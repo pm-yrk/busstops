@@ -20,6 +20,10 @@ const nodeGlobals = {
   AbortController: "readonly",
   AbortSignal: "readonly",
   crypto: "readonly",
+  RequestInit: "readonly",
+  ResponseInit: "readonly",
+  HeadersInit: "readonly",
+  BodyInit: "readonly",
   setTimeout: "readonly",
   clearTimeout: "readonly",
   setInterval: "readonly",
@@ -61,6 +65,13 @@ export default [
         { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
       ],
       "no-console": ["warn", { allow: ["warn", "error"] }],
+    },
+  },
+  {
+    // Pipeline and script entry points: their console output is the operator-facing interface.
+    files: ["pipelines/*/run-*.ts", "scripts/**"],
+    rules: {
+      "no-console": "off",
     },
   },
   {

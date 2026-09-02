@@ -4,3 +4,4 @@ export * from "./time.js";
 export * from "./http.js";
 export * from "./artifacts.js";
 export * from "./quarantine.js";
+export * from "./r2-store.js";

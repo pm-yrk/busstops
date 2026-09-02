@@ -15,3 +15,7 @@ apps/worker/dist/
 tests/fixtures/raw/
 .turbo/
 *.log
+
+# Pipeline run reports
+build-report.json
+network-changes.json

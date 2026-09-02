@@ -1,11 +1,11 @@
 # Bus Stops. Build State
 
-Last updated: 2026-09-02 (P0 complete)
+Last updated: 2026-09-02 (P1 complete)
 
 ## Current status
 
-- Phase: P0 complete → P1 (national static network) starting
-- Overall: foundations in place; product surfaces not yet built
+- Phase: P1 complete → P2 (live data and edge delivery) starting
+- Overall: foundations, all eight source adapters and the national static-network pipeline complete; product surfaces not yet built
 - Deployment: not deployed (external blocker — see Known limitations B3)
 - Blockers: 3 external blockers recorded below (B1 upstream egress, B2 credentials, B3 deploy reachability)
 
@@ -47,30 +47,43 @@ isolated and documented. See `docs/adr/0001-stack-and-build-environment-constrai
 - [x] CI workflow with least-privilege permissions and no secrets for pull requests
 - [x] `.env.example` with names only; `.gitignore` excludes all env files
 
+- [x] `packages/pipeline-core` — retention classes (raw traces hard-capped at 48h), geo and
+      DST-correct time primitives, resilient HTTP with circuit breaking and request coalescing,
+      atomic versioned artifacts with checksum validation and rollback, poison-record quarantine
+- [x] `packages/adapters` — all eight sources: NaPTAN (with OSGB36→WGS84 recovery), TfL,
+      BODS SIRI-VM, TransXChange, Open-Meteo, Environment Agency, National Highways,
+      Street Manager and OpenStreetMap
+- [x] `pipelines/static-network` — national build, search index, atomic publish with
+      previous-good rollback, daily fingerprint change detection, weekly full reconciliation
+- [x] Scheduled workflows with concurrency groups, runtime caps and least-privilege permissions
+
 ### In progress
 
-- [ ] P1 — national static network: NaPTAN/NPTG, BODS TransXChange and TfL schedule adapters,
-      normalization, crosswalks, patterns, search index, versioned artifacts
+- [ ] P2 — live data and edge delivery: Worker viewport/stop/route APIs, caching and
+      coalescing, source health, stale and partial fallback, vehicle matching
 
 ### Next
 
-1. P1 static network adapters, normalization and artifact publishing.
-2. P2 live adapters and the Worker edge API with caching, coalescing and source health.
-3. P3 Bus Stops Live surfaces; then P4 journey planning, P5 pipeline, P6 analytics, P7 Pro,
-   P8 accounts/Daily Brief, P9 hardening, P10 deployment.
+1. P2 Worker edge API with caching, coalescing, source health and vehicle matching.
+2. P3 Bus Stops Live surfaces; P4 journey planning.
+3. P5 intelligence pipeline, P6 analytics, P7 Pro, P8 accounts/Daily Brief, P9 hardening,
+   P10 deployment.
 
 ### Verification evidence
 
-| Check               | Command or method                        | Result                                     | Date       |
-| ------------------- | ---------------------------------------- | ------------------------------------------ | ---------- |
-| Install             | `npm install`                            | 214 packages, no vulnerabilities reported  | 2026-09-02 |
-| Unit tests          | `npx vitest run`                         | 38 passed / 38 (contracts 10, governor 28) | 2026-09-02 |
-| Free-tier preflight | `node scripts/preflight.mjs`             | Passed, 2 deploy-stage warnings            | 2026-09-02 |
-| Secret scan         | `node scripts/secret-scan.mjs`           | Clean across 22 tracked files              | 2026-09-02 |
-| Type check          | `npx tsc --noEmit -p packages/contracts` | Passed                                     | 2026-09-02 |
-| End-to-end          | —                                        | Not run (no app surfaces yet)              | —          |
-| Accessibility       | —                                        | Not run (no app surfaces yet)              | —          |
-| Deployed smoke test | —                                        | Blocked (B3)                               | —          |
+| Check                         | Command or method                               | Result                                                       | Date       |
+| ----------------------------- | ----------------------------------------------- | ------------------------------------------------------------ | ---------- |
+| Install                       | `npm install`                                   | Clean install from lockfile                                  | 2026-09-02 |
+| Unit + contract + integration | `npx vitest run`                                | 326 passed / 326 across 14 files                             | 2026-09-02 |
+| Lint                          | `npx eslint . --max-warnings=0`                 | Clean                                                        | 2026-09-02 |
+| Format                        | `npx prettier --check .`                        | Clean                                                        | 2026-09-02 |
+| Type check                    | `npm run typecheck`                             | Passed for every workspace                                   | 2026-09-02 |
+| Free-tier preflight           | `node scripts/preflight.mjs`                    | Passed, 1 deploy-stage warning                               | 2026-09-02 |
+| Secret scan                   | `node scripts/secret-scan.mjs`                  | Clean across 98 tracked files                                | 2026-09-02 |
+| Pipeline dry run              | `npx tsx pipelines/static-network/run-daily.ts` | Exits 0 reporting the missing credentials, publishes nothing | 2026-09-02 |
+| End-to-end                    | —                                               | Not run (no app surfaces yet)                                | —          |
+| Accessibility                 | —                                               | Not run (no app surfaces yet)                                | —          |
+| Deployed smoke test           | —                                               | Blocked (B3)                                                 | —          |
 
 ### Coverage and source health
 
@@ -78,16 +91,17 @@ isolated and documented. See `docs/adr/0001-stack-and-build-environment-constrai
 from the provider's published schema. "Live verified" = a real upstream response was inspected —
 which nothing can claim in this environment, and nothing does.
 
-| Source             | Adapter | Contract tests | Live verified   | Freshness |
-| ------------------ | ------- | -------------- | --------------- | --------- |
-| BODS               | pending | pending        | blocked (B1/B2) | unknown   |
-| TfL                | pending | pending        | blocked (B1/B2) | unknown   |
-| NaPTAN             | pending | pending        | blocked (B1)    | unknown   |
-| National Highways  | pending | pending        | blocked (B1/B2) | unknown   |
-| Street Manager     | pending | pending        | blocked (B1/B2) | unknown   |
-| OpenStreetMap      | pending | pending        | blocked (B1)    | unknown   |
-| Open-Meteo         | pending | pending        | blocked (B1)    | unknown   |
-| Environment Agency | pending | pending        | blocked (B1)    | unknown   |
+| Source              | Adapter | Contract tests | Live verified   | Freshness |
+| ------------------- | ------- | -------------- | --------------- | --------- |
+| BODS (SIRI-VM)      | done    | 21 passing     | blocked (B1/B2) | unknown   |
+| BODS (TransXChange) | done    | 35 passing     | blocked (B1/B2) | unknown   |
+| TfL                 | done    | 29 passing     | blocked (B1/B2) | unknown   |
+| NaPTAN              | done    | 37 passing     | blocked (B1)    | unknown   |
+| National Highways   | done    | 8 passing      | blocked (B1/B2) | unknown   |
+| Street Manager      | done    | 9 passing      | blocked (B1/B2) | unknown   |
+| OpenStreetMap       | done    | 11 passing     | blocked (B1)    | unknown   |
+| Open-Meteo          | done    | 8 passing      | blocked (B1)    | unknown   |
+| Environment Agency  | done    | 7 passing      | blocked (B1)    | unknown   |
 
 ### Free-tier budget
 
