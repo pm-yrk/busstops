@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Constructed from the published SIRI-VM 2.0 profile used by the Bus Open Data Service.
+     origin: constructed_from_published_schema -->
+<Siri xmlns="http://www.siri.org.uk/siri" version="2.0">
+  <ServiceDelivery>
+    <ResponseTimestamp>2026-09-02T09:00:05+01:00</ResponseTimestamp>
+    <ProducerRef>DepartmentForTransport</ProducerRef>
+    <VehicleMonitoringDelivery version="2.0">
+      <ResponseTimestamp>2026-09-02T09:00:05+01:00</ResponseTimestamp>
+      <RequestMessageRef>a1b2c3</RequestMessageRef>
+      <ValidUntil>2026-09-02T09:05:05+01:00</ValidUntil>
+      <ShortestPossibleCycle>PT5S</ShortestPossibleCycle>
+      <VehicleActivity>
+        <RecordedAtTime>2026-09-02T09:00:00+01:00</RecordedAtTime>
+        <ItemIdentifier>item-0001</ItemIdentifier>
+        <ValidUntilTime>2026-09-02T09:05:00+01:00</ValidUntilTime>
+        <MonitoredVehicleJourney>
+          <LineRef>72</LineRef>
+          <DirectionRef>outbound</DirectionRef>
+          <FramedVehicleJourneyRef>
+            <DataFrameRef>2026-09-02</DataFrameRef>
+            <DatedVehicleJourneyRef>VJ_72_0915</DatedVehicleJourneyRef>
+          </FramedVehicleJourneyRef>
+          <PublishedLineName>72</PublishedLineName>
+          <OperatorRef>FLEE</OperatorRef>
+          <OriginRef>4500010001</OriginRef>
+          <OriginName>Leeds City Bus Station</OriginName>
+          <DestinationRef>4500020001</DestinationRef>
+          <DestinationName>Bradford Interchange</DestinationName>
+          <OriginAimedDepartureTime>2026-09-02T09:15:00+01:00</OriginAimedDepartureTime>
+          <VehicleLocation>
+            <Longitude>-1.5379</Longitude>
+            <Latitude>53.7965</Latitude>
+          </VehicleLocation>
+          <Bearing>225</Bearing>
+          <BlockRef>BLK-11</BlockRef>
+          <VehicleRef>FLEE-30412</VehicleRef>
+        </MonitoredVehicleJourney>
+      </VehicleActivity>
+      <VehicleActivity>
+        <RecordedAtTime>2026-09-02T08:59:30+01:00</RecordedAtTime>
+        <ItemIdentifier>item-0002</ItemIdentifier>
+        <MonitoredVehicleJourney>
+          <LineRef>X1</LineRef>
+          <DirectionRef>inbound</DirectionRef>
+          <PublishedLineName>X1</PublishedLineName>
+          <OperatorRef>SCEM</OperatorRef>
+          <DestinationName>Sheffield Interchange</DestinationName>
+          <VehicleLocation>
+            <Longitude>-1.4659</Longitude>
+            <Latitude>53.3811</Latitude>
+          </VehicleLocation>
+          <Bearing>90</Bearing>
+          <VehicleRef>SCEM-22103</VehicleRef>
+        </MonitoredVehicleJourney>
+      </VehicleActivity>
+      <VehicleActivity>
+        <RecordedAtTime>2026-09-02T09:00:01+01:00</RecordedAtTime>
+        <ItemIdentifier>item-0003</ItemIdentifier>
+        <MonitoredVehicleJourney>
+          <LineRef>99</LineRef>
+          <PublishedLineName>99</PublishedLineName>
+          <OperatorRef>BADD</OperatorRef>
+          <DestinationName>Null Island</DestinationName>
+          <VehicleLocation>
+            <Longitude>0.0</Longitude>
+            <Latitude>0.0</Latitude>
+          </VehicleLocation>
+          <VehicleRef>BADD-00001</VehicleRef>
+        </MonitoredVehicleJourney>
+      </VehicleActivity>
+      <VehicleActivity>
+        <RecordedAtTime>2026-09-02T07:30:00+01:00</RecordedAtTime>
+        <ItemIdentifier>item-0004</ItemIdentifier>
+        <MonitoredVehicleJourney>
+          <LineRef>55</LineRef>
+          <PublishedLineName>55</PublishedLineName>
+          <OperatorRef>STAL</OperatorRef>
+          <DestinationName>Stale Feed Town</DestinationName>
+          <VehicleLocation>
+            <Longitude>-2.2426</Longitude>
+            <Latitude>53.4808</Latitude>
+          </VehicleLocation>
+          <VehicleRef>STAL-77777</VehicleRef>
+        </MonitoredVehicleJourney>
+      </VehicleActivity>
+    </VehicleMonitoringDelivery>
+  </ServiceDelivery>
+</Siri>
