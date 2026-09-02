@@ -1,0 +1,148 @@
+#!/usr/bin/env node
+/**
+ * Pre-deployment preflight (docs/13_FREE_TIER_RULES.md "Verification").
+ *
+ * Fails when a required cap, TTL, rate limit, secret binding or budget value is missing.
+ * Runs in CI on every push so a regression cannot reach deployment. Deployment-only checks
+ * (verified provider allowances, live secret bindings) are reported but only fail the run
+ * when PREFLIGHT_STAGE=deploy, so day-to-day CI stays green while the deploy gate stays hard.
+ */
+
+import { readFileSync, existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+
+const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const stage = process.env.PREFLIGHT_STAGE ?? "ci";
+const failures = [];
+const warnings = [];
+
+function fail(message) {
+  failures.push(message);
+}
+function warn(message) {
+  warnings.push(message);
+}
+function deployGate(message) {
+  if (stage === "deploy") fail(message);
+  else warn(`${message} (deploy-stage gate)`);
+}
+
+function read(relativePath) {
+  const path = join(root, relativePath);
+  return existsSync(path) ? readFileSync(path, "utf8") : null;
+}
+
+// --- 1. Required files exist -------------------------------------------------
+for (const required of [
+  ".env.example",
+  ".gitignore",
+  "packages/governor/src/budget-registry.ts",
+  "packages/contracts/src/source-registry.ts",
+  "docs/13_FREE_TIER_RULES.md",
+]) {
+  if (!read(required)) fail(`Missing required file: ${required}`);
+}
+
+// --- 2. No secret values committed ------------------------------------------
+const envExample = read(".env.example") ?? "";
+for (const line of envExample.split("\n")) {
+  const match = line.match(/^([A-Z0-9_]+)=(.+)$/);
+  if (match && !match[2].startsWith("$") && !["{}", "green"].includes(match[2].trim())) {
+    const value = match[2].trim();
+    // Non-secret defaults (bucket names, mode flags) are allowed; anything key-shaped is not.
+    if (value.length > 24 || /[A-Za-z0-9]{24,}/.test(value)) {
+      fail(`.env.example appears to contain a value for ${match[1]} — names only, never values`);
+    }
+  }
+}
+
+const gitignore = read(".gitignore") ?? "";
+if (!gitignore.includes(".env")) fail(".gitignore must ignore .env files");
+
+// --- 3. Budget registry completeness ----------------------------------------
+const budgetSource = read("packages/governor/src/budget-registry.ts") ?? "";
+const requiredBudgetKeys = [
+  "cloudflare.workers.requests",
+  "cloudflare.r2.storage_bytes",
+  "cloudflare.kv.writes",
+  "github.actions.minutes",
+  "email.daily_sends",
+  "upstream.bods.requests",
+  "upstream.tfl.requests",
+];
+for (const key of requiredBudgetKeys) {
+  if (!budgetSource.includes(`"${key}"`)) {
+    fail(`Budget registry is missing required resource: ${key}`);
+  }
+}
+
+const unverifiedCount = (budgetSource.match(/verifiedAt: null/g) ?? []).length;
+if (unverifiedCount > 0) {
+  deployGate(
+    `${unverifiedCount} budget allowance(s) are unverified against live provider terms; ` +
+      `confirm current free allowances and set verifiedAt before deploying`,
+  );
+}
+
+// --- 4. Governor thresholds match the specification --------------------------
+const governorSource = read("packages/governor/src/governor.ts") ?? "";
+for (const [name, value] of [
+  ["amber", "0.7"],
+  ["red", "0.85"],
+  ["critical", "0.95"],
+]) {
+  if (!new RegExp(`${name}:\\s*${value.replace(".", "\\.")}`).test(governorSource)) {
+    fail(`Governor threshold ${name} must be ${value} per docs/13_FREE_TIER_RULES.md`);
+  }
+}
+for (const preserved of [
+  "consent_deletion",
+  "raw_retention_deletion",
+  "unsubscribe",
+  "security_controls",
+]) {
+  if (!governorSource.includes(preserved)) {
+    fail(`Governor must preserve ${preserved} in critical mode`);
+  }
+}
+
+// --- 5. API caps present -----------------------------------------------------
+const apiSource = read("packages/contracts/src/api.ts") ?? "";
+for (const cap of ["maxBboxAreaSquareDegrees", "minZoom", "maxStops", "maxVehicles", "timeoutMs"]) {
+  if (!apiSource.includes(cap)) fail(`API contract is missing hard cap: ${cap}`);
+}
+
+// --- 6. Source registry: no live-verification claims without evidence --------
+const registrySource = read("packages/contracts/src/source-registry.ts") ?? "";
+const liveClaims = registrySource.match(/method: "live_response",\s*\n\s*at: null/g);
+if (liveClaims) {
+  fail("Source registry claims live verification without a recorded verification timestamp");
+}
+
+// --- 7. Retention policy -----------------------------------------------------
+const retention = read("packages/pipeline-core/src/retention.ts");
+if (retention) {
+  const match = retention.match(/RAW_TRACE_MAX_AGE_HOURS\s*=\s*(\d+)/);
+  if (!match || Number(match[1]) > 48) {
+    fail("Raw trace retention must be capped at 48 hours or less (docs/06_DATA_MODEL.md)");
+  }
+  if (/replay/i.test(retention)) {
+    fail("No Replay pipeline may exist (docs/01_PRODUCT_SPEC.md explicit exclusions)");
+  }
+} else {
+  warn("packages/pipeline-core/src/retention.ts not present yet — raw-expiry policy unverified");
+}
+
+// --- Report ------------------------------------------------------------------
+for (const w of warnings) console.warn(`  warn  ${w}`);
+for (const f of failures) console.error(`  FAIL  ${f}`);
+
+if (failures.length > 0) {
+  console.error(`\nPreflight failed with ${failures.length} error(s) [stage=${stage}].`);
+  process.exit(1);
+}
+console.log(
+  `Preflight passed [stage=${stage}] with ${warnings.length} warning(s). ` +
+    `Deployment additionally requires PREFLIGHT_STAGE=deploy to pass.`,
+);

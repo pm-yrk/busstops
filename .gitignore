@@ -1,0 +1,17 @@
+node_modules/
+dist/
+build/
+.wrangler/
+coverage/
+*.local
+.env
+.env.*
+!.env.example
+.DS_Store
+*.tsbuildinfo
+.vite/
+apps/web/dist/
+apps/worker/dist/
+tests/fixtures/raw/
+.turbo/
+*.log

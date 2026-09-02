@@ -1,0 +1,13 @@
+# Authoritative specification documents are kept byte-identical to the build package.
+docs/0*.md
+docs/1*.md
+CLAUDE.md
+FIRST_PROMPT_FOR_CLAUDE.md
+README.md
+
+node_modules/
+dist/
+build/
+coverage/
+package-lock.json
+.wrangler/
