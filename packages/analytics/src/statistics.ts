@@ -92,10 +92,13 @@ export function proportion(successes: number, total: number, z = 1.96): Proporti
   const centre = p + (z * z) / (2 * total);
   const spread = z * Math.sqrt((p * (1 - p)) / total + (z * z) / (4 * total * total));
 
+  // The interval must bracket its own point estimate. At p = 0 or p = 1 the Wilson arithmetic can
+  // land a hair the wrong side of the estimate through floating-point rounding, and an interval
+  // whose upper bound sits below the value it describes is malformed however small the gap.
   return {
     value: p,
-    low: Math.max(0, (centre - spread) / denominator),
-    high: Math.min(1, (centre + spread) / denominator),
+    low: Math.min(p, Math.max(0, (centre - spread) / denominator)),
+    high: Math.max(p, Math.min(1, (centre + spread) / denominator)),
     denominator: total,
   };
 }
