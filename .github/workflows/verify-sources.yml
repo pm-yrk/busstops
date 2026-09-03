@@ -1,0 +1,63 @@
+name: Verify live sources
+
+# Runs the adapters against real upstream responses.
+#
+# It is a separate, manual workflow rather than part of CI or of a deploy: an upstream having a bad
+# minute is not a reason to fail a build, and a source registry should be updated by someone who
+# has read what came back. Run it, read the summary, then set contractVerification from what it
+# actually observed — never from what it was expected to observe.
+#
+# Requests are deliberately tiny: one bounding box, one stop, a cancelled prefix of the NaPTAN CSV.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-sources
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Fetch and parse real upstream responses
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - run: npm ci --no-audit --no-fund
+
+      - name: Verify
+        env:
+          BODS_API_KEY: ${{ secrets.BODS_API_KEY }}
+          TFL_APP_KEY: ${{ secrets.TFL_APP_KEY }}
+        run: |
+          set -o pipefail
+          npx tsx scripts/verify-live-sources.ts 2>&1 | tee verification.log
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "## Live source verification"
+            echo
+            echo '```'
+            cat verification.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the structured report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-verification
+          path: source-verification.json
+          retention-days: 30
+          if-no-files-found: warn

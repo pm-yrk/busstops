@@ -184,16 +184,23 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           FORCE_REBUILD: "true"
         run: |
-          npx tsx pipelines/static-network/run-daily.ts
+          # The pipeline's own exit code is captured rather than allowed to abort the step,
+          # because the report it writes on the way out is the only description of *why* a run
+          # published nothing, and a step that dies before printing it leaves you guessing.
+          npx tsx pipelines/static-network/run-daily.ts && STATUS=0 || STATUS=$?
+
+          echo "--- build report ---"
+          node -e "console.log(JSON.stringify(require('./build-report.json'), null, 2))" \
+            || echo "no build-report.json was written"
+          echo "--- end build report ---"
 
           # The job exits 0 when storage is not configured, so the schedule keeps running and the
           # gap stays visible instead of turning into a crash. That is right for a cron and wrong
           # for a bootstrap: here, "did not publish" is the failure we are trying to catch.
-          OUTCOME=$(node -e "process.stdout.write(require('./build-report.json').outcome ?? 'missing')")
-          echo "Bootstrap outcome: $OUTCOME"
+          OUTCOME=$(node -e "process.stdout.write(require('./build-report.json').outcome ?? 'missing')" 2>/dev/null || echo missing)
+          echo "Bootstrap outcome: $OUTCOME (pipeline exit $STATUS)"
           if [ "$OUTCOME" != "published" ]; then
             echo "::error::Bootstrap did not publish a national artifact (outcome: $OUTCOME)."
-            node -e "console.error(JSON.stringify(require('./build-report.json'), null, 2))"
             exit 1
           fi
           node -e "const r=require('./build-report.json'); console.log('Stops:', r.counts.stops, 'Services:', r.counts.services, 'Journeys:', r.counts.journeys)"
