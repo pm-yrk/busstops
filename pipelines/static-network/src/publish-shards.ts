@@ -1,4 +1,9 @@
-import { ArtifactStore, mapWithConcurrency, type ObjectStore } from "@busstops/pipeline-core";
+import {
+  ArtifactStore,
+  mapWithConcurrency,
+  objectKeyFor,
+  type ObjectStore,
+} from "@busstops/pipeline-core";
 import type { Coordinate } from "@busstops/contracts";
 import type { BuiltNetwork } from "./build-network.js";
 import { buildSearchIndex, type SearchIndexEntry } from "./search-index.js";
@@ -79,18 +84,22 @@ export async function publishNetworkShards(
     const outcomes = await mapWithConcurrency(shards, TILE_PUBLISH_CONCURRENCY, async (shard) => {
       if (shard.records.length === 0) return { dataset: shard.dataset, error: null };
       try {
-        await artifacts.publish({
-          dataset: shard.dataset,
-          version: options.version,
-          records: shard.records,
-          schemaVersion: NETWORK_SCHEMA_VERSION,
-          sources: ["naptan", "bods"],
-          minimumRecordCount: 1,
-          // A shard's contents move a great deal between timetable changes — a school route
-          // ending for the summer empties a rural tile — and that is data, not a broken parse.
-          maximumShrinkFraction: 0.95,
-          now,
-        });
+        /*
+         * One write per shard, not a full artifact publish.
+         *
+         * A publish costs three round trips — read the manifest, write the object, swap the
+         * pointer — and a national build writes over a thousand shards. That was four thousand
+         * requests against a rate-limited API, and the first attempt lost 962 of them to 429s.
+         *
+         * Two of the three were never needed. The edge reads shards at the version the index
+         * names, addressing the object directly, so a per-shard manifest is written and never
+         * read. And the shrink check a publish performs is meaningless per shard: a rural tile
+         * legitimately empties when a school route stops for the summer.
+         *
+         * Atomicity still comes from the index, which is a real publish, written last.
+         */
+        const body = shard.records.map((record) => JSON.stringify(record)).join("\n");
+        await store.put(objectKeyFor(shard.dataset, options.version), body);
         return { dataset: shard.dataset, error: null };
       } catch (error) {
         return {
@@ -222,6 +231,19 @@ function groupPatternsByTile(network: BuiltNetwork): Map<string, PatternTileReco
       const existing = byTile.get(tile);
       if (existing) existing.push(record);
       else byTile.set(tile, [record]);
+    }
+  }
+  /*
+   * A pattern is written to every tile its shape crosses, so a dense tile can collect far more
+   * than the area itself has routes — one measured at over 20,000, which is tens of megabytes and
+   * the isolate problem again one shard further down. The longest patterns are kept, because a
+   * trunk route is what someone is most likely to be looking at; the rest lose their route name
+   * on the map in that tile and nothing else.
+   */
+  for (const [tile, records] of byTile) {
+    if (records.length > MAX_SHARD_RECORDS) {
+      records.sort((a, b) => b.pattern.stopSequence.length - a.pattern.stopSequence.length);
+      byTile.set(tile, records.slice(0, MAX_SHARD_RECORDS));
     }
   }
   return byTile;

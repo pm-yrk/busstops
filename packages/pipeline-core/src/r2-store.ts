@@ -15,15 +15,22 @@ export interface R2StoreConfig {
   fetchImpl?: typeof fetch;
   /** Requests are bounded so a hung call cannot consume the job's runtime budget. */
   timeoutMs?: number;
+  /** How many times to wait out a 429 before giving up on a request. */
+  maxRateLimitRetries?: number;
+  sleep?: (ms: number) => Promise<void>;
 }
 
 export class R2ObjectStore implements ObjectStore {
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
+  private readonly maxRateLimitRetries: number;
+  private readonly sleep: (ms: number) => Promise<void>;
 
   constructor(private readonly config: R2StoreConfig) {
     this.fetchImpl = config.fetchImpl ?? fetch;
     this.timeoutMs = config.timeoutMs ?? 30_000;
+    this.maxRateLimitRetries = config.maxRateLimitRetries ?? 6;
+    this.sleep = config.sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   }
 
   private objectUrl(key: string): string {
@@ -35,19 +42,39 @@ export class R2ObjectStore implements ObjectStore {
   }
 
   private async request(url: string, init: RequestInit): Promise<Response> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
-    try {
-      return await this.fetchImpl(url, {
-        ...init,
-        signal: controller.signal,
-        headers: {
-          ...(init.headers ?? {}),
-          Authorization: `Bearer ${this.config.apiToken}`,
-        },
-      });
-    } finally {
-      clearTimeout(timer);
+    /*
+     * Cloudflare rate-limits its REST API per account, and a national publish writes thousands of
+     * objects. Being told to slow down is an expected part of that conversation, not a failure:
+     * without this a run gives up on hundreds of shards and publishes nothing.
+     *
+     * Retry-After is honoured when given, because guessing an interval the other side has already
+     * told you is both rude and slower.
+     */
+    for (let attempt = 1; ; attempt++) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+      let response: Response;
+      try {
+        response = await this.fetchImpl(url, {
+          ...init,
+          signal: controller.signal,
+          headers: {
+            ...(init.headers ?? {}),
+            Authorization: `Bearer ${this.config.apiToken}`,
+          },
+        });
+      } finally {
+        clearTimeout(timer);
+      }
+
+      if (response.status !== 429 || attempt > this.maxRateLimitRetries) return response;
+
+      const retryAfter = Number(response.headers.get("retry-after"));
+      const waitMs =
+        Number.isFinite(retryAfter) && retryAfter > 0
+          ? retryAfter * 1000
+          : Math.min(30_000, 500 * 2 ** attempt);
+      await this.sleep(waitMs);
     }
   }
 
