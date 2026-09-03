@@ -16,6 +16,7 @@ import {
   type SourceFingerprint,
 } from "./src/fingerprint.js";
 import { publishJourneyTiles, publishNetwork, rollbackNetwork } from "./src/publish.js";
+import { publishNetworkShards } from "./src/publish-shards.js";
 import { fetchStaticSources } from "./src/sources.js";
 
 const FINGERPRINT_DATASET = "network/fingerprints";
@@ -116,6 +117,34 @@ async function main(): Promise<number> {
     );
   }
 
+  // The edge reads shards, never the national datasets: measured against real data those are
+  // 292 MiB of journeys, 198 MiB of stops and 100 MiB of patterns, against a 128 MiB isolate.
+  // Published after the national datasets and before the fingerprints, so a failure here is a
+  // failed run rather than a live index pointing at shards that do not exist.
+  const shardResult = await publishNetworkShards(store, network, {
+    version: startedAt.toISOString(),
+  });
+  report.shards = {
+    published: shardResult.published,
+    failed: shardResult.failed.slice(0, 10),
+    oversized: shardResult.oversized,
+    stopTiles: shardResult.index?.stopTiles.length ?? 0,
+    patternTiles: shardResult.index?.patternTiles.length ?? 0,
+    searchPrefixes: shardResult.index?.searchPrefixes.length ?? 0,
+  };
+  if (shardResult.index === null) {
+    console.error(
+      `Shard publish incomplete (${shardResult.failed.length} failed); the edge keeps the ` +
+        `previous version rather than reading a half-written one.`,
+    );
+  }
+  if (shardResult.oversized.length > 0) {
+    console.error(
+      `${shardResult.oversized.length} shard(s) exceeded the record cap: ` +
+        `${shardResult.oversized.slice(0, 5).join(", ")}. The sharding key needs to be finer.`,
+    );
+  }
+
   if (!result.complete) {
     // A partial publish is worse than no publish: restore the previous consistent version.
     const rolledBack = await rollbackNetwork(store);
@@ -135,6 +164,12 @@ async function main(): Promise<number> {
     schemaVersion: "1.0.0",
     sources: ["naptan", "bods"],
   });
+
+  if (shardResult.index === null) {
+    report.outcome = "shards_incomplete";
+    writeReport(report);
+    return 1;
+  }
 
   report.outcome = "published";
   console.log(

@@ -8,7 +8,7 @@ import {
 } from "@busstops/pipeline-core";
 import { buildGraph, plan, type JourneyGraph, type PlanResult, type Trip } from "@busstops/journey";
 import { journeyTileDataset } from "@busstops/pipeline-static-network";
-import type { NetworkSnapshot } from "./network-repository.js";
+import type { NetworkSlice } from "./network-reader.js";
 
 /**
  * Journey planning at the edge.
@@ -47,10 +47,7 @@ export class JourneyService {
 
   constructor(private readonly store: ObjectStore) {}
 
-  async planJourney(
-    snapshot: NetworkSnapshot,
-    request: JourneyPlanRequest,
-  ): Promise<JourneyPlanOutcome> {
+  async planJourney(slice: NetworkSlice, request: JourneyPlanRequest): Promise<JourneyPlanOutcome> {
     const corridor = corridorBoundingBox(
       request.origin,
       request.destination,
@@ -77,7 +74,7 @@ export class JourneyService {
       };
     }
 
-    const graph = buildGraphFor(snapshot, journeys, corridor);
+    const graph = buildGraphFor(slice, journeys, corridor);
     if (graph === null) {
       return {
         ok: false,
@@ -134,7 +131,7 @@ export class JourneyService {
 
 /** Builds the search graph, or null when the request would exceed the size guards. */
 export function buildGraphFor(
-  snapshot: NetworkSnapshot,
+  slice: NetworkSlice,
   journeys: readonly ScheduledJourney[],
   corridor: ReturnType<typeof corridorBoundingBox>,
 ): JourneyGraph | null {
@@ -146,8 +143,8 @@ export function buildGraphFor(
   for (const journey of journeys) {
     if (journey.state === "cancelled") continue;
 
-    const pattern = snapshot.patternsById.get(journey.routePatternId);
-    const service = pattern ? snapshot.services.get(pattern.serviceRouteId) : undefined;
+    const pattern = slice.patternsById.get(journey.routePatternId);
+    const service = pattern ? slice.services.get(pattern.serviceRouteId) : undefined;
 
     const stopTimes = journey.stopTimes
       .map((stopTime) => {
@@ -168,13 +165,13 @@ export function buildGraphFor(
       id: journey.id,
       routeId: pattern?.serviceRouteId ?? journey.routePatternId,
       routeName: service?.publicName ?? "Unknown route",
-      headsign: headsignFor(snapshot, stopTimes[stopTimes.length - 1]!.stopId),
+      headsign: headsignFor(slice, stopTimes[stopTimes.length - 1]!.stopId),
       stopTimes,
     });
   }
 
   const stops = [...stopIds]
-    .map((stopId) => snapshot.stopsById.get(stopId))
+    .map((stopId) => slice.stopsById.get(stopId))
     .filter((stop): stop is NonNullable<typeof stop> => stop !== undefined)
     // Stops outside the corridor cannot help this plan and only enlarge the transfer graph,
     // which is quadratic in stop count.
@@ -194,8 +191,8 @@ export function buildGraphFor(
   return buildGraph({ stops, trips: usableTrips });
 }
 
-function headsignFor(snapshot: NetworkSnapshot, lastStopId: string): string {
-  return snapshot.stopsById.get(lastStopId)?.name ?? "Destination not published";
+function headsignFor(slice: NetworkSlice, lastStopId: string): string {
+  return slice.stopsById.get(lastStopId)?.name ?? "Destination not published";
 }
 
 /**

@@ -19,6 +19,7 @@ import {
   buildNetwork,
   publishJourneyTiles,
   publishNetwork,
+  publishNetworkShards,
 } from "@busstops/pipeline-static-network";
 import worker, { initialiseWorker, resetWorkerState } from "./index.js";
 import { R2BindingStore, readFeatureFlags, type R2BucketLike, type WorkerEnv } from "./env.js";
@@ -77,6 +78,10 @@ async function publishedStore(): Promise<InMemoryObjectStore> {
     serviceDate: "2026-09-02",
   });
   await publishNetwork(store, network, { version: "v1" });
+  // The edge reads shards, never the national datasets, so a fixture that publishes only the
+  // latter would test a world the Worker no longer lives in.
+  await publishNetworkShards(store, network, { version: "v1" });
+  await publishJourneyTiles(store, network, { version: "v1" });
   return store;
 }
 

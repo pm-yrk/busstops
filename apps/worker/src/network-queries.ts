@@ -1,17 +1,23 @@
 import type {
   Coordinate,
+  Operator,
   PublishedMetric,
   RoutePattern,
-  SearchResult,
+  ServiceRoute,
   Stop,
 } from "@busstops/contracts";
-import type { NetworkSnapshot } from "./network-repository.js";
+import type { PatternGeometry } from "@busstops/matching";
 
 /**
- * Read-only queries over the published network snapshot.
+ * Read-only queries over whatever slice of the network a request has read.
  *
- * These are derivations of static data the edge already holds, not new analysis: the Worker
- * composes what the pipelines published, and heavy national computation stays in the batch.
+ * These are derivations of static data, not new analysis: the Worker composes what the pipelines
+ * published, and heavy national computation stays in the batch.
+ *
+ * Every function here takes the records it needs rather than a national snapshot. That is the
+ * point: a snapshot parameter is an invitation to load the country into an isolate, which is
+ * measurably impossible — the national datasets are 292, 198 and 100 MiB against a 128 MiB
+ * ceiling. Passing bounded inputs makes the bound visible at every call site.
  */
 
 export interface RouteVariant {
@@ -29,19 +35,25 @@ export interface RouteVariant {
 }
 
 /** Every pattern of a service, with its stop sequence resolved to names. */
-export function routeVariants(snapshot: NetworkSnapshot, serviceId: string): RouteVariant[] {
-  return snapshot.patterns
-    .filter((pattern) => pattern.serviceRouteId === serviceId)
-    .map((pattern) => {
+export function routeVariants(
+  patterns: readonly PatternGeometry[],
+  stopsById: ReadonlyMap<string, Stop>,
+): RouteVariant[] {
+  return patterns
+    .map((geometry) => {
+      const pattern = geometry.pattern;
       const stops = pattern.stopSequence
         .map((stopId, index) => {
-          const stop = snapshot.stopsById.get(stopId);
+          const stop = stopsById.get(stopId);
           if (!stop) return null;
           return {
             stopId,
             atcoCode: stop.atcoCode,
             name: stop.name,
-            locality: localityNameFor(snapshot, stop),
+            // NaPTAN gives each stop an NPTG locality *code*, and the pipeline publishes that,
+            // but not the gazetteer of names it points into. A code is not something to show a
+            // passenger, so the field stays null until those names are published.
+            locality: null as string | null,
             sequence: index,
           };
         })
@@ -64,21 +76,25 @@ export function routeVariants(snapshot: NetworkSnapshot, serviceId: string): Rou
     .sort((a, b) => a.direction.localeCompare(b.direction) || b.stops.length - a.stops.length);
 }
 
-/** Services that call at a stop, derived from the published patterns. */
+/** Services that call at a stop, derived from the patterns read around it. */
 export function routesServingStop(
-  snapshot: NetworkSnapshot,
+  patterns: readonly PatternGeometry[],
   stopId: string,
+  services: ReadonlyMap<string, ServiceRoute>,
+  operators: ReadonlyMap<string, Operator>,
 ): Array<{ id: string; publicName: string; operatorName: string }> {
   const serviceIds = new Set<string>();
-  for (const pattern of snapshot.patterns) {
-    if (pattern.stopSequence.includes(stopId)) serviceIds.add(pattern.serviceRouteId);
+  for (const geometry of patterns) {
+    if (geometry.pattern.stopSequence.includes(stopId)) {
+      serviceIds.add(geometry.pattern.serviceRouteId);
+    }
   }
 
   return [...serviceIds]
     .map((serviceId) => {
-      const service = snapshot.services.get(serviceId);
+      const service = services.get(serviceId);
       if (!service) return null;
-      const operator = snapshot.operators.get(service.operatorId);
+      const operator = operators.get(service.operatorId);
       return {
         id: service.id,
         publicName: service.publicName,
@@ -92,10 +108,10 @@ export function routesServingStop(
 }
 
 export function routesForOperator(
-  snapshot: NetworkSnapshot,
+  services: ReadonlyMap<string, ServiceRoute>,
   operatorId: string,
 ): Array<{ id: string; publicName: string; description: string | null }> {
-  return [...snapshot.services.values()]
+  return [...services.values()]
     .filter((service) => service.operatorId === operatorId)
     .map((service) => ({
       id: service.id,
@@ -113,14 +129,6 @@ export function compareRouteNames(a: string, b: string): number {
     return numericA - numericB;
   }
   return a.localeCompare(b);
-}
-
-export function localityNameFor(snapshot: NetworkSnapshot, stop: Stop): string | null {
-  if (stop.localityId === null) return null;
-  const search = snapshot.searchIndex.entries.find(
-    (entry) => entry.kind === "area" && entry.id === stop.localityId,
-  );
-  return search?.title ?? null;
 }
 
 /**
@@ -180,26 +188,6 @@ export function publishedMetric(input: {
 }
 
 /** Search entries limited to one kind, used by the area and operator pages. */
-export function searchEntriesOfKind(
-  snapshot: NetworkSnapshot,
-  kind: SearchResult["kind"],
-  limit: number,
-): SearchResult[] {
-  const results: SearchResult[] = [];
-  for (const entry of snapshot.searchIndex.entries) {
-    if (entry.kind !== kind) continue;
-    results.push({
-      kind: entry.kind,
-      id: entry.id,
-      title: entry.title,
-      ...(entry.subtitle === undefined ? {} : { subtitle: entry.subtitle }),
-      ...(entry.coordinate === undefined ? {} : { coordinate: entry.coordinate }),
-    });
-    if (results.length >= limit) break;
-  }
-  return results;
-}
-
 export function boundingBoxOf(coordinates: readonly Coordinate[]): {
   west: number;
   south: number;

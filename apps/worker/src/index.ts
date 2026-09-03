@@ -8,10 +8,11 @@ import {
 import { safeModeActive } from "@busstops/governor";
 import {
   boundingBoxAreaSquareDegrees,
+  corridorBoundingBox,
   isPlausibleEnglandCoordinate,
 } from "@busstops/pipeline-core";
 import { matchObservation } from "@busstops/matching";
-import { nearbyStops, searchIndex } from "@busstops/pipeline-static-network";
+
 import { R2BindingStore, readFeatureFlags, type WorkerEnv } from "./env.js";
 import {
   LiveService,
@@ -20,8 +21,8 @@ import {
   oldestObservedAt,
   toMapVehicle,
 } from "./live-service.js";
-import { NetworkRepository } from "./network-repository.js";
-import { JourneyService } from "./journey-service.js";
+import { NetworkReader } from "./network-reader.js";
+import { JOURNEY_LIMITS, JourneyService } from "./journey-service.js";
 import { ProService, resolveScope, DEFAULT_WINDOW_MINUTES } from "./pro-service.js";
 import {
   boundingBoxOf,
@@ -49,7 +50,7 @@ import {
 
 // Module scope survives across requests within an isolate, which is what makes the artifact
 // snapshot and the rate-limit window useful at all.
-let repository: NetworkRepository | null = null;
+let network: NetworkReader | null = null;
 let liveService: LiveService | null = null;
 let journeyService: JourneyService | null = null;
 let proService: ProService | null = null;
@@ -155,11 +156,12 @@ router.get("/v1/map", async (_request, { env, url }) => {
     );
   }
 
-  const snapshot = repository ? await repository.load() : null;
   const now = new Date();
-
-  const stopsResult = snapshot
-    ? NetworkRepository.stopsInBoundingBox(snapshot, bbox, MAP_QUERY_LIMITS.maxStops)
+  // Only the tiles this viewport covers are read. The national stop set is 198 MiB against a
+  // 128 MiB isolate, so "load it and filter" is not an option that exists.
+  const index = network ? await network.networkIndex() : null;
+  const stopsResult = network
+    ? await network.stopsInBoundingBox(bbox, MAP_QUERY_LIMITS.maxStops)
     : { stops: [], truncated: false };
 
   let vehicles: MapResponseData["vehicles"] = [];
@@ -175,23 +177,29 @@ router.get("/v1/map", async (_request, { env, url }) => {
     failedSources = live.failedSources;
     observedAt = oldestObservedAt(live.observations);
 
-    const geometries = snapshot ? NetworkRepository.patternGeometries(snapshot) : [];
+    // Matching only needs the routes that run through the viewport being drawn.
+    const geometries = network ? await network.patternsInBoundingBox(bbox) : [];
     const capped = live.observations.slice(0, MAP_QUERY_LIMITS.maxVehicles);
     vehiclesTruncated = live.observations.length > capped.length;
+
+    const patternsById = new Map(
+      geometries.map((geometry) => [geometry.pattern.id, geometry.pattern]),
+    );
+    const services = network ? await network.services() : new Map();
 
     vehicles = capped.map((observation) => {
       const context = live.journeyContext.get(observation.vehicleRef);
       const summary = toMapVehicle(observation, context, now);
 
-      // Matching only runs when the network snapshot is loaded. Without it a vehicle is still
-      // shown — just without a route name — rather than being hidden from the map.
+      // Matching only runs when routes for this viewport are published. Without them a vehicle is
+      // still shown — just without a route name — rather than being hidden from the map.
       if (geometries.length === 0 || summary.routePublicName !== null) return summary;
 
       const match = matchObservation(observation, geometries);
       if (!match.best || match.confidence.level === "low") return summary;
 
-      const pattern = snapshot?.patternsById.get(match.best.patternId);
-      const service = pattern ? snapshot?.services.get(pattern.serviceRouteId) : undefined;
+      const pattern = patternsById.get(match.best.patternId);
+      const service = pattern ? services.get(pattern.serviceRouteId) : undefined;
       return service ? { ...summary, routePublicName: service.publicName } : summary;
     });
   }
@@ -215,7 +223,7 @@ router.get("/v1/map", async (_request, { env, url }) => {
     },
   };
 
-  const coverage = snapshot ? (liveAllowed && failedSources.length === 0 ? 1 : 0.5) : 0;
+  const coverage = index ? (liveAllowed && failedSources.length === 0 ? 1 : 0.5) : 0;
 
   return json(
     {
@@ -225,7 +233,7 @@ router.get("/v1/map", async (_request, { env, url }) => {
         coverage,
         governorState: state,
         now,
-        ...(snapshot === null ? {} : { networkPartialCoverage: snapshot.partialCoverage }),
+        ...(index === null ? {} : { networkPartialCoverage: index.partialCoverage }),
         failedSources,
         safeMode: safeModeActive(state),
       }),
@@ -237,10 +245,13 @@ router.get("/v1/map", async (_request, { env, url }) => {
 
 router.get("/v1/stops/:id", async (_request, { env, params }) => {
   const state = governorState(env);
-  const snapshot = repository ? await repository.load() : null;
   const now = new Date();
 
-  if (!snapshot) {
+  // Checked before looking the stop up: with nothing published every id is missing, and
+  // answering 404 would tell the caller this stop does not exist rather than that we cannot
+  // currently say.
+  const index = network ? await network.networkIndex() : null;
+  if (!network || !index) {
     return errorResponse(
       "upstream_unavailable",
       "The network dataset is not available yet; live departures cannot be served.",
@@ -249,7 +260,8 @@ router.get("/v1/stops/:id", async (_request, { env, params }) => {
     );
   }
 
-  const stop = snapshot.stopsById.get(params.id ?? "") ?? snapshot.stopsByAtco.get(params.id ?? "");
+  // One locator bucket and one stop tile, whether the caller used a stop id or an ATCO code.
+  const stop = await network.stopByKey(params.id ?? "");
   if (!stop) return errorResponse("not_found", "Stop not found", 404);
 
   const live = liveService
@@ -270,7 +282,12 @@ router.get("/v1/stops/:id", async (_request, { env, params }) => {
       data: {
         stop,
         departures: live.departures,
-        routes: routesServingStop(snapshot, stop.id),
+        routes: routesServingStop(
+          await network.patternsServingStop(stop),
+          stop.id,
+          await network.services(),
+          await network.operators(),
+        ),
       },
     },
     cacheTtlSeconds("tfl", state),
@@ -458,8 +475,17 @@ router.get("/v1/journeys", async (_request, { env, url }) => {
     return errorResponse("bad_request", "Both points must be within England", 400);
   }
 
-  const snapshot = repository ? await repository.load() : null;
-  if (!snapshot || !journeyService) {
+  if (!network || !journeyService) {
+    return errorResponse(
+      "upstream_unavailable",
+      "The network dataset is not available yet.",
+      503,
+      60,
+    );
+  }
+
+  const index = await network.networkIndex();
+  if (!index) {
     return errorResponse(
       "upstream_unavailable",
       "The network dataset is not available yet.",
@@ -481,7 +507,12 @@ router.get("/v1/journeys", async (_request, { env, url }) => {
     return errorResponse("bad_request", "departAt must be seconds into the service day", 400);
   }
 
-  const outcome = await journeyService.planJourney(snapshot, {
+  // The planner reads only the corridor between the two points, which it caps at a handful of
+  // tiles — so a journey request never assembles the national network.
+  const slice = await network.sliceForBoundingBox(
+    corridorBoundingBox(origin, destination, JOURNEY_LIMITS.maxAccessWalkMetres),
+  );
+  const outcome = await journeyService.planJourney(slice, {
     origin,
     destination,
     departAtSeconds,
@@ -494,7 +525,7 @@ router.get("/v1/journeys", async (_request, { env, url }) => {
     coverage: outcome.ok ? 1 : 0,
     governorState: state,
     now,
-    networkPartialCoverage: snapshot.partialCoverage,
+    networkPartialCoverage: index.partialCoverage,
     safeMode: safeModeActive(state),
   });
 
@@ -563,7 +594,6 @@ router.get("/v1/vehicles/:ref", async (_request, { env, params, url }) => {
     return errorResponse("upstream_unavailable", "Live data is not configured.", 503, 60);
   }
 
-  const snapshot = repository ? await repository.load() : null;
   const live = await liveService.vehiclesInBoundingBox(bboxResult.bbox);
   const observation = live.observations.find(
     (candidate) => candidate.vehicleRef === (params.ref ?? ""),
@@ -578,10 +608,14 @@ router.get("/v1/vehicles/:ref", async (_request, { env, params, url }) => {
   }
 
   const context = live.journeyContext.get(observation.vehicleRef);
-  const geometries = snapshot ? NetworkRepository.patternGeometries(snapshot) : [];
+  // Bounded to the viewport the caller asked about, which is the same box the vehicle was found in.
+  const geometries = network ? await network.patternsInBoundingBox(bboxResult.bbox) : [];
   const match = geometries.length > 0 ? matchObservation(observation, geometries) : null;
-  const pattern = match?.best ? snapshot?.patternsById.get(match.best.patternId) : undefined;
-  const service = pattern ? snapshot?.services.get(pattern.serviceRouteId) : undefined;
+  const pattern = match?.best
+    ? geometries.find((geometry) => geometry.pattern.id === match.best!.patternId)?.pattern
+    : undefined;
+  const service =
+    pattern && network ? (await network.services()).get(pattern.serviceRouteId) : undefined;
 
   const vehicle = {
     id: observation.id,
@@ -611,12 +645,20 @@ router.get("/v1/vehicles/:ref", async (_request, { env, params, url }) => {
 
   // Next stops come from the matched pattern's published sequence. Without a confident match
   // there is no sequence to show, and guessing one would be worse than showing none.
+  // Resolved through the locator in one batch: forty ids, not forty round trips, and no national
+  // stop table.
+  const nextStopIds =
+    pattern && match && match.confidence.level !== "low" ? pattern.stopSequence.slice(0, 40) : [];
+  const nextStopsById =
+    nextStopIds.length > 0 && network
+      ? await network.stopsByKeys(nextStopIds)
+      : new Map<string, Awaited<ReturnType<NetworkReader["stopByKey"]>>>();
+
   const nextStops =
-    pattern && snapshot && match && match.confidence.level !== "low"
-      ? pattern.stopSequence
-          .slice(0, 40)
+    nextStopIds.length > 0
+      ? nextStopIds
           .map((stopId) => {
-            const stop = snapshot.stopsById.get(stopId);
+            const stop = nextStopsById.get(stopId);
             if (!stop) return null;
             return {
               stopId,
@@ -640,7 +682,6 @@ router.get("/v1/vehicles/:ref", async (_request, { env, params, url }) => {
         governorState: state,
         now,
         failedSources: live.failedSources,
-        ...(snapshot === null ? {} : { networkPartialCoverage: snapshot.partialCoverage }),
         safeMode: safeModeActive(state),
       }),
       data: {
@@ -649,7 +690,11 @@ router.get("/v1/vehicles/:ref", async (_request, { env, params, url }) => {
         destinationName: context?.destinationName ?? null,
         nextStops,
         recentTrace: [],
-        scheduledShape: pattern ? (snapshot?.shapes.get(pattern.shapeRef) ?? []) : [],
+        // The shape travels with the pattern in its tile, so drawing the route needs no extra read.
+        scheduledShape: match?.best
+          ? (geometries.find((geometry) => geometry.pattern.id === match.best!.patternId)?.shape ??
+            [])
+          : [],
         incidents: [],
       },
     },
@@ -663,10 +708,10 @@ router.get("/v1/vehicles/:ref", async (_request, { env, params, url }) => {
  */
 router.get("/v1/routes/:id", async (_request, { env, params }) => {
   const state = governorState(env);
-  const snapshot = repository ? await repository.load() : null;
   const now = new Date();
 
-  if (!snapshot) {
+  const index = network ? await network.networkIndex() : null;
+  if (!network || !index) {
     return errorResponse(
       "upstream_unavailable",
       "The network dataset is not available yet.",
@@ -675,17 +720,22 @@ router.get("/v1/routes/:id", async (_request, { env, params }) => {
     );
   }
 
-  const route = snapshot.services.get(params.id ?? "");
+  const route = (await network.services()).get(params.id ?? "");
   if (!route) return errorResponse("not_found", "Route not found", 404);
 
-  const operator = snapshot.operators.get(route.operatorId) ?? null;
-  const variants = routeVariants(snapshot, route.id);
+  const operator = (await network.operators()).get(route.operatorId) ?? null;
+
+  // Only the tiles this route is published in, and only the stops its patterns call at.
+  const geometries = await network.patternsForService(route.id);
+  const stopIds = [...new Set(geometries.flatMap((geometry) => geometry.pattern.stopSequence))];
+  const stopsById = await network.stopsByKeys(stopIds);
+  const variants = routeVariants(geometries, stopsById);
 
   // Live vehicles are only fetched for the area this route actually covers, so a route page
   // never triggers a national feed request.
   const coordinates = variants.flatMap((variant) =>
     variant.stops
-      .map((entry) => snapshot.stopsById.get(entry.stopId)?.locationCoordinate)
+      .map((entry) => stopsById.get(entry.stopId)?.locationCoordinate)
       .filter(
         (coordinate): coordinate is NonNullable<typeof coordinate> => coordinate !== undefined,
       ),
@@ -730,7 +780,7 @@ router.get("/v1/routes/:id", async (_request, { env, params }) => {
         governorState: state,
         now,
         failedSources,
-        networkPartialCoverage: snapshot.partialCoverage,
+        networkPartialCoverage: index.partialCoverage,
         safeMode: safeModeActive(state),
       }),
       data: {
@@ -752,9 +802,8 @@ router.get("/v1/routes/:id", async (_request, { env, params }) => {
 /** Operator overview. Factual and deliberately not a league table. */
 router.get("/v1/operators/:id", async (_request, { env, params }) => {
   const state = governorState(env);
-  const snapshot = repository ? await repository.load() : null;
-
-  if (!snapshot) {
+  const index = network ? await network.networkIndex() : null;
+  if (!network || !index) {
     return errorResponse(
       "upstream_unavailable",
       "The network dataset is not available yet.",
@@ -763,10 +812,12 @@ router.get("/v1/operators/:id", async (_request, { env, params }) => {
     );
   }
 
-  const operator = snapshot.operators.get(params.id ?? "");
+  // Operators and services are the two genuinely national datasets the edge still holds: 22 and
+  // 1,043 records. A test asserts they stay that size rather than trusting that they will.
+  const operator = (await network.operators()).get(params.id ?? "");
   if (!operator) return errorResponse("not_found", "Operator not found", 404);
 
-  const routes = routesForOperator(snapshot, operator.id);
+  const routes = routesForOperator(await network.services(), operator.id);
 
   return json(
     {
@@ -776,7 +827,7 @@ router.get("/v1/operators/:id", async (_request, { env, params }) => {
         coverage: 1,
         governorState: state,
         now: new Date(),
-        networkPartialCoverage: snapshot.partialCoverage,
+        networkPartialCoverage: index.partialCoverage,
         safeMode: safeModeActive(state),
       }),
       data: {
@@ -811,7 +862,7 @@ router.get("/v1/operators/:id", async (_request, { env, params }) => {
  */
 router.get("/v1/disruptions", async (_request, { env }) => {
   const state = governorState(env);
-  const snapshot = repository ? await repository.load() : null;
+  const index = network ? await network.networkIndex() : null;
 
   return json(
     {
@@ -821,7 +872,7 @@ router.get("/v1/disruptions", async (_request, { env }) => {
         coverage: 0,
         governorState: state,
         now: new Date(),
-        networkPartialCoverage: snapshot?.partialCoverage ?? true,
+        networkPartialCoverage: index?.partialCoverage ?? true,
         safeMode: safeModeActive(state),
       }),
       data: {
@@ -845,11 +896,6 @@ router.get("/v1/search", async (_request, { env, url }) => {
     return errorResponse("bad_request", "q is required", 400);
   }
 
-  const snapshot = repository ? await repository.load() : null;
-  if (!snapshot) {
-    return errorResponse("upstream_unavailable", "The search index is not available yet.", 503, 60);
-  }
-
   const latParam = url.searchParams.get("lat");
   const lonParam = url.searchParams.get("lon");
   const near =
@@ -857,10 +903,15 @@ router.get("/v1/search", async (_request, { env, url }) => {
       ? { lat: Number(latParam), lon: Number(lonParam) }
       : undefined;
 
-  const hits = searchIndex(snapshot.searchIndex, query, {
-    limit: 20,
-    ...(near === undefined ? {} : { near }),
-  });
+  // Only the prefix buckets this query's words fall in are read. The national search index is
+  // 87 MiB; the buckets a query touches are a few hundred kilobytes.
+  const found = network
+    ? await network.search(query, { limit: 20, ...(near === undefined ? {} : { near }) })
+    : null;
+  if (!found) {
+    return errorResponse("upstream_unavailable", "The search index is not available yet.", 503, 60);
+  }
+  const hits = found.hits;
 
   const results: SearchResult[] = hits.map((hit) => ({
     kind: hit.entry.kind,
@@ -876,7 +927,7 @@ router.get("/v1/search", async (_request, { env, url }) => {
     {
       meta: buildMeta({
         sources: [],
-        observedAt: snapshot.publishedAt,
+        observedAt: found.builtAt,
         coverage: 1,
         governorState: state,
         now: new Date(),
@@ -902,8 +953,9 @@ router.get("/v1/nearby", async (_request, { env, url }) => {
     Math.max(100, Number(url.searchParams.get("radius") ?? "800")),
   );
 
-  const snapshot = repository ? await repository.load() : null;
-  if (!snapshot) {
+  // Read from the search tiles around the point, not from a national index.
+  const found = network ? await network.nearby({ lat, lon }, { radiusMetres, limit: 25 }) : null;
+  if (!found) {
     return errorResponse(
       "upstream_unavailable",
       "The network dataset is not available yet.",
@@ -912,13 +964,13 @@ router.get("/v1/nearby", async (_request, { env, url }) => {
     );
   }
 
-  const hits = nearbyStops(snapshot.searchIndex, { lat, lon }, { radiusMetres, limit: 25 });
+  const hits = found.hits;
 
   return json(
     {
       meta: buildMeta({
         sources: [],
-        observedAt: snapshot.publishedAt,
+        observedAt: found.builtAt,
         coverage: 1,
         governorState: state,
         now: new Date(),
@@ -979,7 +1031,7 @@ function proMeta(state: GovernorState, dataMode: string) {
 }
 
 export function resetWorkerState(): void {
-  repository = null;
+  network = null;
   liveService = null;
   journeyService = null;
   proService = null;
@@ -990,8 +1042,8 @@ export function initialiseWorker(
   now: () => Date = () => new Date(),
   fetchImpl?: typeof fetch,
 ): void {
-  if (!repository && env.ARTIFACTS) {
-    repository = new NetworkRepository(new R2BindingStore(env.ARTIFACTS));
+  if (!network && env.ARTIFACTS) {
+    network = new NetworkReader(new R2BindingStore(env.ARTIFACTS));
   }
   if (!liveService) {
     liveService = new LiveService({ env, now, ...(fetchImpl === undefined ? {} : { fetchImpl }) });

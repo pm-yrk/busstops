@@ -1,0 +1,159 @@
+import type { Coordinate, RoutePattern, Stop } from "@busstops/contracts";
+import { tileIdFor, tilesForCoordinates } from "@busstops/pipeline-core";
+import type { SearchIndexEntry } from "./search-index.js";
+
+/**
+ * Shard addressing for the published network.
+ *
+ * A Workers isolate has 128 MiB. Measured against real national data, the datasets a passenger
+ * query touches are far past that on their own — journeys 292 MiB, stops 198 MiB, patterns
+ * 100 MiB, the search index 87 MiB — so the edge cannot hold the national network at all, and
+ * every request that tried answered 500.
+ *
+ * The fix is the one this pipeline already chose for journeys: publish per shard and read only
+ * the shards a request spans. A viewport needs the stops inside it, not all 349,531; a stop page
+ * needs one stop; a search needs the entries whose words could match.
+ *
+ * Two shard kinds, because queries arrive two ways:
+ *
+ * - **Spatial**, for anything with a location: stops, patterns, journeys and the nearby index.
+ *   Keyed by the same half-degree tile the journey tiles already use.
+ * - **By key**, for anything arriving as an identifier with no location: a stop id, an ATCO code,
+ *   a search word. Keyed by a hash or prefix bucket, so a lookup reads exactly one small object.
+ */
+
+export const SHARDED = {
+  /** One record naming the version every other shard in this publish belongs to. */
+  index: "network/index",
+  stopTile: "network/stops-tile",
+  patternTile: "network/patterns-tile",
+  searchTile: "network/search-tile",
+  searchPrefix: "network/search-prefix",
+  stopLocator: "network/stop-locator",
+  routeTiles: "network/route-tiles",
+} as const;
+
+/**
+ * Locator buckets. 349,531 stops indexed twice (by id and by ATCO code) is ~700,000 keys; at 256
+ * buckets that is ~2,700 rows each, a few hundred kilobytes. Enough buckets that one is trivial
+ * to parse, few enough that publishing them is not itself a cost.
+ */
+export const LOCATOR_BUCKETS = 256;
+
+/**
+ * Search words are bucketed by their first two characters. One character would put every word
+ * beginning "a" in a single shard — around a sixth of a national index, which is exactly the
+ * failure being fixed. Two gives roughly a thousand possible buckets and a few hundred rows each.
+ */
+export const SEARCH_PREFIX_LENGTH = 2;
+
+/**
+ * A shard that grew without bound would reintroduce the original defect quietly, so each is
+ * capped. The cap is high enough that no real bucket approaches it and low enough that hitting it
+ * cannot exhaust an isolate; publishing records when it bites, rather than silently truncating.
+ */
+export const MAX_SHARD_RECORDS = 20_000;
+
+export function stopTileDataset(tile: string): string {
+  return `${SHARDED.stopTile}/${tile}`;
+}
+
+export function patternTileDataset(tile: string): string {
+  return `${SHARDED.patternTile}/${tile}`;
+}
+
+export function searchTileDataset(tile: string): string {
+  return `${SHARDED.searchTile}/${tile}`;
+}
+
+export function searchPrefixDataset(prefix: string): string {
+  return `${SHARDED.searchPrefix}/${prefix}`;
+}
+
+export function stopLocatorDataset(bucket: number): string {
+  return `${SHARDED.stopLocator}/${bucket}`;
+}
+
+/**
+ * FNV-1a over the key, so a lookup computes its bucket without consulting anything. The hash only
+ * has to spread evenly; it is not a checksum and nothing depends on its exact value beyond both
+ * sides computing it identically, which is what the shared implementation is for.
+ */
+export function locatorBucketFor(key: string, buckets = LOCATOR_BUCKETS): number {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < key.length; i++) {
+    hash ^= key.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash % buckets;
+}
+
+/**
+ * The bucket a search word belongs to. Words shorter than the prefix are padded rather than given
+ * their own scheme, so every word has exactly one bucket and lookup never has to special-case.
+ */
+export function searchPrefixFor(token: string, length = SEARCH_PREFIX_LENGTH): string {
+  const normalized = token.toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (normalized.length === 0) return "_".repeat(length);
+  return normalized.slice(0, length).padEnd(length, "_");
+}
+
+/** What the edge needs to resolve an identifier to the shard holding it. */
+export interface StopLocatorRecord {
+  /** A stop id or an ATCO code; both resolve to the same tile. */
+  key: string;
+  tile: string;
+}
+
+/**
+ * A pattern travels with its shape and its along-path stop distances.
+ *
+ * The distances are computed here rather than at the edge because they are a property of static
+ * data that cannot change between publishes, and computing them at request time would mean
+ * looking up every stop in the sequence — stops that may live in neighbouring tiles, turning one
+ * bounded read into an unbounded fan-out.
+ */
+export interface PatternTileRecord {
+  pattern: RoutePattern;
+  shape: Coordinate[];
+  stopDistancesMetres: number[];
+}
+
+/** Which tiles a service's patterns touch, so route detail reads those and no others. */
+export interface RouteTileRecord {
+  serviceId: string;
+  tiles: string[];
+}
+
+/**
+ * The version pointer every other shard is read against.
+ *
+ * Without it a request could read a stop tile from one publish and a pattern tile from the next,
+ * and see a pattern referencing a stop that the tile it holds does not contain. One small record,
+ * read first, pins every subsequent read to a single consistent publish.
+ */
+export interface NetworkIndexRecord {
+  version: string;
+  publishedAt: string;
+  partialCoverage: boolean;
+  /** Tiles that actually have stops, so the edge never requests an object that cannot exist. */
+  stopTiles: string[];
+  patternTiles: string[];
+  searchTiles: string[];
+  searchPrefixes: string[];
+  counts: { stops: number; patterns: number; services: number; searchEntries: number };
+}
+
+export function tileForStop(stop: Stop): string {
+  return tileIdFor(stop.locationCoordinate);
+}
+
+/** Every tile a pattern passes through, so a viewport finds it from any point along the route. */
+export function tilesForPattern(shape: readonly Coordinate[]): string[] {
+  return tilesForCoordinates(shape);
+}
+
+/** Entries with a location are also placed spatially, which is what "stops near me" reads. */
+export function tileForSearchEntry(entry: SearchIndexEntry): string | null {
+  return entry.coordinate ? tileIdFor(entry.coordinate) : null;
+}
