@@ -1,14 +1,14 @@
 # Bus Stops. Build State
 
-Last updated: 2026-09-03 (P3 Bus Stops Live complete)
+Last updated: 2026-09-03 (P7 Bus Stops Pro complete)
 
 ## Current status
 
-- Phase: P0–P6 complete → P7 (Bus Stops Pro)
+- Phase: P0–P7 complete → P8 (accounts and Daily Brief)
 - Overall: foundations, all eight source adapters, the national static-network pipeline, the
   Worker edge API, the full Bus Stops Live passenger app, the journey planning engine, the
-  analytics engine and the national intelligence pipeline are complete. Remaining: P7 Pro app,
-  P8 accounts/Daily Brief, P9 hardening, P10 deployment.
+  analytics engine, the national intelligence pipeline and Bus Stops Pro are complete.
+  Remaining: P8 accounts/Daily Brief, P9 hardening, P10 deployment.
 - Deployment: not deployed (external blocker — see Known limitations B3)
 - Blockers: 3 external blockers recorded below (B1 upstream egress, B2 credentials, B3 deploy reachability)
 
@@ -169,17 +169,40 @@ isolated and documented. See `docs/adr/0001-stack-and-build-environment-constrai
       be blocked by an analytics failure
 - [x] 94 pipeline tests (27 collection, 42 batch, 7 map matching, plus artifact contract tests)
 
+**P7 — Bus Stops Pro**
+
+- [x] All ten sections built and publicly reachable with no sign-in anywhere: Control Tower, Live
+      Operations, Routes, Operators, Congestion, Analytics, Reports, Daily Brief and Settings,
+      with working filters and drilldowns
+- [x] Every response carries an explicit `dataMode` — live, demo_snapshot or unavailable — so a
+      viewer never has to guess. The demonstration snapshot is dated, labelled in the UI, and is
+      reached only when no live intelligence artifact has been published; live and snapshot data
+      are never blended
+- [x] `ProMetric` makes it structurally impossible to publish a figure without its definition,
+      denominator, comparison window, freshness, coverage and suppression state; the tile renders
+      a dash and the reason rather than a placeholder number
+- [x] Control Tower leads with the coverage warning, before any headline figure, and the outlook
+      is assembled from the figures by a fixed rule with no model and no free text
+- [x] Delay-burden and abnormality rankings kept distinct on both Control Tower and Congestion,
+      each stating what it ranks on
+- [x] Operator scorecards publish raw and context-adjusted figures together, and an operator below
+      the comparison threshold is shown separately with its reason rather than ranked
+- [x] Analytics sections carry wording the UI reproduces verbatim: association-not-causation for
+      weather, the Environment Agency wording gate for flooding, and the explicit statement that
+      speed anomalies are properties of a road segment and not statements about any driver
+- [x] Live Operations shows no dispatch controls, and says why
+- [x] Pro settings in the public demo are local and ephemeral, and say so
+- [x] 12 Pro component tests and 11 Pro worker tests
+
 ### In progress
 
-- [ ] P7 — Bus Stops Pro: Control Tower, Live Operations, Routes, Operators, Congestion,
-      Analytics, Disruptions/Alerts, Reports, Daily Brief view and Settings
+- [ ] P8 — accounts, organisations, verified recipients, consent and the Daily Brief
 
 ### Next
 
-1. P7 Bus Stops Pro, publicly viewable with no sign-in wall.
-2. P8 accounts, organisations, verified recipients and the Daily Brief.
-3. P9 hardening, safe mode, runbooks, end-to-end and accessibility testing.
-4. P10 deployment and smoke tests (externally blocked — B3).
+1. P8 accounts, organisations, verified recipients and the Daily Brief.
+2. P9 hardening, safe mode, runbooks, end-to-end and accessibility testing.
+3. P10 deployment and smoke tests (externally blocked — B3).
 
 ### Verification evidence
 
@@ -258,6 +281,16 @@ with a Cloudflare API token from an environment with egress.
 
 No limitation above excuses unfinished credential-independent work; the remaining phases are
 tracked as work, not blockers.
+
+### Pro demonstration snapshot
+
+`apps/worker/src/pro-demo-snapshot.ts` holds a fixed, dated example dataset. It exists because the
+specification allows the public Pro demo to be served from "a conspicuously labelled dated
+snapshot if live national analytics are unavailable", and no live analytics can be produced in
+this environment (blockers B1/B2). It is reached only when no intelligence artifact has been
+published, is never blended with live figures, and every response built from it carries
+`dataMode: "demo_snapshot"`, the snapshot date and a notice the UI displays. A worker test asserts
+that a published artifact — even one with zero incidents — takes precedence over it.
 
 ### Decisions and deviations
 

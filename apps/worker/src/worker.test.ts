@@ -4,14 +4,17 @@ import { dirname, join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   DisruptionsResponseSchema,
+  CongestionResponseSchema,
+  ControlTowerResponseSchema,
   JourneyPlanResponseSchema,
+  OperatorsResponseSchema,
   MAP_QUERY_LIMITS,
   MapResponseSchema,
   OperatorDetailResponseSchema,
   RouteDetailResponseSchema,
   SearchResponseSchema,
 } from "@busstops/contracts";
-import { InMemoryObjectStore } from "@busstops/pipeline-core";
+import { ArtifactStore, InMemoryObjectStore } from "@busstops/pipeline-core";
 import {
   buildNetwork,
   publishJourneyTiles,
@@ -403,6 +406,191 @@ describe("GET /v1/stops/:id", () => {
     );
     expect(response.status).toBe(503);
     expect(response.headers.get("Retry-After")).toBe("60");
+  });
+});
+
+describe("Bus Stops Pro", () => {
+  const PRO_PATHS = [
+    "/v1/pro/control-tower",
+    "/v1/pro/live-operations",
+    "/v1/pro/routes",
+    "/v1/pro/operators",
+    "/v1/pro/congestion",
+    "/v1/pro/analytics",
+    "/v1/pro/reports",
+  ];
+
+  it("serves every Pro endpoint without any authentication", async () => {
+    const store = await publishedStore();
+    for (const path of PRO_PATHS) {
+      const response = await worker.fetch(get(path), makeEnv(store), ctx);
+      expect(response.status, path).toBe(200);
+      // No credential was sent and none was demanded.
+      expect(response.headers.get("WWW-Authenticate")).toBeNull();
+    }
+  });
+
+  it("labels its data mode on every response, so a viewer never has to guess", async () => {
+    const store = await publishedStore();
+    for (const path of PRO_PATHS) {
+      const response = await worker.fetch(get(path), makeEnv(store), ctx);
+      const body = (await response.json()) as {
+        data: {
+          provenance: { dataMode: string; snapshotDate: string | null; notice: string | null };
+        };
+      };
+      expect(["live", "demo_snapshot", "unavailable"], path).toContain(
+        body.data.provenance.dataMode,
+      );
+      if (body.data.provenance.dataMode === "demo_snapshot") {
+        expect(body.data.provenance.snapshotDate, path).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+        expect(body.data.provenance.notice, path).toMatch(/not live data/i);
+      }
+    }
+  });
+
+  it("falls back to the labelled snapshot when no intelligence artifact exists", async () => {
+    const store = await publishedStore();
+    const response = await worker.fetch(get("/v1/pro/control-tower"), makeEnv(store), ctx);
+    const parsed = ControlTowerResponseSchema.safeParse(
+      ((await response.json()) as { data: unknown }).data,
+    );
+    expect(parsed.success).toBe(true);
+    expect(parsed.data!.provenance.dataMode).toBe("demo_snapshot");
+  });
+
+  it("uses live analysis in preference to the snapshot once one is published", async () => {
+    const store = await publishedStore();
+    const artifacts = new ArtifactStore(store);
+    await artifacts.publish({
+      dataset: "intelligence/incidents",
+      version: "v1",
+      records: [],
+      schemaVersion: "1.0.0",
+      minimumRecordCount: 0,
+      allowEmpty: true,
+    });
+
+    const response = await worker.fetch(get("/v1/pro/control-tower"), makeEnv(store), ctx);
+    const body = (await response.json()) as { data: { provenance: { dataMode: string } } };
+    // A published run with zero incidents is a real "nothing to report", not a missing run.
+    expect(body.data.provenance.dataMode).toBe("live");
+  });
+
+  it("never publishes a figure without its denominator, window and coverage", async () => {
+    const store = await publishedStore();
+    const response = await worker.fetch(get("/v1/pro/control-tower"), makeEnv(store), ctx);
+    const parsed = ControlTowerResponseSchema.parse(
+      ((await response.json()) as { data: unknown }).data,
+    );
+
+    expect(parsed.headline.length).toBeGreaterThan(0);
+    for (const metric of parsed.headline) {
+      expect(metric.definition.length).toBeGreaterThan(20);
+      expect(metric.window.length).toBeGreaterThan(0);
+      expect(metric.coverage).toBeGreaterThanOrEqual(0);
+      if (metric.suppressed) {
+        expect(metric.value).toBeNull();
+        expect(metric.suppressionReason).not.toBeNull();
+      }
+    }
+  });
+
+  it("keeps the delay-burden and abnormality rankings distinct", async () => {
+    const store = await publishedStore();
+    const response = await worker.fetch(get("/v1/pro/control-tower"), makeEnv(store), ctx);
+    const parsed = ControlTowerResponseSchema.parse(
+      ((await response.json()) as { data: unknown }).data,
+    );
+
+    expect(parsed.biggestDelayBurden.every((item) => item.surfacedBy === "delay_burden")).toBe(
+      true,
+    );
+    expect(parsed.mostAbnormal.every((item) => item.surfacedBy === "abnormality")).toBe(true);
+  });
+
+  it("suppresses an operator that cannot fairly be compared, with a reason", async () => {
+    const store = await publishedStore();
+    const response = await worker.fetch(get("/v1/pro/operators"), makeEnv(store), ctx);
+    const parsed = OperatorsResponseSchema.parse(
+      ((await response.json()) as { data: unknown }).data,
+    );
+
+    const ineligible = parsed.scorecards.filter((card) => !card.rankingEligible);
+    expect(ineligible.length).toBeGreaterThan(0);
+    for (const card of ineligible) {
+      expect(card.rankingIneligibleReason).not.toBeNull();
+    }
+
+    // Raw and adjusted are always published together; neither may appear alone.
+    for (const card of parsed.scorecards) {
+      expect(card.raw.length).toBeGreaterThan(0);
+      expect(card.contextAdjusted.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("separates biggest delays from most abnormal congestion", async () => {
+    const store = await publishedStore();
+    const response = await worker.fetch(get("/v1/pro/congestion"), makeEnv(store), ctx);
+    const parsed = CongestionResponseSchema.parse(
+      ((await response.json()) as { data: unknown }).data,
+    );
+
+    expect(parsed.biggestDelays.length).toBeGreaterThan(1);
+    expect(parsed.mostAbnormal.length).toBeGreaterThan(1);
+
+    // The same segment may legitimately top both — a big jam on a road that is rarely jammed is
+    // both. What must differ is the ordering, because the two lists rank on different things.
+    expect(parsed.biggestDelays.map((item) => item.segmentId)).not.toEqual(
+      parsed.mostAbnormal.map((item) => item.segmentId),
+    );
+
+    // Biggest delays descend by excess time; most abnormal ascend by how often it happens.
+    const excess = parsed.biggestDelays.map((item) => item.excessVehicleMinutes ?? 0);
+    expect([...excess].sort((a, b) => b - a)).toEqual(excess);
+    const frequency = parsed.mostAbnormal.map((item) => item.occurrenceFrequency ?? 1);
+    expect([...frequency].sort((a, b) => a - b)).toEqual(frequency);
+
+    expect(parsed.causationNotice).toMatch(/not a demonstrated cause/i);
+  });
+
+  it("keeps association wording on the analytics sections that need it", async () => {
+    const store = await publishedStore();
+    const response = await worker.fetch(get("/v1/pro/analytics"), makeEnv(store), ctx);
+    const body = (await response.json()) as {
+      data: {
+        sections: Array<{ key: string; requiredWording: string | null }>;
+        exportNotice: string;
+      };
+    };
+
+    const weather = body.data.sections.find((section) => section.key === "weather_sensitivity");
+    expect(weather?.requiredWording).toMatch(/association, not a demonstrated cause/i);
+
+    const flood = body.data.sections.find((section) => section.key === "flood_susceptibility");
+    expect(flood?.requiredWording).toMatch(/Only the Environment Agency/);
+
+    const speed = body.data.sections.find((section) => section.key === "speed_anomalies");
+    expect(speed?.requiredWording).toMatch(/not statements about any driver/i);
+
+    expect(body.data.exportNotice).toMatch(/Raw vehicle positions are never exported/);
+  });
+
+  it("rejects an unknown report period", async () => {
+    const store = await publishedStore();
+    const response = await worker.fetch(get("/v1/pro/reports?period=hourly"), makeEnv(store), ctx);
+    expect(response.status).toBe(400);
+  });
+
+  it("bounds the requested window rather than scanning unbounded history", async () => {
+    const store = await publishedStore();
+    const response = await worker.fetch(
+      get("/v1/pro/control-tower?window=999999999"),
+      makeEnv(store),
+      ctx,
+    );
+    const body = (await response.json()) as { data: { scope: { windowMinutes: number } } };
+    expect(body.data.scope.windowMinutes).toBeLessThanOrEqual(10_080);
   });
 });
 

@@ -1,5 +1,12 @@
 import type {
+  AnalyticsResponse,
+  CongestionResponse,
+  ControlTowerResponse,
   DisruptionsResponse,
+  LiveOperationsResponse,
+  OperatorsResponse,
+  ReportResponse,
+  RoutesResponse,
   JourneyPlanResponse,
   VehicleDetailResponse,
   MapResponse,
@@ -27,6 +34,13 @@ export class ApiError extends Error {
     super(message);
     this.name = "ApiError";
   }
+}
+
+export interface ProScopeQuery {
+  areaId?: string | null;
+  operatorId?: string | null;
+  routeId?: string | null;
+  windowMinutes?: number;
 }
 
 export interface ApiClientOptions {
@@ -164,6 +178,65 @@ export class ApiClient {
 
   disruptions(signal?: AbortSignal): Promise<DisruptionsResponse> {
     return this.request<DisruptionsResponse>("/v1/disruptions", signal);
+  }
+
+  /**
+   * Bus Stops Pro. No authentication is sent or required: the demo is public by design, and
+   * these endpoints expose no organisation-specific or operational-secret data.
+   */
+  private proQuery(scope: ProScopeQuery = {}): string {
+    const params = new URLSearchParams();
+    if (scope.areaId) params.set("area", scope.areaId);
+    if (scope.operatorId) params.set("operator", scope.operatorId);
+    if (scope.routeId) params.set("route", scope.routeId);
+    if (scope.windowMinutes) params.set("window", String(scope.windowMinutes));
+    const query = params.toString();
+    return query.length > 0 ? `?${query}` : "";
+  }
+
+  proControlTower(
+    scope?: ProScopeQuery,
+    signal?: AbortSignal,
+  ): Promise<{ data: ControlTowerResponse }> {
+    return this.request(`/v1/pro/control-tower${this.proQuery(scope)}`, signal);
+  }
+
+  proLiveOperations(
+    scope?: ProScopeQuery,
+    signal?: AbortSignal,
+  ): Promise<{ data: LiveOperationsResponse }> {
+    return this.request(`/v1/pro/live-operations${this.proQuery(scope)}`, signal);
+  }
+
+  proRoutes(scope?: ProScopeQuery, signal?: AbortSignal): Promise<{ data: RoutesResponse }> {
+    return this.request(`/v1/pro/routes${this.proQuery(scope)}`, signal);
+  }
+
+  proOperators(scope?: ProScopeQuery, signal?: AbortSignal): Promise<{ data: OperatorsResponse }> {
+    return this.request(`/v1/pro/operators${this.proQuery(scope)}`, signal);
+  }
+
+  proCongestion(
+    scope?: ProScopeQuery,
+    signal?: AbortSignal,
+  ): Promise<{ data: CongestionResponse }> {
+    return this.request(`/v1/pro/congestion${this.proQuery(scope)}`, signal);
+  }
+
+  proAnalytics(scope?: ProScopeQuery, signal?: AbortSignal): Promise<{ data: AnalyticsResponse }> {
+    return this.request(`/v1/pro/analytics${this.proQuery(scope)}`, signal);
+  }
+
+  proReport(
+    period: "daily" | "weekly" | "monthly",
+    scope?: ProScopeQuery,
+    signal?: AbortSignal,
+  ): Promise<{ data: ReportResponse }> {
+    const query = this.proQuery(scope);
+    return this.request(
+      `/v1/pro/reports${query.length > 0 ? `${query}&` : "?"}period=${period}`,
+      signal,
+    );
   }
 
   sourcesHealth(signal?: AbortSignal): Promise<unknown> {

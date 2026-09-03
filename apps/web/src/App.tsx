@@ -9,6 +9,16 @@ import { RoutePage } from "./pages/RoutePage.js";
 import { OperatorPage } from "./pages/OperatorPage.js";
 import { DisruptionsPage } from "./pages/DisruptionsPage.js";
 import { JourneyPage } from "./pages/JourneyPage.js";
+import { ProLayout } from "./pro/ProLayout.js";
+import { ControlTowerPage } from "./pro/ControlTowerPage.js";
+import { LiveOperationsPage } from "./pro/LiveOperationsPage.js";
+import { RoutesPage } from "./pro/RoutesPage.js";
+import { OperatorsPage } from "./pro/OperatorsPage.js";
+import { CongestionPage } from "./pro/CongestionPage.js";
+import { AnalyticsPage } from "./pro/AnalyticsPage.js";
+import { ReportsPage } from "./pro/ReportsPage.js";
+import { DailyBriefPage } from "./pro/DailyBriefPage.js";
+import { ProSettingsPage } from "./pro/ProSettingsPage.js";
 import { SearchPage } from "./pages/SearchPage.js";
 import { SavedPage } from "./pages/SavedPage.js";
 import { MethodologyPage } from "./pages/MethodologyPage.js";
@@ -79,6 +89,17 @@ export function App() {
             <Route path="/operators/:operatorId" element={<OperatorPage />} />
             <Route path="/disruptions" element={<DisruptionsPage />} />
             <Route path="/journey" element={<JourneyPage />} />
+            <Route path="/pro" element={<ProLayout />}>
+              <Route index element={<ControlTowerPage />} />
+              <Route path="live" element={<LiveOperationsPage />} />
+              <Route path="routes" element={<RoutesPage />} />
+              <Route path="operators" element={<OperatorsPage />} />
+              <Route path="congestion" element={<CongestionPage />} />
+              <Route path="analytics" element={<AnalyticsPage />} />
+              <Route path="reports" element={<ReportsPage />} />
+              <Route path="brief" element={<DailyBriefPage />} />
+              <Route path="settings" element={<ProSettingsPage />} />
+            </Route>
             <Route path="/search" element={<SearchPage />} />
             <Route path="/saved" element={<SavedPage />} />
             <Route path="/methodology" element={<MethodologyPage />} />

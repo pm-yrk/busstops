@@ -5,3 +5,4 @@ export * from "./derived.js";
 export * from "./account.js";
 export * from "./api.js";
 export * from "./source-registry.js";
+export * from "./pro.js";

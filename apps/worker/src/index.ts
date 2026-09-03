@@ -22,6 +22,7 @@ import {
 } from "./live-service.js";
 import { NetworkRepository } from "./network-repository.js";
 import { JourneyService } from "./journey-service.js";
+import { ProService, resolveScope, DEFAULT_WINDOW_MINUTES } from "./pro-service.js";
 import {
   boundingBoxOf,
   publishedMetric,
@@ -51,6 +52,7 @@ import {
 let repository: NetworkRepository | null = null;
 let liveService: LiveService | null = null;
 let journeyService: JourneyService | null = null;
+let proService: ProService | null = null;
 const rateLimiter = new RateLimiter();
 
 interface RequestContext {
@@ -272,6 +274,112 @@ router.get("/v1/stops/:id", async (_request, { env, params }) => {
       },
     },
     cacheTtlSeconds("tfl", state),
+  );
+});
+
+/**
+ * Bus Stops Pro.
+ *
+ * Public and read-only: there is no sign-in wall on any of these, by design. Authentication in
+ * this product gates only private preferences, organisations, recipients and email delivery —
+ * never the ability to look at what the network is doing.
+ *
+ * Every response carries its data mode, so a viewer is never left guessing whether they are
+ * looking at live analysis or the labelled demonstration snapshot.
+ */
+function proScopeFrom(url: URL) {
+  const windowMinutes = Number(url.searchParams.get("window") ?? DEFAULT_WINDOW_MINUTES);
+  return resolveScope({
+    areaId: url.searchParams.get("area"),
+    operatorId: url.searchParams.get("operator"),
+    routeId: url.searchParams.get("route"),
+    // Bounded: an unbounded window would scan an unbounded amount of history.
+    windowMinutes:
+      Number.isFinite(windowMinutes) && windowMinutes > 0
+        ? Math.min(windowMinutes, 10_080)
+        : DEFAULT_WINDOW_MINUTES,
+  });
+}
+
+router.get("/v1/pro/control-tower", async (_request, { env, url }) => {
+  const state = governorState(env);
+  initialiseWorker(env);
+  const data = await proService!.controlTower(
+    proScopeFrom(url),
+    liveService?.health() ?? [],
+    new Date(),
+  );
+  return json(
+    { meta: proMeta(state, data.provenance.dataMode), data },
+    cacheTtlSeconds("bods", state),
+  );
+});
+
+router.get("/v1/pro/live-operations", async (_request, { env, url }) => {
+  const state = governorState(env);
+  initialiseWorker(env);
+  const data = await proService!.liveOperations(
+    proScopeFrom(url),
+    liveService?.health() ?? [],
+    new Date(),
+  );
+  return json(
+    { meta: proMeta(state, data.provenance.dataMode), data },
+    cacheTtlSeconds("bods", state),
+  );
+});
+
+router.get("/v1/pro/routes", async (_request, { env, url }) => {
+  const state = governorState(env);
+  initialiseWorker(env);
+  const data = await proService!.routes(proScopeFrom(url), new Date());
+  return json(
+    { meta: proMeta(state, data.provenance.dataMode), data },
+    cacheTtlSeconds("static", state),
+  );
+});
+
+router.get("/v1/pro/operators", async (_request, { env, url }) => {
+  const state = governorState(env);
+  initialiseWorker(env);
+  const data = await proService!.operators(proScopeFrom(url), new Date());
+  return json(
+    { meta: proMeta(state, data.provenance.dataMode), data },
+    cacheTtlSeconds("static", state),
+  );
+});
+
+router.get("/v1/pro/congestion", async (_request, { env, url }) => {
+  const state = governorState(env);
+  initialiseWorker(env);
+  const data = await proService!.congestion(proScopeFrom(url), new Date());
+  return json(
+    { meta: proMeta(state, data.provenance.dataMode), data },
+    cacheTtlSeconds("bods", state),
+  );
+});
+
+router.get("/v1/pro/analytics", async (_request, { env, url }) => {
+  const state = governorState(env);
+  initialiseWorker(env);
+  const data = await proService!.analytics(proScopeFrom(url), new Date());
+  return json(
+    { meta: proMeta(state, data.provenance.dataMode), data },
+    cacheTtlSeconds("static", state),
+  );
+});
+
+router.get("/v1/pro/reports", async (_request, { env, url }) => {
+  const state = governorState(env);
+  initialiseWorker(env);
+  const requested = url.searchParams.get("period") ?? "daily";
+  if (requested !== "daily" && requested !== "weekly" && requested !== "monthly") {
+    return errorResponse("bad_request", "period must be daily, weekly or monthly", 400);
+  }
+  const data = await proService!.report(proScopeFrom(url), requested, new Date());
+  return json(
+    { meta: proMeta(state, data.provenance.dataMode), data },
+    cacheTtlSeconds("static", state),
   );
 });
 
@@ -809,10 +917,27 @@ function coverageCaveatsFor(serviceAreas: readonly string[]): string[] {
   return caveats;
 }
 
+/**
+ * Envelope metadata for Pro responses. Coverage is deliberately reported as zero for the demo
+ * snapshot: it covers none of the live network, and saying otherwise would be the exact
+ * confusion the data-mode field exists to prevent.
+ */
+function proMeta(state: GovernorState, dataMode: string) {
+  return buildMeta({
+    sources: liveService?.health() ?? [],
+    observedAt: null,
+    coverage: dataMode === "live" ? 1 : 0,
+    governorState: state,
+    now: new Date(),
+    safeMode: safeModeActive(state),
+  });
+}
+
 export function resetWorkerState(): void {
   repository = null;
   liveService = null;
   journeyService = null;
+  proService = null;
 }
 
 export function initialiseWorker(
@@ -828,6 +953,9 @@ export function initialiseWorker(
   }
   if (!journeyService && env.ARTIFACTS) {
     journeyService = new JourneyService(new R2BindingStore(env.ARTIFACTS));
+  }
+  if (!proService) {
+    proService = new ProService(env.ARTIFACTS ? new R2BindingStore(env.ARTIFACTS) : null);
   }
 }
 
