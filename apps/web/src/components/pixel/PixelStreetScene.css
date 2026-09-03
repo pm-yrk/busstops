@@ -1,19 +1,28 @@
 /*
  * The hero street scene.
  *
- * The SVG carries the drawing; this file carries only the motion and the sizing, so the
+ * The SVG carries the drawing; this file carries only the sizing and the motion, so the
  * illustration itself stays readable as a picture rather than as a pile of transforms.
  */
 
 .street-scene {
   width: 100%;
   /*
-   * Sized as a share of the viewport rather than in pixels, because it is the second half of the
-   * hero composition and has to hold its own against very large type. The clamp keeps it from
-   * dominating a short laptop window or shrinking to an icon on a phone.
+   * Sized by aspect ratio rather than by a height, so the canvas is shown at the proportion it
+   * was drawn for and nothing is cropped. The previous version fixed a height and let the SVG
+   * crop to fill it, which on a phone threw away three quarters of the artwork's width — both
+   * buses among it. The max-height is the one place cropping is still possible, and what it
+   * takes is sky.
    */
-  height: clamp(210px, 46vh, 440px);
+  aspect-ratio: 320 / 100;
+  max-height: min(48vh, 460px);
   overflow: hidden;
+
+  /* How far a bus travels before it wraps: the canvas width, plus its own length off each end. */
+  --scene-enter: -34px;
+  --scene-exit: 320px;
+  --scene-park-blue: 68px;
+  --scene-park-red: 196px;
 }
 
 .street-scene__canvas {
@@ -26,9 +35,36 @@
 }
 
 /*
+ * One composition or the other, never both. The switch is a media query rather than a hook so
+ * there is no first paint with the wrong street in it.
+ */
+.street-scene__canvas--narrow {
+  display: none;
+}
+
+@media (max-width: 720px) {
+  .street-scene {
+    aspect-ratio: 132 / 116;
+    max-height: min(52vh, 460px);
+    --scene-exit: 132px;
+    --scene-park-blue: 16px;
+    --scene-park-red: 74px;
+  }
+
+  .street-scene__canvas--wide {
+    display: none;
+  }
+
+  .street-scene__canvas--narrow {
+    display: block;
+  }
+}
+
+/*
  * Buses run the full width and wrap. The red one runs left to right on the near lane and the
  * blue one right to left on the far lane, which is what makes it read as a road rather than a
- * conveyor belt.
+ * conveyor belt. The distances come from the canvas the scene is currently drawn on, so the same
+ * two keyframes serve both compositions.
  */
 .street-scene__bus {
   will-change: transform;
@@ -44,19 +80,19 @@
 
 @keyframes street-scene-drive-right {
   from {
-    transform: translateX(-34px);
+    transform: translateX(var(--scene-enter));
   }
   to {
-    transform: translateX(320px);
+    transform: translateX(var(--scene-exit));
   }
 }
 
 @keyframes street-scene-drive-left {
   from {
-    transform: translateX(320px) scaleX(-1);
+    transform: translateX(var(--scene-exit)) scaleX(-1);
   }
   to {
-    transform: translateX(-34px) scaleX(-1);
+    transform: translateX(var(--scene-enter)) scaleX(-1);
   }
 }
 
@@ -87,10 +123,10 @@
   }
 
   .street-scene__bus--red {
-    transform: translateX(64px);
+    transform: translateX(var(--scene-park-red));
   }
 
   .street-scene__bus--blue {
-    transform: translateX(232px) scaleX(-1);
+    transform: translateX(var(--scene-park-blue)) scaleX(-1);
   }
 }

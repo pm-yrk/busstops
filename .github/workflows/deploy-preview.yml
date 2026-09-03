@@ -265,6 +265,27 @@ jobs:
         if: ${{ steps.bootstrap.outcome != 'failure' && steps.pages.outcome == 'success' }}
         run: node scripts/smoke-test.mjs "${{ steps.pages.outputs.url }}" "${{ steps.worker.outputs.url }}"
 
+      # Run here rather than in CI because the thing being judged is the deployment: the basemap
+      # comes from a third-party tile host and the policy that permits it is generated at deploy
+      # time, so neither exists in a local build. The accessibility suite cannot see a blank map.
+      - name: Install a browser for the visual pass
+        if: ${{ steps.bootstrap.outcome != 'failure' && steps.pages.outcome == 'success' }}
+        run: npx playwright install --with-deps chromium
+
+      - name: Look at the deployed preview
+        id: visual
+        if: ${{ steps.bootstrap.outcome != 'failure' && steps.pages.outcome == 'success' }}
+        run: node scripts/visual-qa.mjs "${{ steps.pages.outputs.url }}" visual-qa
+
+      - name: Upload what it saw
+        if: ${{ !cancelled() && steps.visual.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: preview-visual-qa
+          path: visual-qa
+          retention-days: 7
+          if-no-files-found: ignore
+
       # Separate from the smoke test on purpose. The smoke test asserts the deployment is sound
       # whatever the upstreams are doing; this asserts there is real national data behind it and
       # that a passenger can reach it, which is only a meaningful question after a bootstrap.
