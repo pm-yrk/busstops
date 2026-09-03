@@ -166,8 +166,38 @@ In order, the run:
 8. Bootstraps the national artifact and **fails if it published nothing**. The daily job exits 0
    when storage is unconfigured, so a schedule keeps running and the gap stays visible; a
    bootstrap needs the opposite.
-9. Waits for Pages to serve, smoke tests both real URLs, and prints the preview link in the job
-   summary.
+9. Waits for Pages to serve, then runs two different checks and prints the preview link in the
+   job summary.
+
+The two checks answer different questions, which is why they are separate:
+
+- `scripts/smoke-test.mjs` asks whether the **deployment** is sound — the edge serves, the
+  security headers are present, the query caps are enforced by the running Worker, Pro needs no
+  credential. It deliberately asserts nothing about live bus data, because whether a feed is
+  healthy this minute is not a property of a deployment and failing a deploy over it would be the
+  wrong signal.
+- `scripts/verify-deployment.mjs` asks whether there is **real data** behind it and whether a
+  passenger can reach it: real stops in a real viewport, a stop that can be selected and returns a
+  renderable departure board, a search that finds a stop the API itself named. It also checks the
+  three things that make the cross-origin setup work — that the bundle really was compiled against
+  the Worker origin, that the served CSP names it exactly, and that the Worker allows the Pages
+  origin. It only runs after a bootstrap, where "no data" is a meaningful answer.
+
+## 5a. Verifying the adapters against real upstreams
+
+GitHub → **Actions** → **Verify live sources** → **Run workflow**.
+
+Fetches one bounding box from BODS, one stop from TfL and a cancelled prefix of the NaPTAN CSV,
+runs each through the parser the platform uses, and reports structure only — counts, field names,
+parser outcomes. Payloads are licensed data that is not redistributed, and credentials are
+redacted from every message. Requests are deliberately tiny, so verification cannot become a load
+source.
+
+Read the summary, then set `contractVerification` in
+`packages/contracts/src/source-registry.ts` from what it **observed**, not from what it was
+expected to observe. `method: "live_response"` is only honest when a real response was inspected,
+and the note should say what was and was not covered — "arrivals for one stop point" rather than
+"TfL works".
 
 ---
 
