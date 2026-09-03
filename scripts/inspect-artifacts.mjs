@@ -41,10 +41,24 @@ function mib(bytes) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
 }
 
-const manifests = (await listObjects("")).filter((object) =>
-  object.key?.endsWith("/manifest.json"),
+// Keys are `manifests/<dataset>/current.json` and `data/<dataset>/<version>.jsonl`. The whole
+// bucket is listed as well as the manifest prefix, so "nothing published" is distinguishable from
+// "the filter was wrong" — the first version of this script confused the two and reported an
+// empty bucket that was not empty.
+const everything = await listObjects("");
+const manifests = (await listObjects("manifests/")).filter((object) =>
+  object.key?.endsWith("/current.json"),
 );
-console.log(`${manifests.length} manifests in ${bucket}\n`);
+console.log(`${everything.length} objects in ${bucket}, ${manifests.length} of them manifests`);
+if (everything.length > 0 && manifests.length === 0) {
+  console.log(
+    `first keys: ${everything
+      .slice(0, 5)
+      .map((object) => object.key)
+      .join(", ")}`,
+  );
+}
+console.log();
 
 const rows = [];
 for (const object of manifests) {
