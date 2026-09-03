@@ -1,6 +1,6 @@
 # Bus Stops. Build State
 
-Last updated: 2026-09-03 (P9 hardening complete)
+Last updated: 2026-09-03 (deployment-readiness audit complete)
 
 ## Current status
 
@@ -270,9 +270,60 @@ isolated and documented. See `docs/adr/0001-stack-and-build-environment-constrai
 - [x] `infra/cloudflare/PROVISIONING.md` — the exact minimum API token scopes, the Worker secrets,
       and why quota verification is deliberately a human step
 
+**Deployment-readiness audit (2026-09-03)**
+
+A reconciliation pass over every file that describes what must be provisioned. Seven defects
+found, all fixed; the repository is now ready to provision.
+
+1. **Production deploys would have gone to preview.** `deploy.yml` selected the Worker
+   environment with `inputs.environment == 'production' && '' || 'preview'`. GitHub expressions
+   short-circuit like JavaScript and the empty string is falsy, so that returns `preview` for
+   _both_ branches. Verified empirically, then replaced with a shell step that computes the
+   target once. A test rejects any expression whose truthy branch is an empty string.
+2. **The preview Worker had no bindings of its own beyond R2.** Wrangler does not inherit
+   bindings into named environments — a binding declared only at the top level is simply absent
+   and the deploy still succeeds. Preview now declares every binding, var and observability
+   setting explicitly, and both preflight and a test compare the two environments structurally,
+   so a binding added later and forgotten under preview fails before it ships.
+3. **The KV namespace was dead configuration.** `CACHE` was bound in `wrangler.toml` and declared
+   in `WorkerEnv`, but no code read it. It has been removed rather than left for someone to
+   provision for nothing: the free tier allows 1,000 KV writes a day, which suits none of the
+   caching this Worker would want. Its two budget-registry entries went with it.
+4. **GitHub Actions minutes were modelled as a fictitious 50,000/month allowance.** That is the
+   included quota for private repositories on a paid plan; standard GitHub-hosted runners are
+   free and unlimited for public repositories. The entry is now `metered: false` with the
+   condition recorded, because making this repository private would turn minutes into a real
+   budget.
+5. **The BODS limit was a number nobody published.** 20,000 requests/day appeared nowhere in
+   BODS guidance, which instead asks for no more than one central live-data request every five
+   seconds. Recorded as 12 requests/minute and — more importantly — enforced at the point of
+   request: the collector previously issued its whole partition list as fast as the responses
+   came back, breaching the interval while appearing to be well inside budget. Four tests cover
+   the spacing, including that coverage is sacrificed before the publisher's rule is.
+6. **The cadence interval double-counted.** Waiting the full interval _after_ a pass, on top of
+   per-request spacing, stretched a 60-second cadence to nearly two minutes and pushed a normal
+   run over its time budget. The interval now counts from the start of the previous pass, which
+   is what a cadence means.
+7. **`evaluateResource` reported unverified allowances as verified**, substituting the current
+   time when `verifiedAt` was null. An unverified figure could not be told apart from a checked
+   one. `allowanceVerifiedAt` is now nullable and reports null.
+
+Also: `.env.example` had five variables nothing read (`R2_BUCKET_RAW`, `KV_NAMESPACE_CACHE`,
+`DATABASE_URL`, `AUTH_SECRET`, `AUTH_ALLOWED_ORIGIN`) and was missing `PUBLIC_API_URL`, which the
+deploy workflow consumes. A contract test now fails on drift in either direction. National
+Highways and Street Manager keys are documented as not required to deploy, because their adapters
+are contract-tested but not yet called by any scheduled job.
+
+`infra/cloudflare/PROVISIONING.md` is now the single authoritative list, with an eleven-step
+order of operations, and it requires two GitHub Environments so a preview deploy is smoke-tested
+against preview's URLs rather than production's.
+
+Nine allowances remain `verifiedAt: null` and continue to block production deploys, as intended.
+
 ### In progress
 
-- [ ] P10 — the deploy itself, blocked on a Cloudflare API token (B3)
+- [ ] P10 — the deploy itself, blocked on a Cloudflare API token (B3) and on the nine
+      unverified free-tier allowances, which are a deliberate human gate
 
 ### Next
 

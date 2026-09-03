@@ -10,6 +10,7 @@ import {
   capabilityAllowed,
   classify,
   evaluateResource,
+  getBudgetResource,
   pollingIntervalMultiplier,
   projectUtilization,
   safeModeActive,
@@ -218,5 +219,71 @@ describe("budget registry integrity", () => {
     // Every allowance starts unverified; preflight must fail until confirmed against live terms.
     const unverified = unverifiedRequiredResources();
     expect(unverified.length).toBeGreaterThan(0);
+  });
+});
+
+describe("unmetered resources", () => {
+  it("never throttles a resource the provider does not meter", () => {
+    const state = evaluateResource({
+      resourceKey: "github.actions.minutes",
+      // Wildly over the placeholder allowance, which is not a real quota.
+      used: 999_999,
+      periodElapsedFraction: 0.1,
+      observedAt: "2026-09-03T09:00:00.000Z",
+    });
+
+    expect(state.state).toBe("green");
+    expect(state.utilizationFraction).toBe(0);
+    expect(state.metered).toBe(false);
+  });
+
+  it("records why a resource is unmetered, so the condition is not lost", () => {
+    const actions = getBudgetResource("github.actions.minutes")!;
+    expect(actions.metered).toBe(false);
+    expect(actions.unmeteredBecause).toMatch(/public repositories/i);
+    // The condition that could make it metered again is stated, not merely implied.
+    expect(actions.unmeteredBecause).toMatch(/private/i);
+  });
+
+  it("reports a null verification time rather than pretending an unchecked figure was checked", () => {
+    const unverified = BUDGET_REGISTRY.find((resource) => resource.verifiedAt === null);
+    expect(unverified).toBeDefined();
+
+    const state = evaluateResource({
+      resourceKey: unverified!.key,
+      used: 1,
+      periodElapsedFraction: 0.5,
+      observedAt: "2026-09-03T09:00:00.000Z",
+    });
+    expect(state.allowanceVerifiedAt).toBeNull();
+  });
+
+  it("carries a note for every allowance that claims to be verified", () => {
+    for (const resource of BUDGET_REGISTRY) {
+      if (resource.verifiedAt !== null) {
+        expect(resource.verifiedNote, resource.key).toBeTruthy();
+      }
+    }
+  });
+
+  it("models the BODS limit as the published interval, not an invented daily quota", () => {
+    const bods = getBudgetResource("upstream.bods.requests")!;
+    // Once every five seconds is twelve a minute.
+    expect(bods.period).toBe("minute");
+    expect(bods.allowance).toBe(12);
+    expect(bods.verifiedNote).toMatch(/five seconds/i);
+  });
+
+  it("keeps the TfL registered-product rate limit", () => {
+    const tfl = getBudgetResource("upstream.tfl.requests")!;
+    expect(tfl.allowance).toBe(500);
+    expect(tfl.period).toBe("minute");
+  });
+
+  it("tracks no resource the platform does not use", () => {
+    // KV was bound but never read; its entries went with the binding.
+    expect(BUDGET_REGISTRY.some((resource) => resource.key.startsWith("cloudflare.kv"))).toBe(
+      false,
+    );
   });
 });

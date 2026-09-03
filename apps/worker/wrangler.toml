@@ -1,8 +1,14 @@
 # Cloudflare Worker configuration for the Bus Stops. edge API.
 #
-# Secrets are never listed here. Set them with `wrangler secret put <NAME>`:
-#   BODS_API_KEY, TFL_APP_KEY, VEHICLE_SALT_SECRET
-# Non-secret configuration goes in [vars]; bindings are declared below.
+# Secrets are never listed here. Set them per environment with:
+#   npx wrangler secret put <NAME> --config apps/worker/wrangler.toml --env preview
+#   npx wrangler secret put <NAME> --config apps/worker/wrangler.toml --env ""
+# See infra/cloudflare/PROVISIONING.md for the authoritative list.
+#
+# IMPORTANT — bindings do not inherit between environments. Wrangler treats every `[env.*]`
+# block as a complete configuration: a binding declared only at the top level is simply absent
+# from a named environment, and the deploy succeeds anyway. So everything the top level declares
+# is repeated under [env.preview] verbatim, and a test asserts the two stay in step.
 
 name = "busstops-api"
 main = "src/index.ts"
@@ -23,13 +29,16 @@ FEATURE_FLAGS_JSON = "{}"
 binding = "ARTIFACTS"
 bucket_name = "busstops-artifacts"
 
-[[kv_namespaces]]
-binding = "CACHE"
-# Replace with the real namespace id at provisioning time; never a secret.
-id = "REPLACE_AT_PROVISIONING"
+# --- Preview -----------------------------------------------------------------
+# A complete, standalone copy. Preview reads its own bucket so a preview deploy can never
+# publish over, or read a half-written artifact from, the production dataset.
 
 [env.preview]
 name = "busstops-api-preview"
+workers_dev = true
+
+[env.preview.observability]
+enabled = true
 
 [env.preview.vars]
 GOVERNOR_MODE = "green"

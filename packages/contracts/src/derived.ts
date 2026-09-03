@@ -396,6 +396,13 @@ export const QuotaStateSchema = z.object({
   allowance: z.number().nonnegative(),
   allowanceUnit: z.string(),
   allowanceSourceUrl: z.string().url().optional(),
-  allowanceVerifiedAt: IsoInstantSchema,
+  /**
+   * When the allowance was last confirmed against the provider's published terms, or null when
+   * it never has been. Nullable on purpose: substituting "now" for an unverified figure would
+   * make a guess indistinguishable from a checked fact.
+   */
+  allowanceVerifiedAt: IsoInstantSchema.nullable(),
+  /** False when the provider does not meter this resource under our conditions. */
+  metered: z.boolean().default(true),
 });
 export type QuotaState = z.infer<typeof QuotaStateSchema>;

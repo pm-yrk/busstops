@@ -4,10 +4,16 @@ name: Intelligence — bounded live collection
 # separate from the user path: browsers never trigger this, and it never fetches a national feed
 # on a browser's behalf.
 #
-# Budget arithmetic, kept explicit so a cadence change is a visible decision rather than a drift:
-# every 30 minutes is 48 runs a day; each run is capped at 10 minutes, so the worst case is
-# 480 minutes a day, about 14,600 a month. The self-imposed ceiling for Actions is half of the
-# 50,000 free minutes, so this sits inside it with the weekly and daily network jobs alongside.
+# Two budgets bound this job, and only one of them is ours.
+#
+# The publisher's rule is the binding one: BODS asks for no more than one central live-data
+# request every five seconds. That is enforced per request in the collector, so a run spaces its
+# partitions rather than bursting them — twelve partitions take at least a minute to sweep.
+#
+# Actions minutes are not a constraint here: standard GitHub-hosted runners are free and
+# unlimited for public repositories. The 10-minute job cap exists to stop a hung upstream holding
+# a runner open, not to ration minutes. If this repository is ever made private, minutes become
+# metered and this cadence needs revisiting.
 
 on:
   schedule:
@@ -50,6 +56,8 @@ jobs:
           BUDGET_UTILIZATION: ${{ vars.BUDGET_UTILIZATION }}
           MAX_PARTITIONS_PER_RUN: ${{ vars.MAX_PARTITIONS_PER_RUN }}
           BODS_DAILY_REQUEST_BUDGET: ${{ vars.BODS_DAILY_REQUEST_BUDGET }}
+          COLLECTION_PASSES: ${{ vars.COLLECTION_PASSES }}
+          COLLECTION_BUDGET_MS: ${{ vars.COLLECTION_BUDGET_MS }}
         run: npx tsx pipelines/live-collection/run-collect.ts
 
       - name: Upload collection report

@@ -62,10 +62,13 @@ if (!gitignore.includes(".env")) fail(".gitignore must ignore .env files");
 
 // --- 3. Budget registry completeness ----------------------------------------
 const budgetSource = read("packages/governor/src/budget-registry.ts") ?? "";
+// Every resource the deployed platform actually consumes. KV is deliberately absent: nothing
+// binds or reads it, so tracking a budget for it would be tracking a fiction.
 const requiredBudgetKeys = [
   "cloudflare.workers.requests",
   "cloudflare.r2.storage_bytes",
-  "cloudflare.kv.writes",
+  "cloudflare.r2.class_a_operations",
+  "cloudflare.r2.class_b_operations",
   "github.actions.minutes",
   "email.daily_sends",
   "upstream.bods.requests",
@@ -83,6 +86,53 @@ if (unverifiedCount > 0) {
     `${unverifiedCount} budget allowance(s) are unverified against live provider terms; ` +
       `confirm current free allowances and set verifiedAt before deploying`,
   );
+}
+
+// A verified allowance must say how it was verified. Without that, "verified" is just a date.
+const verifiedWithoutNote = (
+  budgetSource.match(/verifiedAt: "[^"]+",\s*\n\s*verifiedNote: null/g) ?? []
+).length;
+if (verifiedWithoutNote > 0) {
+  fail(
+    `${verifiedWithoutNote} budget allowance(s) claim verification without recording how it was ` +
+      `verified; set verifiedNote alongside verifiedAt`,
+  );
+}
+
+// An unmetered resource must state the condition that keeps it unmetered, because that condition
+// can change — a repository going private turns free Actions minutes into a real budget.
+const unmeteredCount = (budgetSource.match(/metered: false/g) ?? []).length;
+const unmeteredReasons = (
+  budgetSource.match(/metered: false,\s*\n\s*unmeteredBecause:\s*\n?\s*"/g) ?? []
+).length;
+if (unmeteredCount !== unmeteredReasons) {
+  fail(
+    `every resource marked metered: false must record unmeteredBecause ` +
+      `(${unmeteredCount} unmetered, ${unmeteredReasons} with a stated reason)`,
+  );
+}
+
+// --- 3b. Worker bindings are declared for every environment ------------------
+// Wrangler does not inherit bindings into named environments; a binding missing from
+// [env.preview] is simply absent at runtime and the deploy still succeeds.
+const wrangler = read("apps/worker/wrangler.toml") ?? "";
+const topBindings = [
+  ...wrangler.matchAll(/^\[\[(r2_buckets|kv_namespaces|d1_databases)\]\]/gm),
+].map((m) => m[1]);
+for (const kind of new Set(topBindings)) {
+  const previewCount = (
+    wrangler.match(new RegExp(`^\\[\\[env\\.preview\\.${kind}\\]\\]`, "gm")) ?? []
+  ).length;
+  const topCount = topBindings.filter((k) => k === kind).length;
+  if (previewCount !== topCount) {
+    fail(
+      `wrangler.toml declares ${topCount} top-level ${kind} binding(s) but ${previewCount} for ` +
+        `env.preview; bindings do not inherit between environments`,
+    );
+  }
+}
+if (!/^\[env\.preview\]/m.test(wrangler)) {
+  fail("wrangler.toml must declare a preview environment");
 }
 
 // --- 4. Governor thresholds match the specification --------------------------

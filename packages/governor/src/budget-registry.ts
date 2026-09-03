@@ -17,13 +17,26 @@ export const BudgetResourceSchema = z.object({
   key: z.string().min(1),
   provider: z.string().min(1),
   displayName: z.string().min(1),
-  /** Smallest applicable free allowance for the period. */
+  /** Smallest applicable free allowance for the period. Ignored when `metered` is false. */
   allowance: z.number().positive(),
   unit: z.string().min(1),
   period: BudgetPeriodSchema,
   termsUrl: z.string().url(),
+  /**
+   * Whether the provider meters this resource against a quota at all.
+   *
+   * Some resources are genuinely unlimited under the conditions we run in, and inventing a
+   * number for them is worse than recording none: a fabricated allowance makes the governor
+   * throttle work that costs nothing, and it hides the real condition that keeps it free.
+   * When false, `allowance` is a placeholder and `unmeteredBecause` states the condition.
+   */
+  metered: z.boolean().default(true),
+  /** Required when `metered` is false: the condition under which no quota applies. */
+  unmeteredBecause: z.string().nullable().default(null),
   /** ISO instant when this allowance was last confirmed against the provider's published terms. */
   verifiedAt: z.string().nullable(),
+  /** How the figure was confirmed. Required whenever `verifiedAt` is set. */
+  verifiedNote: z.string().nullable().default(null),
   /** When true, deployment preflight fails unless the allowance has been verified. */
   requiredForDeploy: z.boolean().default(true),
   /**
@@ -43,7 +56,10 @@ export const BUDGET_REGISTRY: readonly BudgetResource[] = [
     unit: "requests",
     period: "day",
     termsUrl: "https://developers.cloudflare.com/workers/platform/limits/",
+    metered: true,
+    unmeteredBecause: null,
     verifiedAt: null,
+    verifiedNote: null,
     requiredForDeploy: true,
     selfImposedCeilingFraction: 0.85,
   },
@@ -55,7 +71,10 @@ export const BUDGET_REGISTRY: readonly BudgetResource[] = [
     unit: "cpu-milliseconds",
     period: "minute",
     termsUrl: "https://developers.cloudflare.com/workers/platform/limits/",
+    metered: true,
+    unmeteredBecause: null,
     verifiedAt: null,
+    verifiedNote: null,
     requiredForDeploy: true,
     selfImposedCeilingFraction: 0.8,
   },
@@ -67,7 +86,10 @@ export const BUDGET_REGISTRY: readonly BudgetResource[] = [
     unit: "bytes",
     period: "month",
     termsUrl: "https://developers.cloudflare.com/r2/pricing/",
+    metered: true,
+    unmeteredBecause: null,
     verifiedAt: null,
+    verifiedNote: null,
     requiredForDeploy: true,
     selfImposedCeilingFraction: 0.8,
   },
@@ -79,7 +101,10 @@ export const BUDGET_REGISTRY: readonly BudgetResource[] = [
     unit: "operations",
     period: "month",
     termsUrl: "https://developers.cloudflare.com/r2/pricing/",
+    metered: true,
+    unmeteredBecause: null,
     verifiedAt: null,
+    verifiedNote: null,
     requiredForDeploy: true,
     selfImposedCeilingFraction: 0.8,
   },
@@ -91,44 +116,38 @@ export const BUDGET_REGISTRY: readonly BudgetResource[] = [
     unit: "operations",
     period: "month",
     termsUrl: "https://developers.cloudflare.com/r2/pricing/",
+    metered: true,
+    unmeteredBecause: null,
     verifiedAt: null,
+    verifiedNote: null,
     requiredForDeploy: true,
     selfImposedCeilingFraction: 0.85,
-  },
-  {
-    key: "cloudflare.kv.reads",
-    provider: "Cloudflare",
-    displayName: "KV reads",
-    allowance: 100_000,
-    unit: "reads",
-    period: "day",
-    termsUrl: "https://developers.cloudflare.com/kv/platform/limits/",
-    verifiedAt: null,
-    requiredForDeploy: true,
-    selfImposedCeilingFraction: 0.85,
-  },
-  {
-    key: "cloudflare.kv.writes",
-    provider: "Cloudflare",
-    displayName: "KV writes",
-    allowance: 1_000,
-    unit: "writes",
-    period: "day",
-    termsUrl: "https://developers.cloudflare.com/kv/platform/limits/",
-    verifiedAt: null,
-    requiredForDeploy: true,
-    selfImposedCeilingFraction: 0.8,
   },
   {
     key: "github.actions.minutes",
     provider: "GitHub",
-    displayName: "Actions minutes (public repository)",
-    allowance: 50_000,
+    displayName: "Actions minutes (standard runners, public repository)",
+    /*
+     * Standard GitHub-hosted runners are free and unlimited for public repositories, so there is
+     * no monthly allowance to model. The previous 50,000-minute figure was the included quota for
+     * private repositories on a paid plan and did not apply here at all.
+     *
+     * The entry is kept rather than deleted because the condition matters: if this repository is
+     * ever made private, minutes become metered immediately and this becomes a real budget. The
+     * placeholder allowance is never consumed while `metered` is false.
+     */
+    allowance: 1,
     unit: "minutes",
     period: "month",
     termsUrl:
       "https://docs.github.com/en/billing/managing-billing-for-github-actions/about-billing-for-github-actions",
-    verifiedAt: null,
+    metered: false,
+    unmeteredBecause:
+      "Standard GitHub-hosted runners are free and unlimited for public repositories. This " +
+      "becomes a metered monthly allowance if the repository is made private.",
+    verifiedAt: "2026-09-03T00:00:00.000Z",
+    verifiedNote:
+      "Confirmed against GitHub's published Actions billing terms for public repositories.",
     requiredForDeploy: true,
     selfImposedCeilingFraction: 0.5,
   },
@@ -140,7 +159,10 @@ export const BUDGET_REGISTRY: readonly BudgetResource[] = [
     unit: "emails",
     period: "day",
     termsUrl: "https://resend.com/pricing",
+    metered: true,
+    unmeteredBecause: null,
     verifiedAt: null,
+    verifiedNote: null,
     requiredForDeploy: false,
     selfImposedCeilingFraction: 0.8,
   },
@@ -152,31 +174,53 @@ export const BUDGET_REGISTRY: readonly BudgetResource[] = [
     unit: "emails",
     period: "month",
     termsUrl: "https://resend.com/pricing",
+    metered: true,
+    unmeteredBecause: null,
     verifiedAt: null,
+    verifiedNote: null,
     requiredForDeploy: false,
     selfImposedCeilingFraction: 0.8,
   },
   {
     key: "upstream.bods.requests",
     provider: "BODS",
-    displayName: "BODS API requests",
-    allowance: 20_000,
+    displayName: "BODS live data requests",
+    /*
+     * BODS publishes a request *interval*, not a daily quota: consumers are asked not to request
+     * the central live data more often than once every five seconds. Twelve requests per minute
+     * is that rule expressed in the registry's units, and it is the real constraint — the
+     * previous 20,000-per-day figure was not published anywhere and let the collector issue a
+     * burst that breached the interval while appearing to be well inside budget.
+     *
+     * BODS_MINIMUM_REQUEST_INTERVAL_MS is the same rule enforced at the point of request.
+     */
+    allowance: 12,
     unit: "requests",
-    period: "day",
-    termsUrl: "https://data.bus-data.dft.gov.uk/guidance/",
-    verifiedAt: null,
+    period: "minute",
+    termsUrl: "https://data.bus-data.dft.gov.uk/guidance/requirements/",
+    metered: true,
+    unmeteredBecause: null,
+    verifiedAt: "2026-09-03T00:00:00.000Z",
+    verifiedNote:
+      "BODS consumer guidance: the central live data should be requested no more frequently " +
+      "than once every five seconds, which is 12 requests per minute.",
     requiredForDeploy: true,
     selfImposedCeilingFraction: 0.5,
   },
   {
     key: "upstream.tfl.requests",
     provider: "TfL",
-    displayName: "TfL Unified API requests",
+    displayName: "TfL Unified API requests (registered product)",
     allowance: 500,
     unit: "requests",
     period: "minute",
     termsUrl: "https://api-portal.tfl.gov.uk/",
-    verifiedAt: null,
+    metered: true,
+    unmeteredBecause: null,
+    verifiedAt: "2026-09-03T00:00:00.000Z",
+    verifiedNote:
+      "TfL registered Unified API product is rate limited to 500 requests per minute. An " +
+      "unregistered caller gets far less, so the app key is what makes this figure apply.",
     requiredForDeploy: true,
     selfImposedCeilingFraction: 0.5,
   },
@@ -188,7 +232,10 @@ export const BUDGET_REGISTRY: readonly BudgetResource[] = [
     unit: "requests",
     period: "day",
     termsUrl: "https://open-meteo.com/en/terms",
+    metered: true,
+    unmeteredBecause: null,
     verifiedAt: null,
+    verifiedNote: null,
     requiredForDeploy: false,
     selfImposedCeilingFraction: 0.5,
   },
@@ -200,7 +247,10 @@ export const BUDGET_REGISTRY: readonly BudgetResource[] = [
     unit: "requests",
     period: "day",
     termsUrl: "https://environment.data.gov.uk/flood-monitoring/doc/reference",
+    metered: true,
+    unmeteredBecause: null,
     verifiedAt: null,
+    verifiedNote: null,
     requiredForDeploy: false,
     selfImposedCeilingFraction: 0.5,
   },

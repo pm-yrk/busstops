@@ -57,7 +57,7 @@ export const SOURCE_REGISTRY: readonly SourceRegistryEntry[] = [
     freshnessSlaSeconds: 180,
     cacheTtlSeconds: 20,
     termsNotes:
-      "Free registered API key. Bounded national collection only on a schedule; user requests are served viewport-scoped from cache.",
+      "Free registered API key. BODS consumer guidance asks that the central live data is requested no more frequently than once every five seconds; see BODS_MINIMUM_REQUEST_INTERVAL_MS, which is enforced at the point of request. Bounded national collection only on a schedule; user requests are served viewport-scoped from cache.",
     contractVerification: {
       method: "published_documentation",
       at: null,
@@ -229,6 +229,15 @@ export const SOURCE_REGISTRY: readonly SourceRegistryEntry[] = [
     },
   },
 ] as const;
+
+/**
+ * BODS asks consumers not to request the central live data more often than once every five
+ * seconds. It is a request interval rather than a quota, so no per-run or per-day cap expresses
+ * it: a collector well inside its budget can still breach the interval by issuing a burst.
+ *
+ * Enforced by the collection run, and recorded in the budget registry as 12 requests per minute.
+ */
+export const BODS_MINIMUM_REQUEST_INTERVAL_MS = 5_000;
 
 export function getSourceRegistryEntry(source: string): SourceRegistryEntry | undefined {
   return SOURCE_REGISTRY.find((entry) => entry.source === source);

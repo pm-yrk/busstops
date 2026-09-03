@@ -39,6 +39,15 @@ export interface CollectionRunOptions {
    * half hour therefore has to collect a short burst while it is alive, rather than one frame.
    */
   passes?: number;
+  /**
+   * Minimum gap between two upstream requests, in milliseconds.
+   *
+   * This is a publisher's rule, not a budget: BODS asks consumers not to request the central
+   * live data more often than once every five seconds. A per-run or per-day cap cannot express
+   * it, because a run well inside its daily budget can still breach the interval by issuing its
+   * whole partition list in one burst — which is exactly what this collector did before.
+   */
+  minimumRequestIntervalMs?: number;
   sleep?: (ms: number) => Promise<void>;
 }
 
@@ -56,6 +65,8 @@ export interface PartitionOutcome {
 export interface CollectionRunReport {
   sourceKey: string;
   passesCompleted: number;
+  /** Milliseconds spent waiting purely to honour the source's minimum request interval. */
+  rateLimitWaitMs: number;
   startedAt: string;
   finishedAt: string;
   durationMs: number;
@@ -102,14 +113,26 @@ export async function runCollection(options: CollectionRunOptions): Promise<Coll
 
   const passes = Math.max(1, options.passes ?? 1);
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const minimumIntervalMs = Math.max(0, options.minimumRequestIntervalMs ?? 0);
   let passesCompleted = 0;
+  let lastRequestStartedAt: number | null = null;
+  let rateLimitWaitMs = 0;
+
+  let previousPassStartedAt: number | null = null;
 
   outer: for (let pass = 0; pass < passes; pass += 1) {
-    if (pass > 0) {
-      // Wait the planned interval before the next snapshot. Collecting again immediately would
-      // spend a request to receive the same positions back.
+    if (pass > 0 && previousPassStartedAt !== null) {
+      /*
+       * The cadence interval is the gap between successive snapshots of the same partition, so
+       * it counts from the start of the previous pass — not from its end. Sleeping the full
+       * interval on top of however long the pass took would silently stretch a 60-second cadence
+       * to two minutes once per-request spacing is enforced, and would push a normal run over
+       * its time budget.
+       */
+      const elapsedSincePassStart = now().getTime() - previousPassStartedAt;
+      const waitMs = Math.max(0, plan.intervalSeconds * 1000 - elapsedSincePassStart);
       const remainingBudget = budgetMs - (now().getTime() - startedAt.getTime());
-      const waitMs = plan.intervalSeconds * 1000;
+
       if (waitMs >= remainingBudget) {
         truncated = true;
         notes.push(
@@ -117,8 +140,9 @@ export async function runCollection(options: CollectionRunOptions): Promise<Coll
         );
         break;
       }
-      await sleep(waitMs);
+      if (waitMs > 0) await sleep(waitMs);
     }
+    previousPassStartedAt = now().getTime();
 
     for (const entry of plan.entries) {
       if (now().getTime() - startedAt.getTime() > budgetMs) {
@@ -128,6 +152,25 @@ export async function runCollection(options: CollectionRunOptions): Promise<Coll
         );
         break outer;
       }
+
+      // Space requests to the publisher's stated minimum interval. Waiting here rather than
+      // dropping partitions keeps national coverage; the run's own time budget still bounds it.
+      if (lastRequestStartedAt !== null && minimumIntervalMs > 0) {
+        const sinceLast = now().getTime() - lastRequestStartedAt;
+        const waitMs = minimumIntervalMs - sinceLast;
+        if (waitMs > 0) {
+          if (now().getTime() - startedAt.getTime() + waitMs > budgetMs) {
+            truncated = true;
+            notes.push(
+              `run stopped early: honouring the ${Math.round(minimumIntervalMs / 1000)}s minimum request interval would exceed the run's time budget`,
+            );
+            break outer;
+          }
+          await sleep(waitMs);
+          rateLimitWaitMs += waitMs;
+        }
+      }
+      lastRequestStartedAt = now().getTime();
 
       const controller = new AbortController();
       const remaining = budgetMs - (now().getTime() - startedAt.getTime());
@@ -200,6 +243,7 @@ export async function runCollection(options: CollectionRunOptions): Promise<Coll
   return {
     sourceKey: options.sourceKey,
     passesCompleted,
+    rateLimitWaitMs,
     startedAt: toIso(startedAt),
     finishedAt: toIso(finishedAt),
     durationMs: finishedAt.getTime() - startedAt.getTime(),

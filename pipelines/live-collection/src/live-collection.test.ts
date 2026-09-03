@@ -356,6 +356,119 @@ describe("collection run", () => {
     expect(report.notes.join(" ")).toMatch(/would not fit in the run's time budget/);
   });
 
+  it("spaces requests to the publisher's stated minimum interval", async () => {
+    let clock = Date.parse("2026-09-03T08:00:00.000Z");
+    const requestTimes: number[] = [];
+
+    const report = await runCollection({
+      sourceKey: "bods",
+      cadence,
+      governorState: "green",
+      window: new RollingObservationWindow(),
+      budgetMs: 300_000,
+      minimumRequestIntervalMs: 5_000,
+      now: () => new Date(clock),
+      sleep: (ms) => {
+        clock += ms;
+        return Promise.resolve();
+      },
+      fetchPartition: () => {
+        requestTimes.push(clock);
+        // Requests are not instantaneous; the spacing must count from the request, not the reply.
+        clock += 400;
+        return Promise.resolve([observation({ observedAt: new Date(clock).toISOString() })]);
+      },
+    });
+
+    expect(requestTimes.length).toBe(3);
+    for (let index = 1; index < requestTimes.length; index += 1) {
+      expect(requestTimes[index]! - requestTimes[index - 1]!).toBeGreaterThanOrEqual(5_000);
+    }
+    expect(report.rateLimitWaitMs).toBeGreaterThan(0);
+  });
+
+  it("does not wait at all when no minimum interval is configured", async () => {
+    let clock = Date.parse("2026-09-03T08:00:00.000Z");
+    const report = await runCollection({
+      sourceKey: "bods",
+      cadence,
+      governorState: "green",
+      window: new RollingObservationWindow(),
+      now: () => new Date(clock),
+      sleep: (ms) => {
+        clock += ms;
+        return Promise.resolve();
+      },
+      fetchPartition: () => Promise.resolve([observation()]),
+    });
+    expect(report.rateLimitWaitMs).toBe(0);
+  });
+
+  it("counts the cadence interval from the start of the previous pass, not its end", async () => {
+    let clock = Date.parse("2026-09-03T08:00:00.000Z");
+    const passStarts: number[] = [];
+    let requestsThisPass = 0;
+
+    await runCollection({
+      sourceKey: "bods",
+      cadence: { ...cadence, maxRequestsPerRun: 2 },
+      governorState: "green",
+      window: new RollingObservationWindow(),
+      passes: 3,
+      budgetMs: 600_000,
+      minimumRequestIntervalMs: 5_000,
+      now: () => new Date(clock),
+      sleep: (ms) => {
+        clock += ms;
+        return Promise.resolve();
+      },
+      fetchPartition: () => {
+        if (requestsThisPass % 2 === 0) passStarts.push(clock);
+        requestsThisPass += 1;
+        return Promise.resolve([observation({ observedAt: new Date(clock).toISOString() })]);
+      },
+    });
+
+    expect(passStarts.length).toBe(3);
+    for (let index = 1; index < passStarts.length; index += 1) {
+      const gap = passStarts[index]! - passStarts[index - 1]!;
+      // Exactly the cadence, not the cadence plus however long the pass took.
+      expect(gap).toBe(cadence.baseIntervalSeconds * 1000);
+    }
+  });
+
+  it("stops rather than breaching the interval when the time budget runs out", async () => {
+    let clock = Date.parse("2026-09-03T08:00:00.000Z");
+    const requestTimes: number[] = [];
+
+    const report = await runCollection({
+      sourceKey: "bods",
+      cadence: { ...cadence, maxRequestsPerRun: 12 },
+      governorState: "green",
+      window: new RollingObservationWindow(),
+      // Only enough budget for a couple of properly spaced requests.
+      budgetMs: 12_000,
+      minimumRequestIntervalMs: 5_000,
+      now: () => new Date(clock),
+      sleep: (ms) => {
+        clock += ms;
+        return Promise.resolve();
+      },
+      fetchPartition: () => {
+        requestTimes.push(clock);
+        return Promise.resolve([observation({ observedAt: new Date(clock).toISOString() })]);
+      },
+    });
+
+    expect(report.truncated).toBe(true);
+    expect(requestTimes.length).toBeLessThan(12);
+    // Coverage is sacrificed before the publisher's rule is.
+    for (let index = 1; index < requestTimes.length; index += 1) {
+      expect(requestTimes[index]! - requestTimes[index - 1]!).toBeGreaterThanOrEqual(5_000);
+    }
+    expect(report.notes.join(" ")).toMatch(/minimum request interval/);
+  });
+
   it("warns when the acceptance rate collapses, which is how schema drift surfaces", async () => {
     const report = await runCollection({
       sourceKey: "bods",

@@ -9,6 +9,7 @@
  */
 
 import { writeFileSync } from "node:fs";
+import { BODS_MINIMUM_REQUEST_INTERVAL_MS } from "@busstops/contracts";
 import { ArtifactStore, r2StoreFromEnv } from "@busstops/pipeline-core";
 import { classify } from "@busstops/governor";
 import {
@@ -62,12 +63,19 @@ async function main(): Promise<number> {
       sourceUpdateIntervalSeconds: 10,
       baseIntervalSeconds: 60,
       maxRequestsPerRun: Number(process.env.MAX_PARTITIONS_PER_RUN ?? "12"),
-      dailyRequestBudget: Number(process.env.BODS_DAILY_REQUEST_BUDGET ?? "20000"),
+      /*
+       * Derived from the published interval rather than invented: one request every five seconds
+       * is 17,280 a day at most, and the registry's self-imposed half of that is the default.
+       * BODS publishes no daily quota, so a larger number here would be a number nobody stated.
+       */
+      dailyRequestBudget: Number(process.env.BODS_DAILY_REQUEST_BUDGET ?? "8640"),
     },
     governorState,
     fetchPartition: collector.fetchPartition,
     window,
     budgetMs: Number(process.env.COLLECTION_BUDGET_MS ?? "240000"),
+    // The publisher's stated interval, honoured at the point of request rather than assumed.
+    minimumRequestIntervalMs: BODS_MINIMUM_REQUEST_INTERVAL_MS,
     // Several snapshots per run: one position per vehicle cannot yield a traversal or a speed.
     passes: Number(process.env.COLLECTION_PASSES ?? "3"),
     health: collector.health,
@@ -80,6 +88,7 @@ async function main(): Promise<number> {
     projectedDailyRequests: result.plan.projectedDailyRequests,
   };
   report.passesCompleted = result.passesCompleted;
+  report.rateLimitWaitMs = result.rateLimitWaitMs;
   report.totals = result.totals;
   report.coverage = result.coverage;
   report.acceptanceRate = result.acceptanceRate;

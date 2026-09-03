@@ -12,14 +12,8 @@ export interface R2BucketLike {
   list(options?: { prefix?: string }): Promise<{ objects: Array<{ key: string }> }>;
 }
 
-export interface KVLike {
-  get(key: string): Promise<string | null>;
-  put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>;
-}
-
 export interface WorkerEnv {
   ARTIFACTS?: R2BucketLike;
-  CACHE?: KVLike;
   BODS_API_KEY?: string;
   TFL_APP_KEY?: string;
   VEHICLE_SALT_SECRET?: string;

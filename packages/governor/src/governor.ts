@@ -44,6 +44,23 @@ export function evaluateResource(sample: UsageSample): QuotaState {
   if (!resource) {
     throw new Error(`Unknown budget resource: ${sample.resourceKey}`);
   }
+  // An unmetered resource has no quota to be a fraction of. Reporting utilisation against its
+  // placeholder allowance would make the governor throttle work that costs nothing.
+  if (!resource.metered) {
+    return {
+      resource: resource.key,
+      utilizationFraction: 0,
+      projectedUtilizationFraction: 0,
+      state: "green",
+      updatedAt: sample.observedAt,
+      allowance: resource.allowance,
+      allowanceUnit: resource.unit,
+      allowanceSourceUrl: resource.termsUrl,
+      allowanceVerifiedAt: resource.verifiedAt,
+      metered: false,
+    };
+  }
+
   const utilization = sample.used / resource.allowance;
   const projected = projectUtilization(sample, resource);
   return {
@@ -55,7 +72,10 @@ export function evaluateResource(sample: UsageSample): QuotaState {
     allowance: resource.allowance,
     allowanceUnit: resource.unit,
     allowanceSourceUrl: resource.termsUrl,
-    allowanceVerifiedAt: resource.verifiedAt ?? sample.observedAt,
+    // Reported as null when the allowance has never been checked, rather than as "now": an
+    // unverified figure must not be able to masquerade as a confirmed one.
+    allowanceVerifiedAt: resource.verifiedAt,
+    metered: true,
   };
 }
 
