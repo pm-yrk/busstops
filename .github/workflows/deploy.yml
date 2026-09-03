@@ -1,0 +1,97 @@
+name: Deploy
+
+# Deployment is manual, and gated. There is no deploy-on-push: a merge that passes CI is not the
+# same event as a decision to put something in front of the public, and conflating them removes
+# the one place a person can say no.
+#
+# The deploy-stage preflight is stricter than the CI one. Notably it fails while any free-tier
+# allowance is unverified against current provider terms, which is deliberate: deploying with
+# unverified quotas is how a free tier stops being free.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Which environment to deploy"
+        type: choice
+        options: ["preview", "production"]
+        default: "preview"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - run: npm ci --no-audit --no-fund
+
+      # The full gate runs again here rather than trusting an earlier green run: the commit being
+      # deployed may not be the commit that was tested.
+      - name: Lint, types and tests
+        run: |
+          npm run format:check
+          npm run lint
+          npm run typecheck
+          npm test
+
+      - name: Deploy-stage preflight
+        env:
+          PREFLIGHT_STAGE: deploy
+        run: npm run preflight
+
+      - name: Build the web app
+        run: npm run build --workspace @busstops/web
+
+      - name: Confirm the security headers shipped
+        run: |
+          test -f apps/web/dist/_headers || { echo "::error::_headers missing from the build"; exit 1; }
+          test -f apps/web/dist/_redirects || { echo "::error::_redirects missing from the build"; exit 1; }
+
+      - name: Deploy the edge API
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          npx wrangler deploy \
+            --config apps/worker/wrangler.toml \
+            --env "${{ inputs.environment == 'production' && '' || 'preview' }}"
+
+      - name: Deploy the web app
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          npx wrangler pages deploy apps/web/dist \
+            --project-name busstops \
+            --branch "${{ inputs.environment == 'production' && 'main' || 'preview' }}"
+
+      # A deployment that has not been smoke-tested is not a deployment, it is a hope.
+      - name: Smoke test the deployment
+        env:
+          SITE_URL: ${{ vars.PUBLIC_BASE_URL }}
+          API_URL: ${{ vars.PUBLIC_API_URL }}
+        run: node scripts/smoke-test.mjs "$SITE_URL" "$API_URL"
+
+      - name: Roll back on a failed smoke test
+        if: failure()
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          echo "::warning::Smoke test failed. Roll back with:"
+          echo "  npx wrangler rollback --config apps/worker/wrangler.toml"
+          echo "  npx wrangler pages deployment list --project-name busstops"

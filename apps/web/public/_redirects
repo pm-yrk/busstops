@@ -1,0 +1,3 @@
+# Single-page app routing: every unmatched path serves the shell, which then routes client-side.
+# 200 rather than 302 so deep links keep their URL and are indexed correctly.
+/*  /index.html  200

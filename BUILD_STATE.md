@@ -256,14 +256,30 @@ isolated and documented. See `docs/adr/0001-stack-and-build-environment-constrai
 4. The Wilson score interval could return an upper bound below its own point estimate at p = 1,
    through floating-point rounding. The bounds now bracket the value.
 
+**P10 — deployment (credential-independent work complete)**
+
+- [x] Deploy workflow: manual rather than deploy-on-push, re-running the whole gate on the commit
+      being deployed, gated on the stricter deploy-stage preflight, and smoke-testing what it
+      deployed with rollback guidance on failure
+- [x] `scripts/smoke-test.mjs` — 11 checks against a live deployment, executed here against the
+      Worker running under `wrangler dev` with 10 passing; it deliberately does not assert that
+      upstream feeds are healthy, since that is not a property of the deployment
+- [x] `apps/web/public/_headers` and `_redirects`. The smoke test found that the static site would
+      have shipped with no Content-Security-Policy at all: the Worker hardened API responses while
+      the pages people actually load had nothing. Six tests now assert the policy
+- [x] `infra/cloudflare/PROVISIONING.md` — the exact minimum API token scopes, the Worker secrets,
+      and why quota verification is deliberately a human step
+
 ### In progress
 
-- [ ] P10 — deployment and deployed smoke tests
+- [ ] P10 — the deploy itself, blocked on a Cloudflare API token (B3)
 
 ### Next
 
-1. P10 deployment (externally blocked — B3: `api.cloudflare.com` is unreachable from this
-   environment and no deployment credentials exist).
+1. P10 deployment. Everything credential-independent is complete: the deploy workflow, the
+   provisioning guide, static-site security headers, and a smoke test that has been executed
+   against a locally running Worker. The deploy itself needs a Cloudflare API token — see B3,
+   whose earlier wording has been corrected.
 
 ### Verification evidence
 
@@ -281,6 +297,8 @@ isolated and documented. See `docs/adr/0001-stack-and-build-environment-constrai
 | Analytics engine              | `npx vitest run packages/analytics`             | 93 passed / 93                                                         | 2026-09-03 |
 | End-to-end                    | —                                               | Not run yet (scheduled for P9)                                         | —          |
 | Accessibility                 | —                                               | Not run yet (scheduled for P9)                                         | —          |
+| Smoke test (local rehearsal)  | `node scripts/smoke-test.mjs` vs `wrangler dev` | 10/11 passed; the 11th needs Pages to apply `_headers`                 | 2026-09-03 |
+| Worker bundle                 | `npx wrangler deploy --dry-run`                 | 434 KiB (87.6 KiB gzipped), all bindings resolved                      | 2026-09-03 |
 | Deployed smoke test           | —                                               | Blocked (B3)                                                           | —          |
 
 ### Acceptance audit (docs/17_ACCEPTANCE_CRITERIA.md)
@@ -413,12 +431,30 @@ cannot be fetched until keys are configured. _Mitigation:_ `.env.example` names 
 and the deployment checklist records where each is obtained. _Resolution:_ register for free keys
 and set them as platform secrets.
 
-**B3 — Deployment unreachable (external blocker).** `api.cloudflare.com` is denied and no
-deploy credential is present, so the app cannot be deployed or smoke-tested from here.
+**B3 — Deployment blocked (external blocker).** Re-tested 2026-09-03, and the earlier wording
+here was imprecise. What is actually true:
+
+- Direct HTTPS to `api.cloudflare.com` is refused by the environment's egress proxy, which
+  answers `403` to `CONNECT` — an organization policy denial, not a network fault.
+- A Cloudflare account **is** reachable through the connected MCP server, which authenticates
+  independently of the proxy. It reports zero Workers and one unrelated R2 bucket, so the
+  account exists and is usable.
+- That MCP toolset exposes creating R2 buckets, KV namespaces and D1 databases, and reading
+  Workers. It exposes **no** tool to upload a Worker script or create a Pages deployment.
+- `wrangler` is installed and the Worker bundles cleanly (`wrangler deploy --dry-run`: 434 KiB,
+  87.6 KiB gzipped, all four bindings resolved). A real deploy stops at
+  `CLOUDFLARE_API_TOKEN` not being set; the MCP server's credential is not one wrangler can use.
+
+So deployment is blocked on a credential and a capability, not on the code. No Cloudflare
+resources were created: provisioning an empty bucket into someone's account when the Worker
+cannot be deployed alongside it would leave litter rather than progress.
+
 _Affected criteria:_ "Cloud deployment succeeds at a free project URL", "mobile/desktop smoke
-tests pass". _Mitigation:_ deployment configuration, preflight gate and runbooks are built and
-committed so deployment is a single credentialed step. _Resolution:_ run the deploy workflow
-with a Cloudflare API token from an environment with egress.
+tests pass". _Mitigation:_ the deploy workflow, provisioning guide, static-site security headers
+and an executable smoke test are committed, and 10 of the smoke test's 11 checks were run
+successfully against the Worker running locally under `wrangler dev`. _Resolution:_ set
+`CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` as repository secrets and run the Deploy
+workflow; it gates on the stricter deploy-stage preflight and smoke-tests what it deployed.
 
 No limitation above excuses unfinished credential-independent work; the remaining phases are
 tracked as work, not blockers.
