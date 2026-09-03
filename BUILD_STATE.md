@@ -1,14 +1,14 @@
 # Bus Stops. Build State
 
-Last updated: 2026-09-03 (P7 Bus Stops Pro complete)
+Last updated: 2026-09-03 (P8 accounts and Daily Brief complete)
 
 ## Current status
 
-- Phase: P0–P7 complete → P8 (accounts and Daily Brief)
+- Phase: P0–P8 complete → P9 (hardening and free-tier proof)
 - Overall: foundations, all eight source adapters, the national static-network pipeline, the
   Worker edge API, the full Bus Stops Live passenger app, the journey planning engine, the
-  analytics engine, the national intelligence pipeline and Bus Stops Pro are complete.
-  Remaining: P8 accounts/Daily Brief, P9 hardening, P10 deployment.
+  analytics engine, the national intelligence pipeline, Bus Stops Pro and the Daily Brief are
+  complete. Remaining: P9 hardening, P10 deployment.
 - Deployment: not deployed (external blocker — see Known limitations B3)
 - Blockers: 3 external blockers recorded below (B1 upstream egress, B2 credentials, B3 deploy reachability)
 
@@ -194,15 +194,45 @@ isolated and documented. See `docs/adr/0001-stack-and-build-environment-constrai
 - [x] Pro settings in the public demo are local and ephemeral, and say so
 - [x] 12 Pro component tests and 11 Pro worker tests
 
+**P8 — accounts and the Daily Brief**
+
+- [x] `packages/daily-brief` — the frozen snapshot, from which both the email and the browser view
+      are rendered, so a recipient opening the link an hour later sees the same figures
+- [x] Deterministic narrative assembled from ranked facts by a fixed template. No model writes any
+      part of it, which is a requirement rather than a preference: a rewriting step cannot be
+      trusted not to change a number or soften a caveat
+- [x] Route rankings are withheld when coverage or sample size cannot support comparing routes
+- [x] A thin-data day is either sent under a clear limited-data label or skipped by preference,
+      and never quietly padded out
+- [x] Investigation priorities are phrased as suggestions and never as operational instructions;
+      a test asserts the wording contains no imperative
+- [x] Table-based responsive HTML with inline styles and no images, a full plain-text part carrying
+      the same figures and the same unsubscribe link, and charts degraded to numbers and bars
+- [x] Data-derived text is escaped, so crafted content cannot inject markup into an email
+- [x] `canSend` returns a typed refusal with a reason, so no caller can treat "unverified" as
+      "fine": verification, explicit opt-in, unsubscribe state, idempotency, the daily cap, the
+      governor state, the provider being configured and the delivery window are all checked
+- [x] The self-imposed daily cap sits below the provider's free limit and halves under budget
+      pressure; sending is suspended entirely in the critical state
+- [x] One-click unsubscribe over both GET and POST (RFC 8058), honoured immediately, idempotent on
+      a second click, spending the token so a leaked link cannot be replayed, and answering
+      identically whether or not the token was valid so it cannot be used to test an address
+- [x] Only unsubscribe token hashes are stored; the plaintext exists only long enough to be put in
+      the email
+- [x] Every send attempt is recorded including the refusals, so an absence of email is explainable
+- [x] The whole product works with no email provider configured: the snapshot is still built and
+      published and the browser Daily Brief works normally
+- [x] 55 Daily Brief tests (41 package, 14 pipeline) and 4 unsubscribe worker tests
+
 ### In progress
 
-- [ ] P8 — accounts, organisations, verified recipients, consent and the Daily Brief
+- [ ] P9 — hardening, safe mode, lifecycle and pruning drills, runbooks, performance,
+      end-to-end and accessibility testing, and the full acceptance audit
 
 ### Next
 
-1. P8 accounts, organisations, verified recipients and the Daily Brief.
-2. P9 hardening, safe mode, runbooks, end-to-end and accessibility testing.
-3. P10 deployment and smoke tests (externally blocked — B3).
+1. P9 hardening, safe mode, runbooks, end-to-end and accessibility testing.
+2. P10 deployment and smoke tests (externally blocked — B3).
 
 ### Verification evidence
 
