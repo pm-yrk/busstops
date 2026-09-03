@@ -78,6 +78,22 @@ describe("publish", () => {
     ).rejects.toThrow(ArtifactValidationError);
   });
 
+  it("publishes an empty artifact only when the caller says empty is a real answer", async () => {
+    const artifacts = new ArtifactStore(new InMemoryObjectStore());
+    const manifest = await artifacts.publish({
+      dataset: "intelligence/incidents",
+      version: "v1",
+      records: [],
+      schemaVersion: "1.0.0",
+      minimumRecordCount: 0,
+      allowEmpty: true,
+    });
+    expect(manifest.recordCount).toBe(0);
+    // And it is genuinely live, so a quiet day replaces yesterday's incidents rather than
+    // leaving them on screen.
+    expect(await artifacts.readCurrent("intelligence/incidents")).toMatchObject({ records: [] });
+  });
+
   it("refuses to publish below the minimum record count", async () => {
     const artifacts = new ArtifactStore(new InMemoryObjectStore());
     await expect(

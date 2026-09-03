@@ -1,0 +1,84 @@
+name: Intelligence — analytics batch and retention
+
+# Two jobs, deliberately independent. Retention runs whether or not the analytics batch
+# succeeded, because raw expiry outranks every optional analytical workload
+# (docs/06_DATA_MODEL.md "Retention classes", docs/13_FREE_TIER_RULES.md).
+
+on:
+  schedule:
+    - cron: "10 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: intelligence-batch
+  cancel-in-progress: false
+
+jobs:
+  batch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - run: npm ci --no-audit --no-fund
+
+      - name: Free-tier preflight
+        run: npm run preflight
+
+      - name: Run the analytics batch
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          R2_BUCKET_ARTIFACTS: ${{ vars.R2_BUCKET_ARTIFACTS }}
+          BUDGET_UTILIZATION: ${{ vars.BUDGET_UTILIZATION }}
+        run: npx tsx pipelines/analytics-batch/run-batch.ts
+
+      - name: Upload batch report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: batch-report
+          path: batch-report.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+  retention:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Runs regardless of the batch outcome: expiry must never be blocked by an analytics failure.
+    needs: batch
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - run: npm ci --no-audit --no-fund
+
+      - name: Roll up, prune and take the storage inventory
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          R2_BUCKET_ARTIFACTS: ${{ vars.R2_BUCKET_ARTIFACTS }}
+          R2_STORAGE_LIMIT_BYTES: ${{ vars.R2_STORAGE_LIMIT_BYTES }}
+        run: npx tsx pipelines/analytics-batch/run-retention.ts
+
+      - name: Upload retention report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: retention-report
+          path: retention-report.json
+          retention-days: 7
+          if-no-files-found: ignore

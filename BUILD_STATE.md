@@ -1,14 +1,14 @@
 # Bus Stops. Build State
 
-Last updated: 2026-09-03 (P6 analytics engine complete)
+Last updated: 2026-09-03 (P5 national intelligence pipeline complete)
 
 ## Current status
 
-- Phase: P0–P2 complete, P4 and P6 complete, P3 partially complete → P5 (national intelligence
-  pipeline) and the remaining P3 surfaces next
+- Phase: P0–P2, P4, P5 and P6 complete; P3 partially complete → the remaining P3 surfaces, then
+  P7 (Bus Stops Pro)
 - Overall: foundations, all eight source adapters, the national static-network pipeline, the
-  Worker edge API, the core passenger surfaces, the journey planning engine and the analytics
-  engine are complete. Remaining: the rest of the P3 pages, P5 intelligence pipeline, P7 Pro
+  Worker edge API, the core passenger surfaces, the journey planning engine, the analytics engine
+  and the national intelligence pipeline are complete. Remaining: the rest of the P3 pages, P7 Pro
   app, P8 accounts/Daily Brief, P9 hardening, P10 deployment.
 - Deployment: not deployed (external blocker — see Known limitations B3)
 - Blockers: 3 external blockers recorded below (B1 upstream egress, B2 credentials, B3 deploy reachability)
@@ -119,6 +119,39 @@ isolated and documented. See `docs/adr/0001-stack-and-build-environment-constrai
       supporting evidence able to adjust only within that cap, plus calibration measurement
 - [x] 93 analytics tests
 
+**P5 — national intelligence pipeline**
+
+- [x] `packages/matching/map-match.ts` — bounded Viterbi map matching with emission, transition,
+      bearing and plausible-speed terms. Nearest-line matching is not used: it flips between
+      parallel carriageways and manufactures phantom diversions, which is the most damaging false
+      positive this system can publish. Display traces are simplified separately from the
+      analytical match, as the specification requires.
+- [x] `pipelines/live-collection` — the scheduled intelligence path, wholly separate from the user
+      path: a 24-cell England partition grid, quota-aware cadence that never polls faster than the
+      source updates and suspends entirely in critical state, ingest quality gates that reject
+      rather than silently correct, and a rolling window that deduplicates on source timestamps and
+      hard-caps itself at the retention ceiling by age and by count
+- [x] Multiple snapshots per run: one position per vehicle cannot yield a traversal, a speed or a
+      delay, so a scheduled run collects a short bounded burst rather than a single frame
+- [x] Collection refuses to run without `VEHICLE_SALT_SECRET` rather than storing operators'
+      own vehicle identifiers unsalted
+- [x] `pipelines/analytics-batch` — checkpointed stage runner (idempotent, bounded, emitting
+      counts, rejections and timing; a failed stage skips its dependants instead of letting them
+      build on a gap), segment sampling behind a match-confidence floor, interval aggregation with
+      an open/closed bucket model and versioned revisions, roll-up-before-pruning, storage
+      inventory with forward quota projection, enrichment joins, incident lifecycle and atomic
+      publication with rollback
+- [x] Enrichment states its distance, window and match confidence on every join; National
+      Highways silence about a local street is reported as "not covered", never as "clear"; Street
+      Manager records are corroboration and the type carries no cause field; Environment Agency
+      notices join by licensed flood area rather than an invented radius
+- [x] Incidents open as `emerging` and need a second detection to become `active`, then decay
+      through `recovering` to `resolved`; identity is deterministic so a retried run cannot
+      duplicate an incident already on screen
+- [x] Retention runs as its own scheduled job, independent of the batch, so raw expiry can never
+      be blocked by an analytics failure
+- [x] 94 pipeline tests (27 collection, 42 batch, 7 map matching, plus artifact contract tests)
+
 ### In progress
 
 - [ ] P3 — remaining surfaces: vehicle, route, disruption, operator, network and area pages,
@@ -126,10 +159,9 @@ isolated and documented. See `docs/adr/0001-stack-and-build-environment-constrai
 
 ### Next
 
-1. Finish the remaining P3 surfaces on top of the completed journey and analytics engines.
-2. P5 national intelligence pipeline: bounded collectors, map matching at scale, aggregates,
-   roll-ups, enrichment and atomic artifact publication.
-3. P7 Pro app, P8 accounts/Daily Brief, P9 hardening, P10 deployment.
+1. Finish the remaining P3 surfaces on top of the completed journey, analytics and intelligence
+   engines.
+2. P7 Pro app, P8 accounts/Daily Brief, P9 hardening, P10 deployment.
 
 ### Verification evidence
 

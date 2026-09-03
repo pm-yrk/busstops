@@ -1,4 +1,4 @@
-import type { ObjectStore } from "./artifacts.js";
+import type { ObjectStore, StoredObject } from "./artifacts.js";
 
 /**
  * Cloudflare R2 object store over the REST API.
@@ -79,6 +79,10 @@ export class R2ObjectStore implements ObjectStore {
   }
 
   async list(prefix: string): Promise<string[]> {
+    return (await this.listDetailed(prefix)).map((object) => object.key);
+  }
+
+  async listDetailed(prefix: string): Promise<StoredObject[]> {
     const url = new URL(
       `https://api.cloudflare.com/client/v4/accounts/${this.config.accountId}` +
         `/r2/buckets/${encodeURIComponent(this.config.bucket)}/objects`,
@@ -90,11 +94,20 @@ export class R2ObjectStore implements ObjectStore {
     if (!response.ok) {
       throw new Error(`R2 list failed for ${prefix}: ${response.status}`);
     }
-    const body = (await response.json()) as { result?: Array<{ key?: string }> };
+    const body = (await response.json()) as {
+      result?: Array<{ key?: string; size?: number; uploaded?: string }>;
+    };
     return (body.result ?? [])
-      .map((object) => object.key)
-      .filter((key): key is string => typeof key === "string")
-      .sort();
+      .filter(
+        (object): object is { key: string; size?: number; uploaded?: string } =>
+          typeof object.key === "string",
+      )
+      .map((object) => ({
+        key: object.key,
+        sizeBytes: typeof object.size === "number" ? object.size : 0,
+        uploadedAt: object.uploaded ?? new Date(0).toISOString(),
+      }))
+      .sort((a, b) => a.key.localeCompare(b.key));
   }
 }
 

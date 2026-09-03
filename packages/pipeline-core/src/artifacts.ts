@@ -27,27 +27,54 @@ export const ArtifactManifestSchema = z.object({
 export type ArtifactManifest = z.infer<typeof ArtifactManifestSchema>;
 
 /** Minimal object-store surface; implemented over R2 in production and a map in tests. */
+export interface StoredObject {
+  key: string;
+  sizeBytes: number;
+  uploadedAt: string;
+}
+
 export interface ObjectStore {
   get(key: string): Promise<string | null>;
   put(key: string, value: string): Promise<void>;
   delete(key: string): Promise<void>;
   list(prefix: string): Promise<string[]>;
+  /**
+   * Listing with size and upload time, which the storage inventory needs. Optional because a
+   * store may not expose it; a caller that cannot get real figures must report that it could
+   * not, rather than estimating a projection from numbers it invented.
+   */
+  listDetailed?(prefix: string): Promise<StoredObject[]>;
 }
 
 export class InMemoryObjectStore implements ObjectStore {
   private readonly objects = new Map<string, string>();
+  private readonly uploadedAt = new Map<string, string>();
+
+  constructor(private readonly now: () => Date = () => new Date()) {}
 
   async get(key: string): Promise<string | null> {
     return this.objects.get(key) ?? null;
   }
   async put(key: string, value: string): Promise<void> {
     this.objects.set(key, value);
+    this.uploadedAt.set(key, this.now().toISOString());
   }
   async delete(key: string): Promise<void> {
     this.objects.delete(key);
+    this.uploadedAt.delete(key);
   }
   async list(prefix: string): Promise<string[]> {
     return [...this.objects.keys()].filter((k) => k.startsWith(prefix)).sort();
+  }
+  async listDetailed(prefix: string): Promise<StoredObject[]> {
+    return [...this.objects.entries()]
+      .filter(([key]) => key.startsWith(prefix))
+      .map(([key, value]) => ({
+        key,
+        sizeBytes: new TextEncoder().encode(value).length,
+        uploadedAt: this.uploadedAt.get(key) ?? this.now().toISOString(),
+      }))
+      .sort((a, b) => a.key.localeCompare(b.key));
   }
   get size(): number {
     return this.objects.size;
@@ -74,6 +101,13 @@ export interface PublishOptions<T> {
   notes?: string;
   /** Minimum record count for the build to be considered valid. */
   minimumRecordCount?: number;
+  /**
+   * Whether an empty dataset is a legitimate result. Off by default, because an empty national
+   * network is always a broken parse. On for datasets where nothing to report is a real answer —
+   * a day with no incidents — since refusing that publish would leave the last non-empty version
+   * live and yesterday's incidents on screen indefinitely.
+   */
+  allowEmpty?: boolean;
   /**
    * Maximum tolerated drop versus the previous version, as a fraction. A national dataset
    * that suddenly loses 40% of its records is far more likely to be a broken upstream parse
@@ -156,7 +190,7 @@ export class ArtifactStore {
       now = () => new Date(),
     } = options;
 
-    if (records.length === 0) {
+    if (records.length === 0 && options.allowEmpty !== true) {
       throw new ArtifactValidationError(
         `Refusing to publish empty artifact for ${dataset}`,
         "empty",
