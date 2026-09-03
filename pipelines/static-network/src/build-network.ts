@@ -1,4 +1,5 @@
 import type {
+  Coordinate,
   Operator,
   RoutePattern,
   ScheduledJourney,
@@ -15,7 +16,7 @@ import {
   parseTransXChange,
   type TransXChangeDocument,
 } from "@busstops/adapters";
-import { pathLengthMetres, resolveScheduledInstant } from "@busstops/pipeline-core";
+import { pathLengthMetres, resolveScheduledInstant, simplifyPath } from "@busstops/pipeline-core";
 
 /**
  * Assembles the normalized national network from source documents.
@@ -59,6 +60,40 @@ export interface BuiltNetwork {
   shapes: Map<string, Array<{ lat: number; lon: number }>>;
   counts: BuildCounts;
   warnings: string[];
+}
+
+/**
+ * How much of a route's geometry is worth publishing.
+ *
+ * TransXChange track points follow the road at every vertex the surveyor recorded, which is far
+ * more detail than a route line drawn on a map can show. Ten metres is narrower than the line's
+ * own width at the closest zoom the app offers, and five decimal places is a little over a metre,
+ * which is about the precision a bus route is actually known to. Together they take roughly three
+ * quarters off published geometry, and that is the difference between a tile the edge can read
+ * and one it cannot.
+ *
+ * `distanceMetres` is measured from the simplified path, so it is very slightly shorter than the
+ * surveyed one. The error is a fraction of a percent over a route, well inside what the product
+ * claims when it reports a distance at all.
+ */
+const SHAPE_TOLERANCE_METRES = 10;
+const SHAPE_COORDINATE_DECIMALS = 5;
+
+function publishableShape(points: readonly Coordinate[]): Coordinate[] {
+  const factor = 10 ** SHAPE_COORDINATE_DECIMALS;
+  const rounded: Coordinate[] = [];
+  for (const point of simplifyPath(points, SHAPE_TOLERANCE_METRES)) {
+    const next = {
+      lat: Math.round(point.lat * factor) / factor,
+      lon: Math.round(point.lon * factor) / factor,
+    };
+    // Rounding can merge neighbours that were a few centimetres apart; a repeated vertex is a
+    // zero-length segment, which every consumer would then have to guard against.
+    const previous = rounded[rounded.length - 1];
+    if (previous && previous.lat === next.lat && previous.lon === next.lon) continue;
+    rounded.push(next);
+  }
+  return rounded;
 }
 
 function coverageAreaForAtco(atcoCode: string): "london" | "non_london" {
@@ -139,9 +174,31 @@ export function buildNetwork(inputs: BuildInputs): BuiltNetwork {
           continue;
         }
 
-        const shape = buildPatternShape(pattern, document);
-        const shapeRef = `pattern:${pattern.id}`;
-        if (shape.length >= 2) shapes.set(shapeRef, shape);
+        /*
+         * The shape is keyed by the route it follows, scoped to the service that publishes it.
+         *
+         * It used to be keyed by the journey pattern id alone, and a TransXChange journey pattern
+         * id is only unique inside its own document — every operator numbers theirs jp_1, JP63 and
+         * so on. Nationally that collapsed 48,448 patterns onto 515 shapes: most patterns were
+         * drawn with some other operator's geometry, and every pattern sharing a key landed in
+         * the same tiles. One tile collected so many copies of the same polyline that serialising
+         * it threw `Invalid string length`, and the next was refused by object storage as too
+         * large, which is how the defect finally surfaced.
+         *
+         * Keying by route is also the deduplication the old key was reaching for. Patterns on one
+         * route differ in which stops they call at, not in where the road goes, so the geometry is
+         * built once and shared — which is both correct and most of the size problem.
+         */
+        const shapeRef = `route:${service.serviceCode}:${pattern.routeRef ?? pattern.id}`;
+        let shape = shapes.get(shapeRef);
+        if (!shape) {
+          const built = publishableShape(buildPatternShape(pattern, document));
+          if (built.length >= 2) {
+            shapes.set(shapeRef, built);
+            shape = built;
+          }
+        }
+        const shapePoints = shape ?? [];
 
         patterns.push({
           id: deterministicUuid("pattern", `${service.serviceCode}:${pattern.id}`),
@@ -151,12 +208,12 @@ export function buildNetwork(inputs: BuildInputs): BuiltNetwork {
             externalIds: [{ source: "bods", id: pattern.id }],
           },
           ingestedAt: inputs.retrievedAt,
-          qualityFlags: shape.length < 2 ? ["low_confidence"] : [],
+          qualityFlags: shapePoints.length < 2 ? ["low_confidence"] : [],
           serviceRouteId: serviceId,
           direction: pattern.direction,
           stopSequence: patternStops.map((s) => stopsByAtco.get(s.atcoCode)!.id),
           shapeRef,
-          distanceMetres: shape.length >= 2 ? pathLengthMetres(shape) : 0,
+          distanceMetres: shapePoints.length >= 2 ? pathLengthMetres(shapePoints) : 0,
           validFrom: service.startDate ? `${service.startDate}T00:00:00.000Z` : inputs.retrievedAt,
           validTo: service.endDate ? `${service.endDate}T23:59:59.000Z` : null,
         });

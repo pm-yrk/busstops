@@ -54,6 +54,20 @@ export const SEARCH_PREFIX_LENGTH = 2;
  */
 export const MAX_SHARD_RECORDS = 20_000;
 
+/**
+ * The cap that actually matters, because a record count is not a size.
+ *
+ * A national publish stopped on two shards that were inside the record cap and still impossible:
+ * one threw `Invalid string length` while being serialised, meaning the text had passed the
+ * largest string the runtime can hold, and object storage refused the other with 413. Neither
+ * limit knows anything about how many records went into the body — so the bound has to be on the
+ * bytes, measured on the exact text that gets written.
+ *
+ * Eight mebibytes is comfortably under both what object storage accepts in one request and what
+ * an isolate can afford to parse for a viewport that spans several tiles.
+ */
+export const MAX_SHARD_BYTES = 8 * 1024 * 1024;
+
 export function stopTileDataset(tile: string): string {
   return `${SHARDED.stopTile}/${tile}`;
 }
@@ -117,6 +131,55 @@ export interface PatternTileRecord {
   pattern: RoutePattern;
   shape: Coordinate[];
   stopDistancesMetres: number[];
+}
+
+/**
+ * How a pattern tile is stored: each shape once, followed by the patterns that follow it.
+ *
+ * A route's geometry is shared by every pattern on it — the patterns differ in which stops they
+ * call at, not in where the road goes — so writing the polyline into each of them multiplied a
+ * dense tile by the number of patterns per route. The reader puts the two back together, so the
+ * saving costs nothing anywhere else.
+ *
+ * A shape line always precedes the patterns that name it. That ordering is what makes truncating
+ * a shard at any line boundary safe: the tail can lose patterns, and at worst leave behind a
+ * shape nothing references, but it can never leave a pattern whose geometry has gone.
+ */
+export type PatternTileLine =
+  | { kind: "shape"; shapeRef: string; points: Coordinate[] }
+  | {
+      kind: "pattern";
+      pattern: RoutePattern;
+      shapeRef: string;
+      stopDistancesMetres: number[];
+    };
+
+/**
+ * Rebuilds the tile's patterns from its lines.
+ *
+ * Lives beside the writer rather than in the reader so the two cannot drift: a change to the
+ * stored form has to pass through this function, which both sides use.
+ */
+export function assemblePatternTile(lines: readonly PatternTileLine[]): PatternTileRecord[] {
+  const shapes = new Map<string, Coordinate[]>();
+  const records: PatternTileRecord[] = [];
+  for (const line of lines) {
+    if (line.kind === "shape") {
+      shapes.set(line.shapeRef, line.points);
+      continue;
+    }
+    const shape = shapes.get(line.shapeRef);
+    // Only reachable if a shard were truncated between a shape and its patterns, which the write
+    // order prevents. Dropping the pattern is right either way: a route line with no geometry has
+    // nothing to draw and nothing to match a vehicle against.
+    if (!shape) continue;
+    records.push({
+      pattern: line.pattern,
+      shape,
+      stopDistancesMetres: line.stopDistancesMetres,
+    });
+  }
+  return records;
 }
 
 /** Which tiles a service's patterns touch, so route detail reads those and no others. */

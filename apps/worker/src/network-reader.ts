@@ -10,11 +10,13 @@ import {
   DATASETS,
   SHARDED,
   type NetworkIndexRecord,
+  type PatternTileLine,
   type PatternTileRecord,
   type RouteTileRecord,
   type SearchHit,
   type SearchIndexEntry,
   type StopLocatorRecord,
+  assemblePatternTile,
   locatorBucketFor,
   nearbyStops,
   patternTileDataset,
@@ -49,18 +51,27 @@ import type { PatternGeometry } from "@busstops/matching";
  */
 
 /**
- * Cached shards are capped by count, not just by age.
+ * Cached shards are capped by count and by size, not just by age.
  *
  * An unbounded cache would refill the isolate with the national network one tile at a time and
  * reintroduce exactly the failure this class exists to prevent — slowly enough that it would look
- * like an unrelated intermittent 500.
+ * like an unrelated intermittent 500. A count on its own does not prevent that: twenty-four dense
+ * city tiles are a different quantity of memory from twenty-four rural ones, so the cache also
+ * carries a budget in characters of the source text it parsed.
+ *
+ * The budget is deliberately a small fraction of the isolate's 128 MiB, because the parsed objects
+ * are several times the size of the text they came from and a request needs room to work on top of
+ * whatever is resident.
  */
 const MAX_CACHED_SHARDS = 24;
+const MAX_CACHED_SHARD_CHARS = 12 * 1024 * 1024;
 
 const INDEX_TTL_MS = 5 * 60 * 1000;
 
 interface CachedShard {
   records: unknown[];
+  /** Length of the text this shard was parsed from, which is what the budget is spent in. */
+  chars: number;
   usedAt: number;
 }
 
@@ -134,23 +145,41 @@ export class NetworkReader {
             .filter((line) => line.length > 0)
             .map((line) => JSON.parse(line) as T);
 
-    this.shards.set(key, { records, usedAt: now });
+    this.shards.set(key, { records, chars: raw?.length ?? 0, usedAt: now });
     this.evictShards();
     return records;
   }
 
-  /** Least-recently-used eviction, so the cache is a working set rather than an accumulation. */
+  /**
+   * Least-recently-used eviction, so the cache is a working set rather than an accumulation.
+   *
+   * Both bounds are enforced from the same pass: oldest first until the count fits, then oldest
+   * first again until the size does. The most recently used shard is never evicted, because it is
+   * the one the request in flight is reading.
+   */
   private evictShards(): void {
-    if (this.shards.size <= MAX_CACHED_SHARDS) return;
+    if (this.shards.size <= MAX_CACHED_SHARDS && this.cachedShardChars <= MAX_CACHED_SHARD_CHARS) {
+      return;
+    }
     const byAge = [...this.shards].sort((a, b) => a[1].usedAt - b[1].usedAt);
-    for (const [key] of byAge.slice(0, this.shards.size - MAX_CACHED_SHARDS)) {
+    let chars = this.cachedShardChars;
+    for (const [key, shard] of byAge.slice(0, -1)) {
+      if (this.shards.size <= MAX_CACHED_SHARDS && chars <= MAX_CACHED_SHARD_CHARS) break;
       this.shards.delete(key);
+      chars -= shard.chars;
     }
   }
 
   /** How many shards are resident. Exposed so a test can prove the cache stays bounded. */
   get cachedShardCount(): number {
     return this.shards.size;
+  }
+
+  /** How much source text the resident shards were parsed from, in characters. */
+  get cachedShardChars(): number {
+    let total = 0;
+    for (const shard of this.shards.values()) total += shard.chars;
+    return total;
   }
 
   private async readTiles<T>(
@@ -189,14 +218,14 @@ export class NetworkReader {
   ): Promise<PatternGeometry[]> {
     const index = await this.networkIndex(now);
     if (!index) return [];
-    const records = await this.readTiles<PatternTileRecord>(
+    const lines = await this.readTiles<PatternTileLine>(
       patternTileDataset,
       tiles,
       index.patternTiles,
       index.version,
       now,
     );
-    return toGeometries(records);
+    return toGeometries(assemblePatternTile(lines));
   }
 
   /**
@@ -321,13 +350,14 @@ export class NetworkReader {
     const tiles = routeTiles.get(serviceId) ?? [];
     if (tiles.length === 0) return [];
 
-    const records = await this.readTiles<PatternTileRecord>(
+    const lines = await this.readTiles<PatternTileLine>(
       patternTileDataset,
       tiles,
       index.patternTiles,
       index.version,
       now,
     );
+    const records = assemblePatternTile(lines);
     return toGeometries(records.filter((r) => r.pattern.serviceRouteId === serviceId));
   }
 

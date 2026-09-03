@@ -247,7 +247,15 @@ describe("buildNetwork with a complete stop set", () => {
 
   it("attaches route geometry and a real distance", () => {
     const pattern = network.patterns[0]!;
-    expect(network.shapes.get(pattern.shapeRef)!.length).toBeGreaterThanOrEqual(4);
+    /*
+     * A line, not a list of survey points. Published geometry is simplified to ten metres, which
+     * on this fixture drops a vertex that sits almost exactly on the line between its neighbours —
+     * so the count is no longer the thing worth asserting. What has to hold is that the route has
+     * a drawable shape and a measured length.
+     */
+    const shape = network.shapes.get(pattern.shapeRef)!;
+    expect(shape.length).toBeGreaterThanOrEqual(2);
+    expect(shape[0]).not.toEqual(shape[shape.length - 1]);
     expect(pattern.distanceMetres).toBeGreaterThan(0);
   });
 

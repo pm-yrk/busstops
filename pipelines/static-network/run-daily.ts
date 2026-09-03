@@ -128,6 +128,10 @@ async function main(): Promise<number> {
     published: shardResult.published,
     failed: shardResult.failed.slice(0, 10),
     oversized: shardResult.oversized,
+    truncated: shardResult.truncated.slice(0, 10),
+    // The size of the biggest shard in each family, which is the number that says whether the
+    // sharding key is still fine enough — a record count never did.
+    largest: shardResult.largest,
     stopTiles: shardResult.index?.stopTiles.length ?? 0,
     patternTiles: shardResult.index?.patternTiles.length ?? 0,
     searchPrefixes: shardResult.index?.searchPrefixes.length ?? 0,
@@ -136,6 +140,14 @@ async function main(): Promise<number> {
     console.error(
       `Shard publish incomplete (${shardResult.failed.length} failed); the edge keeps the ` +
         `previous version rather than reading a half-written one.`,
+    );
+  }
+  if (shardResult.truncated.length > 0) {
+    const worst = shardResult.truncated.reduce((a, b) => (b.dropped > a.dropped ? b : a));
+    console.error(
+      `${shardResult.truncated.length} shard(s) were truncated at the byte budget, worst ` +
+        `${worst.dataset} losing ${worst.dropped} record(s). Those records are not readable at ` +
+        `the edge; the sharding key needs to be finer for that family.`,
     );
   }
   if (shardResult.oversized.length > 0) {

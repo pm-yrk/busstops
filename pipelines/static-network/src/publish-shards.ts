@@ -10,10 +10,11 @@ import { buildSearchIndex, type SearchIndexEntry } from "./search-index.js";
 import { stopDistancesAlongShape } from "./stop-distances.js";
 import { NETWORK_SCHEMA_VERSION, TILE_PUBLISH_CONCURRENCY } from "./publish.js";
 import {
+  MAX_SHARD_BYTES,
   MAX_SHARD_RECORDS,
   SHARDED,
   type NetworkIndexRecord,
-  type PatternTileRecord,
+  type PatternTileLine,
   type RouteTileRecord,
   type StopLocatorRecord,
   locatorBucketFor,
@@ -47,6 +48,16 @@ export interface ShardPublishResult {
   failed: Array<{ dataset: string; reason: string }>;
   /** Shards that hit the record cap, which would mean the sharding scheme needs a finer key. */
   oversized: string[];
+  /** Shards that hit the byte budget, and how many records went unpublished as a result. */
+  truncated: Array<{ dataset: string; dropped: number; kept: number }>;
+  /**
+   * The biggest shard in each family.
+   *
+   * Reported rather than merely bounded, because the useful question after a publish is not "did
+   * anything overflow" but "how close is the largest one" — and the answer needs measuring on
+   * real national data, not estimating from record counts.
+   */
+  largest: Array<{ dataset: string; bytes: number; records: number }>;
 }
 
 export interface ShardPublishOptions {
@@ -54,9 +65,31 @@ export interface ShardPublishOptions {
   now?: () => Date;
 }
 
+/**
+ * A shard, already serialised.
+ *
+ * The lines are built before anything is measured because the byte budget has to apply to the
+ * exact text that gets written; measuring an estimate and writing something else is how a shard
+ * passes a cap and is still refused by object storage.
+ */
 interface Shard {
   dataset: string;
-  records: readonly unknown[];
+  lines: string[];
+  records: number;
+}
+
+/**
+ * UTF-8 byte length. Node's Buffer is the fast path and this only ever runs in the pipeline, but
+ * the module is reachable from the Worker bundle, so it is read off the global rather than
+ * imported — a bare `Buffer` reference would break there at module evaluation.
+ */
+const nodeBuffer = (
+  globalThis as { Buffer?: { byteLength(value: string, encoding: string): number } }
+).Buffer;
+const encoder = nodeBuffer ? null : new TextEncoder();
+
+function utf8Bytes(value: string): number {
+  return nodeBuffer ? nodeBuffer.byteLength(value, "utf8") : encoder!.encode(value).length;
 }
 
 export async function publishNetworkShards(
@@ -68,21 +101,50 @@ export async function publishNetworkShards(
   const now = options.now ?? (() => new Date());
   const failed: ShardPublishResult["failed"] = [];
   const oversized: string[] = [];
+  const truncated: ShardPublishResult["truncated"] = [];
+  const largest: ShardPublishResult["largest"] = [];
 
   /*
    * Families are built, published and released one at a time rather than all assembled up front.
    * Holding every grouping at once means the stops, the patterns with their shapes, the search
    * entries and all six maps over them are live together at peak — on a national build that is
-   * gigabytes, and the previous version of this function died there.
+   * gigabytes, and an earlier version of this function died there.
    */
   let published = 0;
-  const publishFamily = async (shards: Shard[]): Promise<string[]> => {
-    for (const shard of shards) {
-      if (shard.records.length > MAX_SHARD_RECORDS) oversized.push(shard.dataset);
-    }
+  const publishFamily = async (shards: Shard[]): Promise<void> => {
+    let biggest: ShardPublishResult["largest"][number] | null = null;
 
     const outcomes = await mapWithConcurrency(shards, TILE_PUBLISH_CONCURRENCY, async (shard) => {
-      if (shard.records.length === 0) return { dataset: shard.dataset, error: null };
+      if (shard.lines.length === 0) return { dataset: shard.dataset, error: null };
+      if (shard.records > MAX_SHARD_RECORDS) oversized.push(shard.dataset);
+
+      /*
+       * Fitting to the budget, one line at a time.
+       *
+       * A shard that overflows is truncated at a line boundary rather than failing the publish,
+       * because the alternative is a national build losing everything over one dense tile. What
+       * it must not be is silent: the drop is reported, and the families that can be ordered by
+       * importance are, so what survives is what people are most likely to be looking at.
+       */
+      const kept: string[] = [];
+      let bytes = 0;
+      for (const line of shard.lines) {
+        const size = utf8Bytes(line) + (kept.length === 0 ? 0 : 1);
+        if (bytes + size > MAX_SHARD_BYTES) break;
+        bytes += size;
+        kept.push(line);
+      }
+      if (kept.length < shard.lines.length) {
+        truncated.push({
+          dataset: shard.dataset,
+          dropped: shard.lines.length - kept.length,
+          kept: kept.length,
+        });
+      }
+      if (!biggest || bytes > biggest.bytes) {
+        biggest = { dataset: shard.dataset, bytes, records: kept.length };
+      }
+
       try {
         /*
          * One write per shard, not a full artifact publish.
@@ -98,8 +160,7 @@ export async function publishNetworkShards(
          *
          * Atomicity still comes from the index, which is a real publish, written last.
          */
-        const body = shard.records.map((record) => JSON.stringify(record)).join("\n");
-        await store.put(objectKeyFor(shard.dataset, options.version), body);
+        await store.put(objectKeyFor(shard.dataset, options.version), kept.join("\n"));
         return { dataset: shard.dataset, error: null };
       } catch (error) {
         return {
@@ -113,57 +174,55 @@ export async function publishNetworkShards(
       if (outcome.error === null) published += 1;
       else failed.push({ dataset: outcome.dataset, reason: outcome.error });
     }
-    return shards.map((shard) => shard.dataset);
+    if (biggest) largest.push(biggest);
   };
 
   const stopShards = groupStopsByTile(network);
   const stopTiles = [...stopShards.keys()].sort();
   await publishFamily(
-    [...stopShards].map(([tile, records]) => ({ dataset: stopTileDataset(tile), records })),
+    [...stopShards].map(([tile, records]) => shardOf(stopTileDataset(tile), records)),
   );
   stopShards.clear();
 
   const locatorShards = groupLocators(network);
   await publishFamily(
-    [...locatorShards].map(([bucket, records]) => ({
-      dataset: stopLocatorDataset(bucket),
-      records,
-    })),
+    [...locatorShards].map(([bucket, records]) => shardOf(stopLocatorDataset(bucket), records)),
   );
   locatorShards.clear();
 
   const patternShards = groupPatternsByTile(network);
   const patternTiles = [...patternShards.keys()].sort();
   await publishFamily(
-    [...patternShards].map(([tile, records]) => ({ dataset: patternTileDataset(tile), records })),
+    [...patternShards].map(([tile, lines]) => shardOf(patternTileDataset(tile), lines)),
   );
   patternShards.clear();
 
-  await publishFamily([{ dataset: SHARDED.routeTiles, records: routeTileRecords(network) }]);
+  await publishFamily([shardOf(SHARDED.routeTiles, routeTileRecords(network))]);
 
   const searchEntries = buildSearchIndex(network, { builtAt: now().toISOString() }).entries;
 
   const searchTileShards = groupSearchByTile(searchEntries);
   const searchTiles = [...searchTileShards.keys()].sort();
   await publishFamily(
-    [...searchTileShards].map(([tile, records]) => ({ dataset: searchTileDataset(tile), records })),
+    [...searchTileShards].map(([tile, records]) => shardOf(searchTileDataset(tile), records)),
   );
   searchTileShards.clear();
 
   const searchPrefixShards = groupSearchByPrefix(searchEntries);
   const searchPrefixes = [...searchPrefixShards.keys()].sort();
   await publishFamily(
-    [...searchPrefixShards].map(([prefix, records]) => ({
-      dataset: searchPrefixDataset(prefix),
-      records,
-    })),
+    [...searchPrefixShards].map(([prefix, records]) =>
+      shardOf(searchPrefixDataset(prefix), records),
+    ),
   );
   searchPrefixShards.clear();
+
+  const partial = { published, failed, oversized, truncated, largest };
 
   if (failed.length > 0) {
     // The index is the pointer that makes a publish live. Withholding it when a shard failed
     // leaves the previous complete publish serving, rather than a version with holes in it.
-    return { index: null, published, failed, oversized };
+    return { index: null, ...partial };
   }
 
   const index: NetworkIndexRecord = {
@@ -197,10 +256,18 @@ export async function publishNetworkShards(
       dataset: SHARDED.index,
       reason: error instanceof Error ? error.message : String(error),
     });
-    return { index: null, published, failed, oversized };
+    return { index: null, ...partial, failed };
   }
 
-  return { index, published: published + 1, failed, oversized };
+  return { index, ...partial, published: published + 1 };
+}
+
+function shardOf(dataset: string, records: readonly unknown[]): Shard {
+  return {
+    dataset,
+    lines: records.map((record) => JSON.stringify(record)),
+    records: records.length,
+  };
 }
 
 function groupStopsByTile(network: BuiltNetwork): Map<string, BuiltNetwork["stops"]> {
@@ -214,39 +281,75 @@ function groupStopsByTile(network: BuiltNetwork): Map<string, BuiltNetwork["stop
   return byTile;
 }
 
-function groupPatternsByTile(network: BuiltNetwork): Map<string, PatternTileRecord[]> {
-  const byTile = new Map<string, PatternTileRecord[]>();
+/**
+ * Pattern tiles, written as each shape once followed by the patterns that follow it.
+ *
+ * Patterns are grouped by the route they run along, and the groups are ordered by their longest
+ * pattern. A tile that overflows therefore loses its most minor routes rather than an arbitrary
+ * tail, and because a group's shape line precedes its patterns, a cut at any line boundary can
+ * never separate a pattern from its geometry.
+ */
+function groupPatternsByTile(network: BuiltNetwork): Map<string, PatternTileLine[]> {
   const stopsById = new Map(network.stops.map((stop) => [stop.id, stop]));
+
+  interface Group {
+    shapeRef: string;
+    shape: Coordinate[];
+    patterns: PatternTileLine[];
+    longest: number;
+  }
+
+  // Grouped nationally first, so a route's along-path distances are computed once rather than
+  // once per tile it crosses.
+  const groups = new Map<string, Group>();
+  const tilesByGroup = new Map<string, string[]>();
+
   for (const pattern of network.patterns) {
     const shape = network.shapes.get(pattern.shapeRef);
     // A pattern with no geometry cannot be placed, and the map has nothing to draw for it. It
     // stays in the national dataset for the batch pipelines; it simply has no tile.
     if (!shape || shape.length < 2) continue;
-    const record: PatternTileRecord = {
+
+    let group = groups.get(pattern.shapeRef);
+    if (!group) {
+      group = {
+        shapeRef: pattern.shapeRef,
+        shape: shape as Coordinate[],
+        patterns: [],
+        longest: 0,
+      };
+      groups.set(pattern.shapeRef, group);
+      tilesByGroup.set(pattern.shapeRef, tilesForPattern(shape));
+    }
+    group.patterns.push({
+      kind: "pattern",
       pattern,
-      shape: shape as Coordinate[],
+      shapeRef: pattern.shapeRef,
       stopDistancesMetres: stopDistancesAlongShape(pattern, shape as Coordinate[], stopsById),
-    };
-    for (const tile of tilesForPattern(shape)) {
+    });
+    group.longest = Math.max(group.longest, pattern.stopSequence.length);
+  }
+
+  const byTile = new Map<string, Group[]>();
+  for (const group of groups.values()) {
+    for (const tile of tilesByGroup.get(group.shapeRef) ?? []) {
       const existing = byTile.get(tile);
-      if (existing) existing.push(record);
-      else byTile.set(tile, [record]);
+      if (existing) existing.push(group);
+      else byTile.set(tile, [group]);
     }
   }
-  /*
-   * A pattern is written to every tile its shape crosses, so a dense tile can collect far more
-   * than the area itself has routes — one measured at over 20,000, which is tens of megabytes and
-   * the isolate problem again one shard further down. The longest patterns are kept, because a
-   * trunk route is what someone is most likely to be looking at; the rest lose their route name
-   * on the map in that tile and nothing else.
-   */
-  for (const [tile, records] of byTile) {
-    if (records.length > MAX_SHARD_RECORDS) {
-      records.sort((a, b) => b.pattern.stopSequence.length - a.pattern.stopSequence.length);
-      byTile.set(tile, records.slice(0, MAX_SHARD_RECORDS));
+
+  const lines = new Map<string, PatternTileLine[]>();
+  for (const [tile, tileGroups] of byTile) {
+    tileGroups.sort((a, b) => b.longest - a.longest);
+    const out: PatternTileLine[] = [];
+    for (const group of tileGroups) {
+      out.push({ kind: "shape", shapeRef: group.shapeRef, points: group.shape });
+      out.push(...group.patterns);
     }
+    lines.set(tile, out);
   }
-  return byTile;
+  return lines;
 }
 
 function groupSearchByTile(entries: readonly SearchIndexEntry[]): Map<string, SearchIndexEntry[]> {
@@ -258,6 +361,8 @@ function groupSearchByTile(entries: readonly SearchIndexEntry[]): Map<string, Se
     if (existing) existing.push(entry);
     else byTile.set(tile, [entry]);
   }
+  // Ordered so a tile that has to be truncated keeps the places people are most likely to mean.
+  for (const bucket of byTile.values()) bucket.sort((a, b) => b.prominence - a.prominence);
   return byTile;
 }
 
@@ -281,14 +386,9 @@ function groupSearchByPrefix(
     }
   }
 
-  // Keep the most prominent when a bucket is unusually full, so a shard cannot grow without
-  // bound. Sorted rather than truncated arbitrarily: what survives should be what people mean.
-  for (const [key, bucket] of byPrefix) {
-    if (bucket.length > MAX_SHARD_RECORDS) {
-      bucket.sort((a, b) => b.prominence - a.prominence);
-      byPrefix.set(key, bucket.slice(0, MAX_SHARD_RECORDS));
-    }
-  }
+  // Sorted rather than truncated arbitrarily: what survives a full bucket should be what people
+  // mean by the word they typed.
+  for (const bucket of byPrefix.values()) bucket.sort((a, b) => b.prominence - a.prominence);
   return byPrefix;
 }
 
