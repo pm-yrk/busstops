@@ -1,11 +1,15 @@
 # Bus Stops. Build State
 
-Last updated: 2026-09-02 (P1 complete)
+Last updated: 2026-09-03 (P6 analytics engine complete)
 
 ## Current status
 
-- Phase: P1 complete → P2 (live data and edge delivery) starting
-- Overall: foundations, all eight source adapters and the national static-network pipeline complete; product surfaces not yet built
+- Phase: P0–P2 complete, P4 and P6 complete, P3 partially complete → P5 (national intelligence
+  pipeline) and the remaining P3 surfaces next
+- Overall: foundations, all eight source adapters, the national static-network pipeline, the
+  Worker edge API, the core passenger surfaces, the journey planning engine and the analytics
+  engine are complete. Remaining: the rest of the P3 pages, P5 intelligence pipeline, P7 Pro
+  app, P8 accounts/Daily Brief, P9 hardening, P10 deployment.
 - Deployment: not deployed (external blocker — see Known limitations B3)
 - Blockers: 3 external blockers recorded below (B1 upstream egress, B2 credentials, B3 deploy reachability)
 
@@ -57,33 +61,93 @@ isolated and documented. See `docs/adr/0001-stack-and-build-environment-constrai
       previous-good rollback, daily fingerprint change detection, weekly full reconciliation
 - [x] Scheduled workflows with concurrency groups, runtime caps and least-privilege permissions
 
+**P2 — live data and edge delivery**
+
+- [x] `apps/worker` — dependency-free router serving versioned envelopes for viewport, stop,
+      route and search queries, with hard map-query caps enforced server-side
+- [x] Isolate-level snapshot caching, request coalescing and per-client rate limiting
+- [x] Security headers and CSP; no upstream credential ever reaches a response
+- [x] Source health surfaced per response: `sources`, `coverage`, `degradation`,
+      `governorState` and `attribution` on every envelope
+- [x] Degradation derivation — `scheduled_only` when every live source for the viewport is
+      down, `partial_sources` when some remain, so the UI can state exactly what is missing
+- [x] `packages/matching` — vehicle-to-journey matching by distance, bearing and sequence
+      continuity, with delay interpolated between scheduled stop times
+- [x] 40 worker tests driving the real fetch handler end to end
+
+**P3 — Bus Stops Live (partial)**
+
+- [x] React 18 + Vite PWA shell, warm-white/black/red tokens, pixel-art SVG library, wordmark
+- [x] Home, stop, search, live map, saved, methodology, legal and not-found pages
+- [x] Arrival board with live/scheduled/stale distinction and visible source confidence
+- [x] "Will I make it?" and "Bus Stopped?" logic with honest uncertainty
+- [x] Local-first favourites (no account required), maps handoff, allowlisted ticket links
+- [x] MapLibre in a lazy chunk; with no configured style the map renders nothing rather than
+      silently falling back to a third-party tile provider, and the list stands alone
+- [x] 61 web tests (35 lib, 26 component)
+
+**P4 — journey planning engine**
+
+- [x] `packages/journey` — RAPTOR-style rounds keyed by change count, initial footpaths,
+      walk-only itineraries and transfer handling
+- [x] Brute-force verification harness that proves the planner's answers against exhaustive
+      search; it found three real planner bugs, all fixed
+- [x] Nearest-versus-fastest explanation gated on uncertainty, so the app only claims a
+      further stop is better when the evidence supports it
+- [x] 26 journey tests
+
+**P6 — analytics engine**
+
+- [x] `packages/analytics/statistics.ts` — robust statistics: quantiles, median, MAD, IQR,
+      MAD→IQR-fallback robust z-score, empirical percentile, Wilson proportion intervals
+- [x] `metrics.ts` — punctuality, reliability, headway adherence and network health, each with
+      a mandatory denominator, small-sample suppression, and source outages excluded from the
+      denominator so a dead feed can never be reported as cancelled services
+- [x] `baseline.ts` — comparable-period baselines with explicit sufficiency rules, and an
+      abnormality classifier that takes the _less_ alarming of percentile and z-score, then
+      applies materiality and persistence gates before anything is called unusual
+- [x] `events.ts` — bunching, service gaps, diversions and skipped stops, each refusing to fire
+      when the feed is unhealthy, and worded observationally ("appears to have taken a
+      different route", never "is diverted")
+- [x] `congestion.ts` — excess vehicle-minutes, delay-origin location with competing
+      explanations, and speed anomalies that require a sourced limit and are never framed as
+      an accusation against a driver
+- [x] `weather-risk.ts` — weather sensitivity from matched strata only (association, never
+      causation), flood susceptibility behind the official-wording gate, and route risk as a
+      probability band that widens as coverage falls
+- [x] `confidence.ts` — confidence capped by the weakest _essential_ evidence component, with
+      supporting evidence able to adjust only within that cap, plus calibration measurement
+- [x] 93 analytics tests
+
 ### In progress
 
-- [ ] P2 — live data and edge delivery: Worker viewport/stop/route APIs, caching and
-      coalescing, source health, stale and partial fallback, vehicle matching
+- [ ] P3 — remaining surfaces: vehicle, route, disruption, operator, network and area pages,
+      and the journey planner UI page
 
 ### Next
 
-1. P2 Worker edge API with caching, coalescing, source health and vehicle matching.
-2. P3 Bus Stops Live surfaces; P4 journey planning.
-3. P5 intelligence pipeline, P6 analytics, P7 Pro, P8 accounts/Daily Brief, P9 hardening,
-   P10 deployment.
+1. Finish the remaining P3 surfaces on top of the completed journey and analytics engines.
+2. P5 national intelligence pipeline: bounded collectors, map matching at scale, aggregates,
+   roll-ups, enrichment and atomic artifact publication.
+3. P7 Pro app, P8 accounts/Daily Brief, P9 hardening, P10 deployment.
 
 ### Verification evidence
 
-| Check                         | Command or method                               | Result                                                       | Date       |
-| ----------------------------- | ----------------------------------------------- | ------------------------------------------------------------ | ---------- |
-| Install                       | `npm install`                                   | Clean install from lockfile                                  | 2026-09-02 |
-| Unit + contract + integration | `npx vitest run`                                | 326 passed / 326 across 14 files                             | 2026-09-02 |
-| Lint                          | `npx eslint . --max-warnings=0`                 | Clean                                                        | 2026-09-02 |
-| Format                        | `npx prettier --check .`                        | Clean                                                        | 2026-09-02 |
-| Type check                    | `npm run typecheck`                             | Passed for every workspace                                   | 2026-09-02 |
-| Free-tier preflight           | `node scripts/preflight.mjs`                    | Passed, 1 deploy-stage warning                               | 2026-09-02 |
-| Secret scan                   | `node scripts/secret-scan.mjs`                  | Clean across 98 tracked files                                | 2026-09-02 |
-| Pipeline dry run              | `npx tsx pipelines/static-network/run-daily.ts` | Exits 0 reporting the missing credentials, publishes nothing | 2026-09-02 |
-| End-to-end                    | —                                               | Not run (no app surfaces yet)                                | —          |
-| Accessibility                 | —                                               | Not run (no app surfaces yet)                                | —          |
-| Deployed smoke test           | —                                               | Blocked (B3)                                                 | —          |
+| Check                         | Command or method                               | Result                                                                 | Date       |
+| ----------------------------- | ----------------------------------------------- | ---------------------------------------------------------------------- | ---------- |
+| Install                       | `npm install`                                   | Clean install from lockfile                                            | 2026-09-02 |
+| Unit + contract + integration | `npm test`                                      | 571 passed / 571 (510 root across 19 files, 61 web)                    | 2026-09-03 |
+| Lint                          | `npx eslint . --max-warnings=0`                 | Clean                                                                  | 2026-09-02 |
+| Format                        | `npx prettier --check .`                        | Clean                                                                  | 2026-09-02 |
+| Type check                    | `npm run typecheck`                             | Passed for every workspace                                             | 2026-09-02 |
+| Free-tier preflight           | `node scripts/preflight.mjs`                    | Passed, 1 deploy-stage warning                                         | 2026-09-02 |
+| Secret scan                   | `node scripts/secret-scan.mjs`                  | Clean across 188 tracked files                                         | 2026-09-03 |
+| Pipeline dry run              | `npx tsx pipelines/static-network/run-daily.ts` | Exits 0 reporting the missing credentials, publishes nothing           | 2026-09-02 |
+| Journey planner verification  | `npx vitest run packages/journey`               | 26 passed, including brute-force equivalence against exhaustive search | 2026-09-03 |
+| Analytics engine              | `npx vitest run packages/analytics`             | 93 passed / 93                                                         | 2026-09-03 |
+| End-to-end                    | —                                               | Not run yet (scheduled for P9)                                         | —          |
+| Accessibility                 | —                                               | Not run yet (scheduled for P9)                                         | —          |
+| Deployed smoke test           | —                                               | Blocked (B3)                                                           | —          |
 
 ### Coverage and source health
 
