@@ -187,6 +187,7 @@ jobs:
 
       # ------------------------------------------------------ data bootstrap
       - name: Bootstrap the national network artifact
+        id: bootstrap
         if: ${{ inputs.bootstrap_data }}
         env:
           BODS_API_KEY: ${{ secrets.BODS_API_KEY }}
@@ -237,11 +238,15 @@ jobs:
           if-no-files-found: ignore
 
       # -------------------------------------------------------------- verify
-      # These run even when the bootstrap failed, as long as both halves actually deployed. A
-      # failed bootstrap makes the run red either way; what it must not do is throw away the
-      # evidence about whether the deployment itself is sound.
+      # Stop at a failed bootstrap rather than carrying on.
+      #
+      # This used to continue so a failed bootstrap did not throw away the evidence that the
+      # deployment itself was sound. It cost more than it gave: the later steps' output pushed the
+      # bootstrap's own error out of the retrievable end of the log, and diagnosing it took an
+      # extra fifteen-minute cycle each time. The deployment evidence is worth less than knowing
+      # why the data did not publish, and a passing smoke test is available from any green run.
       - name: Wait for the Pages deployment to serve
-        if: ${{ !cancelled() && steps.pages.outcome == 'success' }}
+        if: ${{ steps.bootstrap.outcome != 'failure' && steps.pages.outcome == 'success' }}
         run: |
           for attempt in 1 2 3 4 5 6 7 8 9 10; do
             CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 \
@@ -257,14 +262,14 @@ jobs:
           exit 1
 
       - name: Smoke test the real deployment
-        if: ${{ !cancelled() && steps.pages.outcome == 'success' }}
+        if: ${{ steps.bootstrap.outcome != 'failure' && steps.pages.outcome == 'success' }}
         run: node scripts/smoke-test.mjs "${{ steps.pages.outputs.url }}" "${{ steps.worker.outputs.url }}"
 
       # Separate from the smoke test on purpose. The smoke test asserts the deployment is sound
       # whatever the upstreams are doing; this asserts there is real national data behind it and
       # that a passenger can reach it, which is only a meaningful question after a bootstrap.
       - name: Verify real data through the deployed API
-        if: ${{ !cancelled() && inputs.bootstrap_data && steps.pages.outcome == 'success' }}
+        if: ${{ steps.bootstrap.outcome == 'success' && steps.pages.outcome == 'success' }}
         run: |
           node scripts/verify-deployment.mjs \
             "${{ steps.worker.outputs.url }}" \
