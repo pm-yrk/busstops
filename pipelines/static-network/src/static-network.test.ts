@@ -13,7 +13,13 @@ import { ArtifactStore, InMemoryObjectStore } from "@busstops/pipeline-core";
 import { buildNetwork } from "./build-network.js";
 import { compareFingerprints, fingerprintFromBody, fingerprintFromHeaders } from "./fingerprint.js";
 import { buildSearchIndex, nearbyStops, searchIndex, tokenize } from "./search-index.js";
-import { DATASETS, publishNetwork, rollbackNetwork } from "./publish.js";
+import {
+  DATASETS,
+  journeyTileDataset,
+  publishJourneyTiles,
+  publishNetwork,
+  rollbackNetwork,
+} from "./publish.js";
 import { reconcileNetwork, summariseNetworkChanges } from "./reconcile.js";
 
 const fixturesDir = join(
@@ -158,6 +164,70 @@ function buildCompleteNetwork() {
     "450010003,,,,Armley Road,en,Armley Rd,en,,,Armley Road,en,,,,,W,E0035477,Leeds,,,Leeds,en,,,0,U,428500,433900,-1.5600,53.7996,BCT,MKD,PTP,,,,107,2019-01-01T00:00:00,2026-01-15T09:00:00,1,rev,active";
   return buildNetwork({ ...inputs, naptanCsv: `${naptanCsv.trimEnd()}\n${extraStopRow}\n` });
 }
+
+describe("journey tile publishing", () => {
+  it("publishes journeys per tile so the edge need not load the national timetable", async () => {
+    const store = new InMemoryObjectStore();
+    const network = buildCompleteNetwork();
+    const result = await publishJourneyTiles(store, network, { version: "v1" });
+
+    expect(result.tiles.length).toBeGreaterThan(0);
+    expect(result.failed).toEqual([]);
+
+    const artifacts = new ArtifactStore(store);
+    const tile = await artifacts.readCurrent(journeyTileDataset(result.tiles[0]!));
+    expect(tile.records.length).toBeGreaterThan(0);
+  });
+
+  it("counts journeys it cannot place rather than dropping them silently", async () => {
+    const store = new InMemoryObjectStore();
+    const network = buildCompleteNetwork();
+    const orphaned = {
+      ...network,
+      journeys: network.journeys.map((journey) => ({
+        ...journey,
+        stopTimes: journey.stopTimes.map((stopTime) => ({
+          ...stopTime,
+          stopId: "00000000-0000-5000-8000-000000000000",
+        })),
+      })),
+    };
+
+    const result = await publishJourneyTiles(store, orphaned, { version: "v1" });
+    expect(result.journeysWithoutGeometry).toBe(network.journeys.length);
+    expect(result.tiles).toEqual([]);
+  });
+
+  it("writes a journey to every tile it crosses, so either end can find it", async () => {
+    const store = new InMemoryObjectStore();
+    const network = buildCompleteNetwork();
+    const stopsById = new Map(network.stops.map((stop) => [stop.id, stop]));
+
+    const spanning = {
+      ...network,
+      journeys: network.journeys.slice(0, 1).map((journey) => ({
+        ...journey,
+        stopTimes: journey.stopTimes.map((stopTime, index) => ({
+          ...stopTime,
+          // Move the last stop far enough away to land in a different tile.
+          stopId:
+            index === journey.stopTimes.length - 1
+              ? (network.stops.find(
+                  (stop) =>
+                    Math.abs(
+                      stop.locationCoordinate.lat -
+                        (stopsById.get(journey.stopTimes[0]!.stopId)?.locationCoordinate.lat ?? 0),
+                    ) > 1,
+                )?.id ?? stopTime.stopId)
+              : stopTime.stopId,
+        })),
+      })),
+    };
+
+    const result = await publishJourneyTiles(store, spanning, { version: "v1" });
+    expect(result.tiles.length).toBeGreaterThan(1);
+  });
+});
 
 describe("buildNetwork with a complete stop set", () => {
   const network = buildCompleteNetwork();

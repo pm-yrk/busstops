@@ -1,4 +1,13 @@
-import type { MapResponse, SearchResponse, StopDeparturesResponse } from "@busstops/contracts";
+import type {
+  DisruptionsResponse,
+  JourneyPlanResponse,
+  VehicleDetailResponse,
+  MapResponse,
+  OperatorDetailResponse,
+  RouteDetailResponse,
+  SearchResponse,
+  StopDeparturesResponse,
+} from "@busstops/contracts";
 
 /**
  * Client for the Worker API.
@@ -102,6 +111,59 @@ export class ApiClient {
       radius: String(radiusMetres),
     });
     return this.request<SearchResponse>(`/v1/nearby?${params.toString()}`, signal);
+  }
+
+  /**
+   * A vehicle lookup carries the viewport it was found in. Upstream feeds are viewport-scoped,
+   * so there is no national "get bus by reference" to call.
+   */
+  vehicle(
+    ref: string,
+    bbox: { west: number; south: number; east: number; north: number },
+    signal?: AbortSignal,
+  ): Promise<VehicleDetailResponse> {
+    const bboxParam = [bbox.west, bbox.south, bbox.east, bbox.north]
+      .map((v) => v.toFixed(5))
+      .join(",");
+    return this.request<VehicleDetailResponse>(
+      `/v1/vehicles/${encodeURIComponent(ref)}?bbox=${encodeURIComponent(bboxParam)}`,
+      signal,
+    );
+  }
+
+  route(id: string, signal?: AbortSignal): Promise<RouteDetailResponse> {
+    return this.request<RouteDetailResponse>(`/v1/routes/${encodeURIComponent(id)}`, signal);
+  }
+
+  operator(id: string, signal?: AbortSignal): Promise<OperatorDetailResponse> {
+    return this.request<OperatorDetailResponse>(`/v1/operators/${encodeURIComponent(id)}`, signal);
+  }
+
+  /**
+   * Plans a journey. The coordinates are sent for this request only; the server does not log or
+   * store them, and the client does not persist them either.
+   */
+  journey(
+    origin: { lat: number; lon: number },
+    destination: { lat: number; lon: number },
+    options: { departAtSeconds?: number; serviceDate?: string } = {},
+    signal?: AbortSignal,
+  ): Promise<JourneyPlanResponse> {
+    const params = new URLSearchParams({
+      fromLat: origin.lat.toFixed(5),
+      fromLon: origin.lon.toFixed(5),
+      toLat: destination.lat.toFixed(5),
+      toLon: destination.lon.toFixed(5),
+    });
+    if (options.departAtSeconds !== undefined) {
+      params.set("departAt", String(Math.round(options.departAtSeconds)));
+    }
+    if (options.serviceDate) params.set("date", options.serviceDate);
+    return this.request<JourneyPlanResponse>(`/v1/journeys?${params.toString()}`, signal);
+  }
+
+  disruptions(signal?: AbortSignal): Promise<DisruptionsResponse> {
+    return this.request<DisruptionsResponse>("/v1/disruptions", signal);
   }
 
   sourcesHealth(signal?: AbortSignal): Promise<unknown> {

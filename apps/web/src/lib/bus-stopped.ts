@@ -39,7 +39,8 @@ export interface BusStoppedInput {
 export interface BusStoppedAssessment {
   /** Deliberately never a single cause: the user sees the candidates and the evidence. */
   plausibleStates: PlausibleState[];
-  lastReliableObservation: string | null;
+  /** When the vehicle was last observed, as an ISO instant. Null when nothing is known. */
+  lastReliableObservationAt: string | null;
   freshnessSeconds: number | null;
   /** A suggestion to open the panel, not an automatic claim that something is wrong. */
   suggestPanel: boolean;
@@ -122,7 +123,12 @@ export function assessBusStopped(input: BusStoppedInput): BusStoppedAssessment {
 
   return {
     plausibleStates: states,
-    lastReliableObservation: vehicle ? vehicle.position.lat.toFixed(5) : null,
+    // Derived from the observation's age, because VehicleState carries freshness rather than an
+    // absolute timestamp. The panel shows a time, so it needs one.
+    lastReliableObservationAt:
+      vehicle && freshnessSeconds !== null
+        ? new Date(input.now.getTime() - freshnessSeconds * 1000).toISOString()
+        : null,
     freshnessSeconds,
     suggestPanel: Boolean(stationaryLongEnough || confidenceCollapsed),
     summary:

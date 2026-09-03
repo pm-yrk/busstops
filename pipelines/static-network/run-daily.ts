@@ -14,7 +14,7 @@ import {
   fingerprintFromBody,
   type SourceFingerprint,
 } from "./src/fingerprint.js";
-import { publishNetwork, rollbackNetwork } from "./src/publish.js";
+import { publishJourneyTiles, publishNetwork, rollbackNetwork } from "./src/publish.js";
 import { fetchStaticSources } from "./src/sources.js";
 
 const FINGERPRINT_DATASET = "network/fingerprints";
@@ -94,6 +94,23 @@ async function main(): Promise<number> {
   const result = await publishNetwork(store, network, { version: startedAt.toISOString() });
   report.published = result.published.map((m) => ({ dataset: m.dataset, records: m.recordCount }));
   report.failed = result.failed;
+
+  // Journeys are also published per spatial tile, so the edge can plan a journey without
+  // loading the national timetable. Published after the main datasets so a tile can never point
+  // at journeys the network itself does not have.
+  const tileResult = await publishJourneyTiles(store, network, {
+    version: startedAt.toISOString(),
+  });
+  report.journeyTiles = {
+    published: tileResult.tiles.length,
+    failed: tileResult.failed.slice(0, 10),
+    journeysWithoutGeometry: tileResult.journeysWithoutGeometry,
+  };
+  if (tileResult.journeysWithoutGeometry > 0) {
+    console.error(
+      `${tileResult.journeysWithoutGeometry} journeys could not be placed in a tile because their stops are unlocatable; they will not be plannable.`,
+    );
+  }
 
   if (!result.complete) {
     // A partial publish is worse than no publish: restore the previous consistent version.

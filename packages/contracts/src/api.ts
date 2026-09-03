@@ -1,8 +1,13 @@
 import { z } from "zod";
-import { BoundingBoxSchema, CoordinateSchema, IsoInstantSchema } from "./common.js";
+import {
+  BoundingBoxSchema,
+  ConfidenceSchema,
+  CoordinateSchema,
+  IsoInstantSchema,
+} from "./common.js";
 import { DeparturePredictionSchema, VehicleStateSchema } from "./live.js";
 import { GovernorStateSchema, IncidentSchema, SourceHealthSchema } from "./derived.js";
-import { StopSchema } from "./static.js";
+import { OperatorSchema, ServiceRouteSchema, StopSchema } from "./static.js";
 
 /**
  * Versioned API envelopes. Every response states when it was generated, what was
@@ -135,6 +140,176 @@ export const VehicleDetailResponseSchema = apiEnvelope(
   }),
 );
 export type VehicleDetailResponse = z.infer<typeof VehicleDetailResponseSchema>;
+
+/**
+ * A metric as it is published to a client: never a bare number. The denominator and the
+ * suppression flag travel with the value so a figure computed from four observations cannot be
+ * rendered as though it were computed from four hundred.
+ */
+export const PublishedMetricSchema = z.object({
+  label: z.string(),
+  /** Null when suppressed, which is a legitimate and common state. */
+  value: z.number().nullable(),
+  unit: z.enum(["percent", "seconds", "minutes", "count", "points"]),
+  denominator: z.number().int().nonnegative(),
+  suppressed: z.boolean(),
+  /** Why the figure is missing or qualified, in the words shown to the reader. */
+  note: z.string().nullable(),
+  confidence: ConfidenceSchema.nullable(),
+});
+export type PublishedMetric = z.infer<typeof PublishedMetricSchema>;
+
+export const RouteDetailResponseSchema = apiEnvelope(
+  z.object({
+    route: ServiceRouteSchema,
+    operator: OperatorSchema.nullable(),
+    variants: z.array(
+      z.object({
+        patternId: z.string().uuid(),
+        direction: z.enum(["outbound", "inbound", "circular"]),
+        description: z.string(),
+        distanceMetres: z.number().nonnegative(),
+        stops: z.array(
+          z.object({
+            stopId: z.string().uuid(),
+            atcoCode: z.string(),
+            name: z.string(),
+            locality: z.string().nullable(),
+            sequence: z.number().int().nonnegative(),
+          }),
+        ),
+      }),
+    ),
+    /** Vehicles currently observed on this route, if any live source covers it. */
+    activeVehicles: z.array(
+      z.object({
+        vehicleRef: z.string(),
+        destinationName: z.string().nullable(),
+        delaySeconds: z.number().nullable(),
+        observedAt: IsoInstantSchema,
+        coordinate: CoordinateSchema,
+      }),
+    ),
+    /** Typical frequency, when the timetable supports stating one. */
+    headwaySummary: z.string().nullable(),
+    reliability: z.array(PublishedMetricSchema),
+    incidents: z.array(IncidentSchema),
+    ticketUrl: z.string().url().nullable(),
+  }),
+);
+export type RouteDetailResponse = z.infer<typeof RouteDetailResponseSchema>;
+
+export const DisruptionRankingSchema = z.enum(["delay_burden", "most_abnormal"]);
+export type DisruptionRanking = z.infer<typeof DisruptionRankingSchema>;
+
+export const DisruptionItemSchema = z.object({
+  incident: IncidentSchema,
+  /** Current value against its baseline, both stated, so the reader can judge the gap. */
+  currentValueSeconds: z.number().nullable(),
+  baselineValueSeconds: z.number().nullable(),
+  /** Empirical frequency of conditions at least this bad, with its sample size. */
+  occurrenceFrequency: z.number().min(0).max(1).nullable(),
+  occurrenceSample: z.number().int().nonnegative(),
+  durationSeconds: z.number().nonnegative(),
+  affectedRouteNames: z.array(z.string()),
+  affectedVehicleCount: z.number().int().nonnegative(),
+  /** Total delay across affected vehicles: the burden ranking's basis. */
+  delayBurdenVehicleMinutes: z.number().nonnegative().nullable(),
+  /** Whether conditions are improving, and how that was judged. */
+  recoveryTrend: z.enum(["improving", "steady", "worsening", "unknown"]),
+  officialContext: z.array(z.string()),
+});
+export type DisruptionItem = z.infer<typeof DisruptionItemSchema>;
+
+export const DisruptionsResponseSchema = apiEnvelope(
+  z.object({
+    /** Two rankings, never merged into one league table: they answer different questions. */
+    byDelayBurden: z.array(DisruptionItemSchema),
+    byAbnormality: z.array(DisruptionItemSchema),
+    /** Areas where nothing can be said, distinct from areas where nothing is wrong. */
+    uncoveredAreas: z.array(z.string()),
+  }),
+);
+export type DisruptionsResponse = z.infer<typeof DisruptionsResponseSchema>;
+
+export const OperatorDetailResponseSchema = apiEnvelope(
+  z.object({
+    operator: OperatorSchema,
+    routes: z.array(
+      z.object({
+        id: z.string().uuid(),
+        publicName: z.string(),
+        description: z.string().nullable(),
+      }),
+    ),
+    metrics: z.array(PublishedMetricSchema),
+    /**
+     * Whether this operator's sample supports comparison with others at all. Ranking below the
+     * threshold would be a league-table claim the data cannot support.
+     */
+    rankingEligible: z.boolean(),
+    rankingIneligibleReason: z.string().nullable(),
+    coverageCaveats: z.array(z.string()),
+    incidents: z.array(IncidentSchema),
+  }),
+);
+export type OperatorDetailResponse = z.infer<typeof OperatorDetailResponseSchema>;
+
+export const AreaDetailResponseSchema = apiEnvelope(
+  z.object({
+    areaId: z.string(),
+    name: z.string(),
+    boundingBox: BoundingBoxSchema.nullable(),
+    stopCount: z.number().int().nonnegative(),
+    routeCount: z.number().int().nonnegative(),
+    operators: z.array(z.object({ id: z.string().uuid(), name: z.string() })),
+    metrics: z.array(PublishedMetricSchema),
+    coverageCaveats: z.array(z.string()),
+    incidents: z.array(IncidentSchema),
+  }),
+);
+export type AreaDetailResponse = z.infer<typeof AreaDetailResponseSchema>;
+
+export const JourneyPlanLegSchema = z.object({
+  mode: z.enum(["walk", "bus"]),
+  fromStopId: z.string().nullable(),
+  toStopId: z.string().nullable(),
+  fromName: z.string(),
+  toName: z.string(),
+  routeName: z.string().optional(),
+  headsign: z.string().optional(),
+  departureSeconds: z.number(),
+  arrivalSeconds: z.number(),
+});
+export type JourneyPlanLeg = z.infer<typeof JourneyPlanLegSchema>;
+
+export const JourneyPlanOptionSchema = z.object({
+  ranking: z.enum(["fastest", "least_walking", "fewest_changes"]),
+  legs: z.array(JourneyPlanLegSchema),
+  departureSeconds: z.number(),
+  arrivalSeconds: z.number(),
+  /** An interval, never a single arrival time: a point estimate overstates what is known. */
+  arrivalLowSeconds: z.number(),
+  arrivalHighSeconds: z.number(),
+  totalWalkSeconds: z.number().nonnegative(),
+  changeCount: z.number().int().nonnegative(),
+  boardingStopId: z.string().nullable(),
+  confidence: ConfidenceSchema,
+  explanation: z.string().optional(),
+});
+export type JourneyPlanOption = z.infer<typeof JourneyPlanOptionSchema>;
+
+export const JourneyPlanResponseSchema = apiEnvelope(
+  z.object({
+    serviceDate: z.string(),
+    options: z.array(JourneyPlanOptionSchema),
+    /** Why one boarding stop was preferred to a nearer one, when that needs saying. */
+    explanation: z.string().nullable(),
+    /** Stated when no plan could be produced, in the words shown to the reader. */
+    unavailableReason: z.string().nullable(),
+  }),
+);
+export type JourneyPlanResponse = z.infer<typeof JourneyPlanResponseSchema>;
 
 export const SearchResultSchema = z.object({
   kind: z.enum(["stop", "route", "operator", "area", "place"]),

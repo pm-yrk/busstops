@@ -5,3 +5,4 @@ export * from "./http.js";
 export * from "./artifacts.js";
 export * from "./quarantine.js";
 export * from "./r2-store.js";
+export * from "./tiles.js";

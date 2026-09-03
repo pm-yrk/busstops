@@ -6,7 +6,10 @@ import {
   type SearchResult,
 } from "@busstops/contracts";
 import { safeModeActive } from "@busstops/governor";
-import { boundingBoxAreaSquareDegrees } from "@busstops/pipeline-core";
+import {
+  boundingBoxAreaSquareDegrees,
+  isPlausibleEnglandCoordinate,
+} from "@busstops/pipeline-core";
 import { matchObservation } from "@busstops/matching";
 import { nearbyStops, searchIndex } from "@busstops/pipeline-static-network";
 import { R2BindingStore, readFeatureFlags, type WorkerEnv } from "./env.js";
@@ -18,6 +21,14 @@ import {
   toMapVehicle,
 } from "./live-service.js";
 import { NetworkRepository } from "./network-repository.js";
+import { JourneyService } from "./journey-service.js";
+import {
+  boundingBoxOf,
+  publishedMetric,
+  routeVariants,
+  routesForOperator,
+  routesServingStop,
+} from "./network-queries.js";
 import { Router } from "./router.js";
 import {
   RateLimiter,
@@ -39,6 +50,7 @@ import {
 // snapshot and the rate-limit window useful at all.
 let repository: NetworkRepository | null = null;
 let liveService: LiveService | null = null;
+let journeyService: JourneyService | null = null;
 const rateLimiter = new RateLimiter();
 
 interface RequestContext {
@@ -256,10 +268,420 @@ router.get("/v1/stops/:id", async (_request, { env, params }) => {
       data: {
         stop,
         departures: live.departures,
-        routes: [],
+        routes: routesServingStop(snapshot, stop.id),
       },
     },
     cacheTtlSeconds("tfl", state),
+  );
+});
+
+/**
+ * Journey planning.
+ *
+ * The graph is built from the spatial tiles the journey actually spans, not from the national
+ * timetable, which is what makes this affordable at the edge. Arrival times are returned as
+ * intervals: a single predicted minute would claim precision the data cannot support.
+ *
+ * The origin and destination are used for this request and are not logged or persisted.
+ */
+router.get("/v1/journeys", async (_request, { env, url }) => {
+  const state = governorState(env);
+  const now = new Date();
+
+  const originLat = Number(url.searchParams.get("fromLat"));
+  const originLon = Number(url.searchParams.get("fromLon"));
+  const destinationLat = Number(url.searchParams.get("toLat"));
+  const destinationLon = Number(url.searchParams.get("toLon"));
+
+  if (
+    ![originLat, originLon, destinationLat, destinationLon].every((value) => Number.isFinite(value))
+  ) {
+    return errorResponse("bad_request", "fromLat, fromLon, toLat and toLon are all required", 400);
+  }
+
+  const origin = { lat: originLat, lon: originLon };
+  const destination = { lat: destinationLat, lon: destinationLon };
+  if (!isPlausibleEnglandCoordinate(origin) || !isPlausibleEnglandCoordinate(destination)) {
+    return errorResponse("bad_request", "Both points must be within England", 400);
+  }
+
+  const snapshot = repository ? await repository.load() : null;
+  if (!snapshot || !journeyService) {
+    return errorResponse(
+      "upstream_unavailable",
+      "The network dataset is not available yet.",
+      503,
+      60,
+    );
+  }
+
+  const serviceDate = url.searchParams.get("date") ?? now.toISOString().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(serviceDate)) {
+    return errorResponse("bad_request", "date must be YYYY-MM-DD", 400);
+  }
+
+  const departAtParam = url.searchParams.get("departAt");
+  const departAtSeconds = departAtParam
+    ? Number(departAtParam)
+    : Math.round((now.getTime() - Date.parse(`${serviceDate}T00:00:00.000Z`)) / 1000);
+  if (!Number.isFinite(departAtSeconds)) {
+    return errorResponse("bad_request", "departAt must be seconds into the service day", 400);
+  }
+
+  const outcome = await journeyService.planJourney(snapshot, {
+    origin,
+    destination,
+    departAtSeconds,
+    serviceDate,
+  });
+
+  const meta = buildMeta({
+    sources: [],
+    observedAt: null,
+    coverage: outcome.ok ? 1 : 0,
+    governorState: state,
+    now,
+    networkPartialCoverage: snapshot.partialCoverage,
+    safeMode: safeModeActive(state),
+  });
+
+  if (!outcome.ok) {
+    return json(
+      {
+        meta,
+        data: { serviceDate, options: [], explanation: null, unavailableReason: outcome.reason },
+      },
+      cacheTtlSeconds("static", state),
+    );
+  }
+
+  return json(
+    {
+      meta,
+      data: {
+        serviceDate,
+        options: outcome.result.options.map((option) => ({
+          ranking: option.ranking,
+          legs: option.legs,
+          departureSeconds: option.departureSeconds,
+          arrivalSeconds: option.arrivalSeconds,
+          arrivalLowSeconds: option.arrivalLowSeconds,
+          arrivalHighSeconds: option.arrivalHighSeconds,
+          totalWalkSeconds: option.totalWalkSeconds,
+          changeCount: option.changeCount,
+          boardingStopId: option.boardingStopId,
+          confidence: option.confidence,
+          ...(option.explanation === undefined ? {} : { explanation: option.explanation }),
+        })),
+        explanation: outcome.result.explanation,
+        unavailableReason:
+          outcome.result.options.length === 0
+            ? "We could not find a bus journey between these points at this time."
+            : null,
+      },
+    },
+    // Short cache: a plan is time-sensitive, and a stale one sends someone to a bus that has gone.
+    60,
+  );
+});
+
+/**
+ * Vehicle detail.
+ *
+ * A bounding box is required and is not a convenience: upstream live feeds are viewport-scoped,
+ * so a lookup by reference alone would mean scanning the country for one bus. The page that links
+ * here already knows where it was looking.
+ *
+ * The recent trace is deliberately empty at the edge. Traces live in the bounded intelligence
+ * window, which the Worker does not read per request, and inventing a path between two positions
+ * would draw a route the bus may never have taken.
+ */
+router.get("/v1/vehicles/:ref", async (_request, { env, params, url }) => {
+  const state = governorState(env);
+  const now = new Date();
+
+  const bboxResult = parseBoundingBox(url);
+  if (!bboxResult.ok) return errorResponse("bad_request", bboxResult.message, 400);
+  if (boundingBoxAreaSquareDegrees(bboxResult.bbox) > MAP_QUERY_LIMITS.maxBboxAreaSquareDegrees) {
+    return errorResponse("bad_request", "bbox is larger than the maximum allowed area", 400);
+  }
+
+  if (!liveService) {
+    return errorResponse("upstream_unavailable", "Live data is not configured.", 503, 60);
+  }
+
+  const snapshot = repository ? await repository.load() : null;
+  const live = await liveService.vehiclesInBoundingBox(bboxResult.bbox);
+  const observation = live.observations.find(
+    (candidate) => candidate.vehicleRef === (params.ref ?? ""),
+  );
+
+  if (!observation) {
+    return errorResponse(
+      "not_found",
+      "This bus is no longer reporting a position in this area. Vehicle references rotate daily, so an old link will not resolve.",
+      404,
+    );
+  }
+
+  const context = live.journeyContext.get(observation.vehicleRef);
+  const geometries = snapshot ? NetworkRepository.patternGeometries(snapshot) : [];
+  const match = geometries.length > 0 ? matchObservation(observation, geometries) : null;
+  const pattern = match?.best ? snapshot?.patternsById.get(match.best.patternId) : undefined;
+  const service = pattern ? snapshot?.services.get(pattern.serviceRouteId) : undefined;
+
+  const vehicle = {
+    id: observation.id,
+    provenance: observation.provenance,
+    ingestedAt: observation.ingestedAt,
+    qualityFlags: observation.qualityFlags,
+    vehicleRef: observation.vehicleRef,
+    matchedRoutePatternId: pattern?.id ?? null,
+    matchedScheduledJourneyId: null,
+    position: observation.coordinate,
+    ...(observation.bearingDegrees === undefined
+      ? {}
+      : { bearingDegrees: observation.bearingDegrees }),
+    delaySeconds: null,
+    motionState: "unknown" as const,
+    nextStopId: null,
+    freshnessSeconds: Math.max(
+      0,
+      (now.getTime() - new Date(observation.observedAt).getTime()) / 1000,
+    ),
+    matchConfidence: match?.confidence ?? {
+      level: "low" as const,
+      score: 0,
+      reasons: ["no network snapshot available to match against"],
+    },
+  };
+
+  // Next stops come from the matched pattern's published sequence. Without a confident match
+  // there is no sequence to show, and guessing one would be worse than showing none.
+  const nextStops =
+    pattern && snapshot && match && match.confidence.level !== "low"
+      ? pattern.stopSequence
+          .slice(0, 40)
+          .map((stopId) => {
+            const stop = snapshot.stopsById.get(stopId);
+            if (!stop) return null;
+            return {
+              stopId,
+              name: stop.name,
+              atcoCode: stop.atcoCode,
+              scheduledTime: null,
+              expectedTimeLow: null,
+              expectedTimeHigh: null,
+              passed: false,
+            };
+          })
+          .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
+      : [];
+
+  return json(
+    {
+      meta: buildMeta({
+        sources: live.health,
+        observedAt: observation.observedAt,
+        coverage: live.failedSources.length > 0 ? 0.5 : 1,
+        governorState: state,
+        now,
+        failedSources: live.failedSources,
+        ...(snapshot === null ? {} : { networkPartialCoverage: snapshot.partialCoverage }),
+        safeMode: safeModeActive(state),
+      }),
+      data: {
+        vehicle,
+        routePublicName: service?.publicName ?? context?.publishedLineName ?? null,
+        destinationName: context?.destinationName ?? null,
+        nextStops,
+        recentTrace: [],
+        scheduledShape: pattern ? (snapshot?.shapes.get(pattern.shapeRef) ?? []) : [],
+        incidents: [],
+      },
+    },
+    cacheTtlSeconds("bods", state),
+  );
+});
+
+/**
+ * Route detail. Static structure comes from the published network; live vehicles come from the
+ * source that covers the route's area, and their absence is stated rather than implied.
+ */
+router.get("/v1/routes/:id", async (_request, { env, params }) => {
+  const state = governorState(env);
+  const snapshot = repository ? await repository.load() : null;
+  const now = new Date();
+
+  if (!snapshot) {
+    return errorResponse(
+      "upstream_unavailable",
+      "The network dataset is not available yet.",
+      503,
+      60,
+    );
+  }
+
+  const route = snapshot.services.get(params.id ?? "");
+  if (!route) return errorResponse("not_found", "Route not found", 404);
+
+  const operator = snapshot.operators.get(route.operatorId) ?? null;
+  const variants = routeVariants(snapshot, route.id);
+
+  // Live vehicles are only fetched for the area this route actually covers, so a route page
+  // never triggers a national feed request.
+  const coordinates = variants.flatMap((variant) =>
+    variant.stops
+      .map((entry) => snapshot.stopsById.get(entry.stopId)?.locationCoordinate)
+      .filter(
+        (coordinate): coordinate is NonNullable<typeof coordinate> => coordinate !== undefined,
+      ),
+  );
+  const bbox = boundingBoxOf(coordinates);
+
+  let activeVehicles: Array<{
+    vehicleRef: string;
+    destinationName: string | null;
+    delaySeconds: number | null;
+    observedAt: string;
+    coordinate: { lat: number; lon: number };
+  }> = [];
+  let health: Awaited<ReturnType<LiveService["vehiclesInBoundingBox"]>>["health"] = [];
+  let failedSources: string[] = [];
+
+  if (bbox && liveService) {
+    const live = await liveService.vehiclesInBoundingBox(bbox);
+    health = live.health;
+    failedSources = live.failedSources;
+    activeVehicles = live.observations
+      .filter((observation) => {
+        const context = live.journeyContext.get(observation.vehicleRef);
+        return context?.publishedLineName === route.publicName;
+      })
+      .slice(0, 60)
+      .map((observation) => ({
+        vehicleRef: observation.vehicleRef,
+        destinationName: live.journeyContext.get(observation.vehicleRef)?.destinationName ?? null,
+        delaySeconds: null,
+        observedAt: observation.observedAt,
+        coordinate: observation.coordinate,
+      }));
+  }
+
+  return json(
+    {
+      meta: buildMeta({
+        sources: health,
+        observedAt: oldestObservedAt(activeVehicles),
+        coverage: failedSources.length > 0 ? 0.5 : 1,
+        governorState: state,
+        now,
+        failedSources,
+        networkPartialCoverage: snapshot.partialCoverage,
+        safeMode: safeModeActive(state),
+      }),
+      data: {
+        route,
+        operator,
+        variants,
+        activeVehicles,
+        // Stated only where the published timetable supports it; see network-queries.
+        headwaySummary: null,
+        reliability: [],
+        incidents: [],
+        ticketUrl: null,
+      },
+    },
+    cacheTtlSeconds("bods", state),
+  );
+});
+
+/** Operator overview. Factual and deliberately not a league table. */
+router.get("/v1/operators/:id", async (_request, { env, params }) => {
+  const state = governorState(env);
+  const snapshot = repository ? await repository.load() : null;
+
+  if (!snapshot) {
+    return errorResponse(
+      "upstream_unavailable",
+      "The network dataset is not available yet.",
+      503,
+      60,
+    );
+  }
+
+  const operator = snapshot.operators.get(params.id ?? "");
+  if (!operator) return errorResponse("not_found", "Operator not found", 404);
+
+  const routes = routesForOperator(snapshot, operator.id);
+
+  return json(
+    {
+      meta: buildMeta({
+        sources: [],
+        observedAt: null,
+        coverage: 1,
+        governorState: state,
+        now: new Date(),
+        networkPartialCoverage: snapshot.partialCoverage,
+        safeMode: safeModeActive(state),
+      }),
+      data: {
+        operator,
+        routes,
+        // Performance metrics come from the intelligence artifacts, which the edge does not
+        // compute. Until one is published this is empty rather than filled with a guess.
+        metrics: [
+          publishedMetric({
+            label: "Punctuality",
+            value: null,
+            unit: "percent",
+            denominator: 0,
+            minimumDenominator: 20,
+            note: "No punctuality observations have been published for this operator yet.",
+          }),
+        ],
+        rankingEligible: false,
+        rankingIneligibleReason:
+          "Not enough published observations to compare this operator with others.",
+        coverageCaveats: coverageCaveatsFor(operator.serviceAreas),
+        incidents: [],
+      },
+    },
+    cacheTtlSeconds("static", state),
+  );
+});
+
+/**
+ * Disruptions. Two rankings, kept separate: the largest delay burden and the most abnormal
+ * conditions answer different questions, and merging them would hide both.
+ */
+router.get("/v1/disruptions", async (_request, { env }) => {
+  const state = governorState(env);
+  const snapshot = repository ? await repository.load() : null;
+
+  return json(
+    {
+      meta: buildMeta({
+        sources: [],
+        observedAt: null,
+        coverage: 0,
+        governorState: state,
+        now: new Date(),
+        networkPartialCoverage: snapshot?.partialCoverage ?? true,
+        safeMode: safeModeActive(state),
+      }),
+      data: {
+        byDelayBurden: [],
+        byAbnormality: [],
+        // Naming what is not covered matters more than listing what is: an empty list must not
+        // be read as "nothing is wrong anywhere".
+        uncoveredAreas: [
+          "Nowhere is currently covered by published incident analysis: no intelligence artifact has been produced yet.",
+        ],
+      },
+    },
+    cacheTtlSeconds("bods", state),
   );
 });
 
@@ -365,9 +787,32 @@ router.get("/v1/nearby", async (_request, { env, url }) => {
   );
 });
 
+/**
+ * Coverage caveats stated per operator. National Highways and BODS have different reach, and an
+ * operator running only in London is covered by a different source from one running only outside.
+ */
+function coverageCaveatsFor(serviceAreas: readonly string[]): string[] {
+  const caveats: string[] = [];
+  if (serviceAreas.includes("london")) {
+    caveats.push(
+      "London services are covered by TfL, which publishes arrival predictions rather than vehicle positions, so vehicle-level figures are not available here.",
+    );
+  }
+  if (serviceAreas.includes("non_london")) {
+    caveats.push(
+      "Services outside London are covered by the Bus Open Data Service, whose completeness varies by operator.",
+    );
+  }
+  if (caveats.length === 0) {
+    caveats.push("Coverage for this operator's area has not been established.");
+  }
+  return caveats;
+}
+
 export function resetWorkerState(): void {
   repository = null;
   liveService = null;
+  journeyService = null;
 }
 
 export function initialiseWorker(
@@ -380,6 +825,9 @@ export function initialiseWorker(
   }
   if (!liveService) {
     liveService = new LiveService({ env, now, ...(fetchImpl === undefined ? {} : { fetchImpl }) });
+  }
+  if (!journeyService && env.ARTIFACTS) {
+    journeyService = new JourneyService(new R2BindingStore(env.ARTIFACTS));
   }
 }
 

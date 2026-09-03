@@ -1,0 +1,148 @@
+.route-page {
+  display: grid;
+  gap: var(--space-xl);
+  max-width: 900px;
+}
+
+.route-page__header {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: start;
+  gap: var(--space-md);
+}
+
+.route-page__header h1 {
+  font-size: var(--font-size-h2);
+  margin: 0 0 var(--space-xs);
+  line-height: 1.15;
+}
+
+.route-page__header p {
+  margin: 0;
+}
+
+.route-page__section {
+  display: grid;
+  gap: var(--space-md);
+}
+
+.route-page__section h2 {
+  font-family: var(--font-pixel);
+  font-size: var(--font-size-small);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  margin: 0;
+  padding-bottom: var(--space-sm);
+  border-bottom: 2px solid var(--colour-ink);
+}
+
+.route-page__vehicles,
+.route-page__metrics,
+.route-page__incidents {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-sm);
+}
+
+.route-page__vehicles > li,
+.route-page__metrics > li {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--space-md);
+  padding: var(--space-sm) 0;
+  border-bottom: 1px solid var(--colour-hairline);
+}
+
+.route-page__variant-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+}
+
+.route-page__variant-tabs button {
+  font: inherit;
+  font-size: var(--font-size-small);
+  padding: var(--space-xs) var(--space-md);
+  border: 1px solid var(--colour-hairline);
+  border-radius: var(--radius-pill);
+  background: var(--colour-surface);
+  cursor: pointer;
+}
+
+.route-page__variant-tabs button.is-selected {
+  background: var(--colour-ink);
+  color: var(--colour-surface);
+  border-color: var(--colour-ink);
+}
+
+/*
+ * The stop sequence is drawn as a route line: a continuous rule with a node per stop, which is
+ * how the shape of a route is read at a glance rather than as a plain list.
+ */
+.route-page__stops {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 var(--space-lg);
+  position: relative;
+  display: grid;
+  gap: var(--space-sm);
+}
+
+.route-page__stops::before {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 8px;
+  bottom: 8px;
+  width: 2px;
+  background: var(--colour-red);
+}
+
+.route-page__stops > li {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.route-page__stops > li::before {
+  content: "";
+  position: absolute;
+  left: calc(var(--space-lg) * -1 + 1px);
+  top: 6px;
+  width: 10px;
+  height: 10px;
+  background: var(--colour-surface);
+  border: 2px solid var(--colour-ink);
+  border-radius: var(--radius-pill);
+}
+
+.route-page__metric-value {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.route-page__incidents > li {
+  display: grid;
+  gap: var(--space-xs);
+  padding: var(--space-md);
+  background: var(--colour-surface);
+  border-left: 3px solid var(--colour-amber);
+}
+
+.route-page__incidents p {
+  margin: 0;
+}
+
+@media (max-width: 640px) {
+  .route-page__header {
+    grid-template-columns: auto 1fr;
+  }
+
+  .route-page__header > :last-child {
+    grid-column: 1 / -1;
+  }
+}

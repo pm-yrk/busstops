@@ -1,4 +1,9 @@
-import { ArtifactStore, type ArtifactManifest, type ObjectStore } from "@busstops/pipeline-core";
+import {
+  ArtifactStore,
+  tilesForCoordinates,
+  type ArtifactManifest,
+  type ObjectStore,
+} from "@busstops/pipeline-core";
 import type { BuiltNetwork } from "./build-network.js";
 import { buildSearchIndex } from "./search-index.js";
 
@@ -19,6 +24,8 @@ export const DATASETS = {
   services: "network/services",
   patterns: "network/patterns",
   journeys: "network/journeys",
+  /** Prefix; the real datasets are `network/journeys-tile/<tile>`. See journeyTileDataset. */
+  journeyTiles: "network/journeys-tile",
   shapes: "network/shapes",
   searchIndex: "network/search-index",
 } as const;
@@ -110,6 +117,85 @@ export async function publishNetwork(
   }
 
   return { published, failed, complete: failed.length === 0 };
+}
+
+/**
+ * Journeys are additionally published one object per spatial tile.
+ *
+ * The national journeys dataset is far too large to load in a Worker isolate, but a journey plan
+ * only ever needs the corridor between two points. Publishing per tile lets the edge fetch the
+ * two or three objects a request actually spans. The national dataset is still published, because
+ * the batch pipelines do want the whole thing.
+ */
+export function journeyTileDataset(tile: string): string {
+  return `${DATASETS.journeyTiles}/${tile}`;
+}
+
+export interface JourneyTilePublishResult {
+  tiles: string[];
+  failed: Array<{ dataset: string; reason: string }>;
+  journeysWithoutGeometry: number;
+}
+
+export async function publishJourneyTiles(
+  store: ObjectStore,
+  network: BuiltNetwork,
+  options: PublishOptions,
+): Promise<JourneyTilePublishResult> {
+  const artifacts = new ArtifactStore(store);
+  const now = options.now ?? (() => new Date());
+  const failed: JourneyTilePublishResult["failed"] = [];
+  let journeysWithoutGeometry = 0;
+
+  const stopsById = new Map(network.stops.map((stop) => [stop.id, stop]));
+  const byTile = new Map<string, typeof network.journeys>();
+
+  for (const journey of network.journeys) {
+    const coordinates = journey.stopTimes
+      .map((stopTime) => stopsById.get(stopTime.stopId)?.locationCoordinate)
+      .filter(
+        (coordinate): coordinate is NonNullable<typeof coordinate> => coordinate !== undefined,
+      );
+
+    if (coordinates.length === 0) {
+      // A journey whose stops we cannot locate cannot be placed in a tile, and silently binning
+      // it would make it invisible to planning with no record. Counted and reported instead.
+      journeysWithoutGeometry += 1;
+      continue;
+    }
+
+    // A journey spanning tiles is written to each, so a plan that touches only one end still
+    // finds it. The duplication is bounded by the number of tiles a single route crosses.
+    for (const tile of tilesForCoordinates(coordinates)) {
+      const existing = byTile.get(tile);
+      if (existing) existing.push(journey);
+      else byTile.set(tile, [journey]);
+    }
+  }
+
+  const tiles: string[] = [];
+  for (const [tile, journeys] of byTile) {
+    const dataset = journeyTileDataset(tile);
+    try {
+      await artifacts.publish({
+        dataset,
+        version: options.version,
+        records: journeys,
+        schemaVersion: NETWORK_SCHEMA_VERSION,
+        sources: ["bods"],
+        minimumRecordCount: 1,
+        // A tile's journey count moves a great deal between timetable changes: a school route
+        // ending for the summer is a real change, not a broken parse.
+        maximumShrinkFraction: 0.9,
+        now,
+      });
+      tiles.push(tile);
+    } catch (error) {
+      failed.push({ dataset, reason: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  return { tiles, failed, journeysWithoutGeometry };
 }
 
 /** Rolls every network dataset back to its previous good version after a bad publish. */

@@ -16,7 +16,8 @@
     "@busstops/matching": "*",
     "@busstops/pipeline-core": "*",
     "@busstops/pipeline-static-network": "*",
-    "zod": "^3.24.1"
+    "zod": "^3.24.1",
+    "@busstops/journey": "*"
   },
   "devDependencies": {
     "typescript": "^5.7.2"

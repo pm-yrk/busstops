@@ -4,6 +4,11 @@ import { Wordmark } from "./components/Wordmark.js";
 import { LoadingBus } from "./components/LoadingBus.js";
 import { HomePage } from "./pages/HomePage.js";
 import { StopPage } from "./pages/StopPage.js";
+import { VehiclePage } from "./pages/VehiclePage.js";
+import { RoutePage } from "./pages/RoutePage.js";
+import { OperatorPage } from "./pages/OperatorPage.js";
+import { DisruptionsPage } from "./pages/DisruptionsPage.js";
+import { JourneyPage } from "./pages/JourneyPage.js";
 import { SearchPage } from "./pages/SearchPage.js";
 import { SavedPage } from "./pages/SavedPage.js";
 import { MethodologyPage } from "./pages/MethodologyPage.js";
@@ -69,6 +74,11 @@ export function App() {
             <Route path="/live" element={<LiveMapPage />} />
             <Route path="/live/stops/:stopId" element={<LiveMapPage />} />
             <Route path="/stops/:stopId" element={<StopPage />} />
+            <Route path="/vehicles/:vehicleRef" element={<VehiclePage />} />
+            <Route path="/routes/:routeId" element={<RoutePage />} />
+            <Route path="/operators/:operatorId" element={<OperatorPage />} />
+            <Route path="/disruptions" element={<DisruptionsPage />} />
+            <Route path="/journey" element={<JourneyPage />} />
             <Route path="/search" element={<SearchPage />} />
             <Route path="/saved" element={<SavedPage />} />
             <Route path="/methodology" element={<MethodologyPage />} />

@@ -1,0 +1,222 @@
+.journey-page {
+  display: grid;
+  gap: var(--space-lg);
+  max-width: 780px;
+}
+
+.journey-page__header h1 {
+  font-size: var(--font-size-h2);
+  margin: 0 0 var(--space-xs);
+}
+
+.journey-page__header p {
+  margin: 0;
+}
+
+.journey-page__form {
+  display: grid;
+  gap: var(--space-md);
+  padding: var(--space-lg);
+  background: var(--colour-surface);
+  border: 1px solid var(--colour-hairline);
+  border-radius: var(--radius-md);
+}
+
+.journey-page__form > button[type="submit"] {
+  font: inherit;
+  font-weight: 600;
+  padding: var(--space-sm) var(--space-lg);
+  background: var(--colour-red);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  justify-self: start;
+}
+
+.journey-page__form > button[type="submit"]:disabled {
+  background: var(--colour-hairline);
+  color: var(--colour-muted);
+  cursor: not-allowed;
+}
+
+.endpoint-picker {
+  display: grid;
+  gap: var(--space-xs);
+}
+
+.endpoint-picker label {
+  font-size: var(--font-size-micro);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--colour-muted);
+}
+
+.endpoint-picker__input-row {
+  display: flex;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+
+.endpoint-picker__input-row input {
+  flex: 1 1 220px;
+  font: inherit;
+  padding: var(--space-sm);
+  border: 1px solid var(--colour-hairline);
+  border-radius: var(--radius-sm);
+  min-width: 0;
+}
+
+.endpoint-picker__input-row button,
+.endpoint-picker__chosen button {
+  font: inherit;
+  font-size: var(--font-size-small);
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--colour-ink);
+  border-radius: var(--radius-sm);
+  background: var(--colour-surface);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.endpoint-picker__chosen {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+  padding: var(--space-sm) var(--space-md);
+  background: var(--colour-canvas);
+  border-radius: var(--radius-sm);
+}
+
+.endpoint-picker__results {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--colour-hairline);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.endpoint-picker__results button {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  padding: var(--space-sm) var(--space-md);
+  background: var(--colour-surface);
+  border: none;
+  border-bottom: 1px solid var(--colour-hairline);
+  cursor: pointer;
+}
+
+.endpoint-picker__results li:last-child button {
+  border-bottom: none;
+}
+
+.endpoint-picker__results button:hover,
+.endpoint-picker__results button:focus-visible {
+  background: var(--colour-canvas);
+}
+
+.journey-page__notice {
+  margin: 0;
+  padding: var(--space-sm) var(--space-md);
+  background: var(--colour-canvas);
+  border-left: 3px solid var(--colour-hairline);
+  font-size: var(--font-size-small);
+}
+
+.journey-page__options {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-md);
+}
+
+.journey-option {
+  display: grid;
+  gap: var(--space-md);
+  padding: var(--space-lg);
+  background: var(--colour-surface);
+  border: 1px solid var(--colour-hairline);
+  border-radius: var(--radius-md);
+}
+
+.journey-option header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  flex-wrap: wrap;
+}
+
+/*
+ * The arrival range is the headline, deliberately. Making it the largest thing on the card is
+ * what stops people reading past it to a single number that is not there.
+ */
+.journey-option__arrival {
+  margin: 0;
+  flex: 1 1 260px;
+  font-size: var(--font-size-h3);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+
+.journey-option__summary {
+  margin: 0;
+  font-size: var(--font-size-small);
+  color: var(--colour-muted);
+}
+
+.journey-option__legs {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-sm);
+}
+
+.journey-option__legs > li {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: baseline;
+  gap: var(--space-md);
+  padding: var(--space-sm) 0;
+  border-bottom: 1px solid var(--colour-hairline);
+}
+
+.journey-option__legs > li:last-child {
+  border-bottom: none;
+}
+
+.journey-option__leg-mode {
+  font-size: var(--font-size-micro);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--colour-muted);
+}
+
+.journey-option__explanation {
+  margin: 0;
+  padding: var(--space-sm) var(--space-md);
+  background: var(--colour-canvas);
+  border-left: 3px solid var(--colour-blue);
+  font-size: var(--font-size-small);
+}
+
+.journey-page__explanation {
+  margin: 0;
+  font-size: var(--font-size-small);
+}
+
+@media (max-width: 560px) {
+  .journey-option__legs > li {
+    grid-template-columns: auto 1fr;
+  }
+
+  .journey-option__legs > li > :last-child {
+    grid-column: 1 / -1;
+  }
+}

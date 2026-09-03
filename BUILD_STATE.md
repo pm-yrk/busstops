@@ -1,15 +1,14 @@
 # Bus Stops. Build State
 
-Last updated: 2026-09-03 (P5 national intelligence pipeline complete)
+Last updated: 2026-09-03 (P3 Bus Stops Live complete)
 
 ## Current status
 
-- Phase: P0–P2, P4, P5 and P6 complete; P3 partially complete → the remaining P3 surfaces, then
-  P7 (Bus Stops Pro)
+- Phase: P0–P6 complete → P7 (Bus Stops Pro)
 - Overall: foundations, all eight source adapters, the national static-network pipeline, the
-  Worker edge API, the core passenger surfaces, the journey planning engine, the analytics engine
-  and the national intelligence pipeline are complete. Remaining: the rest of the P3 pages, P7 Pro
-  app, P8 accounts/Daily Brief, P9 hardening, P10 deployment.
+  Worker edge API, the full Bus Stops Live passenger app, the journey planning engine, the
+  analytics engine and the national intelligence pipeline are complete. Remaining: P7 Pro app,
+  P8 accounts/Daily Brief, P9 hardening, P10 deployment.
 - Deployment: not deployed (external blocker — see Known limitations B3)
 - Blockers: 3 external blockers recorded below (B1 upstream egress, B2 credentials, B3 deploy reachability)
 
@@ -75,7 +74,7 @@ isolated and documented. See `docs/adr/0001-stack-and-build-environment-constrai
       continuity, with delay interpolated between scheduled stop times
 - [x] 40 worker tests driving the real fetch handler end to end
 
-**P3 — Bus Stops Live (partial)**
+**P3 — Bus Stops Live**
 
 - [x] React 18 + Vite PWA shell, warm-white/black/red tokens, pixel-art SVG library, wordmark
 - [x] Home, stop, search, live map, saved, methodology, legal and not-found pages
@@ -84,7 +83,25 @@ isolated and documented. See `docs/adr/0001-stack-and-build-environment-constrai
 - [x] Local-first favourites (no account required), maps handoff, allowlisted ticket links
 - [x] MapLibre in a lazy chunk; with no configured style the map renders nothing rather than
       silently falling back to a third-party tile provider, and the list stands alone
-- [x] 61 web tests (35 lib, 26 component)
+- [x] Vehicle page: route, destination, punctuality, movement, match confidence, next four stops
+      with an expandable full sequence, and an explicit statement that the reference rotates daily
+      so an old link is expected to stop resolving
+- [x] Route page: variants as selectable directions, the stop sequence drawn as a route line,
+      buses currently running it, and a frequency only where the timetable supports one
+- [x] Operator page: factual overview with per-metric suppression and an explicit statement that
+      the operator cannot be ranked, rather than a league-table position the sample cannot support
+- [x] Disruptions page: the two rankings kept separate, each explaining what it answers, with the
+      uncovered areas named so an empty list is never read as nothing being wrong
+- [x] Journey planner page: search or geolocation endpoints, arrival shown as a range with its
+      confidence, walk-only fallback, and a statement that the locations are not stored
+- [x] "Bus Stopped?" panel: plausible states rather than one cause, never claiming a breakdown or
+      cancellation, with the next useful services, an alternative stop, a maps handoff and fixed
+      minimal emergency guidance
+- [x] Worker endpoints added for route, operator, disruptions, vehicle and journey, and the stop
+      endpoint now returns the routes that actually call there
+- [x] Journeys are additionally published one artifact per spatial tile, so the edge can plan a
+      journey by loading the two or three tiles a corridor spans instead of the national timetable
+- [x] 83 web tests and 56 worker tests
 
 **P4 — journey planning engine**
 
@@ -154,14 +171,15 @@ isolated and documented. See `docs/adr/0001-stack-and-build-environment-constrai
 
 ### In progress
 
-- [ ] P3 — remaining surfaces: vehicle, route, disruption, operator, network and area pages,
-      and the journey planner UI page
+- [ ] P7 — Bus Stops Pro: Control Tower, Live Operations, Routes, Operators, Congestion,
+      Analytics, Disruptions/Alerts, Reports, Daily Brief view and Settings
 
 ### Next
 
-1. Finish the remaining P3 surfaces on top of the completed journey, analytics and intelligence
-   engines.
-2. P7 Pro app, P8 accounts/Daily Brief, P9 hardening, P10 deployment.
+1. P7 Bus Stops Pro, publicly viewable with no sign-in wall.
+2. P8 accounts, organisations, verified recipients and the Daily Brief.
+3. P9 hardening, safe mode, runbooks, end-to-end and accessibility testing.
+4. P10 deployment and smoke tests (externally blocked — B3).
 
 ### Verification evidence
 

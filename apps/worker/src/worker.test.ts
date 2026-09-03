@@ -2,9 +2,21 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
-import { MAP_QUERY_LIMITS, MapResponseSchema, SearchResponseSchema } from "@busstops/contracts";
+import {
+  DisruptionsResponseSchema,
+  JourneyPlanResponseSchema,
+  MAP_QUERY_LIMITS,
+  MapResponseSchema,
+  OperatorDetailResponseSchema,
+  RouteDetailResponseSchema,
+  SearchResponseSchema,
+} from "@busstops/contracts";
 import { InMemoryObjectStore } from "@busstops/pipeline-core";
-import { buildNetwork, publishNetwork } from "@busstops/pipeline-static-network";
+import {
+  buildNetwork,
+  publishJourneyTiles,
+  publishNetwork,
+} from "@busstops/pipeline-static-network";
 import worker, { initialiseWorker, resetWorkerState } from "./index.js";
 import { R2BindingStore, readFeatureFlags, type R2BucketLike, type WorkerEnv } from "./env.js";
 import {
@@ -63,6 +75,18 @@ async function publishedStore(): Promise<InMemoryObjectStore> {
   });
   await publishNetwork(store, network, { version: "v1" });
   return store;
+}
+
+/** The fixture timetable references a stop the NaPTAN fixture lacks; add it so journeys build. */
+function completeNetwork() {
+  const armley =
+    "450010003,,,,Armley Road,en,Armley Rd,en,,,Armley Road,en,,,,,W,E0035477,Leeds,,,Leeds,en,,,0,U,428500,433900,-1.5600,53.7996,BCT,MKD,PTP,,,,107,2019-01-01T00:00:00,2026-01-15T09:00:00,1,rev,active";
+  return buildNetwork({
+    naptanCsv: `${naptanCsv.trimEnd()}\n${armley}\n`,
+    transXChangeDocuments: [txcXml],
+    retrievedAt: "2026-09-02T06:00:00.000Z",
+    serviceDate: "2026-09-02",
+  });
 }
 
 function makeEnv(store: InMemoryObjectStore, overrides: Partial<WorkerEnv> = {}): WorkerEnv {
@@ -354,6 +378,17 @@ describe("GET /v1/stops/:id", () => {
     expect(body.data.stop.atcoCode).toBe("450010001");
   });
 
+  it("lists the routes that actually call at the stop", async () => {
+    const store = await publishedStore();
+    const response = await worker.fetch(get("/v1/stops/450010001"), makeEnv(store), ctx);
+    const body = (await response.json()) as {
+      data: { routes: Array<{ publicName: string; operatorName: string }> };
+    };
+    expect(body.data.routes.length).toBeGreaterThan(0);
+    // Each route carries the operator's name, not just an id the reader cannot use.
+    expect(body.data.routes[0]!.operatorName).not.toBe("");
+  });
+
   it("returns 404 for an unknown stop", async () => {
     const store = await publishedStore();
     const response = await worker.fetch(get("/v1/stops/000000000"), makeEnv(store), ctx);
@@ -368,6 +403,226 @@ describe("GET /v1/stops/:id", () => {
     );
     expect(response.status).toBe(503);
     expect(response.headers.get("Retry-After")).toBe("60");
+  });
+});
+
+describe("GET /v1/journeys", () => {
+  it("rejects a request missing either endpoint", async () => {
+    const store = await publishedStore();
+    const response = await worker.fetch(
+      get("/v1/journeys?fromLat=53.79&fromLon=-1.54"),
+      makeEnv(store),
+      ctx,
+    );
+    expect(response.status).toBe(400);
+  });
+
+  it("rejects a point outside England rather than planning from it", async () => {
+    const store = await publishedStore();
+    const response = await worker.fetch(
+      get("/v1/journeys?fromLat=48.85&fromLon=2.35&toLat=53.79&toLon=-1.54"),
+      makeEnv(store),
+      ctx,
+    );
+    expect(response.status).toBe(400);
+  });
+
+  it("refuses a cross-country request instead of attempting it", async () => {
+    const store = await publishedStore();
+    await publishJourneyTiles(store, completeNetwork(), { version: "v1" });
+
+    const response = await worker.fetch(
+      get("/v1/journeys?fromLat=50.4&fromLon=-4.1&toLat=54.9&toLon=-1.6"),
+      makeEnv(store),
+      ctx,
+    );
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { data: { unavailableReason: string | null } };
+    expect(body.data.unavailableReason).toMatch(/too far apart/i);
+  });
+
+  it("says no timetable is published rather than returning an empty plan silently", async () => {
+    const store = await publishedStore();
+    const response = await worker.fetch(
+      get("/v1/journeys?fromLat=53.795&fromLon=-1.545&toLat=53.80&toLon=-1.56"),
+      makeEnv(store),
+      ctx,
+    );
+    const parsed = JourneyPlanResponseSchema.safeParse(await response.json());
+    expect(parsed.success).toBe(true);
+    expect(parsed.data!.data.unavailableReason).not.toBeNull();
+  });
+
+  it("plans a journey once the journey tiles are published", async () => {
+    const store = await publishedStore();
+    const network = completeNetwork();
+    await publishJourneyTiles(store, network, { version: "v1" });
+
+    // Plan between the ends of a real published pattern, so there is a journey to find.
+    const pattern = network.patterns[0]!;
+    const boardingStop = network.stops.find((stop) => stop.id === pattern.stopSequence[0])!;
+    const alightingStop = network.stops.find(
+      (stop) => stop.id === pattern.stopSequence[pattern.stopSequence.length - 1],
+    )!;
+    const departAt =
+      (Date.parse(network.journeys[0]!.stopTimes[0]!.scheduledDeparture) -
+        Date.parse("2026-09-02T00:00:00.000Z")) /
+        1000 -
+      600;
+
+    const response = await worker.fetch(
+      get(
+        `/v1/journeys?fromLat=${boardingStop.locationCoordinate.lat}&fromLon=${boardingStop.locationCoordinate.lon}` +
+          `&toLat=${alightingStop.locationCoordinate.lat}&toLon=${alightingStop.locationCoordinate.lon}` +
+          `&date=2026-09-02&departAt=${Math.round(departAt)}`,
+      ),
+      makeEnv(store),
+      ctx,
+    );
+
+    const parsed = JourneyPlanResponseSchema.safeParse(await response.json());
+    expect(parsed.success).toBe(true);
+    // Guard against the assertions below passing vacuously on an empty plan.
+    expect(parsed.data!.data.options.length).toBeGreaterThan(0);
+
+    // Every option must carry an arrival interval, never a bare time.
+    for (const option of parsed.data!.data.options) {
+      expect(option.arrivalHighSeconds).toBeGreaterThanOrEqual(option.arrivalLowSeconds);
+      expect(option.confidence.score).toBeGreaterThanOrEqual(0);
+    }
+  });
+});
+
+describe("GET /v1/vehicles/:ref", () => {
+  it("requires a viewport, because live feeds are area-scoped", async () => {
+    const store = await publishedStore();
+    const response = await worker.fetch(get("/v1/vehicles/abc"), makeEnv(store), ctx);
+    expect(response.status).toBe(400);
+  });
+
+  it("rejects a viewport larger than the map cap", async () => {
+    const store = await publishedStore();
+    const response = await worker.fetch(
+      get("/v1/vehicles/abc?bbox=-6,50,2,55"),
+      makeEnv(store),
+      ctx,
+    );
+    expect(response.status).toBe(400);
+  });
+
+  it("explains that references rotate when a bus cannot be found", async () => {
+    const store = await publishedStore();
+    const response = await worker.fetch(
+      get("/v1/vehicles/unknown-ref?bbox=-1.6,53.75,-1.5,53.85"),
+      makeEnv(store),
+      ctx,
+    );
+    expect(response.status).toBe(404);
+    const body = (await response.json()) as { error: { message: string } };
+    expect(body.error.message).toMatch(/rotate/i);
+  });
+});
+
+describe("GET /v1/routes/:id", () => {
+  async function firstRouteId(store: InMemoryObjectStore): Promise<string> {
+    const response = await worker.fetch(get("/v1/search?q=leeds"), makeEnv(store), ctx);
+    const body = (await response.json()) as {
+      data: { results: Array<{ kind: string; id: string }> };
+    };
+    const route = body.data.results.find((result) => result.kind === "route");
+    expect(route).toBeDefined();
+    return route!.id;
+  }
+
+  it("returns the route with its variants and validates against the contract", async () => {
+    const store = await publishedStore();
+    const id = await firstRouteId(store);
+    const response = await worker.fetch(get(`/v1/routes/${id}`), makeEnv(store), ctx);
+    expect(response.status).toBe(200);
+
+    const parsed = RouteDetailResponseSchema.safeParse(await response.json());
+    expect(parsed.success).toBe(true);
+    expect(parsed.data!.data.variants.length).toBeGreaterThan(0);
+    expect(parsed.data!.data.variants[0]!.stops.length).toBeGreaterThan(1);
+  });
+
+  it("names each variant by where it runs, not by an internal identifier", async () => {
+    const store = await publishedStore();
+    const id = await firstRouteId(store);
+    const response = await worker.fetch(get(`/v1/routes/${id}`), makeEnv(store), ctx);
+    const body = (await response.json()) as {
+      data: { variants: Array<{ description: string }> };
+    };
+    expect(body.data.variants[0]!.description).not.toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}/);
+  });
+
+  it("returns 404 for an unknown route", async () => {
+    const store = await publishedStore();
+    const response = await worker.fetch(
+      get("/v1/routes/00000000-0000-5000-8000-000000000000"),
+      makeEnv(store),
+      ctx,
+    );
+    expect(response.status).toBe(404);
+  });
+});
+
+describe("GET /v1/operators/:id", () => {
+  async function firstOperatorId(store: InMemoryObjectStore): Promise<string> {
+    const response = await worker.fetch(get("/v1/search?q=first"), makeEnv(store), ctx);
+    const body = (await response.json()) as {
+      data: { results: Array<{ kind: string; id: string }> };
+    };
+    return body.data.results.find((result) => result.kind === "operator")?.id ?? "";
+  }
+
+  it("publishes no metric it cannot support, and says why", async () => {
+    const store = await publishedStore();
+    const id = await firstOperatorId(store);
+    if (!id) return;
+
+    const response = await worker.fetch(get(`/v1/operators/${id}`), makeEnv(store), ctx);
+    const parsed = OperatorDetailResponseSchema.safeParse(await response.json());
+    expect(parsed.success).toBe(true);
+
+    for (const metric of parsed.data!.data.metrics) {
+      // A suppressed metric must carry null and an explanation, never a placeholder number.
+      if (metric.suppressed) {
+        expect(metric.value).toBeNull();
+        expect(metric.note).not.toBeNull();
+      }
+    }
+  });
+
+  it("refuses to rank an operator without the sample to support it", async () => {
+    const store = await publishedStore();
+    const id = await firstOperatorId(store);
+    if (!id) return;
+
+    const response = await worker.fetch(get(`/v1/operators/${id}`), makeEnv(store), ctx);
+    const body = (await response.json()) as {
+      data: { rankingEligible: boolean; rankingIneligibleReason: string | null };
+    };
+    expect(body.data.rankingEligible).toBe(false);
+    expect(body.data.rankingIneligibleReason).toMatch(/not enough/i);
+  });
+});
+
+describe("GET /v1/disruptions", () => {
+  it("keeps the two rankings separate rather than merging them into one league table", async () => {
+    const store = await publishedStore();
+    const response = await worker.fetch(get("/v1/disruptions"), makeEnv(store), ctx);
+    const parsed = DisruptionsResponseSchema.safeParse(await response.json());
+    expect(parsed.success).toBe(true);
+    expect(parsed.data!.data).toHaveProperty("byDelayBurden");
+    expect(parsed.data!.data).toHaveProperty("byAbnormality");
+  });
+
+  it("states what is not covered, so an empty list is not read as nothing being wrong", async () => {
+    const store = await publishedStore();
+    const response = await worker.fetch(get("/v1/disruptions"), makeEnv(store), ctx);
+    const body = (await response.json()) as { data: { uncoveredAreas: string[] } };
+    expect(body.data.uncoveredAreas.length).toBeGreaterThan(0);
   });
 });
 
