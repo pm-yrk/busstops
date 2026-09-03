@@ -12,6 +12,7 @@ import { buildNetwork } from "./src/build-network.js";
 import {
   compareFingerprints,
   fingerprintFromBody,
+  fingerprintFromParts,
   type SourceFingerprint,
 } from "./src/fingerprint.js";
 import { publishJourneyTiles, publishNetwork, rollbackNetwork } from "./src/publish.js";
@@ -48,7 +49,10 @@ async function main(): Promise<number> {
 
   const currentFingerprints: SourceFingerprint[] = [
     fingerprintFromBody("naptan", sources.naptanCsv, startedAt.toISOString()),
-    fingerprintFromBody("bods", sources.transXChangeDocuments.join("\n"), startedAt.toISOString()),
+    // Hashed in place rather than joined: the decompressed timetable documents are hundreds of
+    // megabytes together, and concatenating them to fingerprint them is a second copy the heap
+    // cannot afford.
+    fingerprintFromParts("bods", sources.transXChangeDocuments, startedAt.toISOString()),
   ];
 
   const previous = await artifacts.readCurrent<SourceFingerprint>(FINGERPRINT_DATASET);

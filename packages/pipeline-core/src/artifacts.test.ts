@@ -4,6 +4,7 @@ import {
   ArtifactValidationError,
   InMemoryObjectStore,
   contentHash,
+  contentHashOf,
   manifestKey,
   objectKeyFor,
 } from "./artifacts.js";
@@ -31,6 +32,25 @@ async function publishInitial(store: InMemoryObjectStore, count = 100) {
   });
   return artifacts;
 }
+
+describe("contentHashOf", () => {
+  it("hashes parts identically to their concatenation", () => {
+    // This is the property that lets a national dataset be fingerprinted without allocating a
+    // second copy of it. If it ever stopped holding, every stored fingerprint would change and
+    // the pipeline would rebuild the network daily for no reason.
+    const parts = ["<TransXChange>", "one", "", "two", "</TransXChange>"];
+    expect(contentHashOf(parts)).toBe(contentHash(parts.join("")));
+  });
+
+  it("is sensitive to where a boundary falls only when the bytes differ", () => {
+    expect(contentHashOf(["ab", "cd"])).toBe(contentHashOf(["a", "bcd"]));
+    expect(contentHashOf(["ab", "cd"])).not.toBe(contentHashOf(["ab", "ce"]));
+  });
+
+  it("hashes an empty sequence and an empty string alike", () => {
+    expect(contentHashOf([])).toBe(contentHash(""));
+  });
+});
 
 describe("contentHash", () => {
   it("is stable and differs for different content", () => {

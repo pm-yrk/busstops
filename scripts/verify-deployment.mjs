@@ -49,8 +49,23 @@ function assert(condition, message) {
 
 async function getJson(path) {
   const response = await fetch(`${apiUrl}${path}`, { signal: AbortSignal.timeout(20_000) });
-  const body = await response.json().catch(() => null);
-  return { response, body };
+  const text = await response.text();
+  let body = null;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    // Left null; `text` is reported instead. A non-JSON body is usually the platform speaking
+    // rather than the Worker — a resource-limit or startup error — and that text is the whole
+    // diagnosis, so throwing it away turns a specific failure into "got 500".
+  }
+  return { response, body, text };
+}
+
+/** A status line that carries what the server actually said, truncated to stay readable. */
+function describe(response, body, text) {
+  const detail =
+    body?.error?.message ?? body?.error?.code ?? text.replace(/\s+/g, " ").trim().slice(0, 300);
+  return `${response.status}${detail ? `: ${detail}` : ""}`;
 }
 
 // A small viewport over central Manchester: inside the map's size cap, densely stopped, and
@@ -58,8 +73,8 @@ async function getJson(path) {
 const BBOX = "-2.26,53.46,-2.21,53.50";
 
 await check("the live map returns real stops for a real viewport", async () => {
-  const { response, body } = await getJson(`/v1/map?bbox=${BBOX}&zoom=15`);
-  assert(response.ok, `expected 2xx, got ${response.status}`);
+  const { response, body, text } = await getJson(`/v1/map?bbox=${BBOX}&zoom=15`);
+  assert(response.ok, `expected 2xx, got ${describe(response, body, text)}`);
   const stops = body?.data?.stops ?? [];
   assert(Array.isArray(stops), "the map response has no stops array");
   assert(
@@ -83,8 +98,10 @@ await check("the live map returns real stops for a real viewport", async () => {
 
 await check("a stop can be selected and returns a departure board", async () => {
   assert(observed.stop, "no stop was found by the previous check");
-  const { response, body } = await getJson(`/v1/stops/${encodeURIComponent(observed.stop.id)}`);
-  assert(response.ok, `expected 2xx, got ${response.status}`);
+  const { response, body, text } = await getJson(
+    `/v1/stops/${encodeURIComponent(observed.stop.id)}`,
+  );
+  assert(response.ok, `expected 2xx, got ${describe(response, body, text)}`);
   const stop = body?.data?.stop;
   assert(stop, "the stop response has no stop");
   assert(stop.id === observed.stop.id, "a different stop came back than the one requested");
@@ -109,8 +126,8 @@ await check("search finds a real stop by name", async () => {
   // real name rather than something we hoped would be in the index.
   const term = observed.stop.name.split(/[\s,]+/).find((word) => word.length >= 4);
   assert(term, `no searchable word in "${observed.stop.name}"`);
-  const { response, body } = await getJson(`/v1/search?q=${encodeURIComponent(term)}`);
-  assert(response.ok, `expected 2xx, got ${response.status}`);
+  const { response, body, text } = await getJson(`/v1/search?q=${encodeURIComponent(term)}`);
+  assert(response.ok, `expected 2xx, got ${describe(response, body, text)}`);
   const matches = body?.data?.results ?? [];
   assert(matches.length > 0, `search for "${term}" found nothing, so the search index is empty`);
   return `"${term}" → ${matches.length} results`;

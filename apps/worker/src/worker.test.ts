@@ -407,6 +407,27 @@ describe("GET /v1/stops/:id", () => {
     expect(response.status).toBe(503);
     expect(response.headers.get("Retry-After")).toBe("60");
   });
+
+  it("degrades the map rather than erroring when nothing has been published", async () => {
+    /*
+     * The first real preview deploy answered 500 here, before any artifact existed. An empty
+     * bucket is a normal state — it is what every deployment looks like until the first pipeline
+     * run finishes — and the specification requires graceful degradation, so the map must answer
+     * with no stops and say so, not fail.
+     */
+    const response = await worker.fetch(
+      get("/v1/map?bbox=-2.26,53.46,-2.21,53.50&zoom=15"),
+      makeEnv(new InMemoryObjectStore()),
+      ctx,
+    );
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      data: { stops: unknown[] };
+      meta: { degradation: string };
+    };
+    expect(body.data.stops).toEqual([]);
+    expect(body.meta.degradation).not.toBe("normal");
+  });
 });
 
 describe("cross-origin access from the Pages app", () => {

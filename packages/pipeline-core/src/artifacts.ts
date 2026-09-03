@@ -83,10 +83,24 @@ export class InMemoryObjectStore implements ObjectStore {
 
 /** FNV-1a: a fast non-cryptographic content hash, sufficient for integrity of our own artifacts. */
 export function contentHash(value: string): string {
+  return contentHashOf([value]);
+}
+
+/**
+ * The same hash over a sequence of strings, without joining them first.
+ *
+ * FNV-1a folds left to right, so hashing parts in order is identical to hashing their
+ * concatenation — but concatenating a national dataset to fingerprint it allocates a second copy
+ * of it. That is how the first data bootstrap died: joining 25 decompressed timetable archives
+ * into one string exhausted the heap before anything could be published.
+ */
+export function contentHashOf(parts: Iterable<string>): string {
   let hash = 0x811c9dc5;
-  for (let i = 0; i < value.length; i++) {
-    hash ^= value.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193) >>> 0;
+  for (const part of parts) {
+    for (let i = 0; i < part.length; i++) {
+      hash ^= part.charCodeAt(i);
+      hash = Math.imul(hash, 0x01000193) >>> 0;
+    }
   }
   return hash.toString(16).padStart(8, "0");
 }

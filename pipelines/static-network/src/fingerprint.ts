@@ -1,4 +1,4 @@
-import { contentHash } from "@busstops/pipeline-core";
+import { contentHash, contentHashOf } from "@busstops/pipeline-core";
 
 /**
  * Daily change detection (docs/07_DATA_PIPELINES.md "Static network").
@@ -53,6 +53,29 @@ export function fingerprintFromBody(
     source,
     identity: contentHash(body),
     sizeBytes: body.length,
+    lastModified: null,
+    checkedAt,
+  };
+}
+
+/**
+ * Fingerprints a source that arrives as many documents rather than one body.
+ *
+ * Joining them to reuse fingerprintFromBody would allocate a second copy of the whole dataset,
+ * which is exactly what exhausted the heap on the first real bootstrap. The hash is identical to
+ * the one the joined string would produce.
+ */
+export function fingerprintFromParts(
+  source: string,
+  parts: readonly string[],
+  checkedAt: string,
+): SourceFingerprint {
+  let sizeBytes = 0;
+  for (const part of parts) sizeBytes += part.length;
+  return {
+    source,
+    identity: contentHashOf(parts),
+    sizeBytes,
     lastModified: null,
     checkedAt,
   };
