@@ -436,15 +436,33 @@ Getting there took three real defects, each found by measurement rather than ass
    was never needed.
 3. **Tile publishing was serial.** Thousands of independent writes, three round trips each.
 
-**Remaining defect: the Worker cannot read the national snapshot.** With the data published,
-`/v1/map` still answers 500 with the Worker's own message, `/v1/sources/health` still reports 0
-sources, and every endpoint that does _not_ load the snapshot — health, Pro, the query caps,
-unsubscribe — works. The most likely cause is size: `network/stops` is 349,531 records as one
-newline-delimited object, and a Workers isolate has 128 MB. The national journeys dataset was
-already tiled for exactly this reason, and `publish.ts` says so in as many words; stops and the
-search index need the same treatment, reading only the tiles a viewport spans. That is the next
-change, and it is a hypothesis to be measured before it is implemented — the previous guess about
-this 500 (a CPU limit) was wrong, and the response body ruled it out.
+**Remaining defect: the national datasets do not fit in an edge isolate.** Measured, not inferred
+(`scripts/inspect-artifacts.mjs`, run against the preview bucket):
+
+| Dataset                | Records | Size      |
+| ---------------------- | ------- | --------- |
+| `network/journeys`     | 32,199  | 292.2 MiB |
+| `network/stops`        | 349,531 | 197.6 MiB |
+| `network/patterns`     | 48,448  | 100.1 MiB |
+| `network/search-index` | 350,596 | 87.5 MiB  |
+
+A Workers isolate has 128 MiB. `NetworkRepository.read()` loads stops, operators, services,
+patterns, shapes and the search index together — roughly 390 MiB of text before any of it is
+parsed into objects, and parsed JSON is larger than its source. The isolate is killed, so every
+endpoint that loads the snapshot answers 500, and every endpoint that does not — health, Pro, the
+query caps, unsubscribe — works. That is exactly the pattern observed.
+
+An earlier guess at this same 500 was that the free tier's CPU limit was being exceeded parsing
+SIRI-VM. That was wrong: the response body is the Worker's own error text, not Cloudflare's
+resource-limit page, which is what prompted printing the body rather than the status code.
+
+**The fix is the one the codebase already chose once.** `publish.ts` says of journeys: "The
+national journeys dataset is far too large to load in a Worker isolate, but a journey plan only
+ever needs the corridor between two points." Exactly the same is true of stops, patterns and the
+search index: a viewport needs the stops in it, not all 349,531. They must be published per
+spatial tile — the tiling helpers already exist — and `NetworkRepository` must read only the tiles
+a request spans. Until then the deployed Live map cannot draw real stops, and this is the single
+blocker between the preview and a production that would work.
 
 ### Verification evidence
 
