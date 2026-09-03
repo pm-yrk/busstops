@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import type { JourneyPlanOption, JourneyPlanResponse, SearchResult } from "@busstops/contracts";
 import { LoadingBus } from "../components/LoadingBus.js";
 import {
@@ -28,9 +28,24 @@ import "./JourneyPage.css";
 
 type Endpoint = { label: string; lat: number; lon: number } | null;
 
+/**
+ * Reads an endpoint seeded in the URL, which is how a destination tapped on the map or opened
+ * from a stop page arrives here. Anything malformed is ignored rather than half-applied.
+ */
+function endpointFromParams(params: URLSearchParams, prefix: "from" | "to"): Endpoint {
+  const lat = Number(params.get(`${prefix}Lat`));
+  const lon = Number(params.get(`${prefix}Lon`));
+  const label = params.get(`${prefix}Label`);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon) || !label) return null;
+  return { label, lat, lon };
+}
+
 export function JourneyPage() {
-  const [origin, setOrigin] = useState<Endpoint>(null);
-  const [destination, setDestination] = useState<Endpoint>(null);
+  const [searchParams] = useSearchParams();
+  const [origin, setOrigin] = useState<Endpoint>(() => endpointFromParams(searchParams, "from"));
+  const [destination, setDestination] = useState<Endpoint>(() =>
+    endpointFromParams(searchParams, "to"),
+  );
   const [plan, setPlan] = useState<JourneyPlanResponse | null>(null);
   const [planning, setPlanning] = useState(false);
   const [error, setError] = useState<string | null>(null);

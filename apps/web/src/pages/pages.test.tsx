@@ -341,6 +341,33 @@ describe("JourneyPage", () => {
     ).toBeTruthy();
   });
 
+  it("accepts a destination handed over from the map or a stop page", async () => {
+    vi.spyOn(apiClient, "journey").mockResolvedValue(plan);
+
+    render(
+      <MemoryRouter
+        initialEntries={[
+          "/journey?toLat=53.79650&toLon=-1.53790&toLabel=Leeds%20City%20Bus%20Station",
+        ]}
+      >
+        <JourneyPage />
+      </MemoryRouter>,
+    );
+
+    // Pre-filled, so the reader does not have to search for the place they just tapped.
+    expect(screen.getByText("Leeds City Bus Station")).toBeTruthy();
+    expect(screen.queryByLabelText("To")).toBeNull();
+  });
+
+  it("ignores a malformed handover rather than half-applying it", () => {
+    render(
+      <MemoryRouter initialEntries={["/journey?toLat=nonsense&toLabel=Somewhere"]}>
+        <JourneyPage />
+      </MemoryRouter>,
+    );
+    expect(screen.getByLabelText("To")).toBeTruthy();
+  });
+
   it("tells the reader their location is not stored", () => {
     render(
       <MemoryRouter>

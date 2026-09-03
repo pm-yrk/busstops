@@ -172,6 +172,15 @@ export function StopPage() {
           {favourited ? "Saved" : "Save this stop"}
         </button>
 
+        {/* Carries the stop through to the planner, which is how a destination chosen on the
+            map or from a stop reaches it. */}
+        <Link
+          className="stop-page__plan"
+          to={`/journey?toLat=${stop.locationCoordinate.lat.toFixed(5)}&toLon=${stop.locationCoordinate.lon.toFixed(5)}&toLabel=${encodeURIComponent(stop.name)}`}
+        >
+          Plan a journey here
+        </Link>
+
         {walkingUrl && (
           <a className="stop-page__walk" href={walkingUrl} {...EXTERNAL_LINK_ATTRIBUTES}>
             Walking directions

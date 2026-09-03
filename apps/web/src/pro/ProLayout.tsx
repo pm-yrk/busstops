@@ -17,6 +17,7 @@ const SECTIONS = [
   { to: "/pro/operators", label: "Operators" },
   { to: "/pro/congestion", label: "Congestion" },
   { to: "/pro/analytics", label: "Analytics" },
+  { to: "/pro/disruptions", label: "Disruptions" },
   { to: "/pro/reports", label: "Reports" },
   { to: "/pro/brief", label: "Daily Brief" },
   { to: "/pro/settings", label: "Settings" },

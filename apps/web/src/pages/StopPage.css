@@ -120,3 +120,7 @@
     text-align: left;
   }
 }
+
+.stop-page__plan {
+  align-self: center;
+}

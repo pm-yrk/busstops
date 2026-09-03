@@ -18,6 +18,7 @@ import { RoutesPage } from "./pro/RoutesPage.js";
 import { OperatorsPage } from "./pro/OperatorsPage.js";
 import { CongestionPage } from "./pro/CongestionPage.js";
 import { AnalyticsPage } from "./pro/AnalyticsPage.js";
+import { ProDisruptionsPage } from "./pro/ProDisruptionsPage.js";
 import { ReportsPage } from "./pro/ReportsPage.js";
 import { DailyBriefPage } from "./pro/DailyBriefPage.js";
 import { ProSettingsPage } from "./pro/ProSettingsPage.js";
@@ -101,6 +102,7 @@ export function App() {
                 <Route path="operators" element={<OperatorsPage />} />
                 <Route path="congestion" element={<CongestionPage />} />
                 <Route path="analytics" element={<AnalyticsPage />} />
+                <Route path="disruptions" element={<ProDisruptionsPage />} />
                 <Route path="reports" element={<ReportsPage />} />
                 <Route path="brief" element={<DailyBriefPage />} />
                 <Route path="settings" element={<ProSettingsPage />} />

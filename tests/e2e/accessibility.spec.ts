@@ -18,6 +18,7 @@ const PAGES = [
   { path: "/saved", name: "saved" },
   { path: "/methodology", name: "methodology" },
   { path: "/pro", name: "Pro control tower" },
+  { path: "/pro/disruptions", name: "Pro disruptions" },
   { path: "/pro/settings", name: "Pro settings" },
 ];
 

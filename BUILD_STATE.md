@@ -1,14 +1,15 @@
 # Bus Stops. Build State
 
-Last updated: 2026-09-03 (P8 accounts and Daily Brief complete)
+Last updated: 2026-09-03 (P9 hardening complete)
 
 ## Current status
 
-- Phase: P0–P8 complete → P9 (hardening and free-tier proof)
+- Phase: P0–P9 complete → P10 (deployment, externally blocked)
 - Overall: foundations, all eight source adapters, the national static-network pipeline, the
   Worker edge API, the full Bus Stops Live passenger app, the journey planning engine, the
   analytics engine, the national intelligence pipeline, Bus Stops Pro and the Daily Brief are
-  complete. Remaining: P9 hardening, P10 deployment.
+  complete, and the platform is hardened with browser, accessibility, property and free-tier
+  drill suites. Remaining: P10 deployment, which is externally blocked (B3).
 - Deployment: not deployed (external blocker — see Known limitations B3)
 - Blockers: 3 external blockers recorded below (B1 upstream egress, B2 credentials, B3 deploy reachability)
 
@@ -224,15 +225,45 @@ isolated and documented. See `docs/adr/0001-stack-and-build-environment-constrai
       published and the browser Daily Brief works normally
 - [x] 55 Daily Brief tests (41 package, 14 pipeline) and 4 unsubscribe worker tests
 
+**P9 — hardening and free-tier proof**
+
+- [x] Playwright end-to-end suite: passenger journeys, degraded and stale states, the Pro
+      surfaces, the disruption inbox and unsubscribe, across 320/375/768/1440 widths
+- [x] axe-core accessibility pass at WCAG 2.2 AA on nine pages, plus keyboard focus, heading
+      outline, reduced-motion, 200% zoom and map-alternative checks
+- [x] Property-based tests for geometry, tiling, statistics, metrics and idempotency invariants
+- [x] Free-tier drills simulating each governor threshold, asserting that the API, the scheduled
+      collectors, the batch pipeline and email delivery all respond coherently to the same pressure
+- [x] Retention drills: roll up before pruning, raw expiry at its ceiling regardless, correct
+      prune ordering, and no retention class that keeps anything indefinitely
+- [x] Storage projection drill naming the date storage would fill at the observed growth rate
+- [x] Five runbooks covering source outage, budget pressure, bad artifacts, Daily Brief incidents
+      and data subject requests
+- [x] Pro Disruptions exception inbox with severity, abnormality, lifecycle, confidence and source
+- [x] Journey planner accepts a destination handed over from the map or a stop page
+- [x] README rewritten as a working guide to the repository
+
+**Defects the hardening suites found, and fixed**
+
+1. The stop page crashed to a blank white screen on a malformed API payload. Responses are now
+   validated at the client boundary, and a route-level error boundary means a component failure
+   degrades to a panel instead of blanking the app.
+2. Saving a stop as a favourite silently did nothing: the favourite was written under the ATCO
+   code and read back under the URL parameter, which is a UUID. Both sides now key on the ATCO
+   code.
+3. Three WCAG AA colour-contrast failures — brand red on white at 11px, the same red on the
+   near-black arrival board, and the light-background muted grey used on that board.
+4. The Wilson score interval could return an upper bound below its own point estimate at p = 1,
+   through floating-point rounding. The bounds now bracket the value.
+
 ### In progress
 
-- [ ] P9 — hardening, safe mode, lifecycle and pruning drills, runbooks, performance,
-      end-to-end and accessibility testing, and the full acceptance audit
+- [ ] P10 — deployment and deployed smoke tests
 
 ### Next
 
-1. P9 hardening, safe mode, runbooks, end-to-end and accessibility testing.
-2. P10 deployment and smoke tests (externally blocked — B3).
+1. P10 deployment (externally blocked — B3: `api.cloudflare.com` is unreachable from this
+   environment and no deployment credentials exist).
 
 ### Verification evidence
 
@@ -251,6 +282,86 @@ isolated and documented. See `docs/adr/0001-stack-and-build-environment-constrai
 | End-to-end                    | —                                               | Not run yet (scheduled for P9)                                         | —          |
 | Accessibility                 | —                                               | Not run yet (scheduled for P9)                                         | —          |
 | Deployed smoke test           | —                                               | Blocked (B3)                                                           | —          |
+
+### Acceptance audit (docs/17_ACCEPTANCE_CRITERIA.md)
+
+Audited 2026-09-03. "Blocked" means the work is complete and testable but final verification needs
+something unavailable in this environment; the blocker is named. Nothing is marked passing on the
+strength of a fixture where the criterion asks for live data.
+
+**Product and design** — all passing. Brand, pixel library with a reduced-motion loading bus,
+functional pixel arrival board with live/scheduled/freshness states, responsive and keyboard
+accessible UI verified by 140 browser tests at four widths with zero axe violations, and every
+Live and Pro page present and substantive.
+
+**England-wide data**
+
+| Criterion                                                                                      | State                                                                                                                                              |
+| ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| No regional hard-code; configuration supports all England                                      | Pass — `ENGLAND_BOUNDS`, a 24-cell national partition grid, no per-city branching                                                                  |
+| BODS and TfL adapters live-verified with provenance/freshness                                  | **Blocked (B1, B2)** — adapters, provenance and freshness are complete and contract-tested; no upstream host is reachable and no credentials exist |
+| NaPTAN identity, schedules, routes, patterns reconcile nationally                              | Pass in code and tests; national scale unverifiable without B1/B2                                                                                  |
+| Daily fingerprint ingest and weekly reconciliation run idempotently                            | Pass — tested; scheduled workflows configured                                                                                                      |
+| Remaining five adapters implemented and contract-tested                                        | Pass                                                                                                                                               |
+| Source failure, stale, partial coverage and previous-good fallback are user-visible and tested | Pass — worker tests and browser tests both assert the visible states                                                                               |
+
+**Bus Stops Live**
+
+| Criterion                                                                               | State                                                                                                                                                                                                                                                                                                                              |
+| --------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Viewport map, nearby/search, departures, vehicles, tracking, next stops, show-all-stops | Pass in code and tests; "with real data" is blocked by B1/B2                                                                                                                                                                                                                                                                       |
+| Recent actual path versus scheduled shape                                               | **Partial** — the scheduled shape is served and drawn; the actual path is held only in the bounded intelligence window and is not served at the edge. The vehicle page states this rather than drawing a line it cannot support                                                                                                    |
+| Cautious diversion and skipped-stop evidence                                            | Pass — detectors, wording gates and tests                                                                                                                                                                                                                                                                                          |
+| "Will I make it?" calibrated range, confidence, next service                            | Pass                                                                                                                                                                                                                                                                                                                               |
+| "Bus Stopped?" evidence-aware recovery without unsupported claims                       | Pass — 10 component tests including "never claims a breakdown or cancellation"                                                                                                                                                                                                                                                     |
+| Journey planner: searched and map-tapped destinations, three rankings                   | Pass                                                                                                                                                                                                                                                                                                                               |
+| Nearest versus fastest boarding stop, explained when material                           | Pass — with a brute-force verification harness                                                                                                                                                                                                                                                                                     |
+| Maps handoffs valid; favourites local-first                                             | Pass                                                                                                                                                                                                                                                                                                                               |
+| Ticket links allowlisted, labelled, safely opened                                       | **Partial, deliberately** — the https-only domain allowlist, labelling and safe-open behaviour are implemented and tested, but `TICKET_REGISTRY` is empty. Entries require human verification that a domain is the operator's official retailer; adding unverified entries would be the exact harm the allowlist exists to prevent |
+
+**Bus Stops Pro** — all passing. No login wall anywhere (asserted by a browser test), all ten
+sections working with filters and drilldowns, every documented algorithm implemented, every metric
+carrying denominator/window/freshness/coverage/confidence/evidence with incomparable rankings
+suppressed, and the two rankings distinct on both Control Tower and Congestion.
+
+**Daily Brief**
+
+| Criterion                                                                           | State                                                                                                                                                                                                                  |
+| ----------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Browser and email from the same frozen snapshot                                     | Pass                                                                                                                                                                                                                   |
+| Yesterday/today sections, caveats, evidence, deterministic narrative                | Pass                                                                                                                                                                                                                   |
+| Verified opt-in, settings, authorization, one-click unsubscribe, idempotency, audit | Pass — 55 tests                                                                                                                                                                                                        |
+| Hard send caps and degraded behaviour                                               | Pass                                                                                                                                                                                                                   |
+| One authorized production test send                                                 | **Blocked** — needs a configured email provider and a real consenting recipient. Neither exists here, and sending to an unconsented address to satisfy a checkbox would violate the consent rules this system enforces |
+
+**£0, security and operations**
+
+| Criterion                                                                               | State                                                                                                                                                                                                                                                                                                        |
+| --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Official quotas recorded; billing cannot increase automatically                         | **Partial** — the registry records every allowance with its terms URL, and no paid upgrade path exists in any code path. All 14 allowances carry `verifiedAt: null` because provider terms pages are unreachable (B1); the deploy-stage preflight fails until they are confirmed, which is the intended gate |
+| Budget registry, thresholds, projections, kill switches, preflight                      | Pass                                                                                                                                                                                                                                                                                                         |
+| Simulated amber/red/critical degrade in order, preserving deletion/unsubscribe/security | Pass — 18 drills                                                                                                                                                                                                                                                                                             |
+| Raw GPS expires within 24–48h; rollups/pruning/inventory tested; no Replay              | Pass                                                                                                                                                                                                                                                                                                         |
+| Secrets, validation, authorization, CSP, URL allowlist, privacy minimisation, audit     | Pass — threat model, secret scan, worker tests                                                                                                                                                                                                                                                               |
+| Source/map attribution and privacy/terms/methodology pages ship                         | Pass                                                                                                                                                                                                                                                                                                         |
+
+**Engineering, tests and deployment**
+
+| Criterion                                                                                               | State                |
+| ------------------------------------------------------------------------------------------------------- | -------------------- |
+| Typed contracts, idempotent pipelines, versioned atomic artifacts, rollback                             | Pass                 |
+| Format, lint, types, unit, property, contract, integration, golden, E2E, accessibility, security, build | Pass — all green     |
+| Live checks: London, multiple non-London areas, national catalogue evidence                             | **Blocked (B1, B2)** |
+| Cloud deployment at a free URL; mobile/desktop smoke tests                                              | **Blocked (B3)**     |
+| README, runbooks, environment template complete; BUILD_STATE current                                    | Pass                 |
+
+**Rejection conditions** — none apply. The product is not a static mock; fixtures appear only in
+tests and in one conspicuously labelled dated demo snapshot that live data takes precedence over;
+it is England-wide with no regional hard-code; Pro has no login wall; no production path falls back
+to fabricated data; quota controls are hard and tested; raw telemetry expires within 48 hours;
+there is no Replay; nothing depends on a paid service or on AI at runtime; the critical algorithms
+are tested, including by brute-force verification and property tests; and deployment is blocked by
+the absence of credentials rather than left undone.
 
 ### Coverage and source health
 

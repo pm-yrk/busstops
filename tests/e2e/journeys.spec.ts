@@ -172,6 +172,18 @@ test.describe("Bus Stops Pro", () => {
     await expect(page.getByText(/weighted composite/i)).toBeVisible();
   });
 
+  test("the disruption inbox states what it is not covering", async ({ page }) => {
+    await mockApi(page);
+    await page.goto("/pro/disruptions");
+
+    await expect(page.getByRole("heading", { name: /exception inbox/i })).toBeVisible();
+    await expect(
+      page.getByText(/not a statement about parts of the network we cannot see/i),
+    ).toBeVisible();
+    // No acknowledge or clear control: the item goes when the conditions do.
+    await expect(page.getByRole("button", { name: /acknowledge|dismiss|clear/i })).toHaveCount(0);
+  });
+
   test("moves between Pro sections", async ({ page }) => {
     await mockApi(page);
     await page.goto("/pro");
