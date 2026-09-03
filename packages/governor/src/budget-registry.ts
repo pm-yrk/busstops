@@ -10,7 +10,7 @@ import { z } from "zod";
  * resource is unverified, so a stale assumption can never silently authorise a paid overage.
  */
 
-export const BudgetPeriodSchema = z.enum(["day", "month", "minute"]);
+export const BudgetPeriodSchema = z.enum(["day", "month", "minute", "invocation"]);
 export type BudgetPeriod = z.infer<typeof BudgetPeriodSchema>;
 
 export const BudgetResourceSchema = z.object({
@@ -58,8 +58,10 @@ export const BUDGET_REGISTRY: readonly BudgetResource[] = [
     termsUrl: "https://developers.cloudflare.com/workers/platform/limits/",
     metered: true,
     unmeteredBecause: null,
-    verifiedAt: null,
-    verifiedNote: null,
+    verifiedAt: "2026-09-03T12:30:00.000Z",
+    verifiedNote:
+      "Confirmed against Cloudflare Workers Free limits, last updated 2026-07-28: 100,000 " +
+      "requests per day.",
     requiredForDeploy: true,
     selfImposedCeilingFraction: 0.85,
   },
@@ -69,12 +71,14 @@ export const BUDGET_REGISTRY: readonly BudgetResource[] = [
     displayName: "Worker CPU time per invocation",
     allowance: 10,
     unit: "cpu-milliseconds",
-    period: "minute",
+    period: "invocation",
     termsUrl: "https://developers.cloudflare.com/workers/platform/limits/",
     metered: true,
     unmeteredBecause: null,
-    verifiedAt: null,
-    verifiedNote: null,
+    verifiedAt: "2026-09-03T12:30:00.000Z",
+    verifiedNote:
+      "Confirmed against Cloudflare Workers Free limits, last updated 2026-07-28: 10 ms CPU " +
+      "time per invocation.",
     requiredForDeploy: true,
     selfImposedCeilingFraction: 0.8,
   },
@@ -82,14 +86,17 @@ export const BUDGET_REGISTRY: readonly BudgetResource[] = [
     key: "cloudflare.r2.storage_bytes",
     provider: "Cloudflare",
     displayName: "R2 stored bytes",
-    allowance: 10 * 1024 ** 3,
+    // Cloudflare publishes 10 GB-month (decimal GB), not 10 GiB. Use the smaller exact figure.
+    allowance: 10 * 1000 ** 3,
     unit: "bytes",
     period: "month",
     termsUrl: "https://developers.cloudflare.com/r2/pricing/",
     metered: true,
     unmeteredBecause: null,
-    verifiedAt: null,
-    verifiedNote: null,
+    verifiedAt: "2026-09-03T12:30:00.000Z",
+    verifiedNote:
+      "Confirmed against Cloudflare R2 pricing, last updated 2026-08-07: Standard storage has " +
+      "10 GB-month per month free. The free tier does not apply to Infrequent Access storage.",
     requiredForDeploy: true,
     selfImposedCeilingFraction: 0.8,
   },
@@ -103,8 +110,10 @@ export const BUDGET_REGISTRY: readonly BudgetResource[] = [
     termsUrl: "https://developers.cloudflare.com/r2/pricing/",
     metered: true,
     unmeteredBecause: null,
-    verifiedAt: null,
-    verifiedNote: null,
+    verifiedAt: "2026-09-03T12:30:00.000Z",
+    verifiedNote:
+      "Confirmed against Cloudflare R2 pricing, last updated 2026-08-07: Standard storage " +
+      "includes 1 million Class A operations per month free.",
     requiredForDeploy: true,
     selfImposedCeilingFraction: 0.8,
   },
@@ -118,8 +127,10 @@ export const BUDGET_REGISTRY: readonly BudgetResource[] = [
     termsUrl: "https://developers.cloudflare.com/r2/pricing/",
     metered: true,
     unmeteredBecause: null,
-    verifiedAt: null,
-    verifiedNote: null,
+    verifiedAt: "2026-09-03T12:30:00.000Z",
+    verifiedNote:
+      "Confirmed against Cloudflare R2 pricing, last updated 2026-08-07: Standard storage " +
+      "includes 10 million Class B operations per month free.",
     requiredForDeploy: true,
     selfImposedCeilingFraction: 0.85,
   },
