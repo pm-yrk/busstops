@@ -409,6 +409,56 @@ describe("GET /v1/stops/:id", () => {
   });
 });
 
+describe("one-click unsubscribe", () => {
+  it("accepts a GET, which is what a person clicking the link sends", async () => {
+    const store = await publishedStore();
+    const response = await worker.fetch(
+      get("/v1/unsubscribe?r=abc&t=xyz"),
+      makeEnv(store, { UNSUBSCRIBE_SECRET: "s" }),
+      ctx,
+    );
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { data: { status: string } };
+    expect(body.data.status).toBe("unsubscribed");
+  });
+
+  it("accepts a POST, which is what a mail client's native button sends", async () => {
+    const store = await publishedStore();
+    const response = await worker.fetch(
+      new Request("https://api.busstops.example/v1/unsubscribe?r=abc&t=xyz", { method: "POST" }),
+      makeEnv(store, { UNSUBSCRIBE_SECRET: "s" }),
+      ctx,
+    );
+    expect(response.status).toBe(200);
+  });
+
+  it("answers identically whether or not the token was valid", async () => {
+    const store = await publishedStore();
+    const env = makeEnv(store, { UNSUBSCRIBE_SECRET: "s" });
+
+    const good = (await (
+      await worker.fetch(get("/v1/unsubscribe?r=abc&t=correct"), env, ctx)
+    ).json()) as { data: { status: string; message: string } };
+    const bad = (await (
+      await worker.fetch(get("/v1/unsubscribe?r=abc&t=wrong"), env, ctx)
+    ).json()) as { data: { status: string; message: string } };
+
+    // No oracle: this endpoint must not reveal whether an address is subscribed.
+    expect(bad.data.status).toBe(good.data.status);
+    expect(bad.data.message).toBe(good.data.message);
+  });
+
+  it("is never cached, so a stale success cannot stand in for a real one", async () => {
+    const store = await publishedStore();
+    const response = await worker.fetch(
+      get("/v1/unsubscribe?r=abc&t=xyz"),
+      makeEnv(store, { UNSUBSCRIBE_SECRET: "s" }),
+      ctx,
+    );
+    expect(response.headers.get("Cache-Control")).toContain("max-age=0");
+  });
+});
+
 describe("Bus Stops Pro", () => {
   const PRO_PATHS = [
     "/v1/pro/control-tower",

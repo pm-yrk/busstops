@@ -1,0 +1,62 @@
+name: Daily Brief
+
+# One snapshot per day, published before any send, so the browser view and the email are built
+# from the same frozen figures (docs/12_DAILY_BRIEF.md).
+#
+# The job runs whether or not an email provider is configured: the snapshot and the browser view
+# are the product, and email is a delivery mechanism for them.
+
+on:
+  schedule:
+    # 05:40 UTC, ahead of the earliest 07:00 local delivery window in either BST or GMT.
+    - cron: "40 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Never two brief jobs at once: idempotency keys would prevent a duplicate send, but two
+# concurrent runs would still spend two snapshots' worth of storage operations.
+concurrency:
+  group: daily-brief
+  cancel-in-progress: false
+
+jobs:
+  brief:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - run: npm ci --no-audit --no-fund
+
+      - name: Free-tier preflight
+        run: npm run preflight
+
+      - name: Build the snapshot and send
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          R2_BUCKET_ARTIFACTS: ${{ vars.R2_BUCKET_ARTIFACTS }}
+          EMAIL_PROVIDER: ${{ vars.EMAIL_PROVIDER }}
+          EMAIL_PROVIDER_ENDPOINT: ${{ vars.EMAIL_PROVIDER_ENDPOINT }}
+          EMAIL_API_KEY: ${{ secrets.EMAIL_API_KEY }}
+          EMAIL_FROM_ADDRESS: ${{ vars.EMAIL_FROM_ADDRESS }}
+          UNSUBSCRIBE_SECRET: ${{ secrets.UNSUBSCRIBE_SECRET }}
+          PUBLIC_BASE_URL: ${{ vars.PUBLIC_BASE_URL }}
+          BUDGET_UTILIZATION: ${{ vars.BUDGET_UTILIZATION }}
+        run: npx tsx pipelines/daily-brief/run-brief.ts
+
+      - name: Upload brief report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: brief-report
+          path: brief-report.json
+          retention-days: 7
+          if-no-files-found: ignore

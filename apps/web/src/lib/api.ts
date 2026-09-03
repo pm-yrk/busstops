@@ -239,6 +239,19 @@ export class ApiClient {
     );
   }
 
+  /**
+   * One-click unsubscribe. Deliberately a plain GET with no confirmation step: the click in the
+   * email is the confirmation, and asking again is where people give up and report spam instead.
+   */
+  unsubscribe(
+    recipientId: string,
+    token: string,
+    signal?: AbortSignal,
+  ): Promise<{ data: { status: string; message: string } }> {
+    const params = new URLSearchParams({ r: recipientId, t: token });
+    return this.request(`/v1/unsubscribe?${params.toString()}`, signal);
+  }
+
   sourcesHealth(signal?: AbortSignal): Promise<unknown> {
     return this.request<unknown>("/v1/sources/health", signal);
   }

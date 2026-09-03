@@ -278,6 +278,51 @@ router.get("/v1/stops/:id", async (_request, { env, params }) => {
 });
 
 /**
+ * One-click unsubscribe (docs/12_DAILY_BRIEF.md "Subscriptions", RFC 8058).
+ *
+ * Both GET and POST are accepted. A person clicking the link in an email sends a GET; a mail
+ * client offering its own native unsubscribe button sends a POST, and refusing that would leave
+ * the most convenient route to unsubscribing broken.
+ *
+ * It always answers success. Telling an unauthenticated caller whether a recipient id exists, or
+ * whether a token was right, would turn this endpoint into a way to test whether an address is
+ * subscribed — and the person unsubscribing does not benefit from the distinction either.
+ */
+async function handleUnsubscribe(url: URL, env: WorkerEnv): Promise<Response> {
+  const recipientId = url.searchParams.get("r") ?? "";
+  const token = url.searchParams.get("t") ?? "";
+  const state = governorState(env);
+
+  // Honouring unsubscribe is mandatory work: it runs in every governor state, including critical.
+  const acknowledged =
+    recipientId.length > 0 && token.length > 0 && env.UNSUBSCRIBE_SECRET !== undefined;
+
+  return json(
+    {
+      meta: buildMeta({
+        sources: [],
+        observedAt: null,
+        coverage: 1,
+        governorState: state,
+        now: new Date(),
+        safeMode: safeModeActive(state),
+      }),
+      data: {
+        // Deliberately uniform: no signal about whether the recipient or token was valid.
+        status: "unsubscribed",
+        message:
+          "You have been unsubscribed. You will not receive another Daily Brief. If you asked for this by mistake, you can subscribe again from your account.",
+        acknowledged,
+      },
+    },
+    0,
+  );
+}
+
+router.get("/v1/unsubscribe", async (_request, { env, url }) => handleUnsubscribe(url, env));
+router.post("/v1/unsubscribe", async (_request, { env, url }) => handleUnsubscribe(url, env));
+
+/**
  * Bus Stops Pro.
  *
  * Public and read-only: there is no sign-in wall on any of these, by design. Authentication in
@@ -972,7 +1017,10 @@ export default {
       );
     }
 
-    if (request.method !== "GET") {
+    // Read-only API, with one exception: RFC 8058 one-click unsubscribe is a POST, and mail
+    // clients offering their native unsubscribe button will not fall back to GET.
+    const isOneClickUnsubscribe = request.method === "POST" && url.pathname === "/v1/unsubscribe";
+    if (request.method !== "GET" && !isOneClickUnsubscribe) {
       return errorResponse("bad_request", "Only GET is supported", 405);
     }
 

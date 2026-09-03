@@ -9,6 +9,7 @@ import { RoutePage } from "./pages/RoutePage.js";
 import { OperatorPage } from "./pages/OperatorPage.js";
 import { DisruptionsPage } from "./pages/DisruptionsPage.js";
 import { JourneyPage } from "./pages/JourneyPage.js";
+import { UnsubscribePage } from "./pages/UnsubscribePage.js";
 import { ProLayout } from "./pro/ProLayout.js";
 import { ControlTowerPage } from "./pro/ControlTowerPage.js";
 import { LiveOperationsPage } from "./pro/LiveOperationsPage.js";
@@ -89,6 +90,7 @@ export function App() {
             <Route path="/operators/:operatorId" element={<OperatorPage />} />
             <Route path="/disruptions" element={<DisruptionsPage />} />
             <Route path="/journey" element={<JourneyPage />} />
+            <Route path="/unsubscribe" element={<UnsubscribePage />} />
             <Route path="/pro" element={<ProLayout />}>
               <Route index element={<ControlTowerPage />} />
               <Route path="live" element={<LiveOperationsPage />} />

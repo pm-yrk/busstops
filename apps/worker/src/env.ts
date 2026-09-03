@@ -28,6 +28,8 @@ export interface WorkerEnv {
   /** Forces a governor state for drills and incident response. */
   GOVERNOR_MODE?: string;
   PUBLIC_BASE_URL?: string;
+  /** Secret behind Daily Brief unsubscribe tokens. Only token hashes are ever stored. */
+  UNSUBSCRIBE_SECRET?: string;
 }
 
 /** Adapts the native R2 binding to the shared ObjectStore interface used by the artifact store. */
