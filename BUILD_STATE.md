@@ -387,23 +387,26 @@ A dead `quota:check` npm script pointing at a file that was never written has be
 
 ### Verification evidence
 
-| Check                         | Command or method                               | Result                                                                 | Date       |
-| ----------------------------- | ----------------------------------------------- | ---------------------------------------------------------------------- | ---------- |
-| Install                       | `npm install`                                   | Clean install from lockfile                                            | 2026-09-02 |
-| Unit + contract + integration | `npm test`                                      | 571 passed / 571 (510 root across 19 files, 61 web)                    | 2026-09-03 |
-| Lint                          | `npx eslint . --max-warnings=0`                 | Clean                                                                  | 2026-09-02 |
-| Format                        | `npx prettier --check .`                        | Clean                                                                  | 2026-09-02 |
-| Type check                    | `npm run typecheck`                             | Passed for every workspace                                             | 2026-09-02 |
-| Free-tier preflight           | `node scripts/preflight.mjs`                    | Passed, 1 deploy-stage warning                                         | 2026-09-02 |
-| Secret scan                   | `node scripts/secret-scan.mjs`                  | Clean across 188 tracked files                                         | 2026-09-03 |
-| Pipeline dry run              | `npx tsx pipelines/static-network/run-daily.ts` | Exits 0 reporting the missing credentials, publishes nothing           | 2026-09-02 |
-| Journey planner verification  | `npx vitest run packages/journey`               | 26 passed, including brute-force equivalence against exhaustive search | 2026-09-03 |
-| Analytics engine              | `npx vitest run packages/analytics`             | 93 passed / 93                                                         | 2026-09-03 |
-| End-to-end                    | —                                               | Not run yet (scheduled for P9)                                         | —          |
-| Accessibility                 | —                                               | Not run yet (scheduled for P9)                                         | —          |
-| Smoke test (local rehearsal)  | `node scripts/smoke-test.mjs` vs `wrangler dev` | 10/11 passed; the 11th needs Pages to apply `_headers`                 | 2026-09-03 |
-| Worker bundle                 | `npx wrangler deploy --dry-run`                 | 434 KiB (87.6 KiB gzipped), all bindings resolved                      | 2026-09-03 |
-| Deployed smoke test           | —                                               | Blocked (B3)                                                           | —          |
+Local checks run in the build container; live checks cite the GitHub Actions run that observed
+them, because this container has no egress (B1).
+
+| Check                         | Command or method                          | Result                                                           | Date       |
+| ----------------------------- | ------------------------------------------ | ---------------------------------------------------------------- | ---------- |
+| Install                       | `npm ci`                                   | Clean install from lockfile                                      | 2026-09-03 |
+| Unit + contract + integration | `npm test`                                 | 896 passed / 896 (792 root across 33 files, 104 web)             | 2026-09-03 |
+| Lint                          | `npm run lint`                             | Clean, `--max-warnings=0`                                        | 2026-09-03 |
+| Format                        | `npm run format:check`                     | Clean                                                            | 2026-09-03 |
+| Type check                    | `npm run typecheck`                        | Passed for every workspace                                       | 2026-09-03 |
+| Free-tier preflight (ci)      | `npm run preflight`                        | Passed, 0 warnings                                               | 2026-09-03 |
+| Free-tier preflight (deploy)  | `PREFLIGHT_STAGE=deploy npm run preflight` | Passed, 0 warnings                                               | 2026-09-03 |
+| Secret scan                   | `node scripts/secret-scan.mjs`             | Clean across 313 tracked files                                   | 2026-09-03 |
+| End-to-end + accessibility    | `npm run test:e2e`                         | 140 passed / 140 across desktop, tablet and two phone sizes      | 2026-09-03 |
+| Journey planner verification  | `npx vitest run packages/journey`          | Brute-force equivalence against exhaustive search                | 2026-09-03 |
+| Zip reader                    | `npx vitest run pipelines/static-network`  | 7 passed against a fixture written by Python's zipfile           | 2026-09-03 |
+| Live sources                  | `Verify live sources` run 2                | BODS, BODS timetables, TfL and NaPTAN all answered and parsed    | 2026-09-03 |
+| Provisioning                  | `Deploy Preview` run 1                     | R2 buckets and Pages project ensured; nothing chargeable enabled | 2026-09-03 |
+| Worker deploy                 | `Deploy Preview` run 1                     | Deployed, secrets set, `/v1/sources/health` answered 200         | 2026-09-03 |
+| Pages deploy                  | `Deploy Preview` run 1                     | Deployed to the `preview` branch alias                           | 2026-09-03 |
 
 ### Acceptance audit (docs/17_ACCEPTANCE_CRITERIA.md)
 
@@ -520,48 +523,44 @@ provider rejection is never used as the governor.
 
 ### Known limitations
 
-**B1 — Upstream egress blocked (external blocker).** The build sandbox's egress policy denies
-CONNECT to every transport, weather, flood and map host, and to `api.cloudflare.com`. _User
-impact:_ none in production; this only constrains what can be verified during this build.
-_Affected criteria:_ "BODS/TfL adapters live-verified", "NaPTAN reconciles nationally",
-"Live checks cover London and multiple non-London areas". _Mitigation:_ adapters are written to
-published provider schemas, contract-tested against fixtures labelled by origin, and the source
-registry refuses to claim live verification. _Resolution:_ run the contract suite with
-`SOURCE_VERIFY=live` from an environment with egress and credentials.
+**B1 — Upstream egress blocked from the build container (resolved for verification).** The build
+sandbox's egress policy still denies CONNECT to every transport, weather, flood and map host and
+to `api.cloudflare.com`, re-measured 2026-09-03. That is a property of this container, not of the
+platform, and it no longer blocks verification: a GitHub-hosted runner has ordinary egress and
+holds the repository secrets, so `Verify live sources` runs the adapters against real responses
+there. _Still true:_ nothing can be verified by running it in this container, so every live claim
+in this file cites a workflow run rather than a local command.
 
-**B2 — No upstream credentials (external blocker).** `BODS_API_KEY`, `TFL_APP_KEY`,
-National Highways and Street Manager credentials are not provisioned. _User impact:_ live data
-cannot be fetched until keys are configured. _Mitigation:_ `.env.example` names every variable
-and the deployment checklist records where each is obtained. _Resolution:_ register for free keys
-and set them as platform secrets.
+**B2 — Upstream credentials (resolved for BODS, TfL and Cloudflare).** `BODS_API_KEY`,
+`TFL_APP_KEY`, `VEHICLE_SALT_SECRET`, `UNSUBSCRIBE_SECRET`, `CLOUDFLARE_ACCOUNT_ID` and
+`CLOUDFLARE_API_TOKEN` are provisioned as repository secrets and are consumed by workflows only.
+National Highways and Street Manager credentials are still absent; their adapters are implemented
+and contract-tested but called by no scheduled job, so nothing degrades. _Resolution when they are
+wanted:_ register, add the key names to `.env.example`, the source registry entry and that job's
+workflow.
 
-**B3 — Deployment blocked (external blocker).** Re-tested 2026-09-03, and the earlier wording
-here was imprecise. What is actually true:
+**B3 — Deployment (resolved).** The preview is deployed. What changed is not the egress policy but
+where the deploy runs: `Deploy Preview` provisions, deploys and verifies from a runner, so the
+container's inability to reach `api.cloudflare.com` no longer matters. See "Deployment evidence"
+above for the URLs and the checks that passed against them.
 
-- Direct HTTPS to `api.cloudflare.com` is refused by the environment's egress proxy, which
-  answers `403` to `CONNECT` — an organization policy denial, not a network fault.
-- A Cloudflare account **is** reachable through the connected MCP server, which authenticates
-  independently of the proxy. It reports zero Workers and one unrelated R2 bucket, so the
-  account exists and is usable.
-- That MCP toolset exposes creating R2 buckets, KV namespaces and D1 databases, and reading
-  Workers. It exposes **no** tool to upload a Worker script or create a Pages deployment.
-- `wrangler` is installed and the Worker bundles cleanly (`wrangler deploy --dry-run`: 434 KiB,
-  87.6 KiB gzipped, all four bindings resolved). A real deploy stops at
-  `CLOUDFLARE_API_TOKEN` not being set; the MCP server's credential is not one wrangler can use.
+**Live verification is narrower than "the adapters work".** What was observed is recorded in
+`packages/contracts/src/source-registry.ts` with the observation, not the conclusion:
 
-So deployment is blocked on a credential and a capability, not on the code. No Cloudflare
-resources were created: provisioning an empty bucket into someone's account when the Worker
-cannot be deployed alongside it would leave litter rather than progress.
+- **BODS** — the SIRI-VM datafeed for one Manchester bounding box, and the timetable catalogue
+  plus one dataset download. Not national coverage, and not every operator's dialect.
+- **TfL** — arrivals for one stop point. The route-sequence, stop-point and disruption adapters
+  are still verified against published documentation only.
+- **NaPTAN** — the first 255,959 bytes of the national CSV. The stream is cancelled deliberately
+  rather than downloading a national dataset to check a parser, so this verifies the head of the
+  file and says nothing about national reconciliation.
 
-_Affected criteria:_ "Cloud deployment succeeds at a free project URL", "mobile/desktop smoke
-tests pass". _Mitigation:_ the deploy workflow, provisioning guide, static-site security headers
-and an executable smoke test are committed, and 10 of the smoke test's 11 checks were run
-successfully against the Worker running locally under `wrangler dev`. _Resolution:_ set
-`CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` as repository secrets and run the Deploy
-workflow; it gates on the stricter deploy-stage preflight and smoke-tests what it deployed.
+Everything else — National Highways, Street Manager, OpenStreetMap, Open-Meteo, the Environment
+Agency — remains `published_documentation`, because no live response has been inspected. The
+registry's schema refuses to let those say otherwise.
 
-No limitation above excuses unfinished credential-independent work; the remaining phases are
-tracked as work, not blockers.
+No limitation above excuses unfinished credential-independent work; remaining work is tracked as
+work, not as a blocker.
 
 ### Pro demonstration snapshot
 
