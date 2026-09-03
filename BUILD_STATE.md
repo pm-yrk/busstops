@@ -385,6 +385,52 @@ A dead `quota:check` npm script pointing at a file that was never written has be
    BODS/TfL/NaPTAN behaviour actually observed — not assumed — in the source registry.
 2. Production remains un-deployed pending explicit approval after the preview is reviewed.
 
+### Deployment evidence
+
+Preview, deployed by `Deploy Preview` from a GitHub-hosted runner:
+
+|                 |                                                       |
+| --------------- | ----------------------------------------------------- |
+| Preview site    | https://preview.busstops.pages.dev                    |
+| API (Worker)    | https://busstops-api-preview.paulmurrin13.workers.dev |
+| Artifact bucket | `busstops-artifacts-preview`                          |
+
+Verified against those real URLs, not against a rehearsal:
+
+- **Smoke test: 11 of 11 passed.** App shell serves; security headers present; source health
+  answers with its governor state; every response states freshness and degradation; the map's
+  size cap and required bounding box are enforced by the running Worker; Pro answers with no
+  credential; unknown paths 404; write methods are refused; one-click unsubscribe accepts a POST;
+  no credential appears in any response body.
+- **The cross-origin path works end to end.** The deployed bundle
+  (`/assets/index-*.js`) contains the Worker origin, so `VITE_API_URL` really was baked in; the
+  served CSP is `connect-src 'self' https://busstops-api-preview.paulmurrin13.workers.dev`, naming
+  the exact origin with no wildcard; and the Worker answers a request from the Pages origin with
+  `Access-Control-Allow-Origin: https://preview.busstops.pages.dev`. This was the defect most
+  likely to produce an app whose every request fails in a browser while every server-side test
+  passes, so it is checked against the deployment rather than reasoned about.
+- **Pro is public.** `dataMode: "demo_snapshot"`, no `WWW-Authenticate`, no sign-in wall.
+
+**Not yet verified: real national data.** The bootstrap has not completed a publish. Three real
+defects were found and fixed along the way, each by measurement rather than assumption:
+
+1. **BODS timetables are zip archives.** Measured against the live catalogue: 945 published
+   datasets, all 25 in the first page reporting `extension: "zip"`, and a download answering
+   `application/zip` with the PK magic bytes. The pipeline fetched every dataset as text, so the
+   XML parser was handed binary — a silent corruption in which no journeys parse, every
+   downstream dataset produces no records, and the publish rolls back.
+2. **The build exhausted the heap.** Fixing the zip handling meant the pipeline really did
+   decompress 25 archives, and fingerprinting joined all of them into one string. Hashing folds
+   left to right, so the join was never needed.
+3. **Tile publishing was serial.** Thousands of independent object writes, three round trips
+   each, one at a time.
+
+Until a bootstrap publishes, the deployed Live map has no stops to draw and `/v1/map` answers 500
+on the deployed Worker. That 500 is itself unexplained: with an empty bucket the Worker degrades
+correctly in test (a test now pins it), so the cause is specific to the deployed environment, and
+the deployed verification now reports the response body rather than only the status code so the
+next run says what the server actually said.
+
 ### Verification evidence
 
 Local checks run in the build container; live checks cite the GitHub Actions run that observed
