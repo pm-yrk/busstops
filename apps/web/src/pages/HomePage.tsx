@@ -1,30 +1,41 @@
 import { Link } from "react-router-dom";
 import { Wordmark } from "../components/Wordmark.js";
-import {
-  PixelBench,
-  PixelBusSide,
-  PixelShelter,
-  PixelShops,
-  PixelStopPole,
-  PixelStreetLamp,
-  PixelTree,
-} from "../components/pixel/PixelArt.js";
+import { PixelStreetScene } from "../components/pixel/PixelStreetScene.js";
 import "./HomePage.css";
 
 /**
  * Home (docs/03_SITE_MAP_AND_UX.md "Page requirements").
  *
- * Above the fold: only the stacked wordmark, the pixel road scene, and one accessible cue.
- * Everything else is revealed by scrolling — but it is all in the DOM from the start, so
- * keyboard, screen-reader and reduced-motion users are never waiting on an animation to read it.
+ * The first viewport holds the wordmark, the street scene and one scroll cue. Nothing else: the
+ * mark and the artwork are the whole idea of the product, and a paragraph and two buttons beside
+ * them turn a statement into a landing page. The promise and the ways in follow immediately
+ * below, where someone who has scrolled is actually looking for them.
+ *
+ * Everything is in the DOM from the start, so keyboard and screen-reader users are never waiting
+ * on an animation or a scroll position to reach the content.
  */
 
 export function HomePage() {
   return (
     <div className="home">
-      <section className="home__hero">
-        <Wordmark variant="stacked" size="hero" as="h1" />
+      <section className="home__hero" aria-label="Bus Stops.">
+        <div className="home__hero-mark">
+          <Wordmark variant="stacked" size="hero" as="h1" />
+        </div>
 
+        <PixelStreetScene className="home__hero-scene" />
+
+        {/*
+         * A cue rather than a control: the page scrolls normally, and an arrow that looked like a
+         * button would promise behaviour it does not have.
+         */}
+        <div className="home__scroll-cue" aria-hidden="true">
+          <span className="home__scroll-cue-text">Scroll</span>
+          <span className="home__scroll-cue-line" />
+        </div>
+      </section>
+
+      <section className="home__intro page">
         <p className="home__promise">
           Know where your bus really is, what is delaying it, and what to do next.
         </p>
@@ -36,22 +47,6 @@ export function HomePage() {
           <Link to="/search" className="home__cta-secondary">
             Or search for a stop
           </Link>
-        </div>
-
-        <div className="home__scene" aria-hidden="true">
-          <div className="home__scene-back">
-            <PixelShops size={64} />
-            <PixelTree size={44} />
-            <PixelShelter size={52} />
-            <PixelStreetLamp size={44} />
-            <PixelBench size={40} />
-            <PixelStopPole size={48} />
-          </div>
-          <div className="home__scene-road">
-            <div className="home__scene-bus">
-              <PixelBusSide size={44} />
-            </div>
-          </div>
         </div>
       </section>
 

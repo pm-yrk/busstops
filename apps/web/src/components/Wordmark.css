@@ -26,14 +26,6 @@
   color: var(--colour-red);
 }
 
-/* The pixel bus sits in the full stop's place, aligned to the baseline. */
-.wordmark__dot--bus {
-  display: inline-flex;
-  align-items: flex-end;
-  margin-left: 0.06em;
-  transform: translateY(0.06em);
-}
-
 .wordmark--hero {
   font-size: var(--font-size-hero);
 }
@@ -47,7 +39,14 @@
 }
 
 /* The thin red vertical rule that may accompany the stacked lockup. */
+/*
+ * The thin red rule beside the stacked hero. Deliberately hairline-thin against very large black
+ * type: it is a typographic mark, not a border, and any heavier it starts competing with the
+ * wordmark it is there to anchor.
+ */
 .wordmark--stacked.wordmark--hero {
-  padding-left: var(--space-md);
+  padding-left: clamp(var(--space-md), 3vw, var(--space-xl));
   border-left: 2px solid var(--colour-red);
+  line-height: 0.86;
+  letter-spacing: -0.03em;
 }

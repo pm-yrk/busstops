@@ -92,3 +92,31 @@ jobs:
             cat artifacts.log
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  basemap:
+    name: Verify the basemap terms and origins
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - run: npm ci --no-audit --no-fund
+
+      # The CSP has to name every host the style pulls from, and the only way to know them is to
+      # read the style. This also proves the tiles still serve without a key.
+      - name: Basemap
+        run: |
+          set -o pipefail
+          node scripts/verify-basemap.mjs 2>&1 | tee basemap.log
+          {
+            echo "## Basemap"
+            echo
+            echo '```'
+            cat basemap.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

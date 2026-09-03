@@ -1,0 +1,96 @@
+/*
+ * The hero street scene.
+ *
+ * The SVG carries the drawing; this file carries only the motion and the sizing, so the
+ * illustration itself stays readable as a picture rather than as a pile of transforms.
+ */
+
+.street-scene {
+  width: 100%;
+  /*
+   * Sized as a share of the viewport rather than in pixels, because it is the second half of the
+   * hero composition and has to hold its own against very large type. The clamp keeps it from
+   * dominating a short laptop window or shrinking to an icon on a phone.
+   */
+  height: clamp(180px, 34vh, 340px);
+  overflow: hidden;
+}
+
+.street-scene__canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  /* Square pixels at every size: the whole idiom depends on edges staying hard. */
+  image-rendering: pixelated;
+  shape-rendering: crispEdges;
+}
+
+/*
+ * Buses run the full width and wrap. The red one runs left to right on the near lane and the
+ * blue one right to left on the far lane, which is what makes it read as a road rather than a
+ * conveyor belt.
+ */
+.street-scene__bus {
+  will-change: transform;
+}
+
+.street-scene__bus--red {
+  animation: street-scene-drive-right 19s linear infinite;
+}
+
+.street-scene__bus--blue {
+  animation: street-scene-drive-left 26s linear infinite;
+}
+
+@keyframes street-scene-drive-right {
+  from {
+    transform: translateX(-34px);
+  }
+  to {
+    transform: translateX(160px);
+  }
+}
+
+@keyframes street-scene-drive-left {
+  from {
+    transform: translateX(160px) scaleX(-1);
+  }
+  to {
+    transform: translateX(-34px) scaleX(-1);
+  }
+}
+
+/* The lamp's glow is the one thing that pulses; slow enough to notice only if you look. */
+.street-scene__lamp rect:last-child {
+  animation: street-scene-glow 6s ease-in-out infinite;
+}
+
+@keyframes street-scene-glow {
+  0%,
+  100% {
+    opacity: 0.85;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+/*
+ * Reduced motion stops the traffic; it does not empty the street. The buses are parked at
+ * readable positions on the road rather than removed, so the scene is the same picture, still.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .street-scene__bus--red,
+  .street-scene__bus--blue,
+  .street-scene__lamp rect:last-child {
+    animation: none;
+  }
+
+  .street-scene__bus--red {
+    transform: translateX(26px);
+  }
+
+  .street-scene__bus--blue {
+    transform: translateX(118px) scaleX(-1);
+  }
+}

@@ -1,19 +1,83 @@
+/*
+ * Home.
+ *
+ * The hero is a full first viewport with two elements in it: the wordmark and the street scene.
+ * They are laid out as a column that pushes the scene to the bottom edge, so the road reads as
+ * the ground the page stands on rather than as an image floating in the middle of it.
+ */
 .home__hero {
   max-width: 1180px;
   margin: 0 auto;
-  padding: var(--space-xl) var(--space-md) var(--space-lg);
-  /* Above the fold holds only the wordmark, one promise, one cue and the scene. */
-  min-height: min(78vh, 640px);
+  padding: clamp(var(--space-lg), 6vh, var(--space-xl)) var(--space-md) 0;
+  /*
+   * svh rather than vh: on mobile browsers vh includes the chrome that retracts as you scroll,
+   * which pushes the scroll cue off the screen at exactly the moment it is meant to be visible.
+   */
+  min-height: 100svh;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  gap: var(--space-lg);
+}
+
+.home__hero-mark {
   display: flex;
-  flex-direction: column;
-  justify-content: center;
+  align-items: flex-start;
+}
+
+/* The scene sits on the bottom edge of the hero, full width of the composition. */
+.home__hero-scene {
+  align-self: end;
+}
+
+.home__scroll-cue {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding-bottom: var(--space-md);
+  color: var(--colour-muted);
+  font-size: var(--font-size-small);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.home__scroll-cue-line {
+  display: block;
+  width: 1px;
+  height: 28px;
+  background: var(--colour-red);
+  transform-origin: top;
+  animation: home-scroll-cue 2.6s ease-in-out infinite;
+}
+
+@keyframes home-scroll-cue {
+  0%,
+  100% {
+    transform: scaleY(0.4);
+    opacity: 0.5;
+  }
+  50% {
+    transform: scaleY(1);
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .home__scroll-cue-line {
+    animation: none;
+  }
+}
+
+/* The promise and the ways in, immediately below the fold. */
+.home__intro {
+  padding-top: var(--space-xl);
 }
 
 .home__promise {
-  max-width: 28ch;
-  margin: var(--space-lg) 0 var(--space-md);
+  max-width: 26ch;
+  margin: 0 0 var(--space-lg);
   font-size: var(--font-size-lead);
-  color: var(--colour-muted);
+  color: var(--colour-ink);
+  text-wrap: balance;
 }
 
 .home__cta-row {
@@ -37,54 +101,22 @@
   font-size: var(--font-size-small);
 }
 
-.home__scene {
-  margin-top: var(--space-xl);
-  position: relative;
-}
-
-.home__scene-back {
-  display: flex;
-  align-items: flex-end;
-  gap: var(--space-md);
-  opacity: 0.9;
-  overflow: hidden;
-}
-
-.home__scene-road {
-  position: relative;
-  height: 48px;
-  margin-top: -6px;
-  border-top: 2px solid var(--colour-ink);
-  background: repeating-linear-gradient(
-    to right,
-    transparent 0 18px,
-    var(--colour-hairline) 18px 34px
-  );
-  background-position: 0 22px;
-  background-size: auto 2px;
-  background-repeat: repeat-x;
-}
-
-.home__scene-bus {
-  position: absolute;
-  top: 2px;
-  animation: home-bus-travel 14s linear infinite;
-}
-
-@keyframes home-bus-travel {
-  from {
-    transform: translateX(-60px);
+/*
+ * On a phone the hero keeps both elements. The scene is recomposed — shorter, and cropped to its
+ * centre so the shelter and the stop flag stay in frame — rather than hidden, because hiding it
+ * removes the only thing on the page that has any personality.
+ */
+@media (max-width: 640px) {
+  .home__hero {
+    gap: var(--space-md);
   }
-  to {
-    transform: translateX(calc(100vw + 60px));
-  }
-}
 
-/* The scene is decorative: with reduced motion it simply parks. */
-@media (prefers-reduced-motion: reduce) {
-  .home__scene-bus {
-    animation: none;
-    left: var(--space-lg);
+  .home__hero-scene {
+    height: clamp(150px, 26vh, 220px);
+  }
+
+  .home__scroll-cue {
+    padding-bottom: var(--space-sm);
   }
 }
 

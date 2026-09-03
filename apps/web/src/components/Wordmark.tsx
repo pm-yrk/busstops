@@ -1,13 +1,14 @@
-import { PixelBusFront } from "./pixel/PixelArt.js";
 import "./Wordmark.css";
 
 /**
  * The Bus Stops. wordmark (docs/02_DESIGN_SYSTEM.md "Brand").
  *
- * The full stop is part of the name and is always red. At hero size it carries a tiny
- * front-facing pixel bus; below that it is a plain red full stop, because the bus stops being
- * legible before it stops being decorative. The name is never split into red/blue letters and
- * never uses unusual internal capitalisation.
+ * The full stop is part of the name and is always red — a clean full stop at every size. It used
+ * to carry a tiny pixel bus at hero size; that reads as a smudge rather than a bus at the size the
+ * punctuation wants to be, and it costs the mark its most recognisable feature. The pixel work
+ * belongs in the scene beside the wordmark, where it has room to be drawn properly.
+ *
+ * The name is never split into red/blue letters and never uses unusual internal capitalisation.
  */
 
 export interface WordmarkProps {
@@ -19,7 +20,6 @@ export interface WordmarkProps {
 
 export function Wordmark({ variant = "horizontal", size = "small", as = "div" }: WordmarkProps) {
   const Tag = as;
-  const showPixelBus = size === "hero";
 
   return (
     <Tag className={`wordmark wordmark--${variant} wordmark--${size}`}>
@@ -28,13 +28,7 @@ export function Wordmark({ variant = "horizontal", size = "small", as = "div" }:
         <span className="wordmark__line">Bus</span>
         <span className="wordmark__line">
           Stops
-          {showPixelBus ? (
-            <span className="wordmark__dot wordmark__dot--bus">
-              <PixelBusFront size={size === "hero" ? 28 : 14} />
-            </span>
-          ) : (
-            <span className="wordmark__dot">.</span>
-          )}
+          <span className="wordmark__dot">.</span>
         </span>
       </span>
     </Tag>
