@@ -1,5 +1,6 @@
 import {
   ArtifactStore,
+  mapWithConcurrency,
   tilesForCoordinates,
   type ArtifactManifest,
   type ObjectStore,
@@ -17,6 +18,13 @@ import { buildSearchIndex } from "./search-index.js";
  */
 
 export const NETWORK_SCHEMA_VERSION = "1.0.0";
+
+/**
+ * How many journey tiles are published at once. Chosen to keep a national build's wall clock
+ * reasonable without flooding object storage; the writes are independent, so the only reason for
+ * a bound is politeness to the other end and to the runner's sockets.
+ */
+export const TILE_PUBLISH_CONCURRENCY = 12;
 
 export const DATASETS = {
   stops: "network/stops",
@@ -173,8 +181,13 @@ export async function publishJourneyTiles(
     }
   }
 
-  const tiles: string[] = [];
-  for (const [tile, journeys] of byTile) {
+  // Each tile costs three round trips to object storage and there are thousands of them, so
+  // publishing them one at a time makes the job's wall clock the sum of the network latency
+  // rather than the sum of the work. They are independent of each other, so a bounded pool is
+  // safe; the bound is what stops a national build opening thousands of sockets at once.
+  const entries = [...byTile];
+  const outcomes = await mapWithConcurrency(entries, TILE_PUBLISH_CONCURRENCY, async (entry) => {
+    const [tile, journeys] = entry;
     const dataset = journeyTileDataset(tile);
     try {
       await artifacts.publish({
@@ -189,10 +202,16 @@ export async function publishJourneyTiles(
         maximumShrinkFraction: 0.9,
         now,
       });
-      tiles.push(tile);
+      return { tile, error: null };
     } catch (error) {
-      failed.push({ dataset, reason: error instanceof Error ? error.message : String(error) });
+      return { tile, error: error instanceof Error ? error.message : String(error) };
     }
+  });
+
+  const tiles: string[] = [];
+  for (const outcome of outcomes) {
+    if (outcome.error === null) tiles.push(outcome.tile);
+    else failed.push({ dataset: journeyTileDataset(outcome.tile), reason: outcome.error });
   }
 
   return { tiles, failed, journeysWithoutGeometry };
