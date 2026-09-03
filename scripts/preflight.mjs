@@ -80,11 +80,21 @@ for (const key of requiredBudgetKeys) {
   }
 }
 
-const unverifiedCount = (budgetSource.match(/verifiedAt: null/g) ?? []).length;
-if (unverifiedCount > 0) {
+// Only allowances explicitly marked requiredForDeploy are deployment gates. Optional features
+// (for example Daily Brief email or weather enrichment) are allowed to remain unverified and
+// disabled without preventing the core public site from being previewed or deployed.
+const budgetResourceBlocks = [
+  ...budgetSource.matchAll(/\{\n\s*key:\s*"([^"]+)"[\s\S]*?\n\s*\},/g),
+].map((match) => ({ key: match[1], source: match[0] }));
+const unverifiedRequired = budgetResourceBlocks.filter(
+  ({ source }) =>
+    /requiredForDeploy:\s*true/.test(source) && /verifiedAt:\s*null/.test(source),
+);
+if (unverifiedRequired.length > 0) {
   deployGate(
-    `${unverifiedCount} budget allowance(s) are unverified against live provider terms; ` +
-      `confirm current free allowances and set verifiedAt before deploying`,
+    `${unverifiedRequired.length} required budget allowance(s) are unverified against live ` +
+      `provider terms (${unverifiedRequired.map(({ key }) => key).join(", ")}); confirm current ` +
+      `free allowances and set verifiedAt before deploying`,
   );
 }
 
