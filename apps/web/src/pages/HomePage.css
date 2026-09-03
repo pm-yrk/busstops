@@ -1,43 +1,53 @@
 /*
  * Home.
  *
- * The hero is a full first viewport with two elements in it: the wordmark and the street scene.
- * They are laid out as a column that pushes the scene to the bottom edge, so the road reads as
- * the ground the page stands on rather than as an image floating in the middle of it.
+ * The hero is one viewport with two things in it: the wordmark at the top and the street running
+ * off both edges at the bottom. The space between them is the composition, not a gap to fill —
+ * which is why the scene is pinned to the bottom rather than centred, and why nothing else is
+ * allowed into the first screen.
  */
 .home__hero {
-  max-width: 1180px;
-  margin: 0 auto;
-  padding: clamp(var(--space-lg), 6vh, var(--space-xl)) var(--space-md) 0;
   /*
-   * svh rather than vh: on mobile browsers vh includes the chrome that retracts as you scroll,
-   * which pushes the scroll cue off the screen at exactly the moment it is meant to be visible.
+   * svh rather than vh: on mobile browsers vh counts the chrome that retracts as you scroll, so
+   * the scene would sit below the fold on exactly the first screen it is meant to fill. The
+   * header is sticky and in flow, so its height comes off the top — without that the road's
+   * bottom edge lands under the fold by precisely the header's height.
    */
-  min-height: 100svh;
+  min-height: calc(100svh - var(--header-height));
   display: grid;
+  /* Mark, then all the slack, then the street on the bottom edge. */
   grid-template-rows: auto 1fr auto;
+}
+
+.home__hero-top {
+  max-width: 1180px;
+  width: 100%;
+  margin: 0 auto;
+  padding: clamp(var(--space-lg), 7vh, var(--space-xl)) var(--space-md) 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
   gap: var(--space-lg);
 }
 
-.home__hero-mark {
-  display: flex;
-  align-items: flex-start;
-}
-
-/* The scene sits on the bottom edge of the hero, full width of the composition. */
+/*
+ * The scene ignores the page's max-width and runs edge to edge. A street that stops short of the
+ * window looks like an illustration of a street; one that runs off both sides looks like a place.
+ */
 .home__hero-scene {
-  align-self: end;
+  grid-row: 3;
 }
 
 .home__scroll-cue {
   display: flex;
   align-items: center;
   gap: var(--space-sm);
-  padding-bottom: var(--space-md);
+  padding-top: var(--space-sm);
   color: var(--colour-muted);
   font-size: var(--font-size-small);
   letter-spacing: 0.14em;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 
 .home__scroll-cue-line {
@@ -67,7 +77,18 @@
   }
 }
 
-/* The promise and the ways in, immediately below the fold. */
+/*
+ * On a phone the cue moves under the wordmark rather than beside it, and the scene keeps its
+ * height: cropping to the middle of the street is what keeps the shelter and the stop in frame.
+ */
+@media (max-width: 640px) {
+  .home__hero-top {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-md);
+  }
+}
+
 .home__intro {
   padding-top: var(--space-xl);
 }
@@ -110,14 +131,6 @@
   .home__hero {
     gap: var(--space-md);
   }
-
-  .home__hero-scene {
-    height: clamp(150px, 26vh, 220px);
-  }
-
-  .home__scroll-cue {
-    padding-bottom: var(--space-sm);
-  }
 }
 
 .home__section {
@@ -151,14 +164,4 @@
 
 .home__sources li {
   margin-bottom: var(--space-xs);
-}
-
-@media (max-width: 640px) {
-  .home__hero {
-    min-height: auto;
-    padding-top: var(--space-lg);
-  }
-  .home__scene-back > *:nth-child(n + 4) {
-    display: none;
-  }
 }

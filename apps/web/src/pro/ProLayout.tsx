@@ -1,4 +1,5 @@
 import { NavLink, Outlet } from "react-router-dom";
+import { PixelRouteMark } from "../components/pixel/PixelArt.js";
 import "./ProLayout.css";
 
 /**
@@ -27,9 +28,17 @@ export function ProLayout() {
   return (
     <div className="pro-layout">
       <header className="pro-layout__header">
-        <div>
-          <p className="pro-layout__eyebrow">Bus Stops</p>
-          <h1>Pro</h1>
+        <div className="pro-layout__title">
+          {/*
+           * One pixel detail, deliberately small. Pro is a working tool and should feel calmer
+           * than Live, but it is the same product — and a page with none of the family's drawing
+           * anywhere on it stops looking like it belongs.
+           */}
+          <PixelRouteMark size={26} className="pro-layout__mark" />
+          <div>
+            <p className="pro-layout__eyebrow">Bus Stops</p>
+            <h1>Pro</h1>
+          </div>
         </div>
         <p className="pro-layout__intro">
           Public, read-only, and open without an account. Every figure states how it was measured,

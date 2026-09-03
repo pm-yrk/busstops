@@ -167,3 +167,16 @@
   grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
   gap: var(--space-lg);
 }
+
+/* The pixel mark sits with the title rather than beside the whole header, so it reads as part of
+   the wordmark and not as decoration floating in the layout. */
+.pro-layout__title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.pro-layout__mark {
+  flex: none;
+  opacity: 0.85;
+}

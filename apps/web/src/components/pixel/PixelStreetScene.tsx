@@ -52,104 +52,143 @@ export function PixelStreetScene({ className }: { className?: string }) {
   return (
     <div className={`street-scene ${className ?? ""}`.trim()} aria-hidden="true">
       <svg
-        viewBox="0 0 160 80"
+        viewBox="0 0 320 80"
         className="street-scene__canvas"
         role="presentation"
         focusable="false"
-        preserveAspectRatio="xMidYMax meet"
+        /*
+         * "slice" rather than "meet": the scene always fills the width of the hero, cropping
+         * whatever does not fit rather than shrinking into a letterboxed rectangle floating in
+         * the middle of the page. Anchored to the bottom centre, so a wide screen loses a sliver
+         * of sky and a phone crops to the middle of the street — where the shelter and the stop
+         * are — which is the responsive recomposition rather than hiding things.
+         */
+        preserveAspectRatio="xMidYMax slice"
       >
         {/* ---------------------------------------------------------------- sky */}
         <g className="street-scene__sky">
-          <rect x="132" y="6" width="10" height="10" fill={RED} opacity="0.9" />
-          <rect x="130" y="8" width="14" height="6" fill={RED} opacity="0.9" />
+          <rect x="268" y="8" width="10" height="10" fill={RED} opacity="0.9" />
+          <rect x="266" y="10" width="14" height="6" fill={RED} opacity="0.9" />
 
           <g fill={HAIRLINE}>
-            <rect x="18" y="12" width="18" height="4" />
-            <rect x="22" y="9" width="10" height="3" />
-            <rect x="66" y="7" width="14" height="3" />
-            <rect x="70" y="4" width="7" height="3" />
-            <rect x="104" y="16" width="12" height="3" />
+            <rect x="30" y="14" width="20" height="4" />
+            <rect x="35" y="11" width="11" height="3" />
+            <rect x="120" y="8" width="16" height="4" />
+            <rect x="125" y="5" width="8" height="3" />
+            <rect x="196" y="16" width="14" height="3" />
+            <rect x="200" y="13" width="7" height="3" />
+            <rect x="86" y="20" width="12" height="3" />
           </g>
         </g>
 
         {/* ------------------------------------------------------- background row */}
-        {/* Shop frontage: a terrace, so the street has a side rather than a backdrop. */}
+        {/* Shop terrace on the left: the street has a side, not a backdrop. */}
         <g className="street-scene__shops">
-          <rect x="6" y="26" width="34" height="26" fill={SURFACE} />
-          <rect x="6" y="26" width="34" height="2" fill={INK} />
-          <rect x="6" y="24" width="34" height="2" fill={RED} />
-          <rect x="9" y="31" width="9" height="8" fill={HAIRLINE} />
-          <rect x="21" y="31" width="9" height="8" fill={HAIRLINE} />
-          <rect x="33" y="31" width="4" height="8" fill={HAIRLINE} />
-          <rect x="9" y="42" width="10" height="10" fill={INK} />
-          <rect x="22" y="42" width="8" height="10" fill={HAIRLINE} />
-          {/* Awning stripes, the one place a little colour rhythm is worth the ink. */}
-          <rect x="20" y="40" width="12" height="2" fill={RED} />
-          <rect x="20" y="40" width="3" height="2" fill={SURFACE} />
-          <rect x="26" y="40" width="3" height="2" fill={SURFACE} />
+          <rect x="10" y="26" width="46" height="26" fill={SURFACE} />
+          <rect x="10" y="26" width="46" height="2" fill={INK} />
+          <rect x="10" y="24" width="46" height="2" fill={RED} />
+          <rect x="14" y="31" width="11" height="8" fill={HAIRLINE} />
+          <rect x="29" y="31" width="11" height="8" fill={HAIRLINE} />
+          <rect x="44" y="31" width="8" height="8" fill={HAIRLINE} />
+          <rect x="18" y="33" width="3" height="3" fill={RED} opacity="0.35" />
+          <rect x="14" y="42" width="12" height="10" fill={INK} />
+          <rect x="30" y="42" width="10" height="10" fill={HAIRLINE} />
+          {/* Awning stripes: the one place a little colour rhythm is worth the ink. */}
+          <rect x="28" y="40" width="14" height="2" fill={RED} />
+          <rect x="28" y="40" width="4" height="2" fill={SURFACE} />
+          <rect x="36" y="40" width="3" height="2" fill={SURFACE} />
         </g>
 
-        {/* Tree, behind the pavement line so it sits back in the composition. */}
         <g className="street-scene__tree">
-          <rect x="50" y="30" width="14" height="12" fill={INK} />
-          <rect x="48" y="33" width="18" height="6" fill={INK} />
-          <rect x="52" y="27" width="10" height="4" fill={INK} />
-          <rect x="55" y="42" width="4" height="10" fill={MUTED} />
+          {/* Stepped canopy: a silhouette with corners reads as foliage where a rounded mass
+              reads as a blob. */}
+          <rect x="71" y="24" width="8" height="3" fill={INK} />
+          <rect x="67" y="27" width="16" height="4" fill={INK} />
+          <rect x="65" y="31" width="20" height="5" fill={INK} />
+          <rect x="67" y="36" width="16" height="4" fill={INK} />
+          <rect x="71" y="40" width="8" height="3" fill={INK} />
+          <rect x="73" y="43" width="4" height="9" fill={MUTED} />
+          <rect x="70" y="51" width="10" height="1" fill={MUTED} />
         </g>
 
-        {/* Bus shelter: the most recognisable object on any street, so it is drawn in detail. */}
+        {/* Shelter, centred: the most recognisable object on any street, drawn in detail. */}
         <g className="street-scene__shelter">
-          <rect x="76" y="28" width="34" height="3" fill={INK} />
-          <rect x="76" y="31" width="3" height="21" fill={INK} />
-          <rect x="107" y="31" width="3" height="21" fill={INK} />
-          <rect x="79" y="31" width="28" height="17" fill={HAIRLINE} opacity="0.55" />
-          {/* Glazing bars and the timetable case people actually stand and read. */}
-          <rect x="92" y="31" width="1" height="17" fill={INK} opacity="0.5" />
-          <rect x="81" y="34" width="8" height="11" fill={SURFACE} />
-          <rect x="81" y="34" width="8" height="2" fill={RED} />
-          <rect x="82" y="38" width="6" height="1" fill={MUTED} />
-          <rect x="82" y="40" width="6" height="1" fill={MUTED} />
-          <rect x="82" y="42" width="4" height="1" fill={MUTED} />
+          <rect x="120" y="28" width="38" height="3" fill={INK} />
+          <rect x="120" y="31" width="3" height="21" fill={INK} />
+          <rect x="155" y="31" width="3" height="21" fill={INK} />
+          <rect x="123" y="31" width="32" height="17" fill={HAIRLINE} opacity="0.55" />
+          <rect x="139" y="31" width="1" height="17" fill={INK} opacity="0.5" />
+          {/* The timetable case people actually stand and read. */}
+          <rect x="125" y="34" width="9" height="12" fill={SURFACE} />
+          <rect x="125" y="34" width="9" height="2" fill={RED} />
+          <rect x="126" y="38" width="7" height="1" fill={MUTED} />
+          <rect x="126" y="40" width="7" height="1" fill={MUTED} />
+          <rect x="126" y="42" width="5" height="1" fill={MUTED} />
           {/* Bench inside the shelter. */}
-          <rect x="95" y="44" width="10" height="2" fill={INK} />
-          <rect x="96" y="46" width="2" height="4" fill={INK} />
-          <rect x="102" y="46" width="2" height="4" fill={INK} />
+          <rect x="142" y="44" width="11" height="2" fill={INK} />
+          <rect x="143" y="46" width="2" height="4" fill={INK} />
+          <rect x="150" y="46" width="2" height="4" fill={INK} />
         </g>
 
-        {/* Stop flag: the pole and the roundel that says which stop this is. */}
+        {/* Someone waiting. One figure, at the shelter, looking down the road the bus comes from. */}
+        <g className="street-scene__waiting">
+          <rect x="161" y="38" width="4" height="4" fill={INK} />
+          <rect x="160" y="42" width="6" height="7" fill={RED_DARK} />
+          <rect x="160" y="49" width="2" height="3" fill={INK} />
+          <rect x="164" y="49" width="2" height="3" fill={INK} />
+        </g>
+
+        {/* Stop flag on its pole: what tells you this is a stop and not a bench. */}
         <g className="street-scene__stop">
-          <rect x="118" y="24" width="3" height="28" fill={INK} />
-          <rect x="112" y="24" width="15" height="10" fill={RED} />
-          <rect x="114" y="27" width="11" height="4" fill={SURFACE} />
-          <rect x="116" y="28" width="2" height="2" fill={RED_DARK} />
-          <rect x="119" y="28" width="4" height="2" fill={RED_DARK} />
+          <rect x="172" y="24" width="3" height="28" fill={INK} />
+          <rect x="166" y="22" width="16" height="10" fill={RED} />
+          <rect x="168" y="25" width="12" height="4" fill={SURFACE} />
+          <rect x="170" y="26" width="2" height="2" fill={RED_DARK} />
+          <rect x="173" y="26" width="5" height="2" fill={RED_DARK} />
         </g>
 
-        {/* Street lamp, leaning over the carriageway the way they actually do. */}
+        {/* Bench and a second tree, so the right of the street is not empty. */}
+        <g className="street-scene__bench">
+          <rect x="192" y="44" width="14" height="2" fill={INK} />
+          <rect x="193" y="46" width="2" height="6" fill={INK} />
+          <rect x="203" y="46" width="2" height="6" fill={INK} />
+          <rect x="192" y="40" width="14" height="2" fill={INK} opacity="0.6" />
+        </g>
+
+        <g className="street-scene__tree street-scene__tree--far">
+          <rect x="220" y="29" width="7" height="3" fill={INK} opacity="0.85" />
+          <rect x="217" y="32" width="13" height="4" fill={INK} opacity="0.85" />
+          <rect x="219" y="36" width="9" height="3" fill={INK} opacity="0.85" />
+          <rect x="222" y="39" width="3" height="13" fill={MUTED} />
+        </g>
+
+        {/* A second frontage on the right, lower, so the terrace does not repeat itself. */}
+        <g className="street-scene__building">
+          <rect x="244" y="32" width="40" height="20" fill={SURFACE} />
+          <rect x="244" y="32" width="40" height="2" fill={INK} />
+          <rect x="248" y="37" width="9" height="7" fill={HAIRLINE} />
+          <rect x="261" y="37" width="9" height="7" fill={HAIRLINE} />
+          <rect x="274" y="37" width="6" height="7" fill={HAIRLINE} />
+          <rect x="248" y="46" width="10" height="6" fill={INK} />
+        </g>
+
         <g className="street-scene__lamp">
-          <rect x="140" y="20" width="3" height="32" fill={INK} />
-          <rect x="134" y="20" width="9" height="2" fill={INK} />
-          <rect x="132" y="21" width="4" height="3" fill={RED} opacity="0.85" />
+          <rect x="300" y="20" width="3" height="32" fill={INK} />
+          <rect x="294" y="20" width="9" height="2" fill={INK} />
+          <rect x="292" y="21" width="4" height="3" fill={RED} opacity="0.85" />
         </g>
 
         {/* ---------------------------------------------------------- pavement */}
-        <rect x="0" y="52" width="160" height="4" fill={SURFACE} />
-        <rect x="0" y="52" width="160" height="1" fill={HAIRLINE} />
-        {/* Kerb: one darker unit is all it takes to read as a step down to the road. */}
-        <rect x="0" y="56" width="160" height="2" fill={MUTED} opacity="0.5" />
+        <rect x="0" y="52" width="320" height="4" fill={SURFACE} />
+        <rect x="0" y="52" width="320" height="1" fill={HAIRLINE} />
+        <rect x="0" y="56" width="320" height="2" fill={MUTED} opacity="0.5" />
 
         {/* -------------------------------------------------------------- road */}
-        <rect x="0" y="58" width="160" height="22" fill={INK} />
+        <rect x="0" y="58" width="320" height="22" fill={INK} />
         <g className="street-scene__markings" fill={SURFACE} opacity="0.85">
-          <rect x="4" y="68" width="10" height="1.5" />
-          <rect x="22" y="68" width="10" height="1.5" />
-          <rect x="40" y="68" width="10" height="1.5" />
-          <rect x="58" y="68" width="10" height="1.5" />
-          <rect x="76" y="68" width="10" height="1.5" />
-          <rect x="94" y="68" width="10" height="1.5" />
-          <rect x="112" y="68" width="10" height="1.5" />
-          <rect x="130" y="68" width="10" height="1.5" />
-          <rect x="148" y="68" width="10" height="1.5" />
+          {Array.from({ length: 18 }, (_, index) => (
+            <rect key={index} x={4 + index * 18} y="68" width="10" height="1.5" />
+          ))}
         </g>
 
         {/* Buses. Two liveries, two lanes, two speeds, so the street feels in use. */}

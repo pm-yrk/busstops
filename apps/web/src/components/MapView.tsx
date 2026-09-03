@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import maplibregl, { type Map as MapLibreMap, type StyleSpecification } from "maplibre-gl";
 import type { MapStopSummary, MapVehicleSummary } from "@busstops/contracts";
 import type { Bounds } from "../lib/geo.js";
+import { PIXEL_BUS_MARKER, PIXEL_STOP_MARKER } from "./pixel/pixelMarkers.js";
 import "maplibre-gl/dist/maplibre-gl.css";
 import "./MapView.css";
 
@@ -116,6 +117,8 @@ export function MapView({
           "aria-label",
           `${stop.name}${stop.indicator ? `, ${stop.indicator}` : ""}`,
         );
+        // Static markup with no interpolated data; everything about this stop is on the element.
+        element.innerHTML = PIXEL_STOP_MARKER;
         element.addEventListener("click", () => onSelectStop?.(stop.atcoCode));
 
         markersRef.current.push(
@@ -135,8 +138,13 @@ export function MapView({
           "aria-label",
           `${vehicle.routePublicName ?? "Bus"} to ${vehicle.destinationName ?? "unknown destination"}`,
         );
+        element.innerHTML = PIXEL_BUS_MARKER;
         if (vehicle.bearingDegrees !== null) {
           element.style.setProperty("--bearing", `${vehicle.bearingDegrees}deg`);
+          // A drawn bus has a front, unlike a dot: heading west it must be mirrored rather than
+          // rotated upside down.
+          const westbound = vehicle.bearingDegrees > 180;
+          element.classList.toggle("map-marker--westbound", westbound);
         }
         // A stale position is drawn differently, so the map cannot imply false freshness.
         if (vehicle.freshnessSeconds > 180) element.classList.add("map-marker--stale");

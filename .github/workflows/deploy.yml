@@ -113,9 +113,12 @@ jobs:
       - name: Build the web app against the deployed Worker
         env:
           VITE_API_URL: ${{ steps.worker.outputs.url }}
+          VITE_MAP_STYLE_URL: "https://tiles.openfreemap.org/styles/liberty"
         run: |
           npm run build --workspace @busstops/web
-          node scripts/generate-headers.mjs apps/web/dist "${{ steps.worker.outputs.url }}"
+          node scripts/generate-headers.mjs apps/web/dist \
+            "${{ steps.worker.outputs.url }}" \
+            "https://tiles.openfreemap.org"
 
       - name: Confirm the security headers shipped
         run: |

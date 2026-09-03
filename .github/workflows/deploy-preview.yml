@@ -34,6 +34,12 @@ env:
   # The governor cannot read the Cloudflare dashboard. A fresh preview account has spent nothing,
   # so zero is the honest starting figure rather than a guess.
   BUDGET_UTILIZATION: "0"
+  # OpenFreeMap's Liberty style. Verified by scripts/verify-basemap.mjs against the live service:
+  # the style, its tiles, its sprite sheet and its glyphs are all on this one host, and a tile
+  # fetched with no key answered 200. Free, keyless and open is a property that can change, so it
+  # is checked rather than assumed — re-run "Verify sources and artifacts" before trusting it.
+  MAP_STYLE_URL: "https://tiles.openfreemap.org/styles/liberty"
+  MAP_ORIGIN: "https://tiles.openfreemap.org"
 
 jobs:
   preview:
@@ -147,11 +153,16 @@ jobs:
         env:
           # Baked in at build time: the app calls this exact origin, with no runtime lookup.
           VITE_API_URL: ${{ steps.worker.outputs.url }}
+          # Without this the map deliberately renders nothing rather than falling back to some
+          # other tile server, so a preview with no style configured has no map at all.
+          VITE_MAP_STYLE_URL: ${{ env.MAP_STYLE_URL }}
         run: npm run build --workspace @busstops/web
 
       - name: Generate the Content-Security-Policy for that origin
         run: |
-          node scripts/generate-headers.mjs apps/web/dist "${{ steps.worker.outputs.url }}"
+          node scripts/generate-headers.mjs apps/web/dist \
+            "${{ steps.worker.outputs.url }}" \
+            "$MAP_ORIGIN"
           test -f apps/web/dist/_redirects || { echo "::error::_redirects missing"; exit 1; }
           echo "--- generated policy ---"
           grep -m1 'Content-Security-Policy' apps/web/dist/_headers

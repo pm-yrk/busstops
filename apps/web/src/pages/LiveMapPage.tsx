@@ -7,6 +7,7 @@ import { clampBoundsToMaxArea, type Bounds } from "../lib/geo.js";
 import { delayLabel, distanceLabel, freshnessLabel } from "../lib/format.js";
 import { LoadingBus } from "../components/LoadingBus.js";
 import { MapView } from "../components/MapView.js";
+import { SelectedStopBoard } from "../components/SelectedStopBoard.js";
 import {
   DataAge,
   EmptyState,
@@ -39,6 +40,8 @@ type LayerKey = "stops" | "vehicles";
 
 export function LiveMapPage() {
   const [bounds, setBounds] = useState<Bounds>(DEFAULT_VIEW);
+  // The stop whose arrival board is open over the map, by ATCO code. Null when none is selected.
+  const [selectedStop, setSelectedStop] = useState<string | null>(null);
   const [zoom, setZoom] = useState(15);
   const [layers, setLayers] = useState<Record<LayerKey, boolean>>({ stops: true, vehicles: true });
   const [locating, setLocating] = useState(false);
@@ -163,20 +166,25 @@ export function LiveMapPage() {
 
         {response && (
           <>
-            <MapView
-              bounds={bounds}
-              stops={stops}
-              vehicles={vehicles}
-              showStops={layers.stops}
-              showVehicles={layers.vehicles}
-              onSelectStop={(atcoCode) => {
-                globalThis.location.assign(`/stops/${atcoCode}`);
-              }}
-              onBoundsChange={(next, nextZoom) => {
-                setBounds(next);
-                setZoom(nextZoom);
-              }}
-            />
+            <div className="live-map__canvas">
+              <MapView
+                bounds={bounds}
+                stops={stops}
+                vehicles={vehicles}
+                selectedStopId={selectedStop}
+                showStops={layers.stops}
+                showVehicles={layers.vehicles}
+                onSelectStop={setSelectedStop}
+                onBoundsChange={(next, nextZoom) => {
+                  setBounds(next);
+                  setZoom(nextZoom);
+                }}
+              />
+
+              {selectedStop && (
+                <SelectedStopBoard atcoCode={selectedStop} onClose={() => setSelectedStop(null)} />
+              )}
+            </div>
 
             {/*
               The list is the map's equal, not its fallback: it carries the same objects in the

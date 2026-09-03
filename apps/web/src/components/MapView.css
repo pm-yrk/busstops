@@ -23,7 +23,14 @@
   margin: 0;
 }
 
-/* Markers are real controls: 44px targets, visible focus, no hover-only affordance. */
+/*
+ * Markers are real controls: 44px targets, visible focus, no hover-only affordance.
+ *
+ * The drawing inside is a pixel sprite rather than a CSS circle, so a stop on the map is the same
+ * object as the stop flag in the hero scene and a bus is the same bus. The 44px target is the
+ * button; the sprite inside it is smaller, which is what keeps a dense viewport legible while
+ * still being comfortably tappable.
+ */
 .map-marker {
   width: var(--min-touch-target);
   height: var(--min-touch-target);
@@ -33,36 +40,42 @@
   cursor: pointer;
   display: grid;
   place-items: center;
+  /* Consumed by the sprite markup, so one element can be red, blue or hollow without new SVG. */
+  --marker-body: var(--colour-red);
+  --marker-roof: var(--colour-red-dark);
+  --marker-flag: var(--colour-ink);
 }
 
-.map-marker::before {
-  content: "";
-  display: block;
-  width: 14px;
-  height: 14px;
-  border-radius: var(--radius-pill);
-  border: 2px solid var(--colour-ink);
-  background: var(--colour-surface);
+.map-marker--selected {
+  --marker-flag: var(--colour-red);
 }
 
-.map-marker--selected::before {
-  background: var(--colour-red);
-  border-color: var(--colour-red);
-  width: 18px;
-  height: 18px;
+.map-marker--selected svg {
+  transform: scale(1.25);
 }
 
-.map-marker--vehicle::before {
-  border-radius: var(--radius-sm);
-  background: var(--colour-red);
-  border-color: var(--colour-red-dark);
-  transform: rotate(var(--bearing, 0deg));
+.map-marker--vehicle {
+  /* Rotation follows the reported bearing, offset because the sprite is drawn facing east. */
+  transform: rotate(calc(var(--bearing, 90deg) - 90deg));
 }
 
-/* Stale positions are hollow as well as paler: never colour alone. */
-.map-marker--stale::before {
-  background: var(--colour-surface);
-  border-style: dashed;
+/* Heading west, the bus is mirrored rather than turned upside down. */
+.map-marker--westbound {
+  transform: rotate(calc(270deg - var(--bearing, 90deg))) scaleX(-1);
+}
+
+/*
+ * A stale position is hollow as well as paler: never colour alone, and never a bus drawn exactly
+ * like a fresh one when we do not know where it is any more.
+ */
+.map-marker--stale {
+  --marker-body: var(--colour-surface);
+  --marker-roof: var(--colour-muted);
+  opacity: 0.75;
+}
+
+.map-marker--stale svg {
+  outline: 1px dashed var(--colour-muted);
 }
 
 .map-marker:focus-visible {

@@ -4,7 +4,14 @@
   min-height: 100dvh;
 }
 
+/*
+ * The header's height is a number the home hero subtracts to fill the first screen exactly, so it
+ * is declared and enforced rather than left to whatever the content happens to make it.
+ */
 .app__header {
+  height: var(--header-height);
+  display: flex;
+  align-items: center;
   position: sticky;
   top: 0;
   z-index: var(--z-header);
@@ -13,6 +20,10 @@
 }
 
 .app__header-inner {
+  /* The header is a flex container so it can hold a fixed height; without these the inner sizes
+     to its content instead of to the header, and a long nav pushes the page sideways. */
+  width: 100%;
+  min-width: 0;
   max-width: 1180px;
   margin: 0 auto;
   padding: var(--space-sm) var(--space-md);
@@ -112,6 +123,9 @@
   }
   .app__nav {
     width: 100%;
+    /* Allowed to shrink below its content so the horizontal scroll happens inside the nav rather
+       than the document. */
+    min-width: 0;
     overflow-x: auto;
     flex-wrap: nowrap;
     /* Horizontal scroll rather than wrapping keeps the header compact at 320px. */

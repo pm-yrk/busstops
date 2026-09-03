@@ -77,6 +77,16 @@
   --z-map-overlay: 10;
   --z-sheet: 20;
   --z-header: 30;
+
+  /*
+   * The header's height, read by the home hero so it can fill exactly the space below it.
+   *
+   * Declared here rather than in App.css because both would set it on :root and the later import
+   * would win — a cascade accident is not a good reason for the hero to be the wrong height. The
+   * header is given this height rather than merely a minimum, so the number stays true, and the
+   * visual QA asserts the scene lands on the fold rather than trusting it.
+   */
+  --header-height: 3.8rem;
   --z-banner: 40;
   --z-modal: 50;
 }
@@ -98,5 +108,15 @@
   :root {
     --colour-hairline: #8a8880;
     --colour-muted: #3d3b37;
+  }
+}
+
+/*
+ * On a phone the header wraps the nav onto a second row, so it is taller. The hero subtracts
+ * whichever value is live, which is why there is one variable and not two independent guesses.
+ */
+@media (max-width: 640px) {
+  :root {
+    --header-height: 7.6rem;
   }
 }

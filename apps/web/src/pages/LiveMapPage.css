@@ -125,3 +125,8 @@
     border-bottom: 1px solid var(--colour-hairline);
   }
 }
+
+/* The map and the board it opens share a stacking context, so the board can sit over the map. */
+.live-map__canvas {
+  position: relative;
+}

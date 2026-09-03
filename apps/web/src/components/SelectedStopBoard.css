@@ -1,0 +1,55 @@
+/*
+ * The board sits over the map rather than beside it: on a phone it is a sheet at the bottom of
+ * the screen, on a wide screen a panel in the corner. Either way the map stays visible behind it,
+ * which is the reason for opening it in place instead of navigating.
+ */
+.selected-stop {
+  position: absolute;
+  z-index: 2;
+  inset: auto var(--space-md) var(--space-md) var(--space-md);
+  max-width: 380px;
+  padding: var(--space-md);
+  border-radius: var(--radius-md);
+  background: var(--colour-surface);
+  border: 1px solid var(--colour-hairline);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 18%);
+}
+
+@media (min-width: 900px) {
+  .selected-stop {
+    inset: var(--space-md) var(--space-md) auto auto;
+  }
+}
+
+.selected-stop__close {
+  position: absolute;
+  top: var(--space-xs);
+  right: var(--space-xs);
+  width: var(--min-touch-target);
+  height: var(--min-touch-target);
+  border: none;
+  background: transparent;
+  font-size: var(--font-size-h3);
+  line-height: 1;
+  color: var(--colour-muted);
+  cursor: pointer;
+}
+
+.selected-stop__close:focus-visible {
+  outline: 2px solid var(--colour-red);
+  outline-offset: -2px;
+  border-radius: var(--radius-sm);
+}
+
+.selected-stop__error {
+  margin: 0;
+  padding-right: var(--space-lg);
+  color: var(--colour-muted);
+  font-size: var(--font-size-small);
+}
+
+.selected-stop__more {
+  display: inline-block;
+  margin-top: var(--space-sm);
+  font-size: var(--font-size-small);
+}

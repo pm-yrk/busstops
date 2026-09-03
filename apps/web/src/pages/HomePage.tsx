@@ -19,20 +19,21 @@ export function HomePage() {
   return (
     <div className="home">
       <section className="home__hero" aria-label="Bus Stops.">
-        <div className="home__hero-mark">
+        <div className="home__hero-top">
           <Wordmark variant="stacked" size="hero" as="h1" />
+
+          {/*
+           * A cue rather than a control: the page scrolls normally, and an arrow that looked like
+           * a button would promise behaviour it does not have.
+           */}
+          <div className="home__scroll-cue" aria-hidden="true">
+            <span className="home__scroll-cue-text">Scroll</span>
+            <span className="home__scroll-cue-line" />
+          </div>
         </div>
 
+        {/* Full-bleed: the street runs off both edges, so it reads as a street and not a card. */}
         <PixelStreetScene className="home__hero-scene" />
-
-        {/*
-         * A cue rather than a control: the page scrolls normally, and an arrow that looked like a
-         * button would promise behaviour it does not have.
-         */}
-        <div className="home__scroll-cue" aria-hidden="true">
-          <span className="home__scroll-cue-text">Scroll</span>
-          <span className="home__scroll-cue-line" />
-        </div>
       </section>
 
       <section className="home__intro page">
