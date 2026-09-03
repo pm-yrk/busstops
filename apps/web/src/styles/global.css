@@ -53,7 +53,7 @@ a {
 }
 
 a:hover {
-  color: var(--colour-red);
+  color: var(--colour-red-text);
 }
 
 /* A visible focus ring everywhere: keyboard users must always know where they are. */

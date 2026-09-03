@@ -114,9 +114,7 @@ function ArrivalRow({ departure, now }: { departure: DeparturePrediction; now: D
           {state.label}
         </span>
         {time && (
-          <span className="arrival-board__clock micro muted">
-            {formatLondonTime(new Date(time))}
-          </span>
+          <span className="arrival-board__clock micro">{formatLondonTime(new Date(time))}</span>
         )}
       </td>
     </tr>

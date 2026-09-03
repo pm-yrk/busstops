@@ -16,7 +16,7 @@
   font-size: var(--font-size-micro);
   letter-spacing: 0.2em;
   text-transform: uppercase;
-  color: var(--colour-red);
+  color: var(--colour-red-text);
 }
 
 .pro-layout__header h1 {

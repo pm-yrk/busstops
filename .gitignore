@@ -19,3 +19,8 @@ tests/fixtures/raw/
 # Pipeline run reports
 build-report.json
 network-changes.json
+
+# Playwright output
+/test-results/
+/playwright-report/
+/blob-report/

@@ -2,6 +2,7 @@ import { Suspense, lazy } from "react";
 import { Link, NavLink, Route, Routes, useLocation } from "react-router-dom";
 import { Wordmark } from "./components/Wordmark.js";
 import { LoadingBus } from "./components/LoadingBus.js";
+import { ErrorBoundary } from "./components/ErrorBoundary.js";
 import { HomePage } from "./pages/HomePage.js";
 import { StopPage } from "./pages/StopPage.js";
 import { VehiclePage } from "./pages/VehiclePage.js";
@@ -79,39 +80,42 @@ export function App() {
       </header>
 
       <main id="main" className="app__main" tabIndex={-1}>
-        <Suspense fallback={<LoadingBus label="Loading the map" />}>
-          <Routes>
-            <Route path="/" element={<HomePage />} />
-            <Route path="/live" element={<LiveMapPage />} />
-            <Route path="/live/stops/:stopId" element={<LiveMapPage />} />
-            <Route path="/stops/:stopId" element={<StopPage />} />
-            <Route path="/vehicles/:vehicleRef" element={<VehiclePage />} />
-            <Route path="/routes/:routeId" element={<RoutePage />} />
-            <Route path="/operators/:operatorId" element={<OperatorPage />} />
-            <Route path="/disruptions" element={<DisruptionsPage />} />
-            <Route path="/journey" element={<JourneyPage />} />
-            <Route path="/unsubscribe" element={<UnsubscribePage />} />
-            <Route path="/pro" element={<ProLayout />}>
-              <Route index element={<ControlTowerPage />} />
-              <Route path="live" element={<LiveOperationsPage />} />
-              <Route path="routes" element={<RoutesPage />} />
-              <Route path="operators" element={<OperatorsPage />} />
-              <Route path="congestion" element={<CongestionPage />} />
-              <Route path="analytics" element={<AnalyticsPage />} />
-              <Route path="reports" element={<ReportsPage />} />
-              <Route path="brief" element={<DailyBriefPage />} />
-              <Route path="settings" element={<ProSettingsPage />} />
-            </Route>
-            <Route path="/search" element={<SearchPage />} />
-            <Route path="/saved" element={<SavedPage />} />
-            <Route path="/methodology" element={<MethodologyPage />} />
-            <Route path="/about" element={<LegalPages page="about" />} />
-            <Route path="/privacy" element={<LegalPages page="privacy" />} />
-            <Route path="/terms" element={<LegalPages page="terms" />} />
-            <Route path="/contact" element={<LegalPages page="contact" />} />
-            <Route path="*" element={<NotFoundPage />} />
-          </Routes>
-        </Suspense>
+        {/* A failure in one page degrades to a panel rather than blanking the whole app. */}
+        <ErrorBoundary resetKey={location.pathname}>
+          <Suspense fallback={<LoadingBus label="Loading the map" />}>
+            <Routes>
+              <Route path="/" element={<HomePage />} />
+              <Route path="/live" element={<LiveMapPage />} />
+              <Route path="/live/stops/:stopId" element={<LiveMapPage />} />
+              <Route path="/stops/:stopId" element={<StopPage />} />
+              <Route path="/vehicles/:vehicleRef" element={<VehiclePage />} />
+              <Route path="/routes/:routeId" element={<RoutePage />} />
+              <Route path="/operators/:operatorId" element={<OperatorPage />} />
+              <Route path="/disruptions" element={<DisruptionsPage />} />
+              <Route path="/journey" element={<JourneyPage />} />
+              <Route path="/unsubscribe" element={<UnsubscribePage />} />
+              <Route path="/pro" element={<ProLayout />}>
+                <Route index element={<ControlTowerPage />} />
+                <Route path="live" element={<LiveOperationsPage />} />
+                <Route path="routes" element={<RoutesPage />} />
+                <Route path="operators" element={<OperatorsPage />} />
+                <Route path="congestion" element={<CongestionPage />} />
+                <Route path="analytics" element={<AnalyticsPage />} />
+                <Route path="reports" element={<ReportsPage />} />
+                <Route path="brief" element={<DailyBriefPage />} />
+                <Route path="settings" element={<ProSettingsPage />} />
+              </Route>
+              <Route path="/search" element={<SearchPage />} />
+              <Route path="/saved" element={<SavedPage />} />
+              <Route path="/methodology" element={<MethodologyPage />} />
+              <Route path="/about" element={<LegalPages page="about" />} />
+              <Route path="/privacy" element={<LegalPages page="privacy" />} />
+              <Route path="/terms" element={<LegalPages page="terms" />} />
+              <Route path="/contact" element={<LegalPages page="contact" />} />
+              <Route path="*" element={<NotFoundPage />} />
+            </Routes>
+          </Suspense>
+        </ErrorBoundary>
       </main>
 
       <footer className="app__footer no-print">

@@ -13,6 +13,19 @@
 
   --colour-red: #e5242a;
   --colour-red-dark: #b3161b;
+  /*
+   * Red text on a light ground. The brand red is a 3.6:1 contrast on white, which fails WCAG AA
+   * for anything below 24px, so small red text uses the darker shade. The bright red stays for
+   * large type, fills and borders, where the ratio is met or does not apply.
+   */
+  --colour-red-text: #b3161b;
+  /*
+   * The same problem inverted: the brand red on the near-black arrival board is 4.1:1, just under
+   * AA for small text. This lighter red clears it while still reading as the same red.
+   */
+  --colour-red-on-dark: #ff6b6f;
+  /* Muted text on a dark ground. The light-background muted grey is unreadable there. */
+  --colour-muted-on-dark: #b9b6ae;
   --colour-red-pale: #fcebeb;
 
   --colour-blue: #1557ff;

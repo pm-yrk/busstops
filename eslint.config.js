@@ -99,7 +99,9 @@ export default [
     },
   },
   {
-    files: ["apps/web/**/*.{ts,tsx}"],
+    // The end-to-end suite runs in Node but evaluates code inside the browser via page.evaluate,
+    // so it legitimately references browser globals.
+    files: ["apps/web/**/*.{ts,tsx}", "tests/e2e/**/*.ts"],
     languageOptions: {
       globals: browserGlobals,
     },

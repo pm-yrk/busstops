@@ -24,7 +24,7 @@
   font-family: var(--font-pixel);
   font-size: var(--font-size-small);
   letter-spacing: 0.14em;
-  color: var(--colour-red);
+  color: var(--colour-red-on-dark);
   margin: 0 0 var(--space-xs);
 }
 
@@ -118,7 +118,11 @@
 
 .arrival-board__clock {
   display: block;
-  color: rgba(255, 255, 255, 0.55);
+  /*
+   * Overrides the .muted class, which is calibrated for the light canvas and is unreadable on the
+   * board's near-black ground. Specificity here is deliberate, not accidental.
+   */
+  color: var(--colour-muted-on-dark);
 }
 
 .arrival-board__empty {

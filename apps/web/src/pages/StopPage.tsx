@@ -50,23 +50,33 @@ export function StopPage() {
 
   const now = useTicker();
 
-  // Favourite state is derived from storage during render, with the stop id as the reset key,
-  // rather than synchronised through an effect that would render twice on every navigation.
-  const [favouriteState, setFavouriteState] = useState(() => ({
-    stopId,
-    favourited: isFavourited("stop", stopId),
-  }));
-  if (favouriteState.stopId !== stopId) {
-    setFavouriteState({ stopId, favourited: isFavourited("stop", stopId) });
-  }
-  const favourited = favouriteState.favourited;
-
   const ageSeconds = useMemo(() => {
     if (!response?.meta.observedAt) return null;
     return Math.max(0, (now.getTime() - new Date(response.meta.observedAt).getTime()) / 1000);
   }, [response, now]);
 
   const stop = response?.data.stop;
+
+  /*
+   * Favourites are keyed on the ATCO code, which is the stop's canonical public identity and the
+   * only key that is stable whichever form of URL the visitor arrived by. Reading and writing must
+   * use the same key: keying the write on the ATCO code while reading by the URL parameter meant a
+   * saved stop silently never showed as saved.
+   *
+   * The key is only known once the stop has loaded, so the flag is derived from the loaded stop
+   * rather than seeded from the URL, with a counter to re-read storage after a toggle.
+   */
+  const [favouriteState, setFavouriteState] = useState<{
+    atcoCode: string | null;
+    favourited: boolean;
+  }>({ atcoCode: null, favourited: false });
+
+  // Derived during render with the ATCO code as the reset key, rather than through an effect that
+  // would render twice on every navigation.
+  if (stop && favouriteState.atcoCode !== stop.atcoCode) {
+    setFavouriteState({ atcoCode: stop.atcoCode, favourited: isFavourited("stop", stop.atcoCode) });
+  }
+  const favourited = favouriteState.favourited;
 
   const walkingUrl = useMemo(() => {
     if (!stop) return null;
@@ -132,7 +142,7 @@ export function StopPage() {
       ...(stop.indicator === undefined ? {} : { subtitle: stop.indicator }),
     });
     setStorageBlocked(!stored);
-    setFavouriteState({ stopId, favourited: isFavourited("stop", stop.atcoCode) });
+    setFavouriteState({ atcoCode: stop.atcoCode, favourited: isFavourited("stop", stop.atcoCode) });
   };
 
   return (

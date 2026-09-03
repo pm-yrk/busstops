@@ -1,3 +1,16 @@
+import {
+  AnalyticsResponseSchema,
+  CongestionResponseSchema,
+  ControlTowerResponseSchema,
+  LiveOperationsResponseSchema,
+  MapResponseSchema,
+  OperatorsResponseSchema,
+  ReportResponseSchema,
+  RoutesResponseSchema,
+  SearchResponseSchema,
+  StopDeparturesResponseSchema,
+  apiEnvelope,
+} from "@busstops/contracts";
 import type {
   AnalyticsResponse,
   CongestionResponse,
@@ -57,7 +70,11 @@ export class ApiClient {
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
   }
 
-  private async request<T>(path: string, signal?: AbortSignal): Promise<T> {
+  private async request<T>(
+    path: string,
+    signal?: AbortSignal,
+    schema?: { safeParse: (value: unknown) => { success: boolean; data?: unknown } },
+  ): Promise<T> {
     const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
       headers: { Accept: "application/json" },
       ...(signal ? { signal } : {}),
@@ -80,7 +97,24 @@ export class ApiClient {
       throw new ApiError(message, response.status, code, retryAfterSeconds);
     }
 
-    return (await response.json()) as T;
+    const body = (await response.json()) as unknown;
+
+    // Validated at the boundary when a schema is supplied. Rendering an unvalidated payload is
+    // how a malformed response becomes a blank white page instead of an error state — and the
+    // person looking at it has no idea whether the bus is coming or the site is broken.
+    if (schema) {
+      const parsed = schema.safeParse(body);
+      if (!parsed.success) {
+        throw new ApiError(
+          "The server sent a response we could not read. This is a problem at our end, not yours.",
+          502,
+          "invalid_response",
+        );
+      }
+      return parsed.data as T;
+    }
+
+    return body as T;
   }
 
   map(
@@ -94,11 +128,16 @@ export class ApiClient {
     return this.request<MapResponse>(
       `/v1/map?bbox=${encodeURIComponent(bboxParam)}&zoom=${Math.round(zoom)}`,
       signal,
+      MapResponseSchema,
     );
   }
 
   stop(id: string, signal?: AbortSignal): Promise<StopDeparturesResponse> {
-    return this.request<StopDeparturesResponse>(`/v1/stops/${encodeURIComponent(id)}`, signal);
+    return this.request<StopDeparturesResponse>(
+      `/v1/stops/${encodeURIComponent(id)}`,
+      signal,
+      StopDeparturesResponseSchema,
+    );
   }
 
   search(
@@ -111,7 +150,11 @@ export class ApiClient {
       params.set("lat", near.lat.toFixed(5));
       params.set("lon", near.lon.toFixed(5));
     }
-    return this.request<SearchResponse>(`/v1/search?${params.toString()}`, signal);
+    return this.request<SearchResponse>(
+      `/v1/search?${params.toString()}`,
+      signal,
+      SearchResponseSchema,
+    );
   }
 
   nearby(
@@ -124,7 +167,11 @@ export class ApiClient {
       lon: coordinate.lon.toFixed(5),
       radius: String(radiusMetres),
     });
-    return this.request<SearchResponse>(`/v1/nearby?${params.toString()}`, signal);
+    return this.request<SearchResponse>(
+      `/v1/nearby?${params.toString()}`,
+      signal,
+      SearchResponseSchema,
+    );
   }
 
   /**
@@ -194,37 +241,71 @@ export class ApiClient {
     return query.length > 0 ? `?${query}` : "";
   }
 
+  private static readonly PRO_SCHEMAS = {
+    controlTower: apiEnvelope(ControlTowerResponseSchema),
+    liveOperations: apiEnvelope(LiveOperationsResponseSchema),
+    routes: apiEnvelope(RoutesResponseSchema),
+    operators: apiEnvelope(OperatorsResponseSchema),
+    congestion: apiEnvelope(CongestionResponseSchema),
+    analytics: apiEnvelope(AnalyticsResponseSchema),
+    report: apiEnvelope(ReportResponseSchema),
+  };
+
   proControlTower(
     scope?: ProScopeQuery,
     signal?: AbortSignal,
   ): Promise<{ data: ControlTowerResponse }> {
-    return this.request(`/v1/pro/control-tower${this.proQuery(scope)}`, signal);
+    return this.request(
+      `/v1/pro/control-tower${this.proQuery(scope)}`,
+      signal,
+      ApiClient.PRO_SCHEMAS.controlTower,
+    );
   }
 
   proLiveOperations(
     scope?: ProScopeQuery,
     signal?: AbortSignal,
   ): Promise<{ data: LiveOperationsResponse }> {
-    return this.request(`/v1/pro/live-operations${this.proQuery(scope)}`, signal);
+    return this.request(
+      `/v1/pro/live-operations${this.proQuery(scope)}`,
+      signal,
+      ApiClient.PRO_SCHEMAS.liveOperations,
+    );
   }
 
   proRoutes(scope?: ProScopeQuery, signal?: AbortSignal): Promise<{ data: RoutesResponse }> {
-    return this.request(`/v1/pro/routes${this.proQuery(scope)}`, signal);
+    return this.request(
+      `/v1/pro/routes${this.proQuery(scope)}`,
+      signal,
+      ApiClient.PRO_SCHEMAS.routes,
+    );
   }
 
   proOperators(scope?: ProScopeQuery, signal?: AbortSignal): Promise<{ data: OperatorsResponse }> {
-    return this.request(`/v1/pro/operators${this.proQuery(scope)}`, signal);
+    return this.request(
+      `/v1/pro/operators${this.proQuery(scope)}`,
+      signal,
+      ApiClient.PRO_SCHEMAS.operators,
+    );
   }
 
   proCongestion(
     scope?: ProScopeQuery,
     signal?: AbortSignal,
   ): Promise<{ data: CongestionResponse }> {
-    return this.request(`/v1/pro/congestion${this.proQuery(scope)}`, signal);
+    return this.request(
+      `/v1/pro/congestion${this.proQuery(scope)}`,
+      signal,
+      ApiClient.PRO_SCHEMAS.congestion,
+    );
   }
 
   proAnalytics(scope?: ProScopeQuery, signal?: AbortSignal): Promise<{ data: AnalyticsResponse }> {
-    return this.request(`/v1/pro/analytics${this.proQuery(scope)}`, signal);
+    return this.request(
+      `/v1/pro/analytics${this.proQuery(scope)}`,
+      signal,
+      ApiClient.PRO_SCHEMAS.analytics,
+    );
   }
 
   proReport(
@@ -236,6 +317,7 @@ export class ApiClient {
     return this.request(
       `/v1/pro/reports${query.length > 0 ? `${query}&` : "?"}period=${period}`,
       signal,
+      ApiClient.PRO_SCHEMAS.report,
     );
   }
 
