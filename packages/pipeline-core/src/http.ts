@@ -162,6 +162,27 @@ export class SourceClient {
   }
 
   async fetchText(url: string, options: FetchOptions = {}): Promise<string> {
+    return this.fetchWith(url, options, (response) => response.text());
+  }
+
+  /**
+   * The same retry, backoff, circuit-breaker and health accounting as fetchText, for a body that
+   * is not text. BODS publishes every timetable dataset as a zip archive, and decoding one as
+   * text is a silent corruption rather than an error: the XML parser simply finds nothing.
+   */
+  async fetchBytes(url: string, options: FetchOptions = {}): Promise<Uint8Array> {
+    return this.fetchWith(
+      url,
+      options,
+      async (response) => new Uint8Array(await response.arrayBuffer()),
+    );
+  }
+
+  private async fetchWith<T>(
+    url: string,
+    options: FetchOptions,
+    read: (response: Response) => Promise<T>,
+  ): Promise<T> {
     const {
       timeoutMs = 8_000,
       maxAttempts = 3,
@@ -187,7 +208,7 @@ export class SourceClient {
         });
 
         if (response.ok) {
-          const body = await response.text();
+          const body = await read(response);
           this.breaker.recordSuccess();
           this.lastSuccessAt = new Date(this.nowMs).toISOString();
           this.lastMessage = undefined;

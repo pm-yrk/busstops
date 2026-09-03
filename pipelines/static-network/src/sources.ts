@@ -1,5 +1,6 @@
 import { SourceClient } from "@busstops/pipeline-core";
 import { getSourceRegistryEntry, type SourceHealth } from "@busstops/contracts";
+import { isZipArchive, readTransXChangeFromZip } from "./zip.js";
 
 /**
  * Fetches the national static datasets. Every request is bounded, retried with jitter and
@@ -80,9 +81,29 @@ export async function fetchStaticSources(
       for (const dataset of catalogue.results ?? []) {
         if (!dataset.url) continue;
         try {
-          transXChangeDocuments.push(
-            await bodsClient.fetchText(dataset.url, { timeoutMs: 120_000 }),
-          );
+          // Verified against the live catalogue on 2026-09-03: every published dataset reports
+          // `extension: "zip"` and the download answers `application/zip`. Fetching the bytes and
+          // unpacking is therefore the normal path, not a fallback — but a dataset served as bare
+          // XML is still read directly, because the catalogue is the publisher's to change.
+          const bytes = await bodsClient.fetchBytes(dataset.url, { timeoutMs: 120_000 });
+          if (isZipArchive(bytes)) {
+            const archive = readTransXChangeFromZip(bytes);
+            for (const entry of archive.entries) transXChangeDocuments.push(entry.text);
+            for (const skip of archive.skipped) {
+              errors.push({
+                source: "bods",
+                message: `dataset ${dataset.url}: skipped ${skip.name} (${skip.reason})`,
+              });
+            }
+            if (archive.entries.length === 0) {
+              errors.push({
+                source: "bods",
+                message: `dataset ${dataset.url}: archive contained no TransXChange XML`,
+              });
+            }
+          } else {
+            transXChangeDocuments.push(new TextDecoder().decode(bytes));
+          }
         } catch (error) {
           errors.push({
             source: "bods",

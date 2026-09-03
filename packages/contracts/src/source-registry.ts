@@ -59,9 +59,9 @@ export const SOURCE_REGISTRY: readonly SourceRegistryEntry[] = [
     termsNotes:
       "Free registered API key. BODS consumer guidance asks that the central live data is requested no more frequently than once every five seconds; see BODS_MINIMUM_REQUEST_INTERVAL_MS, which is enforced at the point of request. Bounded national collection only on a schedule; user requests are served viewport-scoped from cache.",
     contractVerification: {
-      method: "published_documentation",
-      at: null,
-      note: "Live verification blocked: no BODS_API_KEY provisioned and data.bus-data.dft.gov.uk is unreachable from the build sandbox (egress policy).",
+      method: "live_response",
+      at: "2026-09-03T16:22:31Z",
+      note: 'Observed on a GitHub-hosted runner with the registered key. SIRI-VM datafeed for a Manchester bounding box returned text/xml, 464,663 bytes, from which parseSiriVm read 360 vehicle activities and rejected none; MonitoredVehicleJourney carried BlockRef, DestinationName, DestinationRef, DirectionRef, FramedVehicleJourneyRef, LineRef, OperatorRef, OriginAimedDepartureTime, OriginName, OriginRef, PublishedLineName, VehicleLocation and VehicleRef. The timetable catalogue reported 945 published datasets, and all 25 in the first page had extension "zip": a dataset download answered application/zip with the PK magic bytes, which is why the static pipeline now unpacks the archive instead of decoding it as text.',
     },
   },
   {
@@ -80,9 +80,9 @@ export const SOURCE_REGISTRY: readonly SourceRegistryEntry[] = [
     termsNotes:
       "Free registered app key with per-minute rate limits. Attribution is mandatory under the TfL open data terms.",
     contractVerification: {
-      method: "published_documentation",
-      at: null,
-      note: "Live verification blocked: no TFL_APP_KEY provisioned and api.tfl.gov.uk is unreachable from the build sandbox (egress policy).",
+      method: "live_response",
+      at: "2026-09-03T16:22:32Z",
+      note: "Observed on a GitHub-hosted runner with the registered app key. /StopPoint/490008660N/Arrivals returned application/json with 5 arrivals; TflArrivalSchema accepted all 5 and normalizeTflArrivals produced 5 departures with none rejected. Verified for arrivals only — the route-sequence, stop-point and disruption adapters remain contract-tested against published documentation.",
     },
   },
   {
@@ -100,9 +100,9 @@ export const SOURCE_REGISTRY: readonly SourceRegistryEntry[] = [
     cacheTtlSeconds: 3600,
     termsNotes: "Bulk download; fingerprint daily and only re-ingest on change.",
     contractVerification: {
-      method: "published_documentation",
-      at: null,
-      note: "Live verification blocked: naptan.api.dft.gov.uk is unreachable from the build sandbox (egress policy).",
+      method: "live_response",
+      at: "2026-09-03T16:22:34Z",
+      note: "Observed on a GitHub-hosted runner. The national CSV answered application/csv; a 255,959-byte prefix (the stream was cancelled rather than downloading the national file to check a parser) parsed to 1,170 rows of 43 columns, all 1,170 accepted by NaptanCsvRowSchema and all 1,170 normalised to bus-related stops. Verified on the head of the file, not on national coverage.",
     },
   },
   {
