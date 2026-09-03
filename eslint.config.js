@@ -3,6 +3,8 @@ import js from "@eslint/js";
 import tseslint from "@typescript-eslint/eslint-plugin";
 import tsParser from "@typescript-eslint/parser";
 import prettier from "eslint-config-prettier";
+import reactHooks from "eslint-plugin-react-hooks";
+import jsxA11y from "eslint-plugin-jsx-a11y";
 
 /** Globals available to Node scripts and pipeline entry points. */
 const nodeGlobals = {
@@ -29,6 +31,35 @@ const nodeGlobals = {
   setInterval: "readonly",
   clearInterval: "readonly",
   structuredClone: "readonly",
+};
+
+/** Browser globals used by apps/web. */
+const browserGlobals = {
+  ...nodeGlobals,
+  document: "readonly",
+  window: "readonly",
+  navigator: "readonly",
+  localStorage: "readonly",
+  sessionStorage: "readonly",
+  location: "readonly",
+  history: "readonly",
+  DOMException: "readonly",
+  HTMLElement: "readonly",
+  HTMLButtonElement: "readonly",
+  HTMLDivElement: "readonly",
+  HTMLInputElement: "readonly",
+  Element: "readonly",
+  Node: "readonly",
+  Event: "readonly",
+  CustomEvent: "readonly",
+  MutationObserver: "readonly",
+  ResizeObserver: "readonly",
+  IntersectionObserver: "readonly",
+  requestAnimationFrame: "readonly",
+  cancelAnimationFrame: "readonly",
+  matchMedia: "readonly",
+  getComputedStyle: "readonly",
+  scrollTo: "readonly",
 };
 
 export default [
@@ -65,6 +96,21 @@ export default [
         { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
       ],
       "no-console": ["warn", { allow: ["warn", "error"] }],
+    },
+  },
+  {
+    files: ["apps/web/**/*.{ts,tsx}"],
+    languageOptions: {
+      globals: browserGlobals,
+    },
+    plugins: {
+      "react-hooks": reactHooks,
+      // Accessibility is a build gate, not a review checklist: WCAG 2.2 AA is the target.
+      "jsx-a11y": jsxA11y,
+    },
+    rules: {
+      ...reactHooks.configs.recommended.rules,
+      ...jsxA11y.flatConfigs.recommended.rules,
     },
   },
   {

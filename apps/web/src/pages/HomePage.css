@@ -1,0 +1,132 @@
+.home__hero {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: var(--space-xl) var(--space-md) var(--space-lg);
+  /* Above the fold holds only the wordmark, one promise, one cue and the scene. */
+  min-height: min(78vh, 640px);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.home__promise {
+  max-width: 28ch;
+  margin: var(--space-lg) 0 var(--space-md);
+  font-size: var(--font-size-lead);
+  color: var(--colour-muted);
+}
+
+.home__cta-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  flex-wrap: wrap;
+}
+
+.home__cta {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--min-touch-target);
+  padding: 0 var(--space-lg);
+  border-radius: var(--radius-md);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.home__cta-secondary {
+  font-size: var(--font-size-small);
+}
+
+.home__scene {
+  margin-top: var(--space-xl);
+  position: relative;
+}
+
+.home__scene-back {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-md);
+  opacity: 0.9;
+  overflow: hidden;
+}
+
+.home__scene-road {
+  position: relative;
+  height: 48px;
+  margin-top: -6px;
+  border-top: 2px solid var(--colour-ink);
+  background: repeating-linear-gradient(
+    to right,
+    transparent 0 18px,
+    var(--colour-hairline) 18px 34px
+  );
+  background-position: 0 22px;
+  background-size: auto 2px;
+  background-repeat: repeat-x;
+}
+
+.home__scene-bus {
+  position: absolute;
+  top: 2px;
+  animation: home-bus-travel 14s linear infinite;
+}
+
+@keyframes home-bus-travel {
+  from {
+    transform: translateX(-60px);
+  }
+  to {
+    transform: translateX(calc(100vw + 60px));
+  }
+}
+
+/* The scene is decorative: with reduced motion it simply parks. */
+@media (prefers-reduced-motion: reduce) {
+  .home__scene-bus {
+    animation: none;
+    left: var(--space-lg);
+  }
+}
+
+.home__section {
+  padding-top: var(--space-xl);
+  padding-bottom: 0;
+}
+
+.home__lede {
+  max-width: 62ch;
+  color: var(--colour-muted);
+  font-size: var(--font-size-lead);
+}
+
+.home__card {
+  padding: var(--space-md);
+}
+
+.home__card h3 {
+  font-size: var(--font-size-lead);
+}
+
+.home__card p {
+  margin: 0;
+}
+
+.home__sources {
+  max-width: 62ch;
+  padding-left: var(--space-lg);
+  color: var(--colour-muted);
+}
+
+.home__sources li {
+  margin-bottom: var(--space-xs);
+}
+
+@media (max-width: 640px) {
+  .home__hero {
+    min-height: auto;
+    padding-top: var(--space-lg);
+  }
+  .home__scene-back > *:nth-child(n + 4) {
+    display: none;
+  }
+}

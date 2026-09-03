@@ -1,0 +1,71 @@
+.methodology__lede {
+  max-width: 68ch;
+  font-size: var(--font-size-lead);
+  color: var(--colour-muted);
+}
+
+.methodology section {
+  margin-top: var(--space-xl);
+}
+
+.methodology h2 {
+  font-size: var(--font-size-h3);
+}
+
+.methodology h3 {
+  font-size: var(--font-size-lead);
+  margin-top: var(--space-lg);
+}
+
+.methodology p,
+.methodology li {
+  max-width: 68ch;
+}
+
+/* Wide tables scroll inside their own container rather than the page. */
+.methodology__table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--colour-hairline);
+  border-radius: var(--radius-md);
+  background: var(--colour-surface);
+}
+
+.methodology__table {
+  border-collapse: collapse;
+  min-width: 760px;
+  width: 100%;
+  font-size: var(--font-size-small);
+}
+
+.methodology__table th,
+.methodology__table td {
+  text-align: left;
+  padding: var(--space-sm) var(--space-md);
+  border-bottom: 1px solid var(--colour-hairline);
+  vertical-align: top;
+}
+
+.methodology__table thead th {
+  font-size: var(--font-size-micro);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--colour-muted);
+  background: var(--colour-canvas);
+  position: sticky;
+  top: 0;
+}
+
+.methodology__attribution,
+.methodology__definitions {
+  max-width: 68ch;
+}
+
+.methodology__definitions dt {
+  font-weight: 700;
+  margin-top: var(--space-md);
+}
+
+.methodology__definitions dd {
+  margin: var(--space-xs) 0 0;
+  color: var(--colour-muted);
+}

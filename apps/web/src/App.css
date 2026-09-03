@@ -1,0 +1,123 @@
+.app {
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+}
+
+.app__header {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-header);
+  background: var(--colour-canvas);
+  border-bottom: 1px solid var(--colour-hairline);
+}
+
+.app__header-inner {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: var(--space-sm) var(--space-md);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+  flex-wrap: wrap;
+}
+
+.app__brand {
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--min-touch-target);
+}
+
+.app__nav {
+  display: flex;
+  gap: var(--space-xs);
+  flex-wrap: wrap;
+}
+
+.app__nav-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--min-touch-target);
+  padding: 0 var(--space-sm);
+  text-decoration: none;
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-small);
+  font-weight: 500;
+}
+
+.app__nav-link:hover {
+  background: var(--colour-surface);
+}
+
+/* The active page is marked by a red rule as well as weight, not colour alone. */
+.app__nav-link.active {
+  font-weight: 700;
+  box-shadow: inset 0 -2px 0 var(--colour-red);
+}
+
+.app__main {
+  flex: 1;
+}
+
+.app__main:focus {
+  outline: none;
+}
+
+/* Map surfaces fill the viewport below the header instead of scrolling the page. */
+.app--map .app__main {
+  display: flex;
+  min-height: 0;
+}
+
+.app--map .app__footer {
+  display: none;
+}
+
+.app__footer {
+  border-top: 1px solid var(--colour-hairline);
+  background: var(--colour-surface);
+  margin-top: var(--space-xxl);
+}
+
+.app__footer-inner {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: var(--space-lg) var(--space-md);
+}
+
+.app__footer nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-md);
+  margin-bottom: var(--space-md);
+}
+
+.app__footer nav a {
+  min-height: var(--min-touch-target);
+  display: inline-flex;
+  align-items: center;
+  font-size: var(--font-size-small);
+}
+
+.app__attribution {
+  margin: 0;
+  max-width: 70ch;
+}
+
+@media (max-width: 640px) {
+  .app__header-inner {
+    padding: var(--space-sm);
+  }
+  .app__nav {
+    width: 100%;
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    /* Horizontal scroll rather than wrapping keeps the header compact at 320px. */
+    scrollbar-width: none;
+  }
+  .app__nav::-webkit-scrollbar {
+    display: none;
+  }
+}

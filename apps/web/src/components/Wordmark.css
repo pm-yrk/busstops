@@ -1,0 +1,53 @@
+.wordmark {
+  display: inline-block;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 0.95;
+}
+
+.wordmark__text {
+  display: flex;
+  align-items: baseline;
+  gap: 0.25em;
+}
+
+.wordmark--stacked .wordmark__text {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0;
+}
+
+.wordmark__line {
+  display: inline-flex;
+  align-items: baseline;
+}
+
+.wordmark__dot {
+  color: var(--colour-red);
+}
+
+/* The pixel bus sits in the full stop's place, aligned to the baseline. */
+.wordmark__dot--bus {
+  display: inline-flex;
+  align-items: flex-end;
+  margin-left: 0.06em;
+  transform: translateY(0.06em);
+}
+
+.wordmark--hero {
+  font-size: var(--font-size-hero);
+}
+
+.wordmark--large {
+  font-size: var(--font-size-h1);
+}
+
+.wordmark--small {
+  font-size: var(--font-size-lead);
+}
+
+/* The thin red vertical rule that may accompany the stacked lockup. */
+.wordmark--stacked.wordmark--hero {
+  padding-left: var(--space-md);
+  border-left: 2px solid var(--colour-red);
+}

@@ -1,0 +1,122 @@
+.stop-page__breadcrumb {
+  margin-bottom: var(--space-md);
+  color: var(--colour-muted);
+}
+
+.stop-page__actions {
+  display: flex;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+  margin: var(--space-md) 0;
+}
+
+.stop-page__walk {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--min-touch-target);
+  padding: 0 var(--space-md);
+  border: 1px solid var(--colour-ink);
+  border-radius: var(--radius-md);
+  text-decoration: none;
+  background: var(--colour-surface);
+}
+
+.stop-page__storage-note {
+  margin: 0 0 var(--space-md);
+}
+
+.stop-page__departures,
+.stop-page__details {
+  margin-top: var(--space-xl);
+}
+
+.departure-list {
+  margin-bottom: var(--space-lg);
+}
+
+.departure-list__heading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  font-size: var(--font-size-lead);
+  margin-bottom: var(--space-xs);
+}
+
+.departure-list__items {
+  list-style: none;
+  margin: var(--space-sm) 0 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-sm);
+}
+
+.departure-list__item {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  grid-template-areas:
+    "badge destination time"
+    "badge confidence confidence";
+  align-items: center;
+  gap: var(--space-xs) var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  min-height: var(--min-touch-target);
+}
+
+.departure-list__item .route-badge--inline {
+  grid-area: badge;
+}
+
+.departure-list__destination {
+  grid-area: destination;
+}
+
+.departure-list__time {
+  grid-area: time;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.departure-list__confidence {
+  grid-area: confidence;
+}
+
+.stop-page__facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--space-md);
+  margin: var(--space-md) 0;
+}
+
+.stop-page__facts dt {
+  font-size: var(--font-size-micro);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--colour-muted);
+}
+
+.stop-page__facts dd {
+  margin: var(--space-xs) 0 0;
+  font-weight: 600;
+}
+
+.stop-page__amenities {
+  padding-left: var(--space-lg);
+}
+
+.stop-page__sources {
+  margin-top: var(--space-md);
+}
+
+/* Long destination names must wrap rather than overflow at 320px. */
+@media (max-width: 420px) {
+  .departure-list__item {
+    grid-template-columns: auto 1fr;
+    grid-template-areas:
+      "badge destination"
+      "badge time"
+      "confidence confidence";
+  }
+  .departure-list__time {
+    text-align: left;
+  }
+}

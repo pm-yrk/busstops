@@ -1,0 +1,164 @@
+/*
+ * The arrival board deliberately evokes a roadside digital display: near-black ground, pixel
+ * face, generous spacing. It stays a real table so it is readable, selectable and accessible.
+ */
+
+.arrival-board {
+  background: var(--colour-ink);
+  color: var(--colour-surface);
+  border-radius: var(--radius-md);
+  padding: var(--space-md);
+  container-type: inline-size;
+}
+
+.arrival-board__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--space-md);
+  padding-bottom: var(--space-sm);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.18);
+}
+
+.arrival-board__next {
+  font-family: var(--font-pixel);
+  font-size: var(--font-size-small);
+  letter-spacing: 0.14em;
+  color: var(--colour-red);
+  margin: 0 0 var(--space-xs);
+}
+
+.arrival-board__stop {
+  font-size: var(--font-size-h3);
+  margin: 0;
+  color: var(--colour-surface);
+}
+
+.arrival-board__code {
+  margin: var(--space-xs) 0 0;
+  font-size: var(--font-size-small);
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.arrival-board__table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: var(--space-sm);
+}
+
+.arrival-board__table th {
+  text-align: left;
+  font-size: var(--font-size-micro);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.6);
+  font-weight: 500;
+  padding: var(--space-xs) 0;
+}
+
+.arrival-board__table th:last-child,
+.arrival-board__due {
+  text-align: right;
+}
+
+.arrival-board__row td {
+  padding: var(--space-sm) 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+  vertical-align: top;
+}
+
+.route-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 42px;
+  min-height: 28px;
+  padding: 0 var(--space-sm);
+  background: var(--colour-red);
+  color: var(--colour-surface);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-pixel);
+  font-size: var(--font-size-body);
+  font-weight: 700;
+}
+
+.arrival-board__destination {
+  padding-left: var(--space-sm);
+  padding-right: var(--space-sm);
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.arrival-board__countdown {
+  display: block;
+  font-family: var(--font-pixel);
+  font-size: var(--font-size-lead);
+  color: var(--colour-surface);
+}
+
+.arrival-board__state {
+  display: block;
+  font-size: var(--font-size-micro);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* Status carries a word as well as a colour, so colour is never the only signal. */
+.arrival-board__state--live {
+  color: #6ee7a0;
+}
+.arrival-board__state--scheduled {
+  color: rgba(255, 255, 255, 0.68);
+}
+.arrival-board__state--cancelled {
+  color: #ff9a9d;
+}
+.arrival-board__state--stale {
+  color: #ffd18a;
+}
+
+.arrival-board__clock {
+  display: block;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.arrival-board__empty {
+  margin: var(--space-md) 0;
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.arrival-board__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  margin-top: var(--space-sm);
+  padding-top: var(--space-sm);
+  border-top: 1px solid rgba(255, 255, 255, 0.18);
+}
+
+.arrival-board__freshness {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.62);
+}
+
+.arrival-board__view-all {
+  background: transparent;
+  color: var(--colour-surface);
+  border-color: rgba(255, 255, 255, 0.4);
+  min-height: var(--min-touch-target);
+}
+
+.arrival-board__view-all:hover {
+  border-color: var(--colour-surface);
+  color: var(--colour-surface);
+}
+
+/* On the narrowest screens the destination column wraps rather than overflowing. */
+@container (max-width: 380px) {
+  .arrival-board__destination {
+    font-size: var(--font-size-small);
+  }
+  .arrival-board__countdown {
+    font-size: var(--font-size-body);
+  }
+}
