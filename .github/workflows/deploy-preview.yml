@@ -203,7 +203,13 @@ jobs:
           # The pipeline's own exit code is captured rather than allowed to abort the step,
           # because the report it writes on the way out is the only description of *why* a run
           # published nothing, and a step that dies before printing it leaves you guessing.
-          npx tsx pipelines/static-network/run-daily.ts && STATUS=0 || STATUS=$?
+          set -o pipefail
+          npx tsx pipelines/static-network/run-daily.ts 2>&1 | tee bootstrap.log && STATUS=0 || STATUS=$?
+
+          # Printed before the report, because a run that dies without writing one leaves this as
+          # the only evidence — and the log tail is the part that survives truncation.
+          echo "--- last 40 lines from the pipeline (exit $STATUS) ---"
+          tail -40 bootstrap.log || true
 
           echo "--- build report ---"
           node -e "console.log(JSON.stringify(require('./build-report.json'), null, 2))" \

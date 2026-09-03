@@ -64,82 +64,107 @@ export async function publishNetworkShards(
   const failed: ShardPublishResult["failed"] = [];
   const oversized: string[] = [];
 
-  const searchEntries = buildSearchIndex(network, { builtAt: now().toISOString() }).entries;
+  /*
+   * Families are built, published and released one at a time rather than all assembled up front.
+   * Holding every grouping at once means the stops, the patterns with their shapes, the search
+   * entries and all six maps over them are live together at peak — on a national build that is
+   * gigabytes, and the previous version of this function died there.
+   */
+  let published = 0;
+  const publishFamily = async (shards: Shard[]): Promise<string[]> => {
+    for (const shard of shards) {
+      if (shard.records.length > MAX_SHARD_RECORDS) oversized.push(shard.dataset);
+    }
+
+    const outcomes = await mapWithConcurrency(shards, TILE_PUBLISH_CONCURRENCY, async (shard) => {
+      if (shard.records.length === 0) return { dataset: shard.dataset, error: null };
+      try {
+        await artifacts.publish({
+          dataset: shard.dataset,
+          version: options.version,
+          records: shard.records,
+          schemaVersion: NETWORK_SCHEMA_VERSION,
+          sources: ["naptan", "bods"],
+          minimumRecordCount: 1,
+          // A shard's contents move a great deal between timetable changes — a school route
+          // ending for the summer empties a rural tile — and that is data, not a broken parse.
+          maximumShrinkFraction: 0.95,
+          now,
+        });
+        return { dataset: shard.dataset, error: null };
+      } catch (error) {
+        return {
+          dataset: shard.dataset,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    });
+
+    for (const outcome of outcomes) {
+      if (outcome.error === null) published += 1;
+      else failed.push({ dataset: outcome.dataset, reason: outcome.error });
+    }
+    return shards.map((shard) => shard.dataset);
+  };
 
   const stopShards = groupStopsByTile(network);
-  const patternShards = groupPatternsByTile(network);
-  const searchTileShards = groupSearchByTile(searchEntries);
-  const searchPrefixShards = groupSearchByPrefix(searchEntries);
-  const locatorShards = groupLocators(network);
-  const routeTiles = routeTileRecords(network);
+  const stopTiles = [...stopShards.keys()].sort();
+  await publishFamily(
+    [...stopShards].map(([tile, records]) => ({ dataset: stopTileDataset(tile), records })),
+  );
+  stopShards.clear();
 
-  const shards: Shard[] = [
-    ...[...stopShards].map(([tile, records]) => ({ dataset: stopTileDataset(tile), records })),
-    ...[...patternShards].map(([tile, records]) => ({
-      dataset: patternTileDataset(tile),
-      records,
-    })),
-    ...[...searchTileShards].map(([tile, records]) => ({
-      dataset: searchTileDataset(tile),
-      records,
-    })),
-    ...[...searchPrefixShards].map(([prefix, records]) => ({
-      dataset: searchPrefixDataset(prefix),
-      records,
-    })),
-    ...[...locatorShards].map(([bucket, records]) => ({
+  const locatorShards = groupLocators(network);
+  await publishFamily(
+    [...locatorShards].map(([bucket, records]) => ({
       dataset: stopLocatorDataset(bucket),
       records,
     })),
-    { dataset: SHARDED.routeTiles, records: routeTiles },
-  ];
+  );
+  locatorShards.clear();
 
-  for (const shard of shards) {
-    if (shard.records.length > MAX_SHARD_RECORDS) oversized.push(shard.dataset);
-  }
+  const patternShards = groupPatternsByTile(network);
+  const patternTiles = [...patternShards.keys()].sort();
+  await publishFamily(
+    [...patternShards].map(([tile, records]) => ({ dataset: patternTileDataset(tile), records })),
+  );
+  patternShards.clear();
 
-  const outcomes = await mapWithConcurrency(shards, TILE_PUBLISH_CONCURRENCY, async (shard) => {
-    if (shard.records.length === 0) return { dataset: shard.dataset, error: null };
-    try {
-      await artifacts.publish({
-        dataset: shard.dataset,
-        version: options.version,
-        records: shard.records,
-        schemaVersion: NETWORK_SCHEMA_VERSION,
-        sources: ["naptan", "bods"],
-        minimumRecordCount: 1,
-        // A shard's contents move a great deal between timetable changes — a school route ending
-        // for the summer empties a rural tile — and that is data, not a broken parse.
-        maximumShrinkFraction: 0.95,
-        now,
-      });
-      return { dataset: shard.dataset, error: null };
-    } catch (error) {
-      return {
-        dataset: shard.dataset,
-        error: error instanceof Error ? error.message : String(error),
-      };
-    }
-  });
+  await publishFamily([{ dataset: SHARDED.routeTiles, records: routeTileRecords(network) }]);
 
-  for (const outcome of outcomes) {
-    if (outcome.error !== null) failed.push({ dataset: outcome.dataset, reason: outcome.error });
-  }
+  const searchEntries = buildSearchIndex(network, { builtAt: now().toISOString() }).entries;
+
+  const searchTileShards = groupSearchByTile(searchEntries);
+  const searchTiles = [...searchTileShards.keys()].sort();
+  await publishFamily(
+    [...searchTileShards].map(([tile, records]) => ({ dataset: searchTileDataset(tile), records })),
+  );
+  searchTileShards.clear();
+
+  const searchPrefixShards = groupSearchByPrefix(searchEntries);
+  const searchPrefixes = [...searchPrefixShards.keys()].sort();
+  await publishFamily(
+    [...searchPrefixShards].map(([prefix, records]) => ({
+      dataset: searchPrefixDataset(prefix),
+      records,
+    })),
+  );
+  searchPrefixShards.clear();
 
   if (failed.length > 0) {
     // The index is the pointer that makes a publish live. Withholding it when a shard failed
     // leaves the previous complete publish serving, rather than a version with holes in it.
-    return { index: null, published: outcomes.length - failed.length, failed, oversized };
+    return { index: null, published, failed, oversized };
   }
 
   const index: NetworkIndexRecord = {
     version: options.version,
     publishedAt: now().toISOString(),
     partialCoverage: network.counts.danglingStopReferences > 0 || network.counts.parseErrors > 0,
-    stopTiles: [...stopShards.keys()].sort(),
-    patternTiles: [...patternShards.keys()].sort(),
-    searchTiles: [...searchTileShards.keys()].sort(),
-    searchPrefixes: [...searchPrefixShards.keys()].sort(),
+    stopTiles,
+    patternTiles,
+    searchTiles,
+    searchPrefixes,
     counts: {
       stops: network.stops.length,
       patterns: network.patterns.length,
@@ -163,10 +188,10 @@ export async function publishNetworkShards(
       dataset: SHARDED.index,
       reason: error instanceof Error ? error.message : String(error),
     });
-    return { index: null, published: outcomes.length, failed, oversized };
+    return { index: null, published, failed, oversized };
   }
 
-  return { index, published: outcomes.length + 1, failed, oversized };
+  return { index, published: published + 1, failed, oversized };
 }
 
 function groupStopsByTile(network: BuiltNetwork): Map<string, BuiltNetwork["stops"]> {
