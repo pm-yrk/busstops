@@ -17,6 +17,19 @@ const publicDir = join(dirname(fileURLToPath(import.meta.url)), "../../public");
 describe("static deployment configuration", () => {
   const headers = readFileSync(join(publicDir, "_headers"), "utf8");
 
+  /*
+   * This file is the fallback that ships in `public/`. The deploy workflow overwrites
+   * `dist/_headers` with a generated copy naming the exact API origin the build was compiled
+   * against, because that hostname contains an account-specific subdomain unknown until deploy.
+   *
+   * The fallback deliberately allows no cross-origin connection at all. If a deploy ever skipped
+   * the generator, API calls would fail visibly rather than the page silently gaining permission
+   * to talk to hosts nobody vetted.
+   */
+  it("falls back to allowing no cross-origin API calls", () => {
+    expect(headers).toMatch(/connect-src 'self'(;|\s*$)/m);
+  });
+
   it("sets a Content-Security-Policy on every page", () => {
     expect(headers).toMatch(/^\/\*$/m);
     expect(headers).toContain("Content-Security-Policy:");

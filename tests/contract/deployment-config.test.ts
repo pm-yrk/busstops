@@ -17,6 +17,8 @@ const read = (path: string) => readFileSync(join(root, path), "utf8");
 const deploy = read(".github/workflows/deploy.yml");
 const provisioning = read("infra/cloudflare/PROVISIONING.md");
 const wrangler = read("apps/worker/wrangler.toml");
+const preview = read(".github/workflows/deploy-preview.yml");
+const provisionScript = read("scripts/provision-cloudflare.mjs");
 
 describe("deploy workflow", () => {
   it("resolves the target environment in a shell, not a GitHub ternary", () => {
@@ -43,11 +45,37 @@ describe("deploy workflow", () => {
     expect(deploy).toMatch(/pages_branch=preview/);
   });
 
-  it("refuses to smoke test against an unset URL", () => {
-    // Falling back to a repository-scoped URL would smoke test production after a preview deploy
-    // and report a pass.
-    expect(deploy).toMatch(/if \[ -z "\$SITE_URL" \] \|\| \[ -z "\$API_URL" \]/);
-    expect(deploy).toMatch(/exit 1/);
+  it("smoke tests the URLs it just deployed, not configured ones", () => {
+    /*
+     * This assertion used to require the workflow to refuse an unset $SITE_URL/$API_URL, back
+     * when both came from GitHub Environment variables. Deriving them is strictly stronger than
+     * validating them: a variable can be set and still name the wrong environment, and a smoke
+     * test against production after a preview deploy reports a confident pass. So the property
+     * under test changed rather than relaxed — the URLs must now come from the deploy steps.
+     */
+    expect(deploy).toMatch(/steps\.worker\.outputs\.url/);
+    expect(deploy).toMatch(/node scripts\/smoke-test\.mjs/);
+    // Neither URL may be read from repository or environment variables any more.
+    expect(deploy).not.toMatch(/vars\.PUBLIC_BASE_URL/);
+    expect(deploy).not.toMatch(/vars\.PUBLIC_API_URL/);
+  });
+
+  it("fails rather than guessing when the Worker URL cannot be read back", () => {
+    // The workers.dev subdomain is account-specific. A workflow that assembled the URL from a
+    // guess would deploy a frontend compiled against a host that does not exist.
+    expect(deploy).toMatch(/Could not determine the deployed Worker URL/);
+  });
+
+  it("compiles the frontend against the Worker it deployed", () => {
+    // The app is served from Pages and the API from a Worker: different origins, so a relative
+    // /api resolves to the Pages host and 404s. The origin has to be baked in at build time.
+    expect(deploy).toMatch(/VITE_API_URL: \$\{\{ steps\.worker\.outputs\.url \}\}/);
+    expect(deploy).toMatch(/generate-headers\.mjs/);
+  });
+
+  it("sets the Worker's runtime secrets without ever passing them as arguments", () => {
+    // Command-line arguments appear in process listings; stdin does not.
+    expect(deploy).toMatch(/printf '%s' "\$\{!NAME\}" \| npx wrangler secret put/);
   });
 
   it("runs the deploy-stage preflight, which is stricter than the CI one", () => {
@@ -117,5 +145,106 @@ describe("provisioning document", () => {
 
   it("states that verification is a human step and must not be faked", () => {
     expect(provisioning).toMatch(/Do not set `verifiedAt` merely to make preflight pass/);
+  });
+});
+
+describe("preview deploy workflow", () => {
+  /*
+   * The preview path is one button. Everything it needs is either a repository secret that
+   * already exists or a deterministic constant, because every value a person has to set by hand
+   * before a deploy works is a value that will be set wrong once.
+   */
+
+  it("needs no repository variables and no GitHub Environment", () => {
+    expect(preview).not.toMatch(/vars\./);
+    expect(preview).not.toMatch(/^\s+environment:/m);
+  });
+
+  it("pins the deterministic names rather than asking for them", () => {
+    expect(preview).toMatch(/PAGES_PROJECT: busstops/);
+    expect(preview).toMatch(/R2_BUCKET_ARTIFACTS: busstops-artifacts-preview/);
+    expect(preview).toMatch(/WORKER_ENV: preview/);
+  });
+
+  it("provisions before it deploys", () => {
+    const provisionAt = preview.indexOf("provision-cloudflare.mjs");
+    const deployAt = preview.indexOf("npx wrangler deploy");
+    expect(provisionAt).toBeGreaterThan(-1);
+    expect(deployAt).toBeGreaterThan(provisionAt);
+  });
+
+  it("runs the same gate as CI before touching Cloudflare", () => {
+    for (const gate of ["format:check", "run lint", "run typecheck", "npm test"]) {
+      expect(preview, gate).toContain(gate);
+    }
+    expect(preview).toMatch(/PREFLIGHT_STAGE: deploy/);
+    expect(preview.indexOf("npm test")).toBeLessThan(preview.indexOf("npx wrangler deploy"));
+  });
+
+  it("proves the Worker answers before compiling a frontend against it", () => {
+    const healthAt = preview.indexOf("/v1/sources/health");
+    const buildAt = preview.indexOf("VITE_API_URL");
+    expect(healthAt).toBeGreaterThan(-1);
+    expect(buildAt).toBeGreaterThan(healthAt);
+  });
+
+  it("targets the stable branch alias, not the per-deployment hash URL", () => {
+    // Every Pages deploy also gets a <hash>.<project>.pages.dev address. It changes each time,
+    // so it can never be the origin the Worker's CORS allow-list names.
+    expect(preview).toMatch(/https:\/\/\$\{PAGES_BRANCH\}\.\$\{PAGES_PROJECT\}\.pages\.dev/);
+  });
+
+  it("fails when the data bootstrap quietly publishes nothing", () => {
+    // run-daily exits 0 when storage is unconfigured, so the daily schedule keeps running and the
+    // gap stays visible. A bootstrap needs the opposite: not publishing is the failure.
+    expect(preview).toMatch(/OUTCOME.*!=.*"published"|"\$OUTCOME" != "published"/s);
+  });
+
+  it("never passes a secret as a command-line argument", () => {
+    expect(preview).toMatch(/printf '%s' "\$\{!NAME\}" \| npx wrangler secret put/);
+    for (const name of [
+      "BODS_API_KEY",
+      "TFL_APP_KEY",
+      "VEHICLE_SALT_SECRET",
+      "UNSUBSCRIBE_SECRET",
+    ]) {
+      expect(preview, name).not.toMatch(new RegExp(`secret put ${name}`));
+    }
+  });
+
+  it("ends by printing the URL a person is meant to open", () => {
+    expect(preview).toMatch(/GITHUB_STEP_SUMMARY/);
+    expect(preview).toMatch(/Preview URL:/);
+  });
+});
+
+describe("provisioning script", () => {
+  it("checks for each resource before creating it", () => {
+    expect(provisionScript).toMatch(/ensureR2Bucket/);
+    expect(provisionScript).toMatch(/ensurePagesProject/);
+    // An "already exists" answer from a concurrent run is success, not failure.
+    expect(provisionScript).toMatch(/isAlreadyExists/);
+  });
+
+  it("creates only the resources the platform actually binds", () => {
+    for (const bucket of [...wrangler.matchAll(/bucket_name\s*=\s*"([^"]+)"/g)].map((m) => m[1]!)) {
+      expect(provisionScript, `${bucket} is bound but never provisioned`).toContain(bucket);
+    }
+    // Nothing here may reach for a paid product or a service the Worker does not use.
+    expect(provisionScript).not.toMatch(/kv_namespaces|\/d1\/|hyperdrive|workers_for_platforms/i);
+  });
+
+  it("never echoes the credential it authenticates with", () => {
+    // The token's *name* appears in a "you must set this" message, which is the point of that
+    // message. Its *value* may only ever reach the Authorization header, so every line that
+    // mentions the variable holding it is checked rather than every line mentioning the name.
+    const usesValue = provisionScript
+      .split("\n")
+      .filter((line) => /\bapiToken\b/.test(line))
+      .filter((line) => !/^const apiToken =/.test(line.trim()))
+      // A truthiness check reveals only whether it was set, which the run has to know.
+      .filter((line) => !/!apiToken/.test(line))
+      .filter((line) => !/Authorization/.test(line));
+    expect(usesValue).toEqual([]);
   });
 });

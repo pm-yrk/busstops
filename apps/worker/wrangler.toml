@@ -24,6 +24,11 @@ enabled = true
 [vars]
 GOVERNOR_MODE = "green"
 FEATURE_FLAGS_JSON = "{}"
+# The Pages origin allowed to call this Worker from a browser. Cloudflare Pages URLs are
+# deterministic — `<project>.pages.dev` for production and `<branch>.<project>.pages.dev` for a
+# branch — so CORS can be configured before Pages has ever been deployed, with no lookup and
+# nothing to wire up by hand. Any other origin gets no CORS headers and is refused by the browser.
+PUBLIC_BASE_URL = "https://busstops.pages.dev"
 
 [[r2_buckets]]
 binding = "ARTIFACTS"
@@ -43,6 +48,7 @@ enabled = true
 [env.preview.vars]
 GOVERNOR_MODE = "green"
 FEATURE_FLAGS_JSON = "{}"
+PUBLIC_BASE_URL = "https://preview.busstops.pages.dev"
 
 [[env.preview.r2_buckets]]
 binding = "ARTIFACTS"

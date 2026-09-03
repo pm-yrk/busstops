@@ -1,26 +1,106 @@
 # Provisioning
 
-The authoritative list of everything that must exist before Bus Stops. can be deployed, and the
-exact order to create it in. If this file and any other file disagree, this file is wrong and
-should be fixed — `scripts/preflight.mjs` and the tests in `apps/worker/src/wrangler-config.test.ts`
-and `tests/contract/environment.test.ts` enforce most of it mechanically.
+Everything Bus Stops. needs before it can be deployed, and how much of it is now done for you.
+
+Most of this file used to be a checklist. It is not any more: `.github/workflows/deploy-preview.yml`
+creates the Cloudflare resources, sets the Worker's runtime secrets, works out the deployed URLs
+and wires them into the frontend, the CORS allow-list and the Content-Security-Policy. What
+remains for a person is the part a workflow genuinely cannot do — hold an account, mint a token,
+and read a provider's terms.
+
+If this file and any other file disagree, this file is wrong and should be fixed.
+`scripts/preflight.mjs`, `apps/worker/src/wrangler-config.test.ts` and the contract tests in
+`tests/contract/` enforce most of it mechanically.
 
 Everything here is free-tier. Nothing enables usage-based billing. **Attach no payment method** —
 that is the only guarantee that costs cannot appear.
 
 ---
 
-## 1. What must exist
+## 1. The short version
 
-### Cloudflare resources
+1. Add six repository secrets (§2).
+2. GitHub → **Actions** → **Deploy Preview** → **Run workflow**.
 
-| Resource      | Name                         | Used by                                   |
-| ------------- | ---------------------------- | ----------------------------------------- |
-| R2 bucket     | `busstops-artifacts`         | Production Worker + scheduled jobs        |
-| R2 bucket     | `busstops-artifacts-preview` | Preview Worker                            |
-| Pages project | `busstops`                   | Both environments (preview uses a branch) |
-| Worker        | `busstops-api`               | Created by the first production deploy    |
-| Worker        | `busstops-api-preview`       | Created by the first preview deploy       |
+That is the whole preview path. The run provisions what is missing, deploys, bootstraps real
+national data, smoke tests the result and prints the URL. It is safe to re-run.
+
+Production is deliberately not part of that button: see §6.
+
+---
+
+## 2. What a person must set
+
+### GitHub repository secrets
+
+Settings → Secrets and variables → Actions → **Secrets**.
+
+| Secret                  | Required        | Used by                                                |
+| ----------------------- | --------------- | ------------------------------------------------------ |
+| `CLOUDFLARE_ACCOUNT_ID` | Yes             | Deploy, provisioning, and every job that reaches R2    |
+| `CLOUDFLARE_API_TOKEN`  | Yes             | Deploy, provisioning, and every job that reaches R2    |
+| `BODS_API_KEY`          | Yes             | Live vehicles outside London; static network           |
+| `TFL_APP_KEY`           | Yes             | London arrivals; static network                        |
+| `VEHICLE_SALT_SECRET`   | Yes             | Live collection — it refuses to run without it         |
+| `UNSUBSCRIBE_SECRET`    | Yes             | One-click unsubscribe tokens                           |
+| `EMAIL_API_KEY`         | Only with email | Daily Brief delivery; everything else works without it |
+
+`VEHICLE_SALT_SECRET` and `UNSUBSCRIBE_SECRET` should each be a long random string, for example
+`openssl rand -hex 32`. The vehicle salt is what stops a published vehicle reference being
+correlated across service days; a guessable value defeats the scheme entirely.
+
+The deploy workflows copy the four runtime secrets into the Worker themselves, piping each value
+on stdin so it never appears as a command-line argument. You do not run `wrangler secret put` by
+hand for a deploy — §7 is only there for a local Worker.
+
+### API token scopes
+
+Create the token with **exactly** these four permissions and no more. A token with account-wide
+edit would let a compromised CI run change billing.
+
+| Scope                        | Permission | Needed for                    |
+| ---------------------------- | ---------- | ----------------------------- |
+| Account · Workers Scripts    | Edit       | Deploying the Worker          |
+| Account · Workers R2 Storage | Edit       | Creating and using the bucket |
+| Account · Cloudflare Pages   | Edit       | Creating and deploying Pages  |
+| Account · Account Settings   | Read       | Resolving the account         |
+
+### Nothing else
+
+No GitHub repository variables are required, and the preview path uses no GitHub Environment.
+Everything else the platform needs is either deterministic or read back from what was deployed:
+
+| Value                | Where it comes from now                                                     |
+| -------------------- | --------------------------------------------------------------------------- |
+| R2 bucket            | Fixed: `busstops-artifacts`, `busstops-artifacts-preview`                   |
+| Pages project        | Fixed: `busstops`                                                           |
+| Pages URL            | Deterministic: `busstops.pages.dev`, `preview.busstops.pages.dev`           |
+| Worker URL           | Read back from `wrangler deploy` — the workers.dev subdomain is per-account |
+| `VITE_API_URL`       | The Worker URL, baked into the bundle at build time                         |
+| `PUBLIC_BASE_URL`    | Declared per environment in `wrangler.toml` `[vars]`; it is the CORS origin |
+| `BUDGET_UTILIZATION` | Defaults to `0`                                                             |
+
+The optional repository variables in the table in §8 still work if you set them. They are
+overrides, not requirements — every one has a default in the job that reads it.
+
+---
+
+## 3. What the workflow creates
+
+`scripts/provision-cloudflare.mjs` runs first on every deploy. It asks whether each resource
+exists before creating it, treats an "already exists" answer from a concurrent run as success, and
+can enable nothing chargeable.
+
+| Resource      | Name                         | Created by                  |
+| ------------- | ---------------------------- | --------------------------- |
+| R2 bucket     | `busstops-artifacts`         | The provisioning script     |
+| R2 bucket     | `busstops-artifacts-preview` | The provisioning script     |
+| Pages project | `busstops`                   | The provisioning script     |
+| Worker        | `busstops-api`               | The first production deploy |
+| Worker        | `busstops-api-preview`       | The first preview deploy    |
+
+The Pages project is created connected to **no repository**: the workflow uploads the build
+directly, so Cloudflare never needs access to your code.
 
 There is **no KV namespace and no D1 database**. Earlier configuration declared a KV binding that
 no code read; it has been removed rather than left for you to provision for nothing.
@@ -31,117 +111,89 @@ Declared in `apps/worker/wrangler.toml`. Wrangler does **not** inherit bindings 
 environments, so each is declared twice — once at the top level and once under `[env.preview]`.
 Preflight fails if the two ever drift apart.
 
-| Binding                    | Production           | Preview                      |
-| -------------------------- | -------------------- | ---------------------------- |
-| `ARTIFACTS` (R2)           | `busstops-artifacts` | `busstops-artifacts-preview` |
-| `GOVERNOR_MODE` (var)      | `green`              | `green`                      |
-| `FEATURE_FLAGS_JSON` (var) | `{}`                 | `{}`                         |
-
-### GitHub repository secrets
-
-Settings → Secrets and variables → Actions → **Secrets**.
-
-| Secret                  | Required        | Used by                                         |
-| ----------------------- | --------------- | ----------------------------------------------- |
-| `CLOUDFLARE_ACCOUNT_ID` | Yes             | Deploy, and every scheduled job that reaches R2 |
-| `CLOUDFLARE_API_TOKEN`  | Yes             | Deploy, and every scheduled job that reaches R2 |
-| `BODS_API_KEY`          | Yes             | Static network, live collection                 |
-| `TFL_APP_KEY`           | Yes             | Static network                                  |
-| `VEHICLE_SALT_SECRET`   | Yes             | Live collection — it refuses to run without it  |
-| `UNSUBSCRIBE_SECRET`    | Only with email | Daily Brief                                     |
-| `EMAIL_API_KEY`         | Only with email | Daily Brief                                     |
-
-`VEHICLE_SALT_SECRET` and `UNSUBSCRIBE_SECRET` should each be a long random string, for example
-`openssl rand -hex 32`. The vehicle salt is what stops a published vehicle reference being
-correlated across service days; a guessable value defeats the scheme entirely.
-
-### GitHub Environments
-
-Settings → Environments. Create two, named exactly **`preview`** and **`production`**.
-
-The Deploy workflow takes the environment as its input and reads `PUBLIC_BASE_URL` and
-`PUBLIC_API_URL` from it. Defining those only at repository scope would point a preview deploy's
-smoke test at production and report a pass, so the workflow fails loudly if they are missing.
-
-| Environment variable | `preview`                                              | `production`                                   |
-| -------------------- | ------------------------------------------------------ | ---------------------------------------------- |
-| `PUBLIC_BASE_URL`    | Preview Pages URL                                      | Production Pages URL                           |
-| `PUBLIC_API_URL`     | `https://busstops-api-preview.<subdomain>.workers.dev` | `https://busstops-api.<subdomain>.workers.dev` |
-
-Adding a required reviewer to the `production` environment is worth considering: it makes the
-production deploy button ask a person first.
-
-### GitHub repository variables
-
-Settings → Secrets and variables → Actions → **Variables**. These are public by definition and
-must not be secrets.
-
-| Variable                                                          | Required        | Value                 |
-| ----------------------------------------------------------------- | --------------- | --------------------- |
-| `R2_BUCKET_ARTIFACTS`                                             | Yes             | `busstops-artifacts`  |
-| `BUDGET_UTILIZATION`                                              | Recommended     | `0` initially; see §6 |
-| `R2_STORAGE_LIMIT_BYTES`                                          | Optional        | Defaults to 10 GiB    |
-| `MAX_PARTITIONS_PER_RUN`                                          | Optional        | Defaults to 12        |
-| `BODS_DAILY_REQUEST_BUDGET`                                       | Optional        | Defaults to 8,640     |
-| `COLLECTION_PASSES`                                               | Optional        | Defaults to 3         |
-| `COLLECTION_BUDGET_MS`                                            | Optional        | Defaults to 240,000   |
-| `BATCH_BUDGET_MS`                                                 | Optional        | Defaults to 300,000   |
-| `EMAIL_PROVIDER`, `EMAIL_PROVIDER_ENDPOINT`, `EMAIL_FROM_ADDRESS` | Only with email | Provider details      |
-
-### Worker secrets
-
-Set separately from repository secrets, because the Worker reads them at runtime rather than at
-deploy time. **Each environment has its own set** — setting one does not set the other.
-
-| Worker secret         | Needed by                    |
-| --------------------- | ---------------------------- |
-| `BODS_API_KEY`        | Live vehicles outside London |
-| `TFL_APP_KEY`         | London arrivals              |
-| `VEHICLE_SALT_SECRET` | Opaque vehicle references    |
-| `UNSUBSCRIBE_SECRET`  | One-click unsubscribe        |
-
-### API token scopes
-
-Create the token with **exactly** these four permissions and no more. A token with account-wide
-edit would let a compromised CI run change billing.
-
-| Scope                        | Permission |
-| ---------------------------- | ---------- |
-| Account · Workers Scripts    | Edit       |
-| Account · Workers R2 Storage | Edit       |
-| Account · Cloudflare Pages   | Edit       |
-| Account · Account Settings   | Read       |
+| Binding                    | Production                   | Preview                              |
+| -------------------------- | ---------------------------- | ------------------------------------ |
+| `ARTIFACTS` (R2)           | `busstops-artifacts`         | `busstops-artifacts-preview`         |
+| `PUBLIC_BASE_URL` (var)    | `https://busstops.pages.dev` | `https://preview.busstops.pages.dev` |
+| `GOVERNOR_MODE` (var)      | `green`                      | `green`                              |
+| `FEATURE_FLAGS_JSON` (var) | `{}`                         | `{}`                                 |
 
 ---
 
-## 2. Order of operations
+## 4. How the frontend reaches the API
 
-Follow this exactly; each step depends on the one before.
+The app is served by Pages and the API by a Worker. They are different origins, so a relative
+`/api` would resolve to the Pages host and 404. Three things are wired together at deploy time:
 
-1. **Create the two R2 buckets** with the names in the table above.
-2. **Create the Pages project** named `busstops`, connected to **no repository** — the deploy
-   workflow uploads the build directly, so Pages never needs write access to your code.
-3. **Create the API token** with the four scopes above.
-4. **Add the repository secrets**, then the repository variables.
-5. **Create the `preview` and `production` GitHub Environments.** Their URL variables are not
-   known yet — step 7 fills them in.
-6. **Set the preview Worker secrets** (see §3).
-7. **Run the Deploy workflow against `preview`** (see §4). The first run will stop at the smoke
-   test, because the environment URLs are still empty; that is the guard working. The deploy
-   steps before it will have printed the preview Worker and Pages URLs.
-8. **Set `PUBLIC_BASE_URL` and `PUBLIC_API_URL`** on the `preview` environment to those URLs, and
-   re-run the preview deploy. This time the smoke test runs and must pass.
-9. **Verify the free-tier allowances** and set `verifiedAt` (see §5). Production deploys fail
-   until this is done.
-10. **Set the production Worker secrets**, then run the Deploy workflow against `production`.
-11. **Bootstrap the data**: run _Static network — daily change check_ manually, then let the
-    scheduled jobs take over.
+1. **The client.** `VITE_API_URL` is set to the Worker URL the deploy just read back, and Vite
+   bakes it into the bundle. There is no runtime lookup and no configuration endpoint to get
+   wrong. With it unset the client falls back to a relative `/api`, which is what the Vite dev
+   server proxies to a local `wrangler dev`.
+2. **CORS.** The Worker allows exactly the Pages origin for its environment, from
+   `PUBLIC_BASE_URL` in `wrangler.toml`. Pages hostnames are deterministic, so this needs no
+   chicken-and-egg resolution — the origin is known before either side is deployed.
+3. **The Content-Security-Policy.** `scripts/generate-headers.mjs` writes `dist/_headers` with
+   `connect-src 'self' <the exact Worker origin>`. It is generated rather than checked in because
+   the workers.dev subdomain is account-specific, and named exactly rather than wildcarded.
+
+`apps/web/public/_headers` is the pre-generation fallback and deliberately allows no cross-origin
+API call at all. If the generator is ever skipped the app fails visibly in the browser console
+rather than silently shipping a wider policy than intended.
+
+A Pages Functions proxy at `/api` was considered and rejected: Pages Functions are themselves
+Workers, so every API request would invoke two of them against the same free-tier request budget.
 
 ---
 
-## 3. Setting Worker secrets
+## 5. Deploying the preview
 
-Preview and production are separate. Run each command twice, once per environment:
+GitHub → **Actions** → **Deploy Preview** → **Run workflow**.
+
+The single input, `bootstrap_data`, defaults to on and publishes the national network artifact to
+the preview bucket. Turn it off for a code-only redeploy.
+
+In order, the run:
+
+1. Re-runs the full quality gate on the commit being deployed — that may not be the commit CI
+   tested — then the deploy-stage preflight, which is stricter.
+2. Provisions any missing Cloudflare resource.
+3. Deploys the preview Worker and reads its URL back from wrangler's output.
+4. Sets the Worker's four runtime secrets.
+5. Waits for the Worker to answer `/v1/sources/health` before compiling anything against it.
+6. Builds the frontend with `VITE_API_URL` and generates the matching CSP.
+7. Deploys Pages to the `preview` branch, whose alias `preview.busstops.pages.dev` is stable
+   across deploys — unlike the per-deployment hash URL, which is not what CORS allows.
+8. Bootstraps the national artifact and **fails if it published nothing**. The daily job exits 0
+   when storage is unconfigured, so a schedule keeps running and the gap stays visible; a
+   bootstrap needs the opposite.
+9. Waits for Pages to serve, smoke tests both real URLs, and prints the preview link in the job
+   summary.
+
+---
+
+## 6. Deploying production
+
+GitHub → **Actions** → **Deploy** → **Run workflow** → `production`.
+
+This is a separate, manual, gated button on purpose. A merge that passes CI is not the same event
+as a decision to put something in front of the public, and a deploy-on-push would remove the one
+place a person can say no.
+
+`Deploy` is scoped to a GitHub Environment named after its input, so **creating a `production`
+environment with a required reviewer is the one piece of GitHub configuration still worth doing**.
+It is the only remaining setting whose absence loses something real: without it, the production
+button deploys immediately rather than asking a person first. Create `preview` too if you use
+`Deploy` for preview rather than `Deploy Preview`; it needs no variables.
+
+Production deploys also require every free-tier allowance marked `requiredForDeploy` to be
+verified (§8).
+
+---
+
+## 7. Setting Worker secrets by hand
+
+The deploy workflows do this for you. You only need these commands for a locally run Worker, or to
+rotate a value outside a deploy:
 
 ```bash
 # Preview
@@ -162,35 +214,25 @@ These need `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` in your shell, or 
 
 ---
 
-## 4. Deploying
-
-GitHub → **Actions** → **Deploy** → **Run workflow** → choose `preview` or `production`.
-
-Deployment is manual by design. A merge that passes CI is not the same event as a decision to put
-something in front of the public, and a deploy-on-push would remove the one place a person can
-say no.
-
-The workflow re-runs the whole quality gate on the commit being deployed — that may not be the
-commit CI tested — then runs the deploy-stage preflight, deploys the Worker and Pages, and smoke
-tests what it deployed.
-
----
-
-## 5. Verifying free-tier allowances
+## 8. Free-tier allowances and optional overrides
 
 ```bash
 PREFLIGHT_STAGE=deploy npm run preflight
 ```
 
-This fails while any required allowance in `packages/governor/src/budget-registry.ts` has
-`verifiedAt: null`. Nine do. Verifying one means opening the provider's current terms page,
-confirming the number, and setting both `verifiedAt` and `verifiedNote` on that entry.
+This fails while any allowance in `packages/governor/src/budget-registry.ts` that is marked
+`requiredForDeploy` has `verifiedAt: null`. Verifying one means opening the provider's current
+terms page, confirming the number, and setting both `verifiedAt` and `verifiedNote` on that entry.
 
 This is deliberately a human step. Allowances change, and a stale figure in a registry is worse
 than no figure because it is trusted. **Do not set `verifiedAt` merely to make preflight pass** —
 the gate exists precisely to stop that.
 
-Three entries are already verified and record how:
+Allowances for capabilities that are switched off — email delivery, Open-Meteo, the Environment
+Agency feed — are not `requiredForDeploy`, so they cannot block a deploy of a platform that does
+not yet call them. They become required when the capability is enabled.
+
+Verified, with how:
 
 - **GitHub Actions minutes** — standard GitHub-hosted runners are free and unlimited for public
   repositories, so the entry is marked `metered: false`. It is kept rather than deleted because
@@ -200,30 +242,52 @@ Three entries are already verified and record how:
   collector, not merely documented.
 - **TfL Unified API** — the registered product is 500 requests per minute. The app key is what
   makes that figure apply; an unregistered caller gets far less.
+- **Cloudflare Workers, Pages and R2** — the free-tier request, build and storage allowances the
+  deploy depends on.
+
+### Optional repository variables
+
+Settings → Secrets and variables → Actions → **Variables**. Every one has a working default; set
+one only to override it. These are public by definition and must not be secrets.
+
+| Variable                                                          | Default                       |
+| ----------------------------------------------------------------- | ----------------------------- |
+| `BUDGET_UTILIZATION`                                              | `0` — assume headroom         |
+| `R2_BUCKET_ARTIFACTS`                                             | `busstops-artifacts`          |
+| `PUBLIC_BASE_URL`                                                 | Used for Daily Brief links    |
+| `R2_STORAGE_LIMIT_BYTES`                                          | 10 GiB                        |
+| `MAX_PARTITIONS_PER_RUN`                                          | 12                            |
+| `BODS_DAILY_REQUEST_BUDGET`                                       | 8,640                         |
+| `COLLECTION_PASSES`                                               | 3                             |
+| `COLLECTION_BUDGET_MS`                                            | 240,000                       |
+| `BATCH_BUDGET_MS`                                                 | 300,000                       |
+| `EMAIL_PROVIDER`, `EMAIL_PROVIDER_ENDPOINT`, `EMAIL_FROM_ADDRESS` | Unset; email delivery skipped |
 
 ---
 
-## 6. Keeping it free
+## 9. Keeping it free
 
 - Attach no payment method.
 - Leave the Workers plan on free. `workers_dev = true` and the absence of any paid binding keep
   it there.
-- The governor cannot see the Cloudflare dashboard. Set `BUDGET_UTILIZATION` (0..1) as a
-  repository variable so the scheduled jobs know what the account actually looks like; leaving it
-  at `0` means they assume there is headroom.
+- The governor cannot see the Cloudflare dashboard. Set `BUDGET_UTILIZATION` (0..1) if you want
+  the scheduled jobs to widen their cadence before a limit is reached; `0` means they assume
+  there is headroom.
 - The retention job runs separately from the analytics batch on purpose, so an analytics failure
   can never postpone raw-data expiry.
 
 ---
 
-## 7. After deploying
+## 10. After deploying
+
+The deploy workflows smoke test what they deployed. To re-check later, against the URLs the run
+printed:
 
 ```bash
-node scripts/smoke-test.mjs "$PUBLIC_BASE_URL" "$PUBLIC_API_URL"
+node scripts/smoke-test.mjs https://preview.busstops.pages.dev https://busstops-api-preview.<subdomain>.workers.dev
 ```
 
-The Deploy workflow runs this itself; run it by hand to re-check later. If it fails, roll back
-rather than fixing forward:
+If it fails, roll back rather than fixing forward:
 
 ```bash
 npx wrangler rollback --config apps/worker/wrangler.toml --env ""

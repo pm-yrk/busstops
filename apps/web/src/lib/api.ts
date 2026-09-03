@@ -37,6 +37,23 @@ import type {
  * queue of stale viewport requests in flight.
  */
 
+/**
+ * Where the API lives.
+ *
+ * `VITE_API_URL` is set by the deployment workflow to the exact Worker origin it just deployed,
+ * so a preview build talks to the preview Worker and a production build to the production one,
+ * with no runtime lookup and nothing to configure by hand.
+ *
+ * The fallback is `/api` for local development, where the Vite dev server proxies to a local
+ * `wrangler dev`. It is deliberately a relative path: if the build variable were ever missing in
+ * a deployed bundle the calls would fail visibly against the site's own origin, rather than
+ * silently reaching whatever origin a default happened to name.
+ */
+export function defaultApiBaseUrl(): string {
+  const configured = import.meta.env?.VITE_API_URL;
+  return configured && configured.length > 0 ? configured : "/api";
+}
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -66,7 +83,7 @@ export class ApiClient {
   private readonly fetchImpl: typeof fetch;
 
   constructor(options: ApiClientOptions = {}) {
-    this.baseUrl = (options.baseUrl ?? "/api").replace(/\/$/, "");
+    this.baseUrl = (options.baseUrl ?? defaultApiBaseUrl()).replace(/\/$/, "");
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
   }
 

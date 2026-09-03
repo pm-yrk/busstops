@@ -20,5 +20,17 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    /*
+     * Local development only. Deployed builds call the Worker origin directly via VITE_API_URL;
+     * this proxy exists so `npm run dev` can use the same relative `/api` path against a local
+     * `wrangler dev` without a second build configuration.
+     */
+    proxy: {
+      "/api": {
+        target: "http://127.0.0.1:8787",
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api/, ""),
+      },
+    },
   },
 });

@@ -215,10 +215,53 @@ describe("budget registry integrity", () => {
     }
   });
 
-  it("reports unverified allowances so preflight can block deployment", () => {
-    // Every allowance starts unverified; preflight must fail until confirmed against live terms.
+  /*
+   * This test used to assert that at least one required allowance was unverified, which was true
+   * while none had been checked. All required allowances have since been verified against the
+   * providers' published terms, so that assertion now fails against a correct registry.
+   *
+   * What actually needs guarding is the mechanism, not the transient state: the gate must select
+   * exactly the resources that are required AND unverified, and it must ignore optional ones.
+   */
+  it("selects exactly the required allowances that are still unverified", () => {
     const unverified = unverifiedRequiredResources();
-    expect(unverified.length).toBeGreaterThan(0);
+
+    for (const resource of unverified) {
+      expect(resource.requiredForDeploy).toBe(true);
+      expect(resource.verifiedAt).toBeNull();
+    }
+
+    // Nothing required and verified may appear, and nothing optional may appear at all.
+    const expected = BUDGET_REGISTRY.filter(
+      (resource) => resource.requiredForDeploy && resource.verifiedAt === null,
+    ).map((resource) => resource.key);
+    expect(unverified.map((resource) => resource.key)).toEqual(expected);
+  });
+
+  it("does not let an optional unverified allowance block deployment", () => {
+    // Email, Open-Meteo and Environment Agency allowances are unverified and must stay that way
+    // while those capabilities are switched off. Blocking on them would gate the deploy on
+    // quotas for features that make no requests.
+    const optionalUnverified = BUDGET_REGISTRY.filter(
+      (resource) => !resource.requiredForDeploy && resource.verifiedAt === null,
+    );
+    expect(optionalUnverified.length).toBeGreaterThan(0);
+
+    const blocking = unverifiedRequiredResources().map((resource) => resource.key);
+    for (const resource of optionalUnverified) {
+      expect(blocking).not.toContain(resource.key);
+    }
+  });
+
+  it("has every deployment-required allowance verified with a note", () => {
+    // The deployable state: preflight's deploy gate passes only when this holds.
+    for (const resource of BUDGET_REGISTRY.filter((r) => r.requiredForDeploy)) {
+      expect(
+        resource.verifiedAt,
+        `${resource.key} must be verified before deploying`,
+      ).not.toBeNull();
+      expect(resource.verifiedNote, `${resource.key} must record how it was verified`).toBeTruthy();
+    }
   });
 });
 

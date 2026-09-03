@@ -1,0 +1,241 @@
+name: Deploy Preview
+
+# One button: Actions → Deploy Preview → Run workflow.
+#
+# Provisions what is missing, deploys the Worker, points the frontend at it, deploys Pages,
+# bootstraps real national data, then smoke tests the result and prints the URL.
+#
+# Safe to re-run. Provisioning checks before creating, secrets are overwritten with the same
+# values, and both deploys are idempotent. Nothing here can enable a paid plan.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bootstrap_data:
+        description: "Also publish the national network artifact to the preview bucket"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-preview
+  cancel-in-progress: false
+
+# Deterministic. None of these needs to be configured by hand, which is why there are no
+# repository variables and no GitHub Environment on the preview path.
+env:
+  PAGES_PROJECT: busstops
+  PAGES_BRANCH: preview
+  WORKER_NAME: busstops-api-preview
+  WORKER_ENV: preview
+  R2_BUCKET_ARTIFACTS: busstops-artifacts-preview
+  # The governor cannot read the Cloudflare dashboard. A fresh preview account has spent nothing,
+  # so zero is the honest starting figure rather than a guess.
+  BUDGET_UTILIZATION: "0"
+
+jobs:
+  preview:
+    name: Build, provision and deploy the preview
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      worker_url: ${{ steps.worker.outputs.url }}
+      pages_url: ${{ steps.pages.outputs.url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - run: npm ci --no-audit --no-fund
+
+      # ---------------------------------------------------------------- gates
+      # The full gate runs on the commit being deployed, which may not be the commit CI tested.
+      - name: Format, lint and types
+        run: |
+          npm run format:check
+          npm run lint
+          npm run typecheck
+
+      - name: Unit, contract, integration and property tests
+        run: npm test
+
+      - name: Deploy-stage preflight
+        env:
+          PREFLIGHT_STAGE: deploy
+        run: npm run preflight
+
+      # --------------------------------------------------------- provisioning
+      - name: Ensure Cloudflare resources exist
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: node scripts/provision-cloudflare.mjs
+
+      # -------------------------------------------------------- worker deploy
+      # The Worker is deployed before its secrets exist, because `wrangler secret put` needs the
+      # script to be there. Secrets applied afterwards take effect on the live Worker immediately.
+      - name: Deploy the preview Worker
+        id: worker
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -o pipefail
+          npx wrangler deploy \
+            --config apps/worker/wrangler.toml \
+            --env "$WORKER_ENV" 2>&1 | tee deploy.log
+
+          # The workers.dev subdomain is account-specific and not knowable in advance, so the URL
+          # is read back from what was actually deployed rather than assembled from a guess.
+          URL=$(grep -oE 'https://[a-z0-9.-]+\.workers\.dev' deploy.log | head -1)
+          if [ -z "$URL" ]; then
+            echo "::error::Could not determine the deployed Worker URL from wrangler output."
+            exit 1
+          fi
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "Worker deployed at $URL"
+
+      - name: Configure Worker runtime secrets
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          BODS_API_KEY: ${{ secrets.BODS_API_KEY }}
+          TFL_APP_KEY: ${{ secrets.TFL_APP_KEY }}
+          VEHICLE_SALT_SECRET: ${{ secrets.VEHICLE_SALT_SECRET }}
+          UNSUBSCRIBE_SECRET: ${{ secrets.UNSUBSCRIBE_SECRET }}
+        run: |
+          # Values are piped from the environment straight into wrangler on stdin. They are never
+          # arguments (which appear in process listings), never echoed, and never written to disk.
+          set -u
+          for NAME in BODS_API_KEY TFL_APP_KEY VEHICLE_SALT_SECRET UNSUBSCRIBE_SECRET; do
+            if [ -z "${!NAME:-}" ]; then
+              echo "::error::Repository secret $NAME is empty; the preview Worker needs it."
+              exit 1
+            fi
+            # stdout is discarded because wrangler echoes a success banner per secret; stderr is
+            # kept, because it names the secret and the failure but never the value, and losing
+            # the diagnostic would be worse than the negligible risk of showing it.
+            printf '%s' "${!NAME}" | npx wrangler secret put "$NAME" \
+              --config apps/worker/wrangler.toml \
+              --env "$WORKER_ENV" >/dev/null \
+              && echo "  $NAME: set" \
+              || { echo "::error::Failed to set Worker secret $NAME"; exit 1; }
+          done
+
+      - name: Check the Worker answers before building against it
+        run: |
+          for attempt in 1 2 3 4 5 6; do
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 \
+              "${{ steps.worker.outputs.url }}/v1/sources/health" || echo 000)
+            if [ "$CODE" = "200" ]; then
+              echo "Worker healthy on attempt $attempt"
+              exit 0
+            fi
+            echo "Attempt $attempt: HTTP $CODE, waiting for propagation"
+            sleep 10
+          done
+          echo "::error::The Worker did not become healthy; not building a frontend against it."
+          exit 1
+
+      # ----------------------------------------------------------- pages build
+      - name: Build the frontend against the deployed Worker
+        env:
+          # Baked in at build time: the app calls this exact origin, with no runtime lookup.
+          VITE_API_URL: ${{ steps.worker.outputs.url }}
+        run: npm run build --workspace @busstops/web
+
+      - name: Generate the Content-Security-Policy for that origin
+        run: |
+          node scripts/generate-headers.mjs apps/web/dist "${{ steps.worker.outputs.url }}"
+          test -f apps/web/dist/_redirects || { echo "::error::_redirects missing"; exit 1; }
+          echo "--- generated policy ---"
+          grep -m1 'Content-Security-Policy' apps/web/dist/_headers
+
+      - name: Deploy the Pages preview
+        id: pages
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -o pipefail
+          npx wrangler pages deploy apps/web/dist \
+            --project-name "$PAGES_PROJECT" \
+            --branch "$PAGES_BRANCH" \
+            --commit-dirty=true 2>&1 | tee pages.log
+
+          # The branch alias is stable across deploys; the per-deployment hash URL is not, and is
+          # not what CORS on the Worker allows.
+          ALIAS="https://${PAGES_BRANCH}.${PAGES_PROJECT}.pages.dev"
+          echo "url=$ALIAS" >> "$GITHUB_OUTPUT"
+          echo "Pages deployed at $ALIAS"
+
+      # ------------------------------------------------------ data bootstrap
+      - name: Bootstrap the national network artifact
+        if: ${{ inputs.bootstrap_data }}
+        env:
+          BODS_API_KEY: ${{ secrets.BODS_API_KEY }}
+          TFL_APP_KEY: ${{ secrets.TFL_APP_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          FORCE_REBUILD: "true"
+        run: |
+          npx tsx pipelines/static-network/run-daily.ts
+
+          # The job exits 0 when storage is not configured, so the schedule keeps running and the
+          # gap stays visible instead of turning into a crash. That is right for a cron and wrong
+          # for a bootstrap: here, "did not publish" is the failure we are trying to catch.
+          OUTCOME=$(node -e "process.stdout.write(require('./build-report.json').outcome ?? 'missing')")
+          echo "Bootstrap outcome: $OUTCOME"
+          if [ "$OUTCOME" != "published" ]; then
+            echo "::error::Bootstrap did not publish a national artifact (outcome: $OUTCOME)."
+            node -e "console.error(JSON.stringify(require('./build-report.json'), null, 2))"
+            exit 1
+          fi
+          node -e "const r=require('./build-report.json'); console.log('Stops:', r.counts.stops, 'Services:', r.counts.services, 'Journeys:', r.counts.journeys)"
+
+      - name: Upload the bootstrap report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: preview-bootstrap-report
+          path: build-report.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+      # -------------------------------------------------------------- verify
+      - name: Wait for the Pages deployment to serve
+        run: |
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 \
+              "${{ steps.pages.outputs.url }}" || echo 000)
+            if [ "$CODE" = "200" ]; then
+              echo "Pages serving on attempt $attempt"
+              exit 0
+            fi
+            echo "Attempt $attempt: HTTP $CODE"
+            sleep 15
+          done
+          echo "::error::The Pages deployment did not start serving."
+          exit 1
+
+      - name: Smoke test the real deployment
+        run: node scripts/smoke-test.mjs "${{ steps.pages.outputs.url }}" "${{ steps.worker.outputs.url }}"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## Bus Stops. preview"
+            echo
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| **Preview site** | ${{ steps.pages.outputs.url }} |"
+            echo "| API (Worker) | ${{ steps.worker.outputs.url }} |"
+            echo "| Artifact bucket | \`$R2_BUCKET_ARTIFACTS\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Preview URL: ${{ steps.pages.outputs.url }}"

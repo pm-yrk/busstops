@@ -409,6 +409,69 @@ describe("GET /v1/stops/:id", () => {
   });
 });
 
+describe("cross-origin access from the Pages app", () => {
+  /*
+   * The web app is served from Cloudflare Pages and calls this Worker on a different origin, so
+   * the browser will refuse every response that does not carry CORS headers naming that exact
+   * origin. Nothing else in the suite exercises that path, and getting it wrong produces an app
+   * whose every request fails in the browser while every server-side test passes.
+   */
+  const PAGES_ORIGIN = "https://preview.busstops.pages.dev";
+
+  it("answers a preflight from the Pages origin", async () => {
+    const store = await publishedStore();
+    const response = await worker.fetch(
+      new Request("https://api.busstops.example/v1/sources/health", {
+        method: "OPTIONS",
+        headers: { Origin: PAGES_ORIGIN, "Access-Control-Request-Method": "GET" },
+      }),
+      makeEnv(store, { PUBLIC_BASE_URL: PAGES_ORIGIN }),
+      ctx,
+    );
+
+    expect(response.status).toBe(204);
+    expect(response.headers.get("Access-Control-Allow-Origin")).toBe(PAGES_ORIGIN);
+    expect(response.headers.get("Access-Control-Allow-Methods")).toContain("GET");
+  });
+
+  it("returns CORS headers on an actual data response, not only the preflight", async () => {
+    const store = await publishedStore();
+    const response = await worker.fetch(
+      get("/v1/sources/health", { Origin: PAGES_ORIGIN }),
+      makeEnv(store, { PUBLIC_BASE_URL: PAGES_ORIGIN }),
+      ctx,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Access-Control-Allow-Origin")).toBe(PAGES_ORIGIN);
+    // Caches must not serve one origin's response to another.
+    expect(response.headers.get("Vary")).toContain("Origin");
+  });
+
+  it("gives no CORS headers to an origin it was not configured for", async () => {
+    const store = await publishedStore();
+    const response = await worker.fetch(
+      get("/v1/sources/health", { Origin: "https://not-ours.example" }),
+      makeEnv(store, { PUBLIC_BASE_URL: PAGES_ORIGIN }),
+      ctx,
+    );
+
+    // The request still succeeds server-side; the browser is what refuses to hand it over.
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Access-Control-Allow-Origin")).toBeNull();
+  });
+
+  it("allows the Pages origin the deployed configuration actually names", async () => {
+    // Cloudflare Pages URLs are deterministic, which is why this can be configured up front.
+    const wrangler = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), "../wrangler.toml"),
+      "utf8",
+    );
+    expect(wrangler).toContain('PUBLIC_BASE_URL = "https://busstops.pages.dev"');
+    expect(wrangler).toContain('PUBLIC_BASE_URL = "https://preview.busstops.pages.dev"');
+  });
+});
+
 describe("one-click unsubscribe", () => {
   it("accepts a GET, which is what a person clicking the link sends", async () => {
     const store = await publishedStore();

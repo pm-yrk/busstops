@@ -69,9 +69,10 @@ await check("security headers are set on the app shell", async () => {
   const missing = required.filter((header) => !response.headers.get(header));
   assert(
     missing.length === 0,
-    `missing: ${missing.join(", ")}. These come from apps/web/public/_headers, which Cloudflare ` +
-      `Pages applies but a local 'vite preview' does not — so this check is expected to fail ` +
-      `against a local rehearsal and must pass against a real deployment.`,
+    `missing: ${missing.join(", ")}. These come from dist/_headers, written at deploy time by ` +
+      `scripts/generate-headers.mjs and applied by Cloudflare Pages. A local 'vite preview' does ` +
+      `not apply them, so this check is expected to fail against a local rehearsal and must ` +
+      `pass against a real deployment.`,
   );
   return required.join(", ");
 });

@@ -1,17 +1,21 @@
 # Bus Stops. Build State
 
-Last updated: 2026-09-03 (deployment-readiness audit complete)
+Last updated: 2026-09-03 (deployment automated; preview deploy executing in GitHub Actions)
 
 ## Current status
 
-- Phase: P0–P9 complete → P10 (deployment, externally blocked)
+- Phase: P0–P9 complete → P10 (deployment, automated and executing)
 - Overall: foundations, all eight source adapters, the national static-network pipeline, the
   Worker edge API, the full Bus Stops Live passenger app, the journey planning engine, the
   analytics engine, the national intelligence pipeline, Bus Stops Pro and the Daily Brief are
   complete, and the platform is hardened with browser, accessibility, property and free-tier
-  drill suites. Remaining: P10 deployment, which is externally blocked (B3).
-- Deployment: not deployed (external blocker — see Known limitations B3)
-- Blockers: 3 external blockers recorded below (B1 upstream egress, B2 credentials, B3 deploy reachability)
+  drill suites. P10 is now a single GitHub Actions run rather than a manual checklist.
+- Deployment: preview deploy runs from `Deploy Preview`, which provisions Cloudflare resources,
+  sets the Worker's runtime secrets, deploys both halves, bootstraps real national data and smoke
+  tests what it deployed. Production stays behind a separate, reviewer-gated button.
+- Blockers: B1 and B2 are unchanged and are properties of _this build container_, not of the
+  platform — the GitHub Actions runner has the egress and the credentials that this container
+  lacks, which is precisely why the deploy happens there. B3 is resolved (see below).
 
 ## Environment audit (measured 2026-09-02)
 
@@ -29,8 +33,13 @@ Host reachability was measured directly rather than assumed:
 | `api.open-meteo.com`                  | CONNECT denied                  |
 | `tile.openstreetmap.org`              | CONNECT denied                  |
 
-No upstream credentials are provisioned in this environment. Per `CLAUDE.md`, this does not
-halt development: all credential-independent work proceeds and the blocked verifications are
+Re-measured 2026-09-03: unchanged. Every one of those hosts still answers `403` to `CONNECT`
+through the environment's egress proxy, and no upstream credential is present here.
+
+This constrains what can be _verified from this container_; it does not constrain the platform.
+A GitHub-hosted runner has ordinary egress and holds the repository secrets, so live verification
+of BODS, TfL and NaPTAN, and every Cloudflare API call, happen in the workflow rather than here.
+Per `CLAUDE.md`, all credential-independent work proceeded and the blocked verifications are
 isolated and documented. See `docs/adr/0001-stack-and-build-environment-constraints.md`.
 
 ### Completed
@@ -309,28 +318,72 @@ found, all fixed; the repository is now ready to provision.
    one. `allowanceVerifiedAt` is now nullable and reports null.
 
 Also: `.env.example` had five variables nothing read (`R2_BUCKET_RAW`, `KV_NAMESPACE_CACHE`,
-`DATABASE_URL`, `AUTH_SECRET`, `AUTH_ALLOWED_ORIGIN`) and was missing `PUBLIC_API_URL`, which the
-deploy workflow consumes. A contract test now fails on drift in either direction. National
-Highways and Street Manager keys are documented as not required to deploy, because their adapters
-are contract-tested but not yet called by any scheduled job.
+`DATABASE_URL`, `AUTH_SECRET`, `AUTH_ALLOWED_ORIGIN`). A contract test now fails on drift in
+either direction. National Highways and Street Manager keys are documented as not required to
+deploy, because their adapters are contract-tested but not yet called by any scheduled job.
 
-`infra/cloudflare/PROVISIONING.md` is now the single authoritative list, with an eleven-step
-order of operations, and it requires two GitHub Environments so a preview deploy is smoke-tested
-against preview's URLs rather than production's.
+## Deployment automation (2026-09-03)
 
-Nine allowances remain `verifiedAt: null` and continue to block production deploys, as intended.
+The deploy was a document describing eleven manual steps. It is now one button, because each step
+a person performs before a deploy works is a step that gets performed wrong once.
+
+**The API routing defect, fixed.** The frontend `ApiClient` defaulted to a relative `/api`. The
+app is served by Pages and the API by a Worker — different origins — so every call would have
+resolved to the Pages host and 404'd, and the static CSP's `connect-src 'self'` would have
+blocked the correct origin even after it was pointed there. Three changes, applied together:
+
+1. `defaultApiBaseUrl()` reads `import.meta.env.VITE_API_URL`, which the deploy workflows set to
+   the Worker URL they just read back from wrangler's output. It is baked into the bundle: no
+   runtime lookup, no configuration endpoint to get wrong. Unset, it still falls back to `/api`,
+   which the Vite dev server now proxies to a local `wrangler dev` on 8787.
+2. `scripts/generate-headers.mjs` writes `dist/_headers` at deploy time with
+   `connect-src 'self' <exact Worker origin>` — named, never wildcarded. `public/_headers` stays
+   deliberately restrictive so a skipped generator fails visibly in a browser console rather than
+   silently shipping a wider policy.
+3. `PUBLIC_BASE_URL` is declared per environment in `wrangler.toml`, so the Worker's CORS
+   allow-list names exactly the Pages origin for that environment. This needed no chicken-and-egg
+   resolution: Pages hostnames are deterministic (`busstops.pages.dev`,
+   `preview.busstops.pages.dev`), unlike the account-specific workers.dev subdomain.
+
+A Pages Functions proxy at `/api` was considered and rejected. Pages Functions are Workers, so
+every API request would have invoked two of them against the same free-tier request budget.
+
+**Provisioning.** `scripts/provision-cloudflare.mjs` checks before it creates, treats a
+concurrent run's "already exists" as success, and can reach nothing chargeable. It creates the two
+R2 buckets and the Pages project; wrangler creates the Worker scripts.
+
+**Manual configuration removed.** `R2_BUCKET_ARTIFACTS`, `BUDGET_UTILIZATION`, `PUBLIC_BASE_URL`
+and `PUBLIC_API_URL` were required repository variables. The first two now default in every
+workflow that reads them, `PUBLIC_BASE_URL` moved into `wrangler.toml` where it is also the CORS
+origin, and `PUBLIC_API_URL` is gone entirely — deriving the URL from the deploy is strictly
+stronger than validating a variable, because a variable can be set and still name the wrong
+environment, and a smoke test against production after a preview deploy reports a confident pass.
+The preview path needs no GitHub Environment. The `production` environment is kept, because a
+required reviewer on it is a real gate rather than ceremony.
+
+Two tests changed rather than being deleted, and both were stale premises rather than weakened
+assertions:
+
+- `governor.test.ts` asserted `unverifiedRequiredResources()` returns a non-empty list. That was
+  written when nothing had been verified; all deployment-required allowances now are, so it
+  correctly returns none. It is replaced by three tests of the mechanism: that required-and-
+  unverified is selected exactly, that an optional unverified allowance never blocks a deploy,
+  and that every required allowance carries a note saying how it was verified.
+- `deployment-config.test.ts` required the workflow to refuse an unset `$SITE_URL`/`$API_URL`.
+  Those variables no longer exist; the replacement asserts the stronger property that both URLs
+  come from the deploy steps and from no repository or environment variable.
+
+A dead `quota:check` npm script pointing at a file that was never written has been removed.
 
 ### In progress
 
-- [ ] P10 — the deploy itself, blocked on a Cloudflare API token (B3) and on the nine
-      unverified free-tier allowances, which are a deliberate human gate
+- [ ] P10 — `Deploy Preview` executing in GitHub Actions; evidence recorded below as it lands
 
 ### Next
 
-1. P10 deployment. Everything credential-independent is complete: the deploy workflow, the
-   provisioning guide, static-site security headers, and a smoke test that has been executed
-   against a locally running Worker. The deploy itself needs a Cloudflare API token — see B3,
-   whose earlier wording has been corrected.
+1. Observe the preview run, fix anything it surfaces, and record the preview URL and the live
+   BODS/TfL/NaPTAN behaviour actually observed — not assumed — in the source registry.
+2. Production remains un-deployed pending explicit approval after the preview is reviewed.
 
 ### Verification evidence
 

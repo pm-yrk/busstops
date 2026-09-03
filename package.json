@@ -23,7 +23,6 @@
     "format:check": "prettier --check .",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "preflight": "node scripts/preflight.mjs",
-    "quota:check": "node scripts/quota-check.mjs",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui"
   },
