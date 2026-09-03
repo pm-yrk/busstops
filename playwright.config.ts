@@ -56,7 +56,10 @@ export default defineConfig({
   ],
 
   webServer: {
-    command: `npm run build --workspace @busstops/web && npx vite preview --port ${PORT} --strictPort`,
+    // The server is started from the web workspace itself. Bind Vite explicitly to the same
+    // IPv4 loopback address Playwright probes; relying on Vite's default localhost binding can
+    // resolve to IPv6 on hosted runners and leave Playwright waiting for an unreachable 127.0.0.1.
+    command: `npm run build && npm run preview -- --host 127.0.0.1 --port ${PORT} --strictPort`,
     cwd: "apps/web",
     url: `http://127.0.0.1:${PORT}`,
     reuseExistingServer: !process.env.CI,
