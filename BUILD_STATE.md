@@ -411,25 +411,40 @@ Verified against those real URLs, not against a rehearsal:
   passes, so it is checked against the deployment rather than reasoned about.
 - **Pro is public.** `dataMode: "demo_snapshot"`, no `WWW-Authenticate`, no sign-in wall.
 
-**Not yet verified: real national data.** The bootstrap has not completed a publish. Three real
-defects were found and fixed along the way, each by measurement rather than assumption:
+**Real national data is published.** `Deploy Preview` run 4 bootstrapped
+`busstops-artifacts-preview` from live BODS and NaPTAN, outcome `published`, nothing failed:
 
-1. **BODS timetables are zip archives.** Measured against the live catalogue: 945 published
-   datasets, all 25 in the first page reporting `extension: "zip"`, and a download answering
-   `application/zip` with the PK magic bytes. The pipeline fetched every dataset as text, so the
-   XML parser was handed binary — a silent corruption in which no journeys parse, every
-   downstream dataset produces no records, and the publish rolls back.
-2. **The build exhausted the heap.** Fixing the zip handling meant the pipeline really did
-   decompress 25 archives, and fingerprinting joined all of them into one string. Hashing folds
-   left to right, so the join was never needed.
-3. **Tile publishing was serial.** Thousands of independent object writes, three round trips
-   each, one at a time.
+| Dataset                | Records                                        |
+| ---------------------- | ---------------------------------------------- |
+| `network/stops`        | 349,531                                        |
+| `network/search-index` | 350,596                                        |
+| `network/patterns`     | 48,448                                         |
+| `network/journeys`     | 32,199                                         |
+| `network/services`     | 1,043                                          |
+| `network/shapes`       | 515                                            |
+| `network/operators`    | 22                                             |
+| journey tiles          | 46 published, 0 failed, 0 journeys unplaceable |
 
-Until a bootstrap publishes, the deployed Live map has no stops to draw and `/v1/map` answers 500
-on the deployed Worker. That 500 is itself unexplained: with an empty bucket the Worker degrades
-correctly in test (a test now pins it), so the cause is specific to the deployed environment, and
-the deployed verification now reports the response body rather than only the status code so the
-next run says what the server actually said.
+Getting there took three real defects, each found by measurement rather than assumption:
+
+1. **BODS timetables are zip archives.** 945 published datasets, all 25 in the first page
+   `extension: "zip"`, the download `application/zip` with PK magic bytes. The pipeline fetched
+   them as text, so the XML parser was handed binary — no journeys parsed, every downstream
+   dataset came out empty, and the publish rolled back with nothing to explain why.
+2. **The build exhausted the heap.** Fixing the zips meant 25 archives really were decompressed,
+   and fingerprinting joined all of them into one string. FNV-1a folds left to right, so the join
+   was never needed.
+3. **Tile publishing was serial.** Thousands of independent writes, three round trips each.
+
+**Remaining defect: the Worker cannot read the national snapshot.** With the data published,
+`/v1/map` still answers 500 with the Worker's own message, `/v1/sources/health` still reports 0
+sources, and every endpoint that does _not_ load the snapshot — health, Pro, the query caps,
+unsubscribe — works. The most likely cause is size: `network/stops` is 349,531 records as one
+newline-delimited object, and a Workers isolate has 128 MB. The national journeys dataset was
+already tiled for exactly this reason, and `publish.ts` says so in as many words; stops and the
+search index need the same treatment, reading only the tiles a viewport spans. That is the next
+change, and it is a hypothesis to be measured before it is implemented — the previous guess about
+this 500 (a CPU limit) was wrong, and the response body ruled it out.
 
 ### Verification evidence
 
