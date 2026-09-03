@@ -1,4 +1,4 @@
-name: Verify live sources
+name: Verify sources and artifacts
 
 # Runs the adapters against real upstream responses.
 #
@@ -61,3 +61,34 @@ jobs:
           path: source-verification.json
           retention-days: 30
           if-no-files-found: warn
+
+  inspect:
+    name: Measure the published artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - run: npm ci --no-audit --no-fund
+
+      # Whether a national dataset fits in an edge isolate is a number, and nothing else prints it.
+      - name: Artifact sizes
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          R2_BUCKET_ARTIFACTS: busstops-artifacts-preview
+        run: |
+          set -o pipefail
+          node scripts/inspect-artifacts.mjs 2>&1 | tee artifacts.log
+          {
+            echo "## Published artifact sizes"
+            echo
+            echo '```'
+            cat artifacts.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
