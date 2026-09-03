@@ -42,10 +42,16 @@
   display: none;
 }
 
-@media (max-width: 720px) {
+/*
+ * The switch follows the shape of the space rather than the width alone. A tablet held upright is
+ * 768px across — wide by any breakpoint — but its hero box is twice as tall as it is wide, and the
+ * wide street shrank to a 240px band under 700px of nothing. What decides which street fits is the
+ * proportion of the window, so that is what is asked.
+ */
+@media (max-width: 720px), (max-aspect-ratio: 5 / 4) {
   .street-scene {
     aspect-ratio: 132 / 116;
-    max-height: min(52vh, 460px);
+    max-height: min(62vh, 620px);
     --scene-exit: 132px;
     --scene-park-blue: 16px;
     --scene-park-red: 74px;

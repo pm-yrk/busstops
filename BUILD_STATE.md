@@ -436,8 +436,8 @@ Getting there took three real defects, each found by measurement rather than ass
    was never needed.
 3. **Tile publishing was serial.** Thousands of independent writes, three round trips each.
 
-**Remaining defect: the national datasets do not fit in an edge isolate.** Measured, not inferred
-(`scripts/inspect-artifacts.mjs`, run against the preview bucket):
+**The national datasets do not fit in an edge isolate, so the edge stopped reading them.**
+Measured, not inferred (`scripts/inspect-artifacts.mjs`, run against the preview bucket):
 
 | Dataset                | Records | Size      |
 | ---------------------- | ------- | --------- |
@@ -446,23 +446,56 @@ Getting there took three real defects, each found by measurement rather than ass
 | `network/patterns`     | 48,448  | 100.1 MiB |
 | `network/search-index` | 350,596 | 87.5 MiB  |
 
-A Workers isolate has 128 MiB. `NetworkRepository.read()` loads stops, operators, services,
-patterns, shapes and the search index together — roughly 390 MiB of text before any of it is
-parsed into objects, and parsed JSON is larger than its source. The isolate is killed, so every
-endpoint that loads the snapshot answers 500, and every endpoint that does not — health, Pro, the
-query caps, unsubscribe — works. That is exactly the pattern observed.
+A Workers isolate has 128 MiB. The former `NetworkRepository.read()` loaded stops, operators,
+services, patterns, shapes and the search index together — roughly 390 MiB of text before any of
+it was parsed, and parsed JSON is larger than its source. The isolate was killed, so every
+endpoint that loaded the snapshot answered 500 and every endpoint that did not — health, Pro, the
+query caps, unsubscribe — worked. That is exactly the pattern that was observed.
 
 An earlier guess at this same 500 was that the free tier's CPU limit was being exceeded parsing
 SIRI-VM. That was wrong: the response body is the Worker's own error text, not Cloudflare's
 resource-limit page, which is what prompted printing the body rather than the status code.
 
-**The fix is the one the codebase already chose once.** `publish.ts` says of journeys: "The
-national journeys dataset is far too large to load in a Worker isolate, but a journey plan only
-ever needs the corridor between two points." Exactly the same is true of stops, patterns and the
-search index: a viewport needs the stops in it, not all 349,531. They must be published per
-spatial tile — the tiling helpers already exist — and `NetworkRepository` must read only the tiles
-a request spans. Until then the deployed Live map cannot draw real stops, and this is the single
-blocker between the preview and a production that would work.
+**The fix is the one the codebase already chose once for journeys.** `publish.ts` says of them:
+"The national journeys dataset is far too large to load in a Worker isolate, but a journey plan
+only ever needs the corridor between two points." The same is now true of everything a passenger
+query touches.
+
+- `pipelines/static-network/src/shards.ts` addresses the shards. Spatial families — stops,
+  patterns and the search tiles — use the half-degree tile the journey tiles already used. Key
+  families — the stop locator and the search prefixes — use an FNV-1a bucket and a two-character
+  word prefix, so an identifier or a typed word resolves to exactly one small object. A search is
+  a prefix bucket plus, where the query has a location, the tiles around it: not one 87 MiB index
+  moved somewhere else.
+- `apps/worker/src/network-reader.ts` replaced `NetworkRepository`. Nothing in it opens a national
+  object except `operators` (22 records), `services` (1,043) and the one-record index. Its shard
+  cache is bounded by count _and_ by the size of the text it parsed, because twenty-four dense
+  city tiles are not the same quantity of memory as twenty-four rural ones.
+- **Versioning is atomic.** The index record is read first and names the version; every shard is
+  then read at that exact version rather than through its own pointer. A publish writes shards
+  first and the index last, so a version that is visible is complete, and a reader mid-publish
+  keeps serving the previous one.
+- `apps/worker/src/isolate-memory.test.ts` asserts the _shape_ of the access rather than a size,
+  because a fixture small enough to run in a test is small enough to hide the defect. A recording
+  store logs every key read; a viewport, a stop page and a search must touch none of the national
+  datasets, and a source scan fails if `NetworkSnapshot` or `network-repository` reappear.
+
+Publishing the shards then failed twice more, and both were about size rather than logic:
+
+4. **Rate limiting, not memory.** 962 shard publishes returned 429. A full artifact publish costs
+   three round trips; two of them — the per-shard manifest and the shrink check — are meaningless
+   for a shard the reader addresses directly at a version the index names. One write per shard,
+   and `R2ObjectStore` now waits out a 429 honouring `Retry-After`.
+5. **A shape key that was not unique, and a cap counted in the wrong unit.** A TransXChange
+   journey pattern id is unique only inside its own document, and shapes were keyed by it alone —
+   so nationally 48,448 patterns collapsed onto 515 shapes. Most patterns carried another
+   operator's geometry, and every pattern sharing a key piled into the same tiles: one tile threw
+   `Invalid string length` while being serialised and the next was refused with 413, both while
+   inside the 20,000-record cap. Shapes are now keyed by route, scoped to the service, which is
+   also the deduplication the old key was reaching for. Published geometry is simplified to ten
+   metres and rounded to five decimal places, a tile stores each shape once, and the cap is now on
+   bytes measured on the exact text written — with the largest shard in each family reported after
+   every publish, because the useful question is how close the largest one came.
 
 ### Verification evidence
 
