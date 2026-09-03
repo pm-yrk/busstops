@@ -1,0 +1,264 @@
+.lozenge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: 2px var(--space-sm);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-micro);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border: 1px solid transparent;
+}
+
+.lozenge--neutral {
+  background: var(--colour-canvas);
+  border-color: var(--colour-hairline);
+  color: var(--colour-muted);
+}
+.lozenge--live {
+  background: var(--colour-success-pale);
+  border-color: var(--colour-success);
+  color: var(--colour-success);
+}
+.lozenge--info {
+  background: var(--colour-blue-pale);
+  border-color: var(--colour-blue);
+  color: var(--colour-blue);
+}
+.lozenge--success {
+  background: var(--colour-success-pale);
+  border-color: var(--colour-success);
+  color: var(--colour-success);
+}
+.lozenge--warning {
+  background: var(--colour-amber-pale);
+  border-color: var(--colour-amber);
+  color: var(--colour-amber);
+}
+.lozenge--critical {
+  background: var(--colour-critical-pale);
+  border-color: var(--colour-critical);
+  color: var(--colour-critical);
+}
+
+.route-badge--inline {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 40px;
+  min-height: 26px;
+  padding: 0 var(--space-sm);
+  background: var(--colour-ink);
+  color: var(--colour-surface);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-pixel);
+  font-weight: 700;
+  font-size: var(--font-size-small);
+}
+
+.confidence {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font-size: var(--font-size-small);
+}
+
+.confidence__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  flex: none;
+}
+
+/* Each level also carries its word, so the dot is reinforcement, never the only signal. */
+.confidence--high .confidence__dot {
+  background: var(--colour-success);
+}
+.confidence--medium .confidence__dot {
+  background: var(--colour-amber);
+}
+.confidence--low .confidence__dot {
+  background: var(--colour-muted);
+}
+
+.confidence__reason {
+  font-weight: 400;
+}
+
+.data-age {
+  font-size: var(--font-size-small);
+  color: var(--colour-muted);
+}
+
+.data-age--stale {
+  color: var(--colour-amber);
+  font-weight: 600;
+}
+
+.source-chip {
+  display: inline-block;
+  padding: 1px var(--space-xs);
+  border: 1px solid var(--colour-hairline);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-micro);
+  color: var(--colour-muted);
+  background: var(--colour-canvas);
+}
+
+.metric-tile {
+  padding: var(--space-md);
+}
+
+.metric-tile__label {
+  margin: 0 0 var(--space-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.metric-tile__value {
+  margin: 0;
+  font-size: var(--font-size-h2);
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.metric-tile__unit {
+  font-size: var(--font-size-lead);
+  font-weight: 500;
+  color: var(--colour-muted);
+}
+
+.metric-tile__detail,
+.metric-tile__confidence {
+  margin: var(--space-xs) 0 0;
+}
+
+.service-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  background: var(--colour-amber-pale);
+  border: 1px solid var(--colour-amber);
+  border-radius: var(--radius-md);
+  margin-bottom: var(--space-md);
+}
+
+.service-banner__text {
+  margin: 0;
+  font-size: var(--font-size-small);
+  color: var(--colour-ink);
+}
+
+.state-block {
+  padding: var(--space-lg);
+  text-align: left;
+}
+
+.state-block__title {
+  font-size: var(--font-size-h3);
+  margin-bottom: var(--space-sm);
+}
+
+.state-block--error {
+  border-color: var(--colour-critical);
+  background: var(--colour-critical-pale);
+}
+
+.skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.skeleton__row {
+  height: 44px;
+  border-radius: var(--radius-md);
+  background: linear-gradient(
+    90deg,
+    var(--colour-hairline) 25%,
+    var(--colour-canvas) 50%,
+    var(--colour-hairline) 75%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.4s ease-in-out infinite;
+}
+
+@keyframes skeleton-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton__row {
+    animation: none;
+    background: var(--colour-hairline);
+  }
+}
+
+.evidence-list {
+  margin: var(--space-sm) 0 0;
+  display: grid;
+  gap: var(--space-xs);
+}
+
+.evidence-list__item {
+  display: flex;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+  font-size: var(--font-size-small);
+}
+
+.evidence-list__item dt {
+  font-weight: 600;
+  min-width: 140px;
+}
+
+.evidence-list__item dd {
+  margin: 0;
+  flex: 1 1 200px;
+}
+
+.comparison {
+  margin-bottom: var(--space-sm);
+}
+
+.comparison__labels {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  font-size: var(--font-size-small);
+  margin-bottom: var(--space-xs);
+}
+
+.comparison__value {
+  font-weight: 600;
+}
+
+.comparison__track {
+  position: relative;
+  height: 10px;
+  background: var(--colour-canvas);
+  border: 1px solid var(--colour-hairline);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.comparison__fill {
+  height: 100%;
+  background: var(--colour-red);
+}
+
+/* The typical-value marker is a hard rule, readable without relying on hue alone. */
+.comparison__marker {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 2px;
+  background: var(--colour-ink);
+}

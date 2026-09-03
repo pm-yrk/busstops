@@ -1,0 +1,70 @@
+name: Intelligence — bounded live collection
+
+# The scheduled intelligence path (docs/07_DATA_PIPELINES.md "Live collection"). Entirely
+# separate from the user path: browsers never trigger this, and it never fetches a national feed
+# on a browser's behalf.
+#
+# Two budgets bound this job, and only one of them is ours.
+#
+# The publisher's rule is the binding one: BODS asks for no more than one central live-data
+# request every five seconds. That is enforced per request in the collector, so a run spaces its
+# partitions rather than bursting them — twelve partitions take at least a minute to sweep.
+#
+# Actions minutes are not a constraint here: standard GitHub-hosted runners are free and
+# unlimited for public repositories. The 10-minute job cap exists to stop a hung upstream holding
+# a runner open, not to ration minutes. If this repository is ever made private, minutes become
+# metered and this cadence needs revisiting.
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Never two collectors at once: a second would double the upstream request spend for data the
+# first is already fetching.
+concurrency:
+  group: intelligence-collection
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - run: npm ci --no-audit --no-fund
+
+      - name: Free-tier preflight
+        run: npm run preflight
+
+      - name: Collect bounded live observations
+        env:
+          BODS_API_KEY: ${{ secrets.BODS_API_KEY }}
+          VEHICLE_SALT_SECRET: ${{ secrets.VEHICLE_SALT_SECRET }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          R2_BUCKET_ARTIFACTS: ${{ vars.R2_BUCKET_ARTIFACTS }}
+          BUDGET_UTILIZATION: ${{ vars.BUDGET_UTILIZATION }}
+          MAX_PARTITIONS_PER_RUN: ${{ vars.MAX_PARTITIONS_PER_RUN }}
+          BODS_DAILY_REQUEST_BUDGET: ${{ vars.BODS_DAILY_REQUEST_BUDGET }}
+          COLLECTION_PASSES: ${{ vars.COLLECTION_PASSES }}
+          COLLECTION_BUDGET_MS: ${{ vars.COLLECTION_BUDGET_MS }}
+        run: npx tsx pipelines/live-collection/run-collect.ts
+
+      - name: Upload collection report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: collection-report
+          path: collection-report.json
+          retention-days: 3
+          if-no-files-found: ignore

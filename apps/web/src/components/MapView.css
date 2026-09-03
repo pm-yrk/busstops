@@ -1,0 +1,76 @@
+.map-view {
+  position: relative;
+  width: 100%;
+  height: clamp(280px, 45vh, 520px);
+  border: 1px solid var(--colour-hairline);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--colour-surface);
+}
+
+.map-view__canvas {
+  position: absolute;
+  inset: 0;
+}
+
+.map-view--unavailable {
+  height: auto;
+  padding: var(--space-md);
+  background: var(--colour-canvas);
+}
+
+.map-view--unavailable p {
+  margin: 0;
+}
+
+/* Markers are real controls: 44px targets, visible focus, no hover-only affordance. */
+.map-marker {
+  width: var(--min-touch-target);
+  height: var(--min-touch-target);
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+
+.map-marker::before {
+  content: "";
+  display: block;
+  width: 14px;
+  height: 14px;
+  border-radius: var(--radius-pill);
+  border: 2px solid var(--colour-ink);
+  background: var(--colour-surface);
+}
+
+.map-marker--selected::before {
+  background: var(--colour-red);
+  border-color: var(--colour-red);
+  width: 18px;
+  height: 18px;
+}
+
+.map-marker--vehicle::before {
+  border-radius: var(--radius-sm);
+  background: var(--colour-red);
+  border-color: var(--colour-red-dark);
+  transform: rotate(var(--bearing, 0deg));
+}
+
+/* Stale positions are hollow as well as paler: never colour alone. */
+.map-marker--stale::before {
+  background: var(--colour-surface);
+  border-style: dashed;
+}
+
+.map-marker:focus-visible {
+  outline: 2px solid var(--colour-red);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+.maplibregl-ctrl-attrib {
+  font-size: var(--font-size-micro);
+}

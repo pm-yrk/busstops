@@ -1,0 +1,214 @@
+@import "./tokens.css";
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--colour-canvas);
+  color: var(--colour-ink);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-body);
+  line-height: 1.5;
+  /* Tabular numerals keep countdowns and metrics from jittering as they tick. */
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  margin: 0 0 var(--space-sm);
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  font-weight: 700;
+}
+
+h1 {
+  font-size: var(--font-size-h1);
+}
+h2 {
+  font-size: var(--font-size-h2);
+}
+h3 {
+  font-size: var(--font-size-h3);
+}
+
+p {
+  margin: 0 0 var(--space-md);
+}
+
+a {
+  color: var(--colour-ink);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+a:hover {
+  color: var(--colour-red-text);
+}
+
+/* A visible focus ring everywhere: keyboard users must always know where they are. */
+:focus-visible {
+  outline: 2px solid var(--colour-red);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+  min-height: var(--min-touch-target);
+  border: 1px solid var(--colour-ink);
+  background: var(--colour-surface);
+  border-radius: var(--radius-md);
+  padding: var(--space-sm) var(--space-md);
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.button-primary {
+  background: var(--colour-red);
+  border-color: var(--colour-red);
+  color: var(--colour-surface);
+  font-weight: 600;
+}
+
+.button-primary:hover {
+  background: var(--colour-red-dark);
+  border-color: var(--colour-red-dark);
+}
+
+.button-quiet {
+  border-color: var(--colour-hairline);
+  background: transparent;
+}
+
+input[type="search"],
+input[type="text"],
+input[type="email"] {
+  min-height: var(--min-touch-target);
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--colour-hairline);
+  border-radius: var(--radius-md);
+  background: var(--colour-surface);
+  width: 100%;
+}
+
+/* Screen-reader-only text used for map alternatives and live-region announcements. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.skip-link {
+  position: absolute;
+  left: var(--space-md);
+  top: -100px;
+  z-index: var(--z-modal);
+  background: var(--colour-surface);
+  border: 1px solid var(--colour-ink);
+  padding: var(--space-sm) var(--space-md);
+  transition: top var(--duration-fast) ease;
+}
+
+.skip-link:focus {
+  top: var(--space-md);
+}
+
+.page {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: var(--space-lg) var(--space-md) var(--space-xxl);
+}
+
+.surface {
+  background: var(--colour-surface);
+  border: 1px solid var(--colour-hairline);
+  border-radius: var(--radius-md);
+}
+
+.hairline-top {
+  border-top: 1px solid var(--colour-hairline);
+}
+
+.muted {
+  color: var(--colour-muted);
+}
+
+.small {
+  font-size: var(--font-size-small);
+}
+
+.micro {
+  font-size: var(--font-size-micro);
+}
+
+.stack > * + * {
+  margin-top: var(--space-md);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.grid-cards {
+  display: grid;
+  gap: var(--space-md);
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+/* Reduced motion: no travelling bus, no transitions. Content must never depend on motion. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Safe areas for notched phones, so the bottom sheet's actions stay reachable. */
+@supports (padding: env(safe-area-inset-bottom)) {
+  .safe-bottom {
+    padding-bottom: calc(var(--space-md) + env(safe-area-inset-bottom));
+  }
+}
+
+@media print {
+  .no-print {
+    display: none !important;
+  }
+  body {
+    background: #fff;
+  }
+}

@@ -1,0 +1,102 @@
+/*
+ * Design tokens for the approved warm-white / black / red editorial direction.
+ * Mirrors packages/ui/src/tokens.ts; that module is the source of truth for TS consumers.
+ * See docs/02_DESIGN_SYSTEM.md.
+ */
+
+:root {
+  --colour-canvas: #f7f6f1;
+  --colour-surface: #ffffff;
+  --colour-ink: #111111;
+  --colour-muted: #66645f;
+  --colour-hairline: #dad8d1;
+
+  --colour-red: #e5242a;
+  --colour-red-dark: #b3161b;
+  /*
+   * Red text on a light ground. The brand red is a 3.6:1 contrast on white, which fails WCAG AA
+   * for anything below 24px, so small red text uses the darker shade. The bright red stays for
+   * large type, fills and borders, where the ratio is met or does not apply.
+   */
+  --colour-red-text: #b3161b;
+  /*
+   * The same problem inverted: the brand red on the near-black arrival board is 4.1:1, just under
+   * AA for small text. This lighter red clears it while still reading as the same red.
+   */
+  --colour-red-on-dark: #ff6b6f;
+  /* Muted text on a dark ground. The light-background muted grey is unreadable there. */
+  --colour-muted-on-dark: #b9b6ae;
+  --colour-red-pale: #fcebeb;
+
+  --colour-blue: #1557ff;
+  --colour-blue-pale: #eaf0ff;
+
+  --colour-success: #1f7a3d;
+  --colour-success-pale: #e8f4ec;
+  --colour-amber: #8a5a00;
+  --colour-amber-pale: #fbf1dc;
+  --colour-critical: #b3161b;
+  --colour-critical-pale: #fcebeb;
+
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 40px;
+  --space-xxl: 64px;
+
+  --radius-none: 0;
+  --radius-sm: 2px;
+  --radius-md: 4px;
+  --radius-lg: 8px;
+  --radius-pill: 999px;
+
+  --font-sans: "Inter", "Helvetica Neue", system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
+  --font-pixel: "Silkscreen", "Courier New", ui-monospace, monospace;
+  --font-mono: ui-monospace, "SF Mono", "Menlo", "Consolas", monospace;
+
+  --font-size-micro: 11px;
+  --font-size-small: 13px;
+  --font-size-body: 15px;
+  --font-size-lead: 18px;
+  --font-size-h3: 22px;
+  --font-size-h2: 30px;
+  --font-size-h1: 44px;
+  --font-size-hero: 72px;
+
+  --shadow-none: none;
+  --shadow-panel: 0 2px 12px rgba(17, 17, 17, 0.12);
+  --shadow-sheet: 0 -2px 16px rgba(17, 17, 17, 0.14);
+
+  --min-touch-target: 44px;
+  --duration-fast: 120ms;
+  --duration-base: 200ms;
+  --duration-bus-loop: 2400ms;
+
+  --z-map: 0;
+  --z-map-overlay: 10;
+  --z-sheet: 20;
+  --z-header: 30;
+  --z-banner: 40;
+  --z-modal: 50;
+}
+
+/* Larger type on the smallest screens would overflow; scale the hero only. */
+@media (max-width: 420px) {
+  :root {
+    --font-size-hero: 48px;
+    --font-size-h1: 32px;
+    --font-size-h2: 24px;
+  }
+}
+
+/*
+ * High contrast: strengthen the hairlines and muted text rather than changing the palette,
+ * so the identity survives while contrast improves.
+ */
+@media (prefers-contrast: more) {
+  :root {
+    --colour-hairline: #8a8880;
+    --colour-muted: #3d3b37;
+  }
+}

@@ -1,0 +1,62 @@
+name: Static network — daily change check
+
+# Daily fingerprint check (docs/07_DATA_PIPELINES.md). A full national rebuild runs only when a
+# source actually changed; an unchanged check is still recorded so "nothing happened" is
+# distinguishable from "the job did not run".
+
+on:
+  schedule:
+    # 03:15 UTC, outside peak upstream load. Times are UTC year-round.
+    - cron: "15 3 * * *"
+  workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: "Rebuild even when fingerprints are unchanged"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# One run at a time: a second concurrent rebuild would double the storage operations
+# and could interleave two manifest swaps.
+concurrency:
+  group: static-network
+  cancel-in-progress: false
+
+jobs:
+  check-and-build:
+    runs-on: ubuntu-latest
+    # Hard runtime cap so a hung upstream cannot consume the Actions budget.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - run: npm ci --no-audit --no-fund
+
+      - name: Free-tier preflight
+        run: npm run preflight
+
+      - name: Check fingerprints and rebuild if changed
+        env:
+          BODS_API_KEY: ${{ secrets.BODS_API_KEY }}
+          TFL_APP_KEY: ${{ secrets.TFL_APP_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          R2_BUCKET_ARTIFACTS: ${{ vars.R2_BUCKET_ARTIFACTS }}
+          FORCE_REBUILD: ${{ inputs.force_rebuild }}
+        run: npx tsx pipelines/static-network/run-daily.ts
+
+      - name: Upload build report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: static-network-report
+          path: build-report.json
+          retention-days: 7
+          if-no-files-found: ignore

@@ -1,0 +1,69 @@
+.loading-bus {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-lg) var(--space-md);
+}
+
+.loading-bus--compact {
+  padding: var(--space-sm);
+}
+
+.loading-bus__scene {
+  position: relative;
+  width: 100%;
+  max-width: 240px;
+  height: 44px;
+  overflow: hidden;
+}
+
+.loading-bus__road {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 6px;
+  height: 2px;
+  background: repeating-linear-gradient(
+    to right,
+    var(--colour-hairline) 0 12px,
+    transparent 12px 20px
+  );
+}
+
+.loading-bus__vehicle {
+  position: absolute;
+  bottom: 8px;
+  left: 0;
+  animation: loading-bus-travel var(--duration-bus-loop) linear infinite;
+}
+
+@keyframes loading-bus-travel {
+  from {
+    transform: translateX(-40px);
+  }
+  to {
+    transform: translateX(240px);
+  }
+}
+
+.loading-bus__label {
+  margin: 0;
+}
+
+/*
+ * Reduced motion: the bus parks in the middle of the road rather than travelling. The loading
+ * state still reads as a loading state, without any movement at all.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .loading-bus__vehicle {
+    animation: none;
+    left: 50%;
+    transform: translateX(-50%);
+  }
+}
+
+.loading-bus--timed-out {
+  align-items: flex-start;
+  text-align: left;
+}

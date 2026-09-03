@@ -1,0 +1,147 @@
+.vehicle-page {
+  display: grid;
+  gap: var(--space-xl);
+  max-width: 780px;
+}
+
+.vehicle-page__header {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: start;
+  gap: var(--space-md);
+}
+
+.vehicle-page__header h1 {
+  font-size: var(--font-size-h2);
+  margin: 0 0 var(--space-xs);
+  line-height: 1.15;
+}
+
+.vehicle-page__header p {
+  margin: 0;
+}
+
+.vehicle-page__facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: var(--space-md);
+  padding: var(--space-md);
+  background: var(--colour-surface);
+  border: 1px solid var(--colour-hairline);
+  border-radius: var(--radius-md);
+}
+
+.vehicle-page__facts > div {
+  display: grid;
+  gap: var(--space-xs);
+  align-content: start;
+}
+
+.vehicle-page__fact-label {
+  font-size: var(--font-size-micro);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--colour-muted);
+}
+
+.vehicle-page__fact-value {
+  font-size: var(--font-size-lead);
+  font-variant-numeric: tabular-nums;
+}
+
+.vehicle-page__section {
+  display: grid;
+  gap: var(--space-md);
+}
+
+.vehicle-page__section h2 {
+  font-family: var(--font-pixel);
+  font-size: var(--font-size-small);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  margin: 0;
+  padding-bottom: var(--space-sm);
+  border-bottom: 2px solid var(--colour-ink);
+}
+
+.vehicle-page__stops {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 var(--space-lg);
+  position: relative;
+  display: grid;
+  gap: var(--space-sm);
+}
+
+.vehicle-page__stops::before {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 8px;
+  bottom: 8px;
+  width: 2px;
+  background: var(--colour-red);
+}
+
+.vehicle-page__stops > li {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.vehicle-page__stops > li::before {
+  content: "";
+  position: absolute;
+  left: calc(var(--space-lg) * -1 + 1px);
+  top: 6px;
+  width: 10px;
+  height: 10px;
+  background: var(--colour-surface);
+  border: 2px solid var(--colour-ink);
+  border-radius: var(--radius-pill);
+}
+
+/* Passed stops recede rather than disappear: the sequence still has to read as one line. */
+.vehicle-page__stops > li.is-passed {
+  opacity: 0.55;
+}
+
+.vehicle-page__toggle,
+.vehicle-page__stopped-trigger {
+  font: inherit;
+  font-size: var(--font-size-small);
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--colour-ink);
+  border-radius: var(--radius-sm);
+  background: var(--colour-surface);
+  cursor: pointer;
+  justify-self: start;
+}
+
+.vehicle-page__stopped-trigger {
+  background: var(--colour-ink);
+  color: var(--colour-surface);
+}
+
+.vehicle-page__footer {
+  display: grid;
+  gap: var(--space-sm);
+  padding-top: var(--space-md);
+  border-top: 1px solid var(--colour-hairline);
+  justify-items: start;
+}
+
+.vehicle-page__footer p {
+  margin: 0;
+}
+
+@media (max-width: 640px) {
+  .vehicle-page__header {
+    grid-template-columns: auto 1fr;
+  }
+
+  .vehicle-page__header > :last-child {
+    grid-column: 1 / -1;
+  }
+}

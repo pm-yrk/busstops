@@ -1,0 +1,123 @@
+name: Deploy
+
+# Deployment is manual, and gated. There is no deploy-on-push: a merge that passes CI is not the
+# same event as a decision to put something in front of the public, and conflating them removes
+# the one place a person can say no.
+#
+# The deploy-stage preflight is stricter than the CI one. Notably it fails while any free-tier
+# allowance is unverified against current provider terms, which is deliberate: deploying with
+# unverified quotas is how a free tier stops being free.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Which environment to deploy"
+        type: choice
+        options: ["preview", "production"]
+        default: "preview"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - run: npm ci --no-audit --no-fund
+
+      # The full gate runs again here rather than trusting an earlier green run: the commit being
+      # deployed may not be the commit that was tested.
+      - name: Lint, types and tests
+        run: |
+          npm run format:check
+          npm run lint
+          npm run typecheck
+          npm test
+
+      - name: Deploy-stage preflight
+        env:
+          PREFLIGHT_STAGE: deploy
+        run: npm run preflight
+
+      - name: Build the web app
+        run: npm run build --workspace @busstops/web
+
+      - name: Confirm the security headers shipped
+        run: |
+          test -f apps/web/dist/_headers || { echo "::error::_headers missing from the build"; exit 1; }
+          test -f apps/web/dist/_redirects || { echo "::error::_redirects missing from the build"; exit 1; }
+
+      # Resolved once, in a shell, rather than inline in each command.
+      #
+      # A GitHub expression cannot express this safely: `cond && '' || 'preview'` returns
+      # 'preview' for BOTH branches, because the empty string is falsy and falls through to the
+      # `||`. Production would have deployed to preview, silently and every time.
+      - name: Resolve the target environment
+        id: target
+        run: |
+          if [ "${{ inputs.environment }}" = "production" ]; then
+            echo "worker_env=" >> "$GITHUB_OUTPUT"
+            echo "pages_branch=main" >> "$GITHUB_OUTPUT"
+            echo "worker_name=busstops-api" >> "$GITHUB_OUTPUT"
+          else
+            echo "worker_env=preview" >> "$GITHUB_OUTPUT"
+            echo "pages_branch=preview" >> "$GITHUB_OUTPUT"
+            echo "worker_name=busstops-api-preview" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Deploy the edge API
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          npx wrangler deploy \
+            --config apps/worker/wrangler.toml \
+            --env "${{ steps.target.outputs.worker_env }}"
+
+      - name: Deploy the web app
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          npx wrangler pages deploy apps/web/dist \
+            --project-name busstops \
+            --branch "${{ steps.target.outputs.pages_branch }}"
+
+      # A deployment that has not been smoke-tested is not a deployment, it is a hope.
+      #
+      # PUBLIC_BASE_URL and PUBLIC_API_URL are read from the GitHub Environment named by the
+      # input, so preview is smoke-tested against preview's hosts. Defining them only at
+      # repository scope would point a preview deploy at production and report a pass.
+      - name: Smoke test the deployment
+        env:
+          SITE_URL: ${{ vars.PUBLIC_BASE_URL }}
+          API_URL: ${{ vars.PUBLIC_API_URL }}
+        run: |
+          if [ -z "$SITE_URL" ] || [ -z "$API_URL" ]; then
+            echo "::error::PUBLIC_BASE_URL and PUBLIC_API_URL must be set as variables on the" \
+                 "'${{ inputs.environment }}' GitHub Environment. Without them the smoke test" \
+                 "would silently check the wrong deployment."
+            exit 1
+          fi
+          node scripts/smoke-test.mjs "$SITE_URL" "$API_URL"
+
+      - name: Explain how to roll back
+        if: failure()
+        run: |
+          echo "::warning::Deploy or smoke test failed. Roll back with:"
+          echo "  npx wrangler rollback --config apps/worker/wrangler.toml --env '${{ steps.target.outputs.worker_env }}'"
+          echo "  npx wrangler pages deployment list --project-name busstops"

@@ -1,0 +1,127 @@
+.live-map {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  width: 100%;
+  min-height: 0;
+}
+
+.live-map__controls {
+  padding: var(--space-md);
+  border-right: 1px solid var(--colour-hairline);
+  background: var(--colour-surface);
+}
+
+.live-map__title {
+  font-size: var(--font-size-h3);
+}
+
+.live-map__control-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-md);
+}
+
+.live-map__link {
+  font-size: var(--font-size-small);
+}
+
+.live-map__layers {
+  border: 1px solid var(--colour-hairline);
+  border-radius: var(--radius-md);
+  padding: var(--space-sm) var(--space-md);
+  margin: 0 0 var(--space-md);
+}
+
+.live-map__legend {
+  font-size: var(--font-size-micro);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--colour-muted);
+}
+
+.live-map__layer {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-height: var(--min-touch-target);
+}
+
+.live-map__freshness {
+  margin: 0;
+}
+
+.live-map__body {
+  padding: var(--space-md);
+  overflow-y: auto;
+}
+
+.live-map__section {
+  margin-bottom: var(--space-xl);
+}
+
+.live-map__section h2 {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  font-size: var(--font-size-h3);
+}
+
+.live-map__list {
+  list-style: none;
+  margin: var(--space-sm) 0 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-sm);
+}
+
+.live-map__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  min-height: var(--min-touch-target);
+  flex-wrap: wrap;
+}
+
+.live-map__item-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 160px;
+}
+
+.live-map__item-link {
+  flex: 1 1 200px;
+  text-decoration: none;
+  min-height: var(--min-touch-target);
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  flex-wrap: wrap;
+}
+
+.live-map__item-title {
+  font-weight: 600;
+}
+
+.live-map__item-age {
+  white-space: nowrap;
+}
+
+.live-map__attribution {
+  margin-top: var(--space-lg);
+  padding-top: var(--space-md);
+  border-top: 1px solid var(--colour-hairline);
+}
+
+/* Mobile: controls stack above the list, with the list as the primary surface. */
+@media (max-width: 900px) {
+  .live-map {
+    grid-template-columns: 1fr;
+  }
+  .live-map__controls {
+    border-right: none;
+    border-bottom: 1px solid var(--colour-hairline);
+  }
+}

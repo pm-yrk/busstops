@@ -1,0 +1,25 @@
+{
+  "name": "@busstops/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "@busstops/adapters": "*",
+    "@busstops/contracts": "*",
+    "@busstops/governor": "*",
+    "@busstops/matching": "*",
+    "@busstops/pipeline-core": "*",
+    "@busstops/pipeline-static-network": "*",
+    "zod": "^3.24.1",
+    "@busstops/journey": "*"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2"
+  }
+}

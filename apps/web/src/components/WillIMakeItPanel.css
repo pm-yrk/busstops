@@ -1,0 +1,23 @@
+.wimi {
+  padding: var(--space-md);
+  margin-top: var(--space-lg);
+}
+
+.wimi__heading {
+  font-size: var(--font-size-lead);
+  margin-bottom: var(--space-sm);
+}
+
+.wimi__result {
+  margin-top: var(--space-sm);
+}
+
+.wimi__verdict {
+  margin-bottom: var(--space-sm);
+}
+
+.wimi__next {
+  margin: var(--space-sm) 0 0;
+  padding-top: var(--space-sm);
+  border-top: 1px solid var(--colour-hairline);
+}

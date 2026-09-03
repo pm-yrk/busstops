@@ -1,0 +1,29 @@
+{
+  "name": "Bus Stops.",
+  "short_name": "Bus Stops.",
+  "description": "Live bus arrivals, vehicle tracking and journey planning across England.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#F7F6F1",
+  "theme_color": "#F7F6F1",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Live map",
+      "url": "/live"
+    },
+    {
+      "name": "Saved stops",
+      "url": "/saved"
+    }
+  ]
+}

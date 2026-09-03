@@ -1,0 +1,49 @@
+# Cloudflare Worker configuration for the Bus Stops. edge API.
+#
+# Secrets are never listed here. Set them per environment with:
+#   npx wrangler secret put <NAME> --config apps/worker/wrangler.toml --env preview
+#   npx wrangler secret put <NAME> --config apps/worker/wrangler.toml --env ""
+# See infra/cloudflare/PROVISIONING.md for the authoritative list.
+#
+# IMPORTANT — bindings do not inherit between environments. Wrangler treats every `[env.*]`
+# block as a complete configuration: a binding declared only at the top level is simply absent
+# from a named environment, and the deploy succeeds anyway. So everything the top level declares
+# is repeated under [env.preview] verbatim, and a test asserts the two stay in step.
+
+name = "busstops-api"
+main = "src/index.ts"
+compatibility_date = "2026-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Keep the Worker on the free plan explicitly: no usage-based pricing path.
+workers_dev = true
+
+[observability]
+enabled = true
+
+[vars]
+GOVERNOR_MODE = "green"
+FEATURE_FLAGS_JSON = "{}"
+
+[[r2_buckets]]
+binding = "ARTIFACTS"
+bucket_name = "busstops-artifacts"
+
+# --- Preview -----------------------------------------------------------------
+# A complete, standalone copy. Preview reads its own bucket so a preview deploy can never
+# publish over, or read a half-written artifact from, the production dataset.
+
+[env.preview]
+name = "busstops-api-preview"
+workers_dev = true
+
+[env.preview.observability]
+enabled = true
+
+[env.preview.vars]
+GOVERNOR_MODE = "green"
+FEATURE_FLAGS_JSON = "{}"
+
+[[env.preview.r2_buckets]]
+binding = "ARTIFACTS"
+bucket_name = "busstops-artifacts-preview"

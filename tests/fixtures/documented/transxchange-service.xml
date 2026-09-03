@@ -1,0 +1,183 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Constructed from the published TransXChange 2.4 schema used by BODS.
+     origin: constructed_from_published_schema -->
+<TransXChange xmlns="http://www.transxchange.org.uk/" SchemaVersion="2.4" ModificationDateTime="2026-08-01T00:00:00">
+  <StopPoints>
+    <AnnotatedStopPointRef>
+      <StopPointRef>450010001</StopPointRef>
+      <CommonName>Leeds City Bus Station</CommonName>
+    </AnnotatedStopPointRef>
+    <AnnotatedStopPointRef>
+      <StopPointRef>450010002</StopPointRef>
+      <CommonName>Boar Lane, The Bull</CommonName>
+    </AnnotatedStopPointRef>
+    <AnnotatedStopPointRef>
+      <StopPointRef>450010003</StopPointRef>
+      <CommonName>Armley Road</CommonName>
+    </AnnotatedStopPointRef>
+  </StopPoints>
+
+  <RouteSections>
+    <RouteSection id="RS1">
+      <RouteLink id="RL1">
+        <From><StopPointRef>450010001</StopPointRef></From>
+        <To><StopPointRef>450010002</StopPointRef></To>
+        <Distance>620</Distance>
+        <Track>
+          <Mapping>
+            <Location><Longitude>-1.5379</Longitude><Latitude>53.7965</Latitude></Location>
+            <Location><Longitude>-1.5400</Longitude><Latitude>53.7955</Latitude></Location>
+            <Location><Longitude>-1.5419</Longitude><Latitude>53.7946</Latitude></Location>
+          </Mapping>
+        </Track>
+      </RouteLink>
+      <RouteLink id="RL2">
+        <From><StopPointRef>450010002</StopPointRef></From>
+        <To><StopPointRef>450010003</StopPointRef></To>
+        <Distance>1450</Distance>
+        <Track>
+          <Mapping>
+            <Location><Longitude>-1.5419</Longitude><Latitude>53.7946</Latitude></Location>
+            <Location><Longitude>-1.5600</Longitude><Latitude>53.7960</Latitude></Location>
+          </Mapping>
+        </Track>
+      </RouteLink>
+    </RouteSection>
+  </RouteSections>
+
+  <Routes>
+    <Route id="R1">
+      <PrivateCode>R1</PrivateCode>
+      <Description>Leeds to Armley</Description>
+      <RouteSectionRef>RS1</RouteSectionRef>
+    </Route>
+  </Routes>
+
+  <JourneyPatternSections>
+    <JourneyPatternSection id="JPS1">
+      <JourneyPatternTimingLink id="JPTL1">
+        <From SequenceNumber="1">
+          <Activity>pickUp</Activity>
+          <StopPointRef>450010001</StopPointRef>
+          <TimingStatus>principalTimingPoint</TimingStatus>
+        </From>
+        <To SequenceNumber="2">
+          <Activity>pickUpAndSetDown</Activity>
+          <StopPointRef>450010002</StopPointRef>
+          <TimingStatus>otherPoint</TimingStatus>
+          <WaitTime>PT30S</WaitTime>
+        </To>
+        <RouteLinkRef>RL1</RouteLinkRef>
+        <RunTime>PT3M</RunTime>
+      </JourneyPatternTimingLink>
+      <JourneyPatternTimingLink id="JPTL2">
+        <From SequenceNumber="2">
+          <Activity>pickUpAndSetDown</Activity>
+          <StopPointRef>450010002</StopPointRef>
+          <TimingStatus>otherPoint</TimingStatus>
+        </From>
+        <To SequenceNumber="3">
+          <Activity>setDown</Activity>
+          <StopPointRef>450010003</StopPointRef>
+          <TimingStatus>principalTimingPoint</TimingStatus>
+        </To>
+        <RouteLinkRef>RL2</RouteLinkRef>
+        <RunTime>PT6M30S</RunTime>
+      </JourneyPatternTimingLink>
+    </JourneyPatternSection>
+  </JourneyPatternSections>
+
+  <Operators>
+    <Operator id="OP1">
+      <NationalOperatorCode>FLEE</NationalOperatorCode>
+      <OperatorCode>FLEE</OperatorCode>
+      <OperatorShortName>First Leeds</OperatorShortName>
+    </Operator>
+  </Operators>
+
+  <Services>
+    <Service>
+      <ServiceCode>PB0002032:72</ServiceCode>
+      <Lines>
+        <Line id="L1"><LineName>72</LineName></Line>
+      </Lines>
+      <OperatingPeriod>
+        <StartDate>2026-01-01</StartDate>
+        <EndDate>2026-12-31</EndDate>
+      </OperatingPeriod>
+      <RegisteredOperatorRef>OP1</RegisteredOperatorRef>
+      <Mode>bus</Mode>
+      <StandardService>
+        <Origin>Leeds City Bus Station</Origin>
+        <Destination>Armley Road</Destination>
+        <JourneyPattern id="JP1">
+          <DirectionRef>outbound</DirectionRef>
+          <RouteRef>R1</RouteRef>
+          <JourneyPatternSectionRefs>JPS1</JourneyPatternSectionRefs>
+        </JourneyPattern>
+      </StandardService>
+    </Service>
+  </Services>
+
+  <VehicleJourneys>
+    <VehicleJourney>
+      <OperatorRef>OP1</OperatorRef>
+      <VehicleJourneyCode>VJ_WEEKDAY_0915</VehicleJourneyCode>
+      <ServiceRef>PB0002032:72</ServiceRef>
+      <LineRef>L1</LineRef>
+      <JourneyPatternRef>JP1</JourneyPatternRef>
+      <DepartureTime>09:15:00</DepartureTime>
+      <OperatingProfile>
+        <RegularDayType>
+          <DaysOfWeek>
+            <Monday/><Tuesday/><Wednesday/><Thursday/><Friday/>
+          </DaysOfWeek>
+        </RegularDayType>
+        <SpecialDaysOperation>
+          <DaysOfNonOperation>
+            <DateRange><StartDate>2026-12-25</StartDate><EndDate>2026-12-25</EndDate></DateRange>
+          </DaysOfNonOperation>
+        </SpecialDaysOperation>
+      </OperatingProfile>
+    </VehicleJourney>
+    <VehicleJourney>
+      <OperatorRef>OP1</OperatorRef>
+      <VehicleJourneyCode>VJ_SATURDAY_1015</VehicleJourneyCode>
+      <ServiceRef>PB0002032:72</ServiceRef>
+      <LineRef>L1</LineRef>
+      <JourneyPatternRef>JP1</JourneyPatternRef>
+      <DepartureTime>10:15:00</DepartureTime>
+      <OperatingProfile>
+        <RegularDayType>
+          <DaysOfWeek><Saturday/></DaysOfWeek>
+        </RegularDayType>
+      </OperatingProfile>
+    </VehicleJourney>
+    <VehicleJourney>
+      <OperatorRef>OP1</OperatorRef>
+      <VehicleJourneyCode>VJ_NIGHT_2350</VehicleJourneyCode>
+      <ServiceRef>PB0002032:72</ServiceRef>
+      <LineRef>L1</LineRef>
+      <JourneyPatternRef>JP1</JourneyPatternRef>
+      <DepartureTime>23:50:00</DepartureTime>
+      <OperatingProfile>
+        <RegularDayType>
+          <DaysOfWeek><MondayToFriday/></DaysOfWeek>
+        </RegularDayType>
+      </OperatingProfile>
+    </VehicleJourney>
+    <VehicleJourney>
+      <OperatorRef>OP1</OperatorRef>
+      <VehicleJourneyCode>VJ_ORPHAN</VehicleJourneyCode>
+      <ServiceRef>PB0002032:72</ServiceRef>
+      <LineRef>L1</LineRef>
+      <JourneyPatternRef>JP_MISSING</JourneyPatternRef>
+      <DepartureTime>12:00:00</DepartureTime>
+      <OperatingProfile>
+        <RegularDayType>
+          <DaysOfWeek><MondayToSunday/></DaysOfWeek>
+        </RegularDayType>
+      </OperatingProfile>
+    </VehicleJourney>
+  </VehicleJourneys>
+</TransXChange>
