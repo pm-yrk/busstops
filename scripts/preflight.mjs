@@ -87,8 +87,7 @@ const budgetResourceBlocks = [
   ...budgetSource.matchAll(/\{\n\s*key:\s*"([^"]+)"[\s\S]*?\n\s*\},/g),
 ].map((match) => ({ key: match[1], source: match[0] }));
 const unverifiedRequired = budgetResourceBlocks.filter(
-  ({ source }) =>
-    /requiredForDeploy:\s*true/.test(source) && /verifiedAt:\s*null/.test(source),
+  ({ source }) => /requiredForDeploy:\s*true/.test(source) && /verifiedAt:\s*null/.test(source),
 );
 if (unverifiedRequired.length > 0) {
   deployGate(
