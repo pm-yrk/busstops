@@ -74,21 +74,30 @@ for (const object of manifests) {
 
 rows.sort((a, b) => (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0));
 
-let tooLarge = 0;
+const tooLarge = [];
 for (const manifest of rows) {
   // Half the ceiling is the honest threshold: the isolate holds the raw text and the parsed
   // objects at once, and parsed JSON is larger than its source.
   const risky = (manifest.sizeBytes ?? 0) > ISOLATE_MEMORY_BYTES / 2;
-  if (risky) tooLarge += 1;
+  if (risky) tooLarge.push(manifest);
   console.log(
     `${risky ? "  TOO LARGE" : "        ok"}  ${manifest.dataset.padEnd(28)} ` +
       `${String(manifest.recordCount).padStart(8)} records  ${mib(manifest.sizeBytes ?? 0).padStart(10)}`,
   );
 }
 
-console.log(
-  tooLarge === 0
-    ? `\nEvery dataset is comfortably inside a ${mib(ISOLATE_MEMORY_BYTES)} isolate.`
-    : `\n${tooLarge} dataset(s) are too large for an edge isolate to load whole. The edge must read ` +
-        `these per tile rather than nationally, as the journeys dataset already does.`,
-);
+if (tooLarge.length === 0) {
+  console.log(`\nEvery dataset is comfortably inside a ${mib(ISOLATE_MEMORY_BYTES)} isolate.`);
+} else {
+  // Repeated at the end as well as in the table: the table is sorted largest-first, and the
+  // interesting rows are then the ones a truncated log loses.
+  console.log(`\n${tooLarge.length} dataset(s) cannot be loaded whole by an edge isolate:`);
+  for (const manifest of tooLarge) {
+    console.log(
+      `  ${manifest.dataset} — ${manifest.recordCount} records, ${mib(manifest.sizeBytes ?? 0)}`,
+    );
+  }
+  console.log(
+    `\nThe edge must read these per tile rather than nationally, as journeys already are.`,
+  );
+}
