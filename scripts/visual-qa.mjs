@@ -90,9 +90,17 @@ for (const size of WIDTHS) {
     const page = await context.newPage();
     watch(page, sink);
 
-    await page.goto(`${baseUrl}${target.path}`, { waitUntil: "networkidle", timeout: 60_000 });
-    // The map and the pixel scene both settle after first paint; a fixed settle beats racing them.
-    await page.waitForTimeout(target.name === "live" ? 8_000 : 1_500);
+    /*
+     * "domcontentloaded" and then a fixed settle, not "networkidle". The live map polls for
+     * vehicles on a ticker, so the network never goes idle and waiting for it to would throw a
+     * timeout out of the script rather than reporting a failed check — turning a page that works
+     * into a run with a stack trace in it.
+     */
+    await page.goto(`${baseUrl}${target.path}`, {
+      waitUntil: "domcontentloaded",
+      timeout: 60_000,
+    });
+    await page.waitForTimeout(target.name === "live" ? 9_000 : 2_000);
 
     await page.screenshot({
       path: join(screenshotDir, `${size.name}-${target.name}.png`),
