@@ -45,31 +45,52 @@ jobs:
             --name preview-visual-qa \
             --dir /tmp/busstops-visual-qa
 
-      - name: Convert portfolio images to lightweight JPGs
+      - name: Create fresh README JPEGs
         run: |
           python3 -m pip install --quiet pillow
           python3 - <<'PY'
           from PIL import Image
 
           pairs = [
-              ("/tmp/busstops-visual-qa/desktop-home.png", "docs/portfolio/busstops-home.jpg"),
-              ("/tmp/busstops-visual-qa/desktop-pro.png", "docs/portfolio/busstops-pro.jpg"),
+              ("/tmp/busstops-visual-qa/desktop-home.png", "docs/portfolio/busstops-home-v7.jpg"),
+              ("/tmp/busstops-visual-qa/desktop-pro.png", "docs/portfolio/busstops-pro-v7.jpg"),
           ]
 
           for source, target in pairs:
               image = Image.open(source).convert("RGB")
-              image.save(target, "JPEG", quality=80, optimize=True)
+              image.save(target, "JPEG", quality=82, optimize=True, progressive=False)
+              check = Image.open(target)
+              check.verify()
+          PY
+          file docs/portfolio/busstops-home-v7.jpg docs/portfolio/busstops-pro-v7.jpg
+
+      - name: Point README at the fresh images
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path("README.md")
+          text = path.read_text()
+          text = re.sub(
+              r"!\[Bus Stops current build\]\([^\n]+\)",
+              "![Bus Stops current build](docs/portfolio/busstops-home-v7.jpg)",
+              text,
+          )
+          text = re.sub(
+              r"!\[Bus Stops Pro current build\]\([^\n]+\)",
+              "![Bus Stops Pro current build](docs/portfolio/busstops-pro-v7.jpg)",
+              text,
+          )
+          path.write_text(text)
           PY
 
-      - name: Keep the latest screenshots in the repository
+      - name: Commit README and screenshots normally with git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git pull --rebase origin main
-          git add docs/portfolio/busstops-home.jpg docs/portfolio/busstops-pro.jpg
-          if git diff --cached --quiet; then
-            echo "Portfolio screenshots are already current."
-          else
-            git commit -m "Refresh Bus Stops portfolio screenshots"
-            git push origin HEAD:main
-          fi
+          git add README.md docs/portfolio/busstops-home-v7.jpg docs/portfolio/busstops-pro-v7.jpg
+          git status --short
+          git commit -m "Fix Bus Stops README screenshots"
+          git push origin HEAD:main
