@@ -20,6 +20,54 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # What the upstreams actually return, right now, from a runner.
+  #
+  # The preview reported zero live buses while every structural check passed. Four different
+  # things produce that symptom — the request never left, it was refused, the body was empty, or
+  # the body was full and we rejected all of it — and only an independent request made at the
+  # same moment can tell them apart. This is that request. It prints counts, statuses and
+  # timings, never a credential or a source vehicle reference.
+  diagnose:
+    name: Ask every upstream directly
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - run: npm ci --no-audit --no-fund
+
+      - name: Probe
+        env:
+          BODS_API_KEY: ${{ secrets.BODS_API_KEY }}
+          TFL_APP_KEY: ${{ secrets.TFL_APP_KEY }}
+        run: |
+          npx tsx scripts/diagnose-upstreams.ts --json upstream-diagnosis.json 2>&1 | tee diagnosis.log
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "## Upstream diagnosis"
+            echo
+            echo "UTC now: $(date -u +%FT%TZ)"
+            echo
+            echo '```'
+            sed -n '1,220p' diagnosis.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: upstream-diagnosis
+          path: |
+            upstream-diagnosis.json
+            diagnosis.log
+          retention-days: 7
+
   verify:
     name: Fetch and parse real upstream responses
     runs-on: ubuntu-latest
