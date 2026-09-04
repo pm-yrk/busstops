@@ -158,13 +158,26 @@ async function main(): Promise<number> {
   }
 
   if (!result.complete) {
-    // A partial publish is worse than no publish: restore the previous consistent version.
-    const rolledBack = await rollbackNetwork(store);
+    /*
+     * A partial publish is worse than no publish: restore the previous consistent version.
+     *
+     * The rollback can itself fail — a run that could not write its shards is a run whose storage
+     * was refusing writes — and when it did, it threw out of `main` and took the build report
+     * with it. The report is the only description of why a run published nothing, so a rollback
+     * that fails is recorded as part of the report rather than instead of it.
+     */
     report.outcome = "rolled_back";
-    report.rolledBack = rolledBack;
-    console.error(
-      `Publish incomplete; rolled back: ${rolledBack.join(", ") || "(nothing to restore)"}`,
-    );
+    try {
+      const rolledBack = await rollbackNetwork(store);
+      report.rolledBack = rolledBack;
+      console.error(
+        `Publish incomplete; rolled back: ${rolledBack.join(", ") || "(nothing to restore)"}`,
+      );
+    } catch (error) {
+      report.outcome = "rollback_failed";
+      report.rollbackError = error instanceof Error ? error.message : String(error);
+      console.error(`Publish incomplete and the rollback failed too: ${report.rollbackError}`);
+    }
     writeReport(report);
     return 1;
   }
