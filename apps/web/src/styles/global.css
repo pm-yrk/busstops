@@ -155,6 +155,22 @@ input[type="email"] {
   padding: var(--space-lg) var(--space-md) var(--space-xxl);
 }
 
+/*
+ * A whole-page loading or error state gets the page's gutter.
+ *
+ * These blocks are returned in place of a page while it loads or after it fails, so they land
+ * where the page's own container would have been — and without this they ran edge to edge while
+ * the header above and footer below kept their margins. The child selector is what distinguishes
+ * the two uses: a block standing in for a page is a direct child of main, and one inside a page
+ * (a Pro panel, the compact spinner on the arrival board) is not, and must not be indented twice.
+ */
+.app__main > .state-block,
+.app__main > .loading-bus {
+  width: calc(100% - 2 * var(--space-md));
+  max-width: var(--page-max, 1180px);
+  margin: var(--space-lg) auto var(--space-xxl);
+}
+
 .surface {
   background: var(--colour-surface);
   border: 1px solid var(--colour-hairline);
