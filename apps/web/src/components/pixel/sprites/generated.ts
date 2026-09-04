@@ -104,22 +104,22 @@ export const ART: Record<string, PixelImage> = {
 /** Small enough to inline, and MapLibre needs them without a round trip. */
 export const MARKERS: Record<string, PixelImage> = {
   busMarkerRed: {
-    src: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAALCAYAAABlNU3NAAAAkUlEQVR42mNggAIRQf7/1MQMyAAk8CUsmmwMM/T/zSrsloA4yjoWKPipihZRfHRxGMawwDYwE4xrp68F0yCNxPBhNDJedfAibgtgGF0jLj42C0AYwwKQQmpiDAs2i0nDMTqfGIys59mDK5gWwBQgpwJ0PjaMTw8DOoBJhAV44lZEqR6cmYUaepbMnvCfGhjZTAC/uIGCRMrIrQAAAABJRU5ErkJggg==",
+    src: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAALCAYAAABlNU3NAAAAkUlEQVR42mNggAIRQf7/1MQMyAAk8CUsmmwMM/T/zSrsloA4yjoWKPipihZRfHRxGMawwDYwE4xrp68F0yCNxPBhNDJedfAibgtgGF0jLj42C0AYwwKQQmpiDAs2i0nDMTqfGIys59mDK5gWwBQgpwJ0PjaMTw8DOoBJhAV44lZEqR6cmYVSPbzcnP+piWHmAgBfHWWG5uovZQAAAABJRU5ErkJggg==",
     w: 24,
     h: 11,
   },
   busMarkerBlue: {
-    src: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAALCAYAAABlNU3NAAAAkUlEQVR42mNggAIRQf7/1MQMyAAk4F/7n2wMM/T/zSrsloA4yjoWKFg0/D9RfHRxGMawwDYwE4xrp68F0yCNxPBhNDJedfAibgtgGF0jLj42C0AYwwKQQmpiDAuEbKbBMTqfGIys59mDK5gWwBQgpwJ0PjaMTw8DOoBJhAV44lZEqR6cmYUaepbMnvCfGhjZTAAUZIq8UOXlSwAAAABJRU5ErkJggg==",
+    src: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAALCAYAAABlNU3NAAAAkUlEQVR42mNggAIRQf7/1MQMyAAk4F/7n2wMM/T/zSrsloA4yjoWKFg0/D9RfHRxGMawwDYwE4xrp68F0yCNxPBhNDJedfAibgtgGF0jLj42C0AYwwKQQmpiDAuEbKbBMTqfGIys59mDK5gWwBQgpwJ0PjaMTw8DOoBJhAV44lZEqR6cmYVSPbzcnP+piWHmAgCzum7A8nwcuAAAAABJRU5ErkJggg==",
     w: 24,
     h: 11,
   },
   busMarkerAmber: {
-    src: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAALCAYAAABlNU3NAAAAkElEQVR42mNggAIRQf7/1MQMyAAk8P9mFdkYZigyG8USEEdZxwIFf9poQhQfXRyGMSywDcwE49rpa8E0SCMxfBiNjFcdvIjbAhhG14iLj80CEMawAKSQmhjDgq4oBjhG5xODkfU8e3AF0wKYAuRUgM7HhvHpYUAHMImwAE/ciijVgzOzUEPPktkT/lMDI5sJAECcoCWZ0gTLAAAAAElFTkSuQmCC",
+    src: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAALCAYAAABlNU3NAAAAj0lEQVR42mNggAIRQf7/1MQMyAAk8P9mFdkYZigyG8USEEdZxwIFf9poQhQfXRyGMSywDcwE49rpa8E0SCMxfBiNjFcdvIjbAhhG14iLj80CEMawAKSQmhjDgq4oBjhG5xODkfU8e3AF0wKYAuRUgM7HhvHpYUAHMImwAE/ciijVgzOzUKqHl5vzPzUxzFwA3/KEKR89AHUAAAAASUVORK5CYII=",
     w: 24,
     h: 11,
   },
   stopMarker: {
-    src: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAwAAAAOCAYAAAAbvf3sAAAAT0lEQVR42mNgYGBgEBHk//9URQsvBqlhgAH6aPj+7SNejFUDiL725B0KjSyHVQM2jFMDyU4iSQMxmAEXWDJ7wv+wAE/cCgaxBpBCbBhZDQATcfcbSWGCQgAAAABJRU5ErkJggg==",
+    src: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAwAAAAOCAYAAAAbvf3sAAAAUUlEQVR42mNgYGBgEBHk//9URQsvBqlhgAH6aPj+7SNejFUDiL725B0KjSyHVQM2jFMDyU4iSQMxmAEXWDJ7wv+wAE/cCgaxBl5uzv/YMLIaABcO7QeEogPeAAAAAElFTkSuQmCC",
     w: 12,
     h: 14,
   },

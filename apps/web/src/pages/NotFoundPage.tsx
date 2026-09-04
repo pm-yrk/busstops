@@ -5,7 +5,7 @@ import { PixelStopPole } from "../components/pixel/PixelArt.js";
 export function NotFoundPage() {
   return (
     <div className="page">
-      <PixelStopPole size={48} />
+      <PixelStopPole scale={2} />
       <h1>That page does not exist</h1>
       <p className="muted" style={{ maxWidth: "60ch" }}>
         The link may be out of date, or the stop or route may have been withdrawn. Searching by name

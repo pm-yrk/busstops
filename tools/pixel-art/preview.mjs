@@ -14,7 +14,13 @@ export function rowsToSvg(rows, scale = 1, bg = "none") {
       let len = 1;
       while (x + len < w && rows[y][x + len] === ch) len++;
       const fill = PALETTE[ch];
-      if (fill) out += `<rect x="${x}" y="${y}" width="${len}" height="1" fill="${fill}"/>`;
+      if (fill) {
+        const opacity = fill.length > 7 ? parseInt(fill.slice(7, 9), 16) / 255 : 1;
+        out +=
+          `<rect x="${x}" y="${y}" width="${len}" height="1" fill="${fill.slice(0, 7)}"` +
+          (opacity < 1 ? ` opacity="${opacity.toFixed(3)}"` : "") +
+          "/>";
+      }
       x += len;
     }
   }

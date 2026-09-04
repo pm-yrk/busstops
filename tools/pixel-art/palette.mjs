@@ -70,4 +70,16 @@ export const PALETTE = {
   // Sky
   S: "#e9eef1",
   T: "#f3f5f6",
+
+  /*
+   * Shadow, as alpha rather than as a colour. A shadow painted in a flat grey was lighter than
+   * the asphalt it fell on, so every bus in the scene sat on a bright stripe that read as a
+   * reflection. These darken whatever is underneath, which is what a shadow does.
+   */
+  "-": "#0d0b0947",
+  "=": "#0d0b0926",
+  "+": "#0d0b0968",
+  /* Road paint: a wash over the asphalt, because a bus cage is painted on, not laid on. */
+  "*": "#8c101552",
+  "%": "#f2b13440",
 };

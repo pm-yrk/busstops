@@ -210,9 +210,9 @@ export function busSide({
   c.outline("K");
 
   // ---- ground shadow, drawn after the outline so it stays soft ----------
-  c.hline(8, 31, 84, "P");
-  c.hline(16, 30, 12, "Q");
-  c.hline(74, 30, 12, "Q");
+  c.hline(6, 31, 88, "-");
+  c.hline(14, 30, 16, "=");
+  c.hline(72, 30, 16, "=");
   return c;
 }
 
@@ -301,7 +301,7 @@ export function busMid({
     }
   }
   c.outline("K");
-  c.hline(4, 21, 56, "P");
+  c.hline(3, 21, 58, "-");
   return c;
 }
 
@@ -367,7 +367,7 @@ export function busFront({
   c.hline(2, 30, 36, "N");
   c.rect(15, 30, 10, 2, "Q"); // plate
   c.outline("K");
-  c.hline(4, 33, 32, "P");
+  c.hline(3, 33, 34, "-");
   return c;
 }
 
@@ -401,7 +401,7 @@ export function busMarker({ body = "t", bodyDark = "s", bodyLight = "u" } = {}) 
     c.px(cx, 8, "N");
   }
   c.outline("K");
-  c.hline(3, 10, 18, "P");
+  c.hline(2, 10, 20, "-");
   return c;
 }
 
@@ -416,6 +416,6 @@ export function stopMarker() {
   c.rect(5, 8, 2, 5, "N");
   c.vline(5, 8, 5, "P");
   c.frame(1, -1, 10, 10, "K");
-  c.hline(3, 13, 6, "P");
+  c.hline(3, 13, 6, "-");
   return c;
 }

@@ -49,13 +49,18 @@
   image-rendering: pixelated;
 }
 
-.map-marker--vehicle {
-  /* Rotation follows the reported bearing, offset because the sprite is drawn facing east. */
+/*
+ * Rotation follows the reported bearing, offset because the sprite is drawn facing east — and it
+ * is applied to the drawing rather than to the marker, because MapLibre writes its own transform
+ * onto the marker element to position it and an inline style wins. The bus was drawn facing east
+ * whichever way it was going.
+ */
+.map-marker--vehicle .map-marker__art {
   transform: rotate(calc(var(--bearing, 90deg) - 90deg));
 }
 
 /* Heading west, the bus is mirrored rather than turned upside down. */
-.map-marker--westbound {
+.map-marker--westbound .map-marker__art {
   transform: rotate(calc(270deg - var(--bearing, 90deg))) scaleX(-1);
 }
 
@@ -80,7 +85,7 @@
   position: absolute;
   top: 100%;
   left: 50%;
-  transform: translate(-50%, 2px) rotate(calc(90deg - var(--bearing, 90deg)));
+  transform: translate(-50%, 2px);
   font-family: var(--font-pixel);
   font-size: var(--font-size-micro);
   line-height: 1;

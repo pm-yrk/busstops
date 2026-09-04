@@ -131,6 +131,11 @@
   text-align: right;
 }
 
+/* The header has to sit over its column, not run into the one beside it. */
+.arrival-board__table th:nth-child(2) {
+  padding-left: var(--space-sm);
+}
+
 .arrival-board__row td {
   padding: var(--space-sm) 0;
   border-top: 1px solid rgba(255, 208, 138, 0.16);

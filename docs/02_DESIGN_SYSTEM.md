@@ -30,7 +30,9 @@ Use a modern grotesk/system sans with tabular numerals and a legible pixel/monos
 
 ## Pixel-art library
 
-Create original consistent SVG/CSS/canvas assets on a fixed pixel grid: side and front buses, bus-stop pole, shelter, road, traffic lights, cones/barriers, trees, bench, street lamp, shops, skyline, sun/cloud/rain/snow/flood, walking person, pin, clock, charts, warnings, and route/station marks. Preserve crisp edges, limited palettes, accessible alternatives, and reduced-motion fallbacks.
+Create original consistent assets on a fixed pixel grid: side and front buses, bus-stop pole, shelter, road, traffic lights, cones/barriers, trees, bench, street lamp, shops, skyline, sun/cloud/rain/snow/flood, walking person, pin, clock, charts, warnings, and route/station marks. Preserve crisp edges, limited palettes, accessible alternatives, and reduced-motion fallbacks.
+
+The artwork is authored as drawing code in `tools/pixel-art` and built to images; the small interface marks stay as `<rect>` units on a 16-unit grid. See ADR 0003 for why, and what that preserves and costs.
 
 Required signature moments:
 

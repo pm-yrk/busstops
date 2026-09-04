@@ -15,7 +15,7 @@ function blob(c, discs, colour) {
  * A street tree. The canopy is a cluster of discs of different sizes at irregular centres, then
  * lit from the upper left, then bitten into at the edges so the silhouette is never symmetrical.
  */
-export function tree({ w = 34, h = 46, seed = 1 } = {}) {
+export function tree({ w = 34, h = 46, seed = 1, spread = 1 } = {}) {
   const c = new Canvas(w, h);
   const cx = Math.floor(w / 2);
   const cy = 17;
@@ -40,7 +40,7 @@ export function tree({ w = 34, h = 46, seed = 1 } = {}) {
   const lumps = [];
   for (let k = 0; k < 7; k++) {
     const a = (k / 7) * Math.PI * 2 + seed * 1.7;
-    const rad = 9 + ((seed * 13 + k * 7) % 3);
+    const rad = Math.round((9 + ((seed * 13 + k * 7) % 3)) * spread);
     lumps.push([
       cx + Math.round(Math.cos(a) * rad),
       cy + Math.round(Math.sin(a) * rad * 0.85),
@@ -67,7 +67,7 @@ export function tree({ w = 34, h = 46, seed = 1 } = {}) {
   // Loose leaves at the edge, so the outline never closes into a smooth curve.
   for (let k = 0; k < 16; k++) {
     const a = (k / 16) * Math.PI * 2 + seed * 0.9;
-    const rad = 11 + ((seed * 7 + k * 11) % 4);
+    const rad = Math.round((11 + ((seed * 7 + k * 11) % 4)) * spread);
     const lx = cx + Math.round(Math.cos(a) * rad);
     const ly = cy + Math.round(Math.sin(a) * rad * 0.85);
     if (c.get(lx, ly) === ".") c.px(lx, ly, k % 3 === 0 ? "4" : "3");
@@ -85,7 +85,7 @@ export function tree({ w = 34, h = 46, seed = 1 } = {}) {
   c.vline(cx - 1, 28, h - 30, "M");
   c.vline(cx + 1, 28, h - 30, "K");
   c.hline(cx - 3, h - 2, 7, "M");
-  c.hline(cx - 4, h - 1, 9, "P");
+  c.hline(cx - 5, h - 1, 11, "-");
   return c;
 }
 
@@ -178,8 +178,8 @@ export function shelter({ w = 60, h = 48 } = {}) {
   c.hline(glassX + 2, h - 14, glassW - 4, "P");
   for (const x of [glassX + 4, glassX + glassW - 7]) c.rect(x, h - 11, 2, 6, "M");
   // Pavement shadow.
-  c.hline(2, h - 2, w - 4, "P");
-  c.hline(6, h - 1, w - 12, "Q");
+  c.hline(1, h - 2, w - 2, "=");
+  c.hline(3, h - 1, w - 6, "-");
   return c;
 }
 
@@ -191,7 +191,7 @@ export function stopFlag({ h = 52, routes = "36" } = {}) {
   c.vline(7, 24, h - 26, "P");
   c.vline(9, 24, h - 26, "L");
   c.hline(5, h - 2, 7, "N");
-  c.hline(4, h - 1, 9, "P");
+  c.hline(3, h - 1, 11, "-");
   // Sign panel: red header carrying a bus mark, white field carrying the routes.
   c.rect(1, 2, 16, 23, "W");
   c.rect(1, 2, 16, 9, "t");
@@ -272,7 +272,7 @@ export function person({ coat = "b", coatDark = "a", hair = "L", skin = "A", pos
   }
   c.rect(2, 19, 3, 2, "K");
   c.rect(6, 19, 3, 2, "K");
-  c.hline(1, 20, 9, "P");
+  c.hline(0, 20, 11, "-");
   return c;
 }
 
@@ -285,7 +285,7 @@ export function lamp({ h = 54 } = {}) {
   c.rect(5, h - 6, 5, 4, "M"); // base
   c.hline(5, h - 6, 5, "N");
   c.hline(4, h - 2, 7, "N");
-  c.hline(3, h - 1, 9, "P");
+  c.hline(2, h - 1, 11, "-");
   c.line(7, 6, 12, 2, "N"); // arm
   c.line(7, 7, 12, 3, "L");
   c.rect(11, 1, 5, 3, "M"); // head
@@ -312,7 +312,7 @@ export function bench({ w = 26 } = {}) {
     c.vline(x + 2, 11, 4, "K");
   }
   c.hline(3, 15, w - 6, "N");
-  c.hline(2, 15, w - 4, "P");
+  c.hline(1, 15, w - 2, "-");
   return c;
 }
 
@@ -327,6 +327,6 @@ export function bin() {
   c.rect(4, 3, 4, 1, "K");
   c.rect(3, 8, 6, 4, "s"); // a red band, tying it to the palette
   c.hline(3, 8, 6, "u");
-  c.hline(2, 17, 8, "P");
+  c.hline(1, 17, 10, "-");
   return c;
 }

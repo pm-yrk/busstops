@@ -25,7 +25,8 @@
     "preflight": "node scripts/preflight.mjs",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
-    "art": "node tools/pixel-art/build.mjs"
+    "art": "node tools/pixel-art/build.mjs",
+    "art:bench": "rm -rf apps/web/dist && VITE_MAP_STYLE_URL=/style.json playwright test -g 'art bench'"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.13.0",

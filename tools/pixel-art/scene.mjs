@@ -35,22 +35,40 @@ function pavement(c, { pavement: py, kerb, road }) {
   c.hline(0, road - 1, c.w, "N");
 }
 
-/** Asphalt: patched, not flat, with a centre line, a stop line and a drain. */
-function carriageway(c, { road, h }) {
+/**
+ * Asphalt: patched, not flat, with a centre line, a stop cage and a gully.
+ *
+ * `markings` is off for the repeating edge tile. Those are one-off features of this stretch of
+ * road; tiled, the stop cage came out as a row of little red boxes marching off both sides of
+ * the window.
+ */
+function carriageway(c, { road, h }, { markings = true } = {}) {
   c.rect(0, road, c.w, h - road, "M");
   c.hline(0, road, c.w, "N");
+  // The gutter runs in the kerb's shadow.
+  c.hline(0, road, c.w, "+");
+  c.hline(0, road + 1, c.w, "-");
   c.speckle(0, road + 1, c.w, h - road - 1, "N", 0.07, 3);
   c.speckle(0, road + 1, c.w, h - road - 1, "L", 0.05, 11);
+  // Lane line down the middle of the carriageway. This one does tile.
+  const mid = road + Math.floor((h - road) / 2);
+  for (let x = 4; x < c.w; x += 14) c.hline(x, mid, 7, "Q");
+  if (!markings) return;
   // A patch of newer asphalt, because a road that is one colour reads as a floor.
   c.rect(Math.floor(c.w * 0.18), road + 3, 46, h - road - 6, "L");
   c.speckle(Math.floor(c.w * 0.18), road + 3, 46, h - road - 6, "M", 0.18, 5);
-  // Lane line down the middle of the carriageway.
-  const mid = road + Math.floor((h - road) / 2);
-  for (let x = 4; x < c.w; x += 14) c.hline(x, mid, 7, "Q");
-  // Bus stop cage: the red-and-yellow marking outside the shelter.
-  const cage = Math.floor(c.w * 0.44);
-  c.rect(cage, road + 1, Math.floor(c.w * 0.3), 2, "r");
-  c.hline(cage, road + 1, Math.floor(c.w * 0.3), "z");
+  // The bus stop cage: an outlined box on the carriageway, which is what is actually painted
+  // there. A single stripe read as a stray orange line lying in the road.
+  const cage = Math.floor(c.w * 0.42);
+  const cageW = Math.floor(c.w * 0.34);
+  const cageH = Math.min(11, h - road - 5);
+  // Painted, not drawn on top: a wash of red over the asphalt with a firmer edge. An outlined
+  // box read as a red picture frame lying in the road.
+  c.rect(cage, road + 2, cageW, cageH, "*");
+  c.frame(cage, road + 2, cageW, cageH, "r");
+  c.hline(cage + 1, road + 2, cageW - 2, "s");
+  // The worn dashes along the kerb side of the bay.
+  for (let x = cage + 2; x < cage + cageW - 2; x += 4) c.hline(x, road + 2 + cageH - 1, 2, "s");
   // Gully.
   c.rect(Math.floor(c.w * 0.72), road + 1, 7, 3, "L");
   for (let y = road + 2; y < road + 4; y++)
@@ -125,7 +143,17 @@ export function wideScene() {
       lit: [2],
       shopH: 36,
     },
-    { x: 188, w: 44, h: 70, wall: "brick", shop: false, floors: 2, lit: [1], shopH: 28 },
+    {
+      x: 188,
+      w: 44,
+      h: 60,
+      wall: "brick",
+      shop: false,
+      floors: 1,
+      lit: [0],
+      shopH: 28,
+      chimney: false,
+    },
     {
       x: 232,
       w: 40,
@@ -150,23 +178,23 @@ export function wideScene() {
       shopH: 34,
     },
   ];
-  for (const b of terrace) {
-    c.blit(shopBuilding({ ...b, chimney: b.chimney ?? b.h > 72 }), b.x, g.pavement - b.h);
-  }
+  terrace.forEach((b, i) => {
+    c.blit(shopBuilding({ ...b, seed: i, chimney: b.chimney ?? b.h > 72 }), b.x, g.pavement - b.h);
+  });
 
   pavement(c, g);
 
   // ---- midground: the street ------------------------------------------
   // Nothing lines up on one baseline: the furniture stands at slightly different depths on the
   // pavement, so its feet sit on different rows.
-  c.blit(tree({ seed: 2 }), 8, g.kerb - 47);
+  c.blit(tree({ seed: 2, spread: 1.15 }), 6, g.kerb - 48);
   c.blit(bench({}), 52, g.kerb - 17);
   c.blit(lamp({}), 92, g.kerb - 55);
-  c.blit(tree({ seed: 6 }), 108, g.kerb - 46);
+  c.blit(tree({ seed: 6, spread: 0.8 }), 110, g.kerb - 44);
   c.blit(shelter({}), 142, g.kerb - 49);
   c.blit(stopFlag({}), 206, g.kerb - 54); // in the gap between two frontages
   c.blit(bin(), 226, g.kerb - 19);
-  c.blit(tree({ seed: 4 }), 268, g.kerb - 45);
+  c.blit(tree({ seed: 4, spread: 1 }), 268, g.kerb - 46);
   c.blit(person({ coat: "b", coatDark: "a", pose: 0 }), 154, g.kerb - 22);
   c.blit(person({ coat: "s", coatDark: "q", hair: "D", skin: "B", pose: 1 }), 168, g.kerb - 21);
   c.blit(person({ coat: "M", coatDark: "K", hair: "y", pose: 2 }), 184, g.kerb - 20);
@@ -184,7 +212,7 @@ export function tallScene() {
   c.blit(cloud({ seed: 5 }), 2, 8);
   c.blit(cloud({ seed: 2 }), 80, 26);
   c.blit(cloud({ seed: 8 }), 30, 44);
-  c.blit(distantBlock({ w: 44, h: 58, tone: "9" }), 94, g.pavement - 52 - 58);
+  c.blit(distantBlock({ w: 46, h: 58, tone: "9" }), 92, 96 - 58);
 
   // Fewer buildings, taller, so the phone keeps the detail rather than the count.
   // Two buildings, not three: on a phone the detail has to survive, and it survives by having
@@ -219,7 +247,7 @@ export function tallScene() {
 
   pavement(c, g);
 
-  c.blit(tree({ seed: 3 }), 0, g.kerb - 46);
+  c.blit(tree({ seed: 3, spread: 1.1 }), 0, g.kerb - 47);
   c.blit(lamp({}), 32, g.kerb - 55);
   c.blit(shelter({ w: 62 }), 48, g.kerb - 49);
   c.blit(stopFlag({}), 118, g.kerb - 54);
@@ -258,7 +286,7 @@ export function edgeStrip(g, { height = 72, wall = "brick" } = {}) {
     g.pavement - height,
   );
   pavement(c, g);
-  carriageway(c, g);
+  carriageway(c, g, { markings: false });
   return c;
 }
 

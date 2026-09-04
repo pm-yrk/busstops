@@ -55,6 +55,7 @@ export function shopBuilding({
   lit = [1],
   shopH = 30,
   shop = true,
+  seed = 0,
 } = {}) {
   const c = new Canvas(w, h);
   const k = WALLS[wall];
@@ -153,10 +154,13 @@ export function shopBuilding({
   }
   c.rect(w - 18, gy + gh - 12, 4, 9, "L"); // someone behind the counter
   c.rect(w - 17, gy + gh - 14, 2, 2, "C");
-  for (let i = 0; i < w + gh; i++) {
-    const rx = 2 + i,
-      ry = gy + 1 + Math.floor(i / 2);
-    if (rx < w - 10 && ry < gy + gh) {
+  // The rake and the starting point move per building. One angle repeated down a terrace reads
+  // as a stencil rather than as five separate windows.
+  const rake = 2 + (seed % 2);
+  for (let i = 0; i < (w + gh) * rake; i++) {
+    const rx = 2 - (seed % 5) * 3 + i,
+      ry = gy + 1 + Math.floor(i / rake);
+    if (rx > 1 && rx < w - 10 && ry < gy + gh) {
       c.px(rx, ry, "j");
       c.px(rx + 1, ry, "j");
     }
