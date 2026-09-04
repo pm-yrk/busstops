@@ -7,12 +7,7 @@ on:
       - ".github/workflows/portfolio-screenshots.yml"
 
 permissions:
-  actions: read
   contents: write
-
-concurrency:
-  group: portfolio-screenshots
-  cancel-in-progress: true
 
 jobs:
   publish:
@@ -22,54 +17,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download visual QA from the latest successful preview deployment
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Save the current build screenshot as a static portfolio image
         run: |
-          RUN_ID=$(gh run list \
-            --workflow deploy-preview.yml \
-            --status success \
-            --limit 1 \
-            --json databaseId \
-            --jq '.[0].databaseId')
+          cp docs/portfolio/busstops-home.png docs/portfolio/busstops-static-2026-09-04.png
 
-          if [ -z "$RUN_ID" ] || [ "$RUN_ID" = "null" ]; then
-            echo "::error::No successful Deploy Preview run was found."
-            exit 1
-          fi
-
-          echo "Using Deploy Preview run $RUN_ID"
-          rm -rf /tmp/busstops-visual-qa
-          mkdir -p /tmp/busstops-visual-qa docs/portfolio
-          gh run download "$RUN_ID" \
-            --name preview-visual-qa \
-            --dir /tmp/busstops-visual-qa
-
-      - name: Convert portfolio images to lightweight JPGs
-        run: |
-          python3 -m pip install --quiet pillow
-          python3 - <<'PY'
-          from PIL import Image
-
-          pairs = [
-              ("/tmp/busstops-visual-qa/desktop-home.png", "docs/portfolio/busstops-home.jpg"),
-              ("/tmp/busstops-visual-qa/desktop-pro.png", "docs/portfolio/busstops-pro.jpg"),
-          ]
-
-          for source, target in pairs:
-              image = Image.open(source).convert("RGB")
-              image.save(target, "JPEG", quality=80, optimize=True)
-          PY
-
-      - name: Keep the latest screenshots in the repository
+      - name: Commit the static screenshot
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git pull --rebase origin main
-          git add docs/portfolio/busstops-home.jpg docs/portfolio/busstops-pro.jpg
+          git add docs/portfolio/busstops-static-2026-09-04.png
           if git diff --cached --quiet; then
-            echo "Portfolio screenshots are already current."
+            echo "Static screenshot already exists."
           else
-            git commit -m "Refresh Bus Stops portfolio screenshots"
+            git commit -m "Add static Bus Stops portfolio screenshot"
             git push origin HEAD:main
           fi
