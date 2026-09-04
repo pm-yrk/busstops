@@ -4,7 +4,7 @@
 
 [**Open the live preview →**](https://preview.busstops.pages.dev)
 
-![Bus Stops current build](docs/portfolio/busstops-static-2026-09-04.png)
+![Bus Stops current build](docs/portfolio/busstops-readme-current.jpg)
 
 ## Why I built it
 
