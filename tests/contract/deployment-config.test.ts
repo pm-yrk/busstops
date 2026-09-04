@@ -75,7 +75,9 @@ describe("deploy workflow", () => {
 
   it("sets the Worker's runtime secrets without ever passing them as arguments", () => {
     // Command-line arguments appear in process listings; stdin does not.
-    expect(deploy).toMatch(/printf '%s' "\$\{!NAME\}" \| npx wrangler secret put/);
+    expect(deploy).toMatch(
+      /printf '%s' "\$\{!NAME\}" \| npx (?:--no-install )?wrangler secret put/,
+    );
   });
 
   it("runs the deploy-stage preflight, which is stricter than the CI one", () => {
@@ -168,7 +170,7 @@ describe("preview deploy workflow", () => {
 
   it("provisions before it deploys", () => {
     const provisionAt = preview.indexOf("provision-cloudflare.mjs");
-    const deployAt = preview.indexOf("npx wrangler deploy");
+    const deployAt = preview.search(/npx (?:--no-install )?wrangler deploy/);
     expect(provisionAt).toBeGreaterThan(-1);
     expect(deployAt).toBeGreaterThan(provisionAt);
   });
@@ -178,7 +180,9 @@ describe("preview deploy workflow", () => {
       expect(preview, gate).toContain(gate);
     }
     expect(preview).toMatch(/PREFLIGHT_STAGE: deploy/);
-    expect(preview.indexOf("npm test")).toBeLessThan(preview.indexOf("npx wrangler deploy"));
+    expect(preview.indexOf("npm test")).toBeLessThan(
+      preview.search(/npx (?:--no-install )?wrangler deploy/),
+    );
   });
 
   it("proves the Worker answers before compiling a frontend against it", () => {
@@ -201,7 +205,9 @@ describe("preview deploy workflow", () => {
   });
 
   it("never passes a secret as a command-line argument", () => {
-    expect(preview).toMatch(/printf '%s' "\$\{!NAME\}" \| npx wrangler secret put/);
+    expect(preview).toMatch(
+      /printf '%s' "\$\{!NAME\}" \| npx (?:--no-install )?wrangler secret put/,
+    );
     for (const name of [
       "BODS_API_KEY",
       "TFL_APP_KEY",
@@ -210,6 +216,22 @@ describe("preview deploy workflow", () => {
     ]) {
       expect(preview, name).not.toMatch(new RegExp(`secret put ${name}`));
     }
+  });
+
+  /*
+   * A deploy that fetches its own tooling is a deploy whose tooling nobody reviewed. wrangler is
+   * a pinned devDependency `npm ci` installs, so every call passes `--no-install`: a missing copy
+   * must fail rather than reach for the registry, in the middle of talking to the account.
+   */
+  it("never installs the deploy tool while deploying", () => {
+    // Command lines only. The step comments name `npx wrangler` to explain why the flag is there,
+    // and a prose mention of the mistake is not the mistake.
+    const calls = preview
+      .split("\n")
+      .filter((line) => !line.trimStart().startsWith("#"))
+      .filter((line) => /npx [^\n]*wrangler/.test(line));
+    expect(calls.length).toBeGreaterThan(0);
+    for (const call of calls) expect(call.trim(), call.trim()).toContain("--no-install");
   });
 
   it("ends by printing the URL a person is meant to open", () => {
