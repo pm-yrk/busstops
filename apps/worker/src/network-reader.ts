@@ -4,7 +4,6 @@ import {
   objectKeyFor,
   type ObjectStore,
   haversineMetres,
-  tilesForBoundingBox,
 } from "@busstops/pipeline-core";
 import {
   DATASETS,
@@ -18,14 +17,17 @@ import {
   type StopLocatorRecord,
   assemblePatternTile,
   locatorBucketFor,
+  patternTilesForBoundingBox,
   nearbyStops,
   patternTileDataset,
   searchIndex as rankSearch,
   searchPrefixDataset,
   searchPrefixFor,
   searchTileDataset,
+  searchTilesForBoundingBox,
   stopLocatorDataset,
   stopTileDataset,
+  stopTilesForBoundingBox,
   tokenize,
 } from "@busstops/pipeline-static-network";
 import type { PatternGeometry } from "@busstops/matching";
@@ -239,10 +241,11 @@ export class NetworkReader {
     bbox: { west: number; south: number; east: number; north: number },
     now: number = Date.now(),
   ): Promise<NetworkSlice> {
-    const tiles = tilesForBoundingBox(bbox);
+    // Stops and patterns are on different grids — a pattern is written to every tile it crosses,
+    // so its grid is finer — and asking each for its own is what keeps the two from drifting.
     const [stops, patterns, services] = await Promise.all([
-      this.stopsInTiles(tiles, now),
-      this.patternsInTiles(tiles, now),
+      this.stopsInTiles(stopTilesForBoundingBox(bbox), now),
+      this.patternsInTiles(patternTilesForBoundingBox(bbox), now),
       this.services(now),
     ]);
     return {
@@ -257,7 +260,7 @@ export class NetworkReader {
     limit: number,
     now: number = Date.now(),
   ): Promise<StopsInViewport> {
-    const stops = await this.stopsInTiles(tilesForBoundingBox(bbox), now);
+    const stops = await this.stopsInTiles(stopTilesForBoundingBox(bbox), now);
 
     const inside = stops.filter((stop) => {
       const { lat, lon } = stop.locationCoordinate;
@@ -336,7 +339,7 @@ export class NetworkReader {
     bbox: { west: number; south: number; east: number; north: number },
     now: number = Date.now(),
   ): Promise<PatternGeometry[]> {
-    return this.patternsInTiles(tilesForBoundingBox(bbox), now);
+    return this.patternsInTiles(patternTilesForBoundingBox(bbox), now);
   }
 
   /** Every pattern of one service, read from the tiles that service is known to touch. */
@@ -449,7 +452,7 @@ export class NetworkReader {
 
     const entries = await this.readTiles<SearchIndexEntry>(
       searchTileDataset,
-      tilesForBoundingBox(boxAround(coordinate, options.radiusMetres)),
+      searchTilesForBoundingBox(boxAround(coordinate, options.radiusMetres)),
       index.searchTiles,
       index.version,
       now,

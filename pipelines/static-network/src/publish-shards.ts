@@ -367,6 +367,54 @@ function groupSearchByTile(entries: readonly SearchIndexEntry[]): Map<string, Se
 }
 
 /**
+ * Words that say where a stop is not.
+ *
+ * A national publish measured what happens without this: the "ro" bucket held 79,298 entries and
+ * could publish 32,168 of them, and "st" was the same story. Both are one word — nearly every
+ * stop in England is on a Road or a Street, so those words place a stop in the country rather
+ * than on a map, and indexing by them costs more than every distinctive word put together.
+ *
+ * They are removed from the *index*, not from the entry: the tokens stay, so "Armley Road" still
+ * scores higher for the full phrase than "Armley Lane" does. And an entry with nothing else to
+ * index by — a stop actually called "The Green" — keeps them, because being findable by a poor
+ * word beats not being findable at all.
+ */
+const GENERIC_NAME_WORDS = new Set([
+  "road",
+  "street",
+  "lane",
+  "avenue",
+  "close",
+  "drive",
+  "way",
+  "court",
+  "place",
+  "terrace",
+  "gardens",
+  "crescent",
+  "grove",
+  "walk",
+  "row",
+  "rise",
+  "view",
+  "the",
+  "of",
+  "and",
+  "at",
+  "on",
+  "opposite",
+  "adjacent",
+  "near",
+  "outside",
+  "corner",
+  "junction",
+  "stop",
+  "bus",
+  "stand",
+  "bay",
+]);
+
+/**
  * An entry is reachable from every word in it, so someone searching "Armley" finds "Leeds Armley
  * Road" without having to type the first word. That means one entry appears in several prefix
  * shards; the duplication is the index, and it is bounded by the number of words in a name.
@@ -376,8 +424,12 @@ function groupSearchByPrefix(
 ): Map<string, SearchIndexEntry[]> {
   const byPrefix = new Map<string, SearchIndexEntry[]>();
   for (const entry of entries) {
+    const distinctive = entry.tokens.filter(
+      (token) => !GENERIC_NAME_WORDS.has(token.toLowerCase()),
+    );
+    const indexable = distinctive.length > 0 ? distinctive : entry.tokens;
     const keys = new Set<string>();
-    for (const token of entry.tokens) keys.add(searchPrefixFor(token));
+    for (const token of indexable) keys.add(searchPrefixFor(token));
     for (const code of entry.codes) keys.add(searchPrefixFor(code));
     for (const key of keys) {
       const existing = byPrefix.get(key);

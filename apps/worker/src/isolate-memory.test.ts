@@ -119,6 +119,32 @@ describe("the edge never reads a national dataset", () => {
     expect(reads.filter((key) => key.includes(SHARDED.searchPrefix)).length).toBeLessThan(5);
   });
 
+  it("finds a stop and its routes at their own coordinates", async () => {
+    /*
+     * The grids are per family now — stops on a quarter degree, patterns on an eighth, journeys
+     * still on the half degree they were published with — because a national publish had to drop
+     * 230 London stops and 10,013 West Yorkshire patterns to fit one size to all of them. Two
+     * grids means two chances to disagree, and a publisher and a reader that disagree produce
+     * empty results rather than an error. So this asks for a stop at the coordinate it is
+     * actually at, and the patterns that call there.
+     */
+    const { reader } = await publishedReader();
+    const built = network();
+    const stop = built.stops.find((candidate) =>
+      built.patterns.some((pattern) => pattern.stopSequence.includes(candidate.id)),
+    );
+    expect(stop).toBeDefined();
+
+    const { lat, lon } = stop!.locationCoordinate;
+    const box = { west: lon - 0.01, east: lon + 0.01, south: lat - 0.01, north: lat + 0.01 };
+
+    const viewport = await reader.stopsInBoundingBox(box, 400);
+    expect(viewport.stops.map((s) => s.id)).toContain(stop!.id);
+
+    const serving = await reader.patternsServingStop(stop!);
+    expect(serving.length).toBeGreaterThan(0);
+  });
+
   it("reads only the tiles a viewport covers, not every published tile", async () => {
     const { reader, reads } = await publishedReader();
     const index = await reader.networkIndex();

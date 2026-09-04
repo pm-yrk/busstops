@@ -1,5 +1,6 @@
 import type { Coordinate, RoutePattern, Stop } from "@busstops/contracts";
-import { tileIdFor, tilesForCoordinates } from "@busstops/pipeline-core";
+import type { BoundingBox } from "@busstops/contracts";
+import { tileIdFor, tilesForBoundingBox, tilesForCoordinates } from "@busstops/pipeline-core";
 import type { SearchIndexEntry } from "./search-index.js";
 
 /**
@@ -67,6 +68,26 @@ export const MAX_SHARD_RECORDS = 20_000;
  * an isolate can afford to parse for a viewport that spans several tiles.
  */
 export const MAX_SHARD_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Tile sizes, per family, chosen from what a national publish actually weighed rather than from
+ * one number reused everywhere.
+ *
+ * At the half-degree the journey tiles use, the first complete publish reported the cost: the
+ * London stop tile came to 8 MiB and had to drop 230 real stops, and one West Yorkshire pattern
+ * tile held 11,420 patterns and could publish 1,407 of them. Both are coverage holes in the
+ * densest places, which is precisely where they are noticed.
+ *
+ * Stops divide cleanly by area, so a quarter degree takes the worst tile to about a quarter of
+ * the budget. Patterns do not: a route is written to every tile it crosses, so a finer grid also
+ * multiplies the copies. An eighth of a degree is the point where the densest tile fits with room
+ * left, at the cost of geometry stored roughly four times over — which is cheap in object storage
+ * and is the thing the edge never has to read all of.
+ *
+ * Journey tiles keep the half degree they were published with; nothing here changes them.
+ */
+export const STOP_TILE_DEGREES = 0.25;
+export const PATTERN_TILE_DEGREES = 0.125;
 
 export function stopTileDataset(tile: string): string {
   return `${SHARDED.stopTile}/${tile}`;
@@ -208,15 +229,27 @@ export interface NetworkIndexRecord {
 }
 
 export function tileForStop(stop: Stop): string {
-  return tileIdFor(stop.locationCoordinate);
+  return tileIdFor(stop.locationCoordinate, STOP_TILE_DEGREES);
 }
+
+/** The stop tiles a viewport covers. Used by the edge, so the sizes cannot drift between sides. */
+export function stopTilesForBoundingBox(bbox: BoundingBox): string[] {
+  return tilesForBoundingBox(bbox, STOP_TILE_DEGREES);
+}
+
+export function patternTilesForBoundingBox(bbox: BoundingBox): string[] {
+  return tilesForBoundingBox(bbox, PATTERN_TILE_DEGREES);
+}
+
+/** Search entries are placed on the stop grid, because they are mostly stops. */
+export const searchTilesForBoundingBox = stopTilesForBoundingBox;
 
 /** Every tile a pattern passes through, so a viewport finds it from any point along the route. */
 export function tilesForPattern(shape: readonly Coordinate[]): string[] {
-  return tilesForCoordinates(shape);
+  return tilesForCoordinates(shape, PATTERN_TILE_DEGREES);
 }
 
 /** Entries with a location are also placed spatially, which is what "stops near me" reads. */
 export function tileForSearchEntry(entry: SearchIndexEntry): string | null {
-  return entry.coordinate ? tileIdFor(entry.coordinate) : null;
+  return entry.coordinate ? tileIdFor(entry.coordinate, STOP_TILE_DEGREES) : null;
 }
