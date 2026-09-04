@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   publish:
@@ -50,3 +50,12 @@ jobs:
             test -s "/tmp/$name"
             file "/tmp/$name"
           done
+
+      - name: Mark successful publish
+        run: |
+          date -u +'%Y-%m-%dT%H:%M:%SZ' > .github/readme-assets-live.txt
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/readme-assets-live.txt
+          git commit -m 'Confirm README image assets are live'
+          git push
