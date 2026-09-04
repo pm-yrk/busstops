@@ -45,15 +45,28 @@ jobs:
             --name preview-visual-qa \
             --dir /tmp/busstops-visual-qa
 
-          cp /tmp/busstops-visual-qa/desktop-home.png docs/portfolio/busstops-home.png
-          cp /tmp/busstops-visual-qa/desktop-pro.png docs/portfolio/busstops-pro.png
+      - name: Convert portfolio images to lightweight JPGs
+        run: |
+          python3 -m pip install --quiet pillow
+          python3 - <<'PY'
+          from PIL import Image
+
+          pairs = [
+              ("/tmp/busstops-visual-qa/desktop-home.png", "docs/portfolio/busstops-home.jpg"),
+              ("/tmp/busstops-visual-qa/desktop-pro.png", "docs/portfolio/busstops-pro.jpg"),
+          ]
+
+          for source, target in pairs:
+              image = Image.open(source).convert("RGB")
+              image.save(target, "JPEG", quality=80, optimize=True)
+          PY
 
       - name: Keep the latest screenshots in the repository
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git pull --rebase origin main
-          git add docs/portfolio/busstops-home.png docs/portfolio/busstops-pro.png
+          git add docs/portfolio/busstops-home.jpg docs/portfolio/busstops-pro.jpg
           if git diff --cached --quiet; then
             echo "Portfolio screenshots are already current."
           else
