@@ -94,205 +94,220 @@ async function probe(
   return entry;
 }
 
-console.log("=".repeat(72));
-console.log("BODS SIRI-VM by viewport");
-console.log("=".repeat(72));
-console.log(`BODS_API_KEY present: ${BODS_KEY ? "yes" : "NO"}`);
-console.log(`TFL_APP_KEY present: ${TFL_KEY ? "yes" : "NO"}`);
-
-for (const area of AREAS) {
-  const url = new URL("https://data.bus-data.dft.gov.uk/api/v1/datafeed/");
-  const b = area.bbox;
-  url.searchParams.set(
-    "boundingBox",
-    [b.west, b.south, b.east, b.north].map((v) => v.toFixed(5)).join(","),
-  );
-  if (BODS_KEY) url.searchParams.set("api_key", BODS_KEY);
-
-  const probeResult = await probe(`siri-vm ${area.name}`, url.toString(), {
-    maxBody: 300,
-  });
-  const row: Record<string, unknown> = {
-    area: area.name,
-    status: probeResult.status ?? null,
-    contentType: probeResult.contentType ?? null,
-    bytes: probeResult.bytes ?? 0,
-    ms: probeResult.ms,
-    error: probeResult.error ?? null,
-  };
-
-  if (probeResult.text && probeResult.status === 200) {
-    const now = new Date();
-    const parsed = parseSiriVm(probeResult.text);
-    row.rawActivities = parsed.activities.length;
-    row.parseRejected = parsed.rejected.length;
-    row.responseTimestamp = parsed.responseTimestamp;
-
-    const normalized = normalizeSiriVm(probeResult.text, {
-      retrievedAt: now.toISOString(),
-      vehicleSalt: "diagnostic-salt-not-published",
-      now,
-    });
-    row.accepted = normalized.observations.length;
-    const reasons: Record<string, number> = {};
-    for (const r of normalized.rejected) {
-      // Bucket by shape, not by value: "observation 812s old" would be a thousand distinct keys.
-      const key = r.reason.replace(/\d+/g, "N");
-      reasons[key] = (reasons[key] ?? 0) + 1;
-    }
-    row.rejectedBy = reasons;
-    const times = normalized.observations
-      .map((o) => Date.parse(o.observedAt))
-      .sort((a, b) => a - b);
-    if (times.length > 0) {
-      row.oldestObservation = new Date(times[0]!).toISOString();
-      row.newestObservation = new Date(times[times.length - 1]!).toISOString();
-      row.oldestAgeSeconds = Math.round((now.getTime() - times[0]!) / 1000);
-      row.newestAgeSeconds = Math.round((now.getTime() - times[times.length - 1]!) / 1000);
-    }
-    // Every activity's age, including the ones the normaliser dropped, so a feed that is simply
-    // stale is distinguishable from a feed that is empty.
-    const allAges = parsed.activities
-      .map((a) => (now.getTime() - Date.parse(a.RecordedAtTime)) / 1000)
-      .filter((n) => Number.isFinite(n))
-      .sort((a, b) => a - b);
-    if (allAges.length > 0) {
-      row.rawAgeSeconds = {
-        min: Math.round(allAges[0]!),
-        median: Math.round(allAges[Math.floor(allAges.length / 2)]!),
-        max: Math.round(allAges[allAges.length - 1]!),
-      };
-    }
-  } else if (probeResult.text) {
-    row.head = probeResult.head;
-  }
-
-  report.areas.push(row);
-  console.log(
-    `\n${area.name}: HTTP ${row.status ?? "-"} ${row.contentType ?? ""} ${row.bytes} bytes in ${row.ms}ms` +
-      (row.error ? `\n  error: ${row.error}` : ""),
-  );
-  if (row.rawActivities !== undefined) {
-    console.log(
-      `  activities ${row.rawActivities}, accepted ${row.accepted}, parse-rejected ${row.parseRejected}`,
-    );
-    console.log(`  responseTimestamp ${row.responseTimestamp ?? "-"}`);
-    if (row.rawAgeSeconds)
-      console.log(
-        `  raw observation age s: min ${row.rawAgeSeconds.min} median ${row.rawAgeSeconds.median} max ${row.rawAgeSeconds.max}`,
-      );
-    if (row.oldestObservation)
-      console.log(
-        `  accepted age s: newest ${row.newestAgeSeconds} oldest ${row.oldestAgeSeconds}`,
-      );
-    const rejected = Object.entries((row.rejectedBy ?? {}) as Record<string, number>);
-    if (rejected.length > 0)
-      console.log(`  rejected: ${rejected.map(([k, v]) => `${v}x ${k}`).join(", ")}`);
-  } else if (row.head) {
-    console.log(`  body: ${row.head}`);
-  }
-}
-
-console.log(`\n${"=".repeat(72)}`);
-console.log("Other BODS endpoints named in the brief");
-console.log("=".repeat(72));
-
-const key = BODS_KEY ? `?api_key=${BODS_KEY}` : "";
-const ENDPOINTS: Array<[string, string, { method?: string; accept?: string }]> = [
-  [
-    "national GTFS timetable (HEAD)",
-    "https://data.bus-data.dft.gov.uk/timetable/download/gtfs-file/all/",
-    { method: "HEAD" },
-  ],
-  [
-    "regional GTFS: yorkshire (HEAD)",
-    "https://data.bus-data.dft.gov.uk/timetable/download/gtfs-file/yorkshire/",
-    { method: "HEAD" },
-  ],
-  [
-    "regional GTFS: north_west (HEAD)",
-    "https://data.bus-data.dft.gov.uk/timetable/download/gtfs-file/north_west/",
-    { method: "HEAD" },
-  ],
-  [
-    "GTFS-RT vehicle positions",
-    `https://data.bus-data.dft.gov.uk/api/v1/gtfsrtdatafeed/${key}`,
-    {},
-  ],
-  [
-    "disruptions API",
-    `https://data.bus-data.dft.gov.uk/api/v1/disruptions/${key}`,
-    { accept: "application/json" },
-  ],
-  ["cancellations (siri-sx)", `https://data.bus-data.dft.gov.uk/api/v1/siri-sx/${key}`, {}],
-  [
-    "datasets index",
-    `https://data.bus-data.dft.gov.uk/api/v1/dataset/${key}${key ? "&" : "?"}limit=1`,
-    { accept: "application/json" },
-  ],
-];
-
-for (const [label, url, options] of ENDPOINTS) {
-  const result = await probe(label, url, options);
-  report.endpoints.push({
-    label,
-    url: result.url,
-    status: result.status ?? null,
-    contentType: result.contentType ?? null,
-    contentLength: result.contentLength ?? null,
-    bytes: result.bytes ?? null,
-    ms: result.ms,
-    error: result.error ?? null,
-    head: result.head ?? null,
-  });
-  console.log(
-    `\n${label}\n  ${result.url}\n  HTTP ${result.status ?? "-"} ${result.contentType ?? ""} ` +
-      `len=${result.contentLength ?? result.bytes ?? "-"} in ${result.ms}ms` +
-      (result.error ? `\n  error: ${result.error}` : "") +
-      (result.head ? `\n  body: ${result.head}` : ""),
-  );
-}
-
-if (TFL_KEY) {
-  console.log(`\n${"=".repeat(72)}`);
-  console.log("TfL");
+async function main(): Promise<void> {
   console.log("=".repeat(72));
-  for (const [label, path] of [
-    ["arrivals at a Westminster stop", "/StopPoint/490008660N/Arrivals"],
-    ["bus line status", "/Line/Mode/bus/Status"],
-    ["bus disruption", "/Line/Mode/bus/Disruption"],
-  ]) {
-    const url = new URL(`https://api.tfl.gov.uk${path}`);
-    url.searchParams.set("app_key", TFL_KEY);
-    const result = await probe(label, url.toString(), { accept: "application/json", maxBody: 260 });
-    let count: number | null = null;
-    try {
-      const body: unknown = JSON.parse(result.text ?? "null");
-      count = Array.isArray(body) ? body.length : null;
-    } catch {
-      /* reported through head instead */
+  console.log("BODS SIRI-VM by viewport");
+  console.log("=".repeat(72));
+  console.log(`BODS_API_KEY present: ${BODS_KEY ? "yes" : "NO"}`);
+  console.log(`TFL_APP_KEY present: ${TFL_KEY ? "yes" : "NO"}`);
+
+  for (const area of AREAS) {
+    const url = new URL("https://data.bus-data.dft.gov.uk/api/v1/datafeed/");
+    const b = area.bbox;
+    url.searchParams.set(
+      "boundingBox",
+      [b.west, b.south, b.east, b.north].map((v) => v.toFixed(5)).join(","),
+    );
+    if (BODS_KEY) url.searchParams.set("api_key", BODS_KEY);
+
+    const probeResult = await probe(`siri-vm ${area.name}`, url.toString(), {
+      maxBody: 300,
+    });
+    const row: Record<string, unknown> = {
+      area: area.name,
+      status: probeResult.status ?? null,
+      contentType: probeResult.contentType ?? null,
+      bytes: probeResult.bytes ?? 0,
+      ms: probeResult.ms,
+      error: probeResult.error ?? null,
+    };
+
+    if (probeResult.text && probeResult.status === 200) {
+      const now = new Date();
+      const parsed = parseSiriVm(probeResult.text);
+      row.rawActivities = parsed.activities.length;
+      row.parseRejected = parsed.rejected.length;
+      row.responseTimestamp = parsed.responseTimestamp;
+
+      const normalized = normalizeSiriVm(probeResult.text, {
+        retrievedAt: now.toISOString(),
+        vehicleSalt: "diagnostic-salt-not-published",
+        now,
+      });
+      row.accepted = normalized.observations.length;
+      const reasons: Record<string, number> = {};
+      for (const r of normalized.rejected) {
+        // Bucket by shape, not by value: "observation 812s old" would be a thousand distinct keys.
+        const key = r.reason.replace(/\d+/g, "N");
+        reasons[key] = (reasons[key] ?? 0) + 1;
+      }
+      row.rejectedBy = reasons;
+      const times = normalized.observations
+        .map((o) => Date.parse(o.observedAt))
+        .sort((a, b) => a - b);
+      if (times.length > 0) {
+        row.oldestObservation = new Date(times[0]!).toISOString();
+        row.newestObservation = new Date(times[times.length - 1]!).toISOString();
+        row.oldestAgeSeconds = Math.round((now.getTime() - times[0]!) / 1000);
+        row.newestAgeSeconds = Math.round((now.getTime() - times[times.length - 1]!) / 1000);
+      }
+      // Every activity's age, including the ones the normaliser dropped, so a feed that is simply
+      // stale is distinguishable from a feed that is empty.
+      const allAges = parsed.activities
+        .map((a) => (now.getTime() - Date.parse(a.RecordedAtTime)) / 1000)
+        .filter((n) => Number.isFinite(n))
+        .sort((a, b) => a - b);
+      if (allAges.length > 0) {
+        row.rawAgeSeconds = {
+          min: Math.round(allAges[0]!),
+          median: Math.round(allAges[Math.floor(allAges.length / 2)]!),
+          max: Math.round(allAges[allAges.length - 1]!),
+        };
+      }
+    } else if (probeResult.text) {
+      row.head = probeResult.head;
     }
+
+    report.areas.push(row);
+    console.log(
+      `\n${area.name}: HTTP ${row.status ?? "-"} ${row.contentType ?? ""} ${row.bytes} bytes in ${row.ms}ms` +
+        (row.error ? `\n  error: ${row.error}` : ""),
+    );
+    if (row.rawActivities !== undefined) {
+      console.log(
+        `  activities ${row.rawActivities}, accepted ${row.accepted}, parse-rejected ${row.parseRejected}`,
+      );
+      console.log(`  responseTimestamp ${row.responseTimestamp ?? "-"}`);
+      if (row.rawAgeSeconds)
+        console.log(
+          `  raw observation age s: min ${row.rawAgeSeconds.min} median ${row.rawAgeSeconds.median} max ${row.rawAgeSeconds.max}`,
+        );
+      if (row.oldestObservation)
+        console.log(
+          `  accepted age s: newest ${row.newestAgeSeconds} oldest ${row.oldestAgeSeconds}`,
+        );
+      const rejected = Object.entries((row.rejectedBy ?? {}) as Record<string, number>);
+      if (rejected.length > 0)
+        console.log(`  rejected: ${rejected.map(([k, v]) => `${v}x ${k}`).join(", ")}`);
+    } else if (row.head) {
+      console.log(`  body: ${row.head}`);
+    }
+  }
+
+  console.log(`\n${"=".repeat(72)}`);
+  console.log("Other BODS endpoints named in the brief");
+  console.log("=".repeat(72));
+
+  const key = BODS_KEY ? `?api_key=${BODS_KEY}` : "";
+  const ENDPOINTS: Array<[string, string, { method?: string; accept?: string }]> = [
+    [
+      "national GTFS timetable (HEAD)",
+      "https://data.bus-data.dft.gov.uk/timetable/download/gtfs-file/all/",
+      { method: "HEAD" },
+    ],
+    [
+      "regional GTFS: yorkshire (HEAD)",
+      "https://data.bus-data.dft.gov.uk/timetable/download/gtfs-file/yorkshire/",
+      { method: "HEAD" },
+    ],
+    [
+      "regional GTFS: north_west (HEAD)",
+      "https://data.bus-data.dft.gov.uk/timetable/download/gtfs-file/north_west/",
+      { method: "HEAD" },
+    ],
+    [
+      "GTFS-RT vehicle positions",
+      `https://data.bus-data.dft.gov.uk/api/v1/gtfsrtdatafeed/${key}`,
+      {},
+    ],
+    [
+      "disruptions API",
+      `https://data.bus-data.dft.gov.uk/api/v1/disruptions/${key}`,
+      { accept: "application/json" },
+    ],
+    ["cancellations (siri-sx)", `https://data.bus-data.dft.gov.uk/api/v1/siri-sx/${key}`, {}],
+    [
+      "datasets index",
+      `https://data.bus-data.dft.gov.uk/api/v1/dataset/${key}${key ? "&" : "?"}limit=1`,
+      { accept: "application/json" },
+    ],
+  ];
+
+  for (const [label, url, options] of ENDPOINTS) {
+    const result = await probe(label, url, options);
     report.endpoints.push({
-      label: `tfl ${label}`,
+      label,
       url: result.url,
       status: result.status ?? null,
+      contentType: result.contentType ?? null,
+      contentLength: result.contentLength ?? null,
       bytes: result.bytes ?? null,
       ms: result.ms,
-      records: count,
       error: result.error ?? null,
+      head: result.head ?? null,
     });
     console.log(
-      `\ntfl ${label}: HTTP ${result.status ?? "-"} ${result.bytes ?? 0} bytes in ${result.ms}ms` +
-        (count === null ? "" : `, ${count} records`) +
-        (result.error ? `\n  error: ${result.error}` : ""),
+      `\n${label}\n  ${result.url}\n  HTTP ${result.status ?? "-"} ${result.contentType ?? ""} ` +
+        `len=${result.contentLength ?? result.bytes ?? "-"} in ${result.ms}ms` +
+        (result.error ? `\n  error: ${result.error}` : "") +
+        (result.head ? `\n  body: ${result.head}` : ""),
     );
-    if (count === 0 || count === null) console.log(`  body: ${result.head ?? "-"}`);
+  }
+
+  if (TFL_KEY) {
+    console.log(`\n${"=".repeat(72)}`);
+    console.log("TfL");
+    console.log("=".repeat(72));
+    for (const [label, path] of [
+      ["arrivals at a Westminster stop", "/StopPoint/490008660N/Arrivals"],
+      ["bus line status", "/Line/Mode/bus/Status"],
+      ["bus disruption", "/Line/Mode/bus/Disruption"],
+    ]) {
+      const url = new URL(`https://api.tfl.gov.uk${path}`);
+      url.searchParams.set("app_key", TFL_KEY);
+      const result = await probe(label, url.toString(), {
+        accept: "application/json",
+        maxBody: 260,
+      });
+      let count: number | null = null;
+      try {
+        const body: unknown = JSON.parse(result.text ?? "null");
+        count = Array.isArray(body) ? body.length : null;
+      } catch {
+        /* reported through head instead */
+      }
+      report.endpoints.push({
+        label: `tfl ${label}`,
+        url: result.url,
+        status: result.status ?? null,
+        bytes: result.bytes ?? null,
+        ms: result.ms,
+        records: count,
+        error: result.error ?? null,
+      });
+      console.log(
+        `\ntfl ${label}: HTTP ${result.status ?? "-"} ${result.bytes ?? 0} bytes in ${result.ms}ms` +
+          (count === null ? "" : `, ${count} records`) +
+          (result.error ? `\n  error: ${result.error}` : ""),
+      );
+      if (count === 0 || count === null) console.log(`  body: ${result.head ?? "-"}`);
+    }
+  }
+
+  const jsonAt = process.argv.indexOf("--json");
+  if (jsonAt !== -1 && process.argv[jsonAt + 1]) {
+    // The captured bodies are dropped: they are large and can contain source vehicle references.
+    writeFileSync(process.argv[jsonAt + 1], JSON.stringify(report, null, 2));
+    console.log(`\nreport -> ${process.argv[jsonAt + 1]}`);
   }
 }
 
-const jsonAt = process.argv.indexOf("--json");
-if (jsonAt !== -1 && process.argv[jsonAt + 1]) {
-  // The captured bodies are dropped: they are large and can contain source vehicle references.
-  writeFileSync(process.argv[jsonAt + 1], JSON.stringify(report, null, 2));
-  console.log(`\nreport -> ${process.argv[jsonAt + 1]}`);
-}
+/*
+ * Wrapped rather than run at the top level: this file resolves as CommonJS under tsx, where
+ * top-level await is a transform error — and the workflow piped the output through `tee`, so the
+ * failing exit code was replaced by tee's and the step reported success while doing nothing.
+ */
+main().catch((error: unknown) => {
+  console.error(error instanceof Error ? `${error.name}: ${error.message}` : String(error));
+  process.exitCode = 1;
+});

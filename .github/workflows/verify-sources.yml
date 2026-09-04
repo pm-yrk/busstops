@@ -44,6 +44,9 @@ jobs:
           BODS_API_KEY: ${{ secrets.BODS_API_KEY }}
           TFL_APP_KEY: ${{ secrets.TFL_APP_KEY }}
         run: |
+          # pipefail, because `| tee` otherwise replaces the probe's exit code with tee's: the
+          # first run of this step crashed on a transform error and reported success.
+          set -o pipefail
           npx tsx scripts/diagnose-upstreams.ts --json upstream-diagnosis.json 2>&1 | tee diagnosis.log
 
       - name: Summarise
