@@ -10,17 +10,50 @@ import { isZipArchive, readTransXChangeFromZip } from "./zip.js";
 
 export const NAPTAN_CSV_URL = "https://naptan.api.dft.gov.uk/v1/access-nodes?dataFormat=csv";
 
+/** How much of the published timetable estate a run actually took. */
+export interface TimetableCoverage {
+  /** Datasets BODS says it has published, or null if the catalogue did not say. */
+  published: number | null;
+  requested: number;
+  fetched: number;
+}
+
 export interface StaticSourceResult {
   naptanCsv: string | null;
   transXChangeDocuments: string[];
   health: SourceHealth[];
   errors: Array<{ source: string; message: string }>;
+  /** Null when no catalogue was read, which means no timetable was ingested at all. */
+  timetableCoverage: TimetableCoverage | null;
 }
+
+/**
+ * How many timetable datasets a run takes by default.
+ *
+ * Raised from 25 after a national build produced stops for the whole country and services for a
+ * fraction of it. Every part of the job scales with this — the download, the parse, the build and
+ * the publish — so it is a figure to move deliberately and measure, which is why the build report
+ * now carries the coverage it achieved against the count BODS published.
+ */
+export const DEFAULT_MAX_TIMETABLE_DATASETS = 150;
 
 export interface FetchStaticSourcesOptions {
   bodsApiKey: string | undefined;
   fetchImpl?: typeof fetch;
-  /** Caps how many timetable datasets a single run downloads, protecting the runtime budget. */
+  /**
+   * How many of BODS's published timetable datasets a run downloads.
+   *
+   * This is the single number that decides how much of England has a timetable. NaPTAN gives
+   * every stop in the country regardless; services, routes and departures come only from the
+   * datasets fetched here. At 25 a national build produced 1,043 services out of 945 published
+   * datasets — enough for a working map of the whole country and a departure board only where
+   * those operators run, which is how a stop in Manchester came back with no routes at all.
+   *
+   * It is a cap rather than "all of them" because the download, the parse and the publish all
+   * scale with it and the job has a runtime budget. The count fetched and the count published
+   * are both reported, so the gap is a number in the build report rather than a surprise at a
+   * bus stop.
+   */
   maxTimetableDatasets?: number;
 }
 
@@ -61,6 +94,7 @@ export async function fetchStaticSources(
   );
 
   const transXChangeDocuments: string[] = [];
+  let timetableCoverage: TimetableCoverage | null = null;
   if (!options.bodsApiKey) {
     errors.push({
       source: "bods",
@@ -68,15 +102,24 @@ export async function fetchStaticSources(
     });
   } else {
     try {
+      const wanted = options.maxTimetableDatasets ?? DEFAULT_MAX_TIMETABLE_DATASETS;
       const datasetsUrl = new URL("https://data.bus-data.dft.gov.uk/api/v1/dataset/");
       datasetsUrl.searchParams.set("api_key", options.bodsApiKey);
       datasetsUrl.searchParams.set("status", "published");
-      datasetsUrl.searchParams.set("limit", String(options.maxTimetableDatasets ?? 25));
+      datasetsUrl.searchParams.set("limit", String(wanted));
 
-      const catalogue = await bodsClient.fetchJson<{ results?: Array<{ url?: string }> }>(
-        datasetsUrl.toString(),
-        { timeoutMs: 60_000 },
-      );
+      const catalogue = await bodsClient.fetchJson<{
+        count?: number;
+        results?: Array<{ url?: string }>;
+      }>(datasetsUrl.toString(), { timeoutMs: 60_000 });
+
+      // What the publisher has, against what this run took. Recorded whether or not it is all of
+      // them, because "England-wide" is a claim that should be checkable against a number.
+      timetableCoverage = {
+        published: catalogue.count ?? null,
+        requested: wanted,
+        fetched: (catalogue.results ?? []).filter((dataset) => dataset.url).length,
+      };
 
       for (const dataset of catalogue.results ?? []) {
         if (!dataset.url) continue;
@@ -120,5 +163,5 @@ export async function fetchStaticSources(
   }
   health.push(bodsClient.health());
 
-  return { naptanCsv, transXChangeDocuments, health, errors };
+  return { naptanCsv, transXChangeDocuments, health, errors, timetableCoverage };
 }

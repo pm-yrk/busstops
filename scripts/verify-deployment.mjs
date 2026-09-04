@@ -93,18 +93,29 @@ await check("the live map returns real stops for a real viewport", async () => {
   );
   assert(inBox.length === stops.length, "some stops fall outside the requested viewport");
   observed.stop = stops[0];
+  /*
+   * A stop the map says has a service, if there is one. Timetables come from the BODS datasets a
+   * build ingested and stops come from all of NaPTAN, so a stop with no routes is a coverage
+   * figure rather than a broken endpoint — and picking one arbitrarily would test the wrong
+   * thing. How many stops here have a service is reported as its own check below.
+   */
+  observed.stopWithRoutes = stops.find((stop) => (stop.routePublicNames ?? []).length > 0) ?? null;
+  observed.stopsWithRoutes = stops.filter(
+    (stop) => (stop.routePublicNames ?? []).length > 0,
+  ).length;
   return `${stops.length} stops, first: ${stops[0].name}`;
 });
 
 await check("a stop can be selected and returns a departure board", async () => {
   assert(observed.stop, "no stop was found by the previous check");
-  const { response, body, text } = await getJson(
-    `/v1/stops/${encodeURIComponent(observed.stop.id)}`,
-  );
+  // Prefer a stop the map says has a service, so the board is exercised with something on it.
+  const target = observed.stopWithRoutes ?? observed.stop;
+  observed.stop = target;
+  const { response, body, text } = await getJson(`/v1/stops/${encodeURIComponent(target.id)}`);
   assert(response.ok, `expected 2xx, got ${describe(response, body, text)}`);
   const stop = body?.data?.stop;
   assert(stop, "the stop response has no stop");
-  assert(stop.id === observed.stop.id, "a different stop came back than the one requested");
+  assert(stop.id === target.id, "a different stop came back than the one requested");
   // Departures may legitimately be empty at night or on a stop with no service today. What must
   // exist is the board itself and its freshness, which is what the pixel display renders.
   const departures = body?.data?.departures;
@@ -170,6 +181,17 @@ await check("nearby stops come back for a real point", async () => {
   return `${results.length} within 800m of ${observed.stop.name}`;
 });
 
+await check("the viewport's stops carry the services that call at them", async () => {
+  /*
+   * Reported rather than asserted at a threshold, because it is a property of how many timetable
+   * datasets the build took, not of the deployment. A zero here is the honest signal that this
+   * area has stops and no timetable — which is what a passenger would see as an empty board.
+   */
+  assert(observed.stopsWithRoutes !== undefined, "the map check did not run");
+  const total = observed.stop ? "the viewport" : "no viewport";
+  return `${observed.stopsWithRoutes} of the returned stops have a service, in ${total}`;
+});
+
 await check("route detail answers without the Worker falling over", async () => {
   /*
    * The endpoint most likely to be the next isolate failure: it reads every tile a service
@@ -177,7 +199,23 @@ await check("route detail answers without the Worker falling over", async () => 
    * so a route with no data is reported differently from a route that killed the request.
    */
   const first = observed.routes?.[0];
-  assert(first?.id, `no route is listed at ${observed.stop?.name ?? "the observed stop"}`);
+  if (!first?.id) {
+    /*
+     * No service calls at the stop this run happened to pick, which is a timetable-coverage fact
+     * and not a failure of the endpoint. What must still be true is that asking for a route the
+     * network does not have is answered rather than crashed.
+     */
+    const { response, body, text } = await getJson("/v1/routes/does-not-exist");
+    assert(
+      response.status !== 500,
+      `the Worker failed on an unknown route: ${describe(response, body, text)}`,
+    );
+    assert(
+      response.status === 404 || response.status === 400 || response.status === 503,
+      `an unknown route should be refused, got ${describe(response, body, text)}`,
+    );
+    return `no service calls at ${observed.stop?.name ?? "the sampled stop"}; an unknown route answered ${response.status}`;
+  }
   const { response, body, text } = await getJson(`/v1/routes/${encodeURIComponent(first.id)}`);
   assert(response.status !== 500, `the Worker failed: ${describe(response, body, text)}`);
   assert(response.ok, `expected 2xx, got ${describe(response, body, text)}`);

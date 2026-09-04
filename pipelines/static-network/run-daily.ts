@@ -37,9 +37,30 @@ async function main(): Promise<number> {
   const store = storeResult.store;
   const artifacts = new ArtifactStore(store);
 
-  const sources = await fetchStaticSources({ bodsApiKey: process.env.BODS_API_KEY });
+  const sources = await fetchStaticSources({
+    bodsApiKey: process.env.BODS_API_KEY,
+    ...(process.env.BODS_MAX_TIMETABLE_DATASETS
+      ? { maxTimetableDatasets: Number(process.env.BODS_MAX_TIMETABLE_DATASETS) }
+      : {}),
+  });
   report.sourceHealth = sources.health;
   report.sourceErrors = sources.errors;
+  /*
+   * How much of England has a timetable, as a number.
+   *
+   * NaPTAN gives every stop in the country whatever happens here; services, routes and departures
+   * come only from the datasets this run took. A build that fetched a fraction of them produces a
+   * complete map with a departure board at some of its stops and none at others, which looks like
+   * a defect at the stop and is really a coverage figure — so the figure is published.
+   */
+  report.timetableCoverage = sources.timetableCoverage;
+  if (sources.timetableCoverage) {
+    const { fetched, published } = sources.timetableCoverage;
+    console.log(
+      `Timetable coverage: ${fetched} of ${published ?? "an unstated number of"} published ` +
+        `BODS datasets. Stops are national either way; services are not.`,
+    );
+  }
 
   if (!sources.naptanCsv) {
     report.outcome = "source_unavailable";
