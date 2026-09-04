@@ -117,7 +117,9 @@ await check("a stop can be selected and returns a departure board", async () => 
     assert(departure.liveState !== undefined, "a departure does not say whether it is live");
   }
   assert(body?.meta?.generatedAt, "the stop response does not state its freshness");
-  return `${stop.name}: ${departures.length} departures, ${body.meta.degradation}`;
+  // Carried to the route check: this is the only response that names the services calling here.
+  observed.routes = body?.data?.routes ?? [];
+  return `${stop.name}: ${departures.length} departures, ${observed.routes.length} routes, ${body.meta.degradation}`;
 });
 
 await check("search finds a real stop by name", async () => {
@@ -131,6 +133,58 @@ await check("search finds a real stop by name", async () => {
   const matches = body?.data?.results ?? [];
   assert(matches.length > 0, `search for "${term}" found nothing, so the search index is empty`);
   return `"${term}" → ${matches.length} results`;
+});
+
+await check("nearby stops come back for a real point", async () => {
+  assert(observed.stop, "no stop was found by the earlier check");
+  const { lat, lon } = observed.stop.coordinate;
+  const { response, body, text } = await getJson(`/v1/nearby?lat=${lat}&lon=${lon}&radius=800`);
+  assert(response.ok, `expected 2xx, got ${describe(response, body, text)}`);
+  const results = body?.data?.results ?? [];
+  assert(
+    results.length > 0,
+    "nothing was found within 800m of a stop the API itself returned, which means the search " +
+      "tiles around that point are not readable",
+  );
+  return `${results.length} within 800m of ${observed.stop.name}`;
+});
+
+await check("route detail answers without the Worker falling over", async () => {
+  /*
+   * The endpoint most likely to be the next isolate failure: it reads every tile a service
+   * touches, which for a long route is many. A 500 here is the specific thing being watched for,
+   * so a route with no data is reported differently from a route that killed the request.
+   */
+  const first = observed.routes?.[0];
+  assert(first?.id, `no route is listed at ${observed.stop?.name ?? "the observed stop"}`);
+  const { response, body, text } = await getJson(`/v1/routes/${encodeURIComponent(first.id)}`);
+  assert(response.status !== 500, `the Worker failed: ${describe(response, body, text)}`);
+  assert(response.ok, `expected 2xx, got ${describe(response, body, text)}`);
+  const route = body?.data?.route ?? body?.data?.service;
+  assert(route, "the route response has no route");
+  return `${first.publicName ?? first.id} answered ${response.status}`;
+});
+
+await check("a journey can be planned across real timetable data", async () => {
+  /*
+   * Two points a kilometre apart in the same city, taken from stops the API returned, so the
+   * corridor is inside the planner's tile cap. "No route today" is a legitimate answer at 3am;
+   * a 500, or a refusal to accept the request at all, is not.
+   */
+  assert(observed.stop, "no stop was found by the earlier check");
+  const from = observed.stop.coordinate;
+  const to = { lat: from.lat + 0.012, lon: from.lon + 0.012 };
+  const { response, body, text } = await getJson(
+    `/v1/journeys?fromLat=${from.lat}&fromLon=${from.lon}&toLat=${to.lat}&toLon=${to.lon}`,
+  );
+  assert(response.status !== 500, `the Worker failed: ${describe(response, body, text)}`);
+  assert(
+    response.ok || response.status === 422 || response.status === 404,
+    `expected an answer or a stated reason, got ${describe(response, body, text)}`,
+  );
+  const options = body?.data?.options ?? [];
+  const reason = body?.data?.reason ?? body?.error?.code ?? "none";
+  return response.ok ? `${options.length} option(s), reason ${reason}` : `stated: ${reason}`;
 });
 
 await check("the source health endpoint reports on real sources", async () => {
