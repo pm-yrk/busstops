@@ -157,12 +157,29 @@ for (const size of WIDTHS) {
         const px = doc.scrollWidth - doc.clientWidth;
         if (px <= 0) return { px, culprit: "" };
 
+        /*
+         * Something sticking out only scrolls the page if nothing between it and the root clips
+         * it. The Pro section tabs are a deliberate scrolling strip, so its last link hangs 301px
+         * past the edge and scrolls nothing — and naming it sent me looking at the wrong element
+         * entirely. An element inside a clipping ancestor is contained, by definition.
+         */
+        const contained = (el) => {
+          for (let node = el.parentElement; node && node !== doc; node = node.parentElement) {
+            const overflowX = getComputedStyle(node).overflowX;
+            if (overflowX === "auto" || overflowX === "scroll" || overflowX === "hidden") {
+              return true;
+            }
+          }
+          return false;
+        };
+
         let worst = null;
         for (const el of document.querySelectorAll("body *")) {
           const rect = el.getBoundingClientRect();
           if (rect.width === 0 || rect.height === 0) continue;
           const past = Math.round(rect.right - doc.clientWidth);
           if (past <= 0) continue;
+          if (contained(el)) continue;
           // The innermost offender is the useful one: its ancestors are only as wide as it is.
           if (!worst || past > worst.past || (past === worst.past && el.contains(worst.el))) {
             worst = { el, past };
