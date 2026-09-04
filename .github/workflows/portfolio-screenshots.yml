@@ -7,6 +7,7 @@ on:
       - ".github/workflows/portfolio-screenshots.yml"
 
 permissions:
+  actions: read
   contents: write
 
 concurrency:
@@ -14,56 +15,38 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  capture:
+  publish:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 5
 
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
-      - name: Install Chromium
-        run: npx --yes playwright@1.55.0 install --with-deps chromium
-
-      - name: Check the public preview is available
+      - name: Download visual QA from the latest successful preview deployment
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          for attempt in {1..12}; do
-            if curl -fsS --max-time 15 https://preview.busstops.pages.dev/ >/dev/null; then
-              exit 0
-            fi
-            echo "Preview not ready on attempt $attempt"
-            sleep 10
-          done
-          echo "::error::The public Bus Stops preview is not available."
-          exit 1
+          RUN_ID=$(gh run list \
+            --workflow deploy-preview.yml \
+            --status success \
+            --limit 1 \
+            --json databaseId \
+            --jq '.[0].databaseId')
 
-      - name: Capture the current public build
-        run: |
-          mkdir -p docs/portfolio
+          if [ -z "$RUN_ID" ] || [ "$RUN_ID" = "null" ]; then
+            echo "::error::No successful Deploy Preview run was found."
+            exit 1
+          fi
 
-          npx --yes playwright@1.55.0 screenshot \
-            --browser chromium \
-            --viewport-size "1440,900" \
-            --wait-for-timeout 5000 \
-            https://preview.busstops.pages.dev/ \
-            docs/portfolio/busstops-home.png
+          echo "Using Deploy Preview run $RUN_ID"
+          rm -rf /tmp/busstops-visual-qa
+          mkdir -p /tmp/busstops-visual-qa docs/portfolio
+          gh run download "$RUN_ID" \
+            --name preview-visual-qa \
+            --dir /tmp/busstops-visual-qa
 
-          npx --yes playwright@1.55.0 screenshot \
-            --browser chromium \
-            --viewport-size "1440,900" \
-            --wait-for-timeout 6000 \
-            https://preview.busstops.pages.dev/pro \
-            docs/portfolio/busstops-pro.png
-
-      - name: Upload screenshots
-        uses: actions/upload-artifact@v4
-        with:
-          name: portfolio-screenshots
-          path: docs/portfolio
-          retention-days: 7
+          cp /tmp/busstops-visual-qa/desktop-home.png docs/portfolio/busstops-home.png
+          cp /tmp/busstops-visual-qa/desktop-pro.png docs/portfolio/busstops-pro.png
 
       - name: Keep the latest screenshots in the repository
         run: |
