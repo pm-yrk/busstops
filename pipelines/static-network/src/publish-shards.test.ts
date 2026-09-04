@@ -13,6 +13,7 @@ import {
   assemblePatternTile,
   searchPrefixesForWord,
   patternTileDataset,
+  searchPrefixDataset,
   type PatternTileLine,
 } from "./shards.js";
 
@@ -194,6 +195,39 @@ describe("search buckets", () => {
 
     // And nothing was dropped to make it fit.
     expect(result.truncated.filter((entry) => entry.dataset.includes("search-prefix"))).toEqual([]);
+  });
+
+  it("keeps a stop findable by every word that reached its letter", async () => {
+    /*
+     * A stop called "Bolton Bond Street" reaches "bo" by two different words. Filing it under the
+     * first one alone means the other word finds nothing — an empty result, not an error, which
+     * is how every defect in this sharding has presented so far.
+     */
+    const network = build([txcXml]);
+    const stop = network.stops[0];
+    expect(stop).toBeDefined();
+
+    for (let i = 0; i < SEARCH_BUCKET_SPLIT_AT + 40; i++) {
+      network.stops.push({
+        ...stop!,
+        id: `two-words-${i}`,
+        atcoCode: `TW${i}`,
+        name: `Bolton Bondgate ${i}`,
+      });
+    }
+
+    const { store, result } = await publish(network);
+    expect(result.index).not.toBeNull();
+    const published = new Set(result.index!.searchPrefixes);
+    expect(published.has("bo")).toBe(false);
+
+    // Both words resolve to a bucket, and both buckets hold the stop.
+    for (const word of ["bolton", "bondgate"]) {
+      const buckets = searchPrefixesForWord(word, published);
+      expect(buckets.length).toBe(1);
+      const body = (await store.get(objectKeyFor(searchPrefixDataset(buckets[0]!), "v1"))) ?? "";
+      expect(body).toContain("Bolton Bondgate");
+    }
   });
 
   it("sends a word to the buckets it was actually published in", () => {

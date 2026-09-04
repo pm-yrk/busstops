@@ -427,13 +427,8 @@ function groupSearchByPrefix(
 ): Map<string, SearchIndexEntry[]> {
   const byPrefix = new Map<string, SearchIndexEntry[]>();
   for (const entry of entries) {
-    const distinctive = entry.tokens.filter(
-      (token) => !GENERIC_NAME_WORDS.has(token.toLowerCase()),
-    );
-    const indexable = distinctive.length > 0 ? distinctive : entry.tokens;
     const keys = new Set<string>();
-    for (const token of indexable) keys.add(searchPrefixFor(token));
-    for (const code of entry.codes) keys.add(searchPrefixFor(code));
+    for (const word of indexWordsFor(entry)) keys.add(searchPrefixFor(word));
     for (const key of keys) {
       const existing = byPrefix.get(key);
       if (existing) existing.push(entry);
@@ -457,10 +452,11 @@ function groupSearchByPrefix(
       continue;
     }
     for (const entry of bucket) {
-      const deeper = deepestPrefixFor(entry, key);
-      const existing = split.get(deeper);
-      if (existing) existing.push(entry);
-      else split.set(deeper, [entry]);
+      for (const deeper of deeperPrefixesFor(entry, key)) {
+        const existing = split.get(deeper);
+        if (existing) existing.push(entry);
+        else split.set(deeper, [entry]);
+      }
     }
   }
 
@@ -471,18 +467,32 @@ function groupSearchByPrefix(
 }
 
 /**
- * Which three-character bucket an entry belongs in, once its two-character one has been split.
- *
- * An entry can reach a bucket by any of its words, so the one that put it there is the one that
- * decides where it goes next. Anything else would file it under a word it does not have.
+ * The words an entry is reachable by. One definition, used both when filing an entry and when a
+ * full bucket is split, because a split that used a different set would file an entry under a
+ * word the edge will never look it up by.
  */
-function deepestPrefixFor(entry: SearchIndexEntry, shallowKey: string): string {
-  for (const token of [...entry.tokens, ...entry.codes]) {
-    if (searchPrefixFor(token, SEARCH_PREFIX_LENGTH) === shallowKey) {
-      return searchPrefixFor(token, SEARCH_SPLIT_PREFIX_LENGTH);
+function indexWordsFor(entry: SearchIndexEntry): string[] {
+  const distinctive = entry.tokens.filter((token) => !GENERIC_NAME_WORDS.has(token.toLowerCase()));
+  return [...(distinctive.length > 0 ? distinctive : entry.tokens), ...entry.codes];
+}
+
+/**
+ * Every deeper bucket an entry belongs in once its shallow one has been split.
+ *
+ * All of them, not the first: a stop called "Bolton Bond Street" reaches "bo" by two different
+ * words, and filing it under only one means the other word finds nothing. That failure is silent
+ * — an empty result, not an error — which is the kind this sharding keeps producing.
+ */
+function deeperPrefixesFor(entry: SearchIndexEntry, shallowKey: string): string[] {
+  const deeper = new Set<string>();
+  for (const word of indexWordsFor(entry)) {
+    if (searchPrefixFor(word, SEARCH_PREFIX_LENGTH) === shallowKey) {
+      deeper.add(searchPrefixFor(word, SEARCH_SPLIT_PREFIX_LENGTH));
     }
   }
-  return searchPrefixFor(shallowKey, SEARCH_SPLIT_PREFIX_LENGTH);
+  // Only reachable if the bucket key came from somewhere other than this entry's own words.
+  if (deeper.size === 0) deeper.add(searchPrefixFor(shallowKey, SEARCH_SPLIT_PREFIX_LENGTH));
+  return [...deeper];
 }
 
 function groupLocators(network: BuiltNetwork): Map<number, StopLocatorRecord[]> {
