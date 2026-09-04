@@ -13,8 +13,8 @@ import {
   MAX_SHARD_BYTES,
   MAX_SHARD_RECORDS,
   SEARCH_BUCKET_SPLIT_AT,
+  SEARCH_MAX_PREFIX_LENGTH,
   SEARCH_PREFIX_LENGTH,
-  SEARCH_SPLIT_PREFIX_LENGTH,
   SHARDED,
   type NetworkIndexRecord,
   type PatternTileLine,
@@ -437,27 +437,35 @@ function groupSearchByPrefix(
   }
 
   /*
-   * A letter that will not fit is split rather than truncated.
+   * A letter that will not fit is split rather than truncated, as many times as it takes.
    *
-   * Two characters suits most of the alphabet and not all of it: nationally "bo" held 69,659
-   * entries where most buckets hold a few hundred, and truncating it lost every stop whose only
-   * distinctive word began that way. Splitting the few that overflow keeps one small object per
-   * lookup without making every other letter deeper than it needs to be, and the index records
-   * which depth each letter ended up at so the edge does not have to guess.
+   * Two characters suits most of the alphabet and not all of it: "bo" held 69,659 entries where
+   * most buckets hold a few hundred. One extra character is not always enough either — every
+   * London ATCO code begins 490, so splitting "49" produced "490" and moved the whole city one
+   * character sideways. So the split repeats until each bucket fits or its keys stop growing,
+   * and the index records the depth each letter reached so the edge does not have to guess.
    */
-  const split = new Map<string, SearchIndexEntry[]>();
-  for (const [key, bucket] of byPrefix) {
-    if (bucket.length <= SEARCH_BUCKET_SPLIT_AT) {
-      split.set(key, bucket);
-      continue;
-    }
-    for (const entry of bucket) {
-      for (const deeper of deeperPrefixesFor(entry, key)) {
-        const existing = split.get(deeper);
-        if (existing) existing.push(entry);
-        else split.set(deeper, [entry]);
+  let split = byPrefix;
+  for (let length = SEARCH_PREFIX_LENGTH + 1; length <= SEARCH_MAX_PREFIX_LENGTH; length++) {
+    let anyOversized = false;
+    const deepened = new Map<string, SearchIndexEntry[]>();
+    for (const [key, bucket] of split) {
+      if (bucket.length <= SEARCH_BUCKET_SPLIT_AT || key.length !== length - 1) {
+        deepened.set(key, bucket);
+        continue;
       }
+      for (const entry of bucket) {
+        for (const deeper of deeperPrefixesFor(entry, key, length)) {
+          const existing = deepened.get(deeper);
+          if (existing) existing.push(entry);
+          else deepened.set(deeper, [entry]);
+        }
+      }
+      anyOversized = true;
     }
+    split = deepened;
+    // Nothing at this depth needed splitting, so nothing deeper will either.
+    if (!anyOversized) break;
   }
 
   // Sorted rather than truncated arbitrarily: what survives a full bucket should be what people
@@ -472,7 +480,17 @@ function groupSearchByPrefix(
  * word the edge will never look it up by.
  */
 function indexWordsFor(entry: SearchIndexEntry): string[] {
-  const distinctive = entry.tokens.filter((token) => !GENERIC_NAME_WORDS.has(token.toLowerCase()));
+  /*
+   * A single letter is not a search term either, and removing the generic words made it the only
+   * indexable word for a great many stops: NaPTAN is full of "Stop S" and "Stand K", and with
+   * "stop" and "stand" gone what remained was "s". A national publish put 31,407 entries in one
+   * bucket that way, and no amount of splitting helps when every entry shares the same one-letter
+   * word. Such a stop stays findable by its code, by the tile it is in and by "stops near me" —
+   * which is how anyone would actually look for it.
+   */
+  const distinctive = entry.tokens.filter(
+    (token) => token.length > 1 && !GENERIC_NAME_WORDS.has(token.toLowerCase()),
+  );
   return [...(distinctive.length > 0 ? distinctive : entry.tokens), ...entry.codes];
 }
 
@@ -483,15 +501,15 @@ function indexWordsFor(entry: SearchIndexEntry): string[] {
  * words, and filing it under only one means the other word finds nothing. That failure is silent
  * — an empty result, not an error — which is the kind this sharding keeps producing.
  */
-function deeperPrefixesFor(entry: SearchIndexEntry, shallowKey: string): string[] {
+function deeperPrefixesFor(entry: SearchIndexEntry, shallowKey: string, length: number): string[] {
   const deeper = new Set<string>();
   for (const word of indexWordsFor(entry)) {
-    if (searchPrefixFor(word, SEARCH_PREFIX_LENGTH) === shallowKey) {
-      deeper.add(searchPrefixFor(word, SEARCH_SPLIT_PREFIX_LENGTH));
+    if (searchPrefixFor(word, shallowKey.length) === shallowKey) {
+      deeper.add(searchPrefixFor(word, length));
     }
   }
   // Only reachable if the bucket key came from somewhere other than this entry's own words.
-  if (deeper.size === 0) deeper.add(searchPrefixFor(shallowKey, SEARCH_SPLIT_PREFIX_LENGTH));
+  if (deeper.size === 0) deeper.add(searchPrefixFor(shallowKey, length));
   return [...deeper];
 }
 

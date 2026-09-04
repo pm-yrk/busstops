@@ -63,7 +63,16 @@ export const SEARCH_PREFIX_LENGTH = 2;
  * splitting happens before truncation would.
  */
 export const SEARCH_BUCKET_SPLIT_AT = 6_000;
-export const SEARCH_SPLIT_PREFIX_LENGTH = 3;
+
+/**
+ * How deep a split may go.
+ *
+ * One extra character is not always enough. Every London ATCO code begins 490, so splitting "49"
+ * produced "490" and moved the whole city one character sideways; the split has to keep going
+ * until the bucket fits or the key runs out of word to grow into. Six characters is past the
+ * point where any real query is still ambiguous, and it bounds the recursion.
+ */
+export const SEARCH_MAX_PREFIX_LENGTH = 6;
 
 /**
  * A shard that grew without bound would reintroduce the original defect quietly, so each is
@@ -162,13 +171,20 @@ export function searchPrefixFor(token: string, length = SEARCH_PREFIX_LENGTH): s
 export const MAX_SEARCH_BUCKETS_PER_WORD = 8;
 
 export function searchPrefixesForWord(word: string, published: ReadonlySet<string>): string[] {
+  /*
+   * Longest first. A bucket is split as many times as it takes to fit, so the depth varies by
+   * letter and only the index knows it: "pi" may be one object while "4900" is one of several
+   * hundred that "49" became. Asking for the longest key the word can name and walking down finds
+   * whichever depth this publish settled on.
+   */
+  const longest = Math.min(word.length, SEARCH_MAX_PREFIX_LENGTH);
+  for (let length = longest; length >= SEARCH_PREFIX_LENGTH; length--) {
+    const candidate = searchPrefixFor(word, length);
+    if (published.has(candidate)) return [candidate];
+  }
+
+  // The letter was split below what this word can name, so read the parts it could be in.
   const shallow = searchPrefixFor(word, SEARCH_PREFIX_LENGTH);
-  if (published.has(shallow)) return [shallow];
-
-  const deep = searchPrefixFor(word, SEARCH_SPLIT_PREFIX_LENGTH);
-  if (published.has(deep)) return [deep];
-
-  // The letter was split and the word is too short to name one of its parts.
   const parts: string[] = [];
   for (const candidate of published) {
     if (candidate.length > shallow.length && candidate.startsWith(shallow)) parts.push(candidate);

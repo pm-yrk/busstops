@@ -47,6 +47,50 @@ describe("R2ObjectStore retries", () => {
     expect(attempts.length).toBe(5);
   });
 
+  it("retries a request that never answered at all", async () => {
+    /*
+     * A timeout throws rather than returning a status, so it used to skip the retry entirely and
+     * be final on the first attempt — while a 503 was patiently retried. A publish of 3,618
+     * objects lost ten of them to "This operation was aborted", each on a small object, half an
+     * hour into the run.
+     */
+    let attempts = 0;
+    const store = new R2ObjectStore({
+      accountId: "acct",
+      bucket: "bucket",
+      apiToken: "token",
+      maxRateLimitRetries: 3,
+      sleep: async () => {},
+      fetchImpl: (async () => {
+        attempts += 1;
+        if (attempts < 3) throw new Error("This operation was aborted");
+        return new Response("{}", { status: 200 });
+      }) as unknown as typeof fetch,
+    });
+
+    await store.put("data/x/v1.jsonl", "{}");
+    expect(attempts).toBe(3);
+  });
+
+  it("reports the reason when a request never answers at all", async () => {
+    // Nothing to report a status for, so the error itself has to survive to the caller.
+    let attempts = 0;
+    const store = new R2ObjectStore({
+      accountId: "acct",
+      bucket: "bucket",
+      apiToken: "token",
+      maxRateLimitRetries: 2,
+      sleep: async () => {},
+      fetchImpl: (async () => {
+        attempts += 1;
+        throw new Error("This operation was aborted");
+      }) as unknown as typeof fetch,
+    });
+
+    await expect(store.put("data/x/v1.jsonl", "{}")).rejects.toThrow(/aborted/);
+    expect(attempts).toBe(3);
+  });
+
   it("answers a permanent refusal at once", async () => {
     // 413 means the body is too large and will be too large again. Retrying is only slower, and
     // it would hide the real fix, which is to write a smaller shard.

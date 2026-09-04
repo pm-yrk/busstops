@@ -63,6 +63,21 @@ export class R2ObjectStore implements ObjectStore {
             Authorization: `Bearer ${this.config.apiToken}`,
           },
         });
+      } catch (error) {
+        /*
+         * A request that times out or drops throws rather than answering, so it went past the
+         * status handling below entirely and was final on the first attempt — while a 503 was
+         * patiently retried. A publish of 3,618 objects lost ten of them that way, each to
+         * "This operation was aborted" on a small object, half an hour into a run.
+         *
+         * A timeout is the most transient failure there is, so it is retried on the same terms
+         * as a 429. The last attempt rethrows, because a request that never answered has no
+         * status to report and the caller needs the reason.
+         */
+        clearTimeout(timer);
+        if (attempt > this.maxRateLimitRetries) throw error;
+        await this.sleep(Math.min(30_000, 500 * 2 ** attempt));
+        continue;
       } finally {
         clearTimeout(timer);
       }

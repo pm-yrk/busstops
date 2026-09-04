@@ -6,6 +6,7 @@ import { InMemoryObjectStore, objectKeyFor } from "@busstops/pipeline-core";
 import type { Coordinate } from "@busstops/contracts";
 import { buildNetwork } from "./build-network.js";
 import { publishNetworkShards } from "./publish-shards.js";
+import { buildSearchIndex } from "./search-index.js";
 import {
   MAX_SEARCH_BUCKETS_PER_WORD,
   MAX_SHARD_BYTES,
@@ -228,6 +229,55 @@ describe("search buckets", () => {
       const body = (await store.get(objectKeyFor(searchPrefixDataset(buckets[0]!), "v1"))) ?? "";
       expect(body).toContain("Bolton Bondgate");
     }
+  });
+
+  it("keeps splitting a bucket that one extra character does not fix", async () => {
+    /*
+     * Every London ATCO code begins 490, so splitting "49" produced "490" and moved the whole
+     * city one character sideways rather than dividing it. The split has to repeat until the
+     * bucket fits.
+     */
+    const network = build([txcXml]);
+    const stop = network.stops[0];
+    expect(stop).toBeDefined();
+
+    for (let i = 0; i < SEARCH_BUCKET_SPLIT_AT + 80; i++) {
+      network.stops.push({
+        ...stop!,
+        id: `london-${i}`,
+        // Same first three characters for all of them, differing from the fourth.
+        atcoCode: `490${String(i).padStart(6, "0")}`,
+        name: `London Stop ${i}`,
+      });
+    }
+
+    const { result } = await publish(network);
+    expect(result.index).not.toBeNull();
+    const published = new Set(result.index!.searchPrefixes);
+
+    expect(published.has("49")).toBe(false);
+    expect(published.has("490")).toBe(false);
+    const deep = [...published].filter((prefix) => prefix.startsWith("490"));
+    expect(deep.length).toBeGreaterThan(1);
+
+    // And a full code still resolves to exactly one object.
+    const buckets = searchPrefixesForWord("490000001", published);
+    expect(buckets.length).toBe(1);
+    expect(published.has(buckets[0]!)).toBe(true);
+  });
+
+  it("does not index a stop by a single letter", () => {
+    // NaPTAN is full of "Stop S" and "Stand K". With the generic words gone, "s" was the only
+    // word left for 31,407 entries — and no split helps when they all share it.
+    const network = build([txcXml]);
+    const seed = network.stops[0]!;
+    network.stops.push({ ...seed, id: "stand-s", atcoCode: "STANDS1", name: "Stand S" });
+
+    const entries = buildSearchIndex(network, { builtAt: "2026-09-04T00:00:00.000Z" }).entries;
+    const entry = entries.find((candidate) => candidate.title === "Stand S");
+    expect(entry).toBeDefined();
+    // Still reachable by its code, which is how anyone would actually look for it.
+    expect(entry!.codes).toContain("STANDS1");
   });
 
   it("sends a word to the buckets it was actually published in", () => {
