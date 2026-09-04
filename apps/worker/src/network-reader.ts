@@ -84,6 +84,12 @@ const MAX_CACHED_SHARD_CHARS = 12 * 1024 * 1024;
  */
 const MAX_REQUEST_SHARD_CHARS = 12 * 1024 * 1024;
 
+/**
+ * How many search buckets one query may open. A hundred and twenty characters of query is a lot
+ * of words, and each word is at least one object; the bound is on the reading, not on the typing.
+ */
+const MAX_SEARCH_BUCKETS_PER_QUERY = 12;
+
 /** Tiles read at once before the budget is checked again. */
 const TILE_READ_BATCH = 6;
 
@@ -484,7 +490,15 @@ export class NetworkReader {
      * disagreeing about where an entry was filed.
      */
     const available = new Set(index.searchPrefixes);
-    const wanted = [...new Set(lookups.flatMap((word) => searchPrefixesForWord(word, available)))];
+    /*
+     * Bounded like every other read. A long query tokenises into many words, each resolving to at
+     * least one bucket, and a query is capped at 120 characters rather than at a word count — so
+     * without this the number of objects one search opens is set by how much someone typed.
+     * Words are taken in the order they were written, which is the order they were meant in.
+     */
+    const wanted = [
+      ...new Set(lookups.flatMap((word) => searchPrefixesForWord(word, available))),
+    ].slice(0, MAX_SEARCH_BUCKETS_PER_QUERY);
     const buckets = await Promise.all(
       wanted.map((prefix) =>
         this.readShard<SearchIndexEntry>(searchPrefixDataset(prefix), index.version, now),

@@ -178,6 +178,22 @@ describe("the edge never reads a national dataset", () => {
     expect(found?.hits.length).toBeGreaterThan(0);
   });
 
+  it("opens a bounded number of buckets however long the query is", async () => {
+    // A query is capped at 120 characters, not at a word count, and each word is at least one
+    // object. Without a bound on the reading, how much someone types decides how much the edge
+    // holds — the same defect as a wide viewport, arrived at through the search box.
+    const { reader, reads } = await publishedReader();
+    reads.length = 0;
+
+    const wordy = Array.from({ length: 40 }, (_, i) => `word${i}`)
+      .join(" ")
+      .slice(0, 120);
+    await reader.search(wordy, { limit: 10 });
+    expect(reads.filter((key) => key.includes(SHARDED.searchPrefix)).length).toBeLessThanOrEqual(
+      12,
+    );
+  });
+
   it("reads only the tiles a viewport covers, not every published tile", async () => {
     const { reader, reads } = await publishedReader();
     const index = await reader.networkIndex();
