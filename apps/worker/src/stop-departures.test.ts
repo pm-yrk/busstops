@@ -26,15 +26,18 @@ const provenance = {
 
 const stop: Stop = {
   id: STOP_ID,
-  validFrom: "2026-01-01T00:00:00.000Z",
-  validTo: null,
   provenance: { ...provenance, source: "naptan" },
   ingestedAt: provenance.retrievedAt,
   qualityFlags: [],
   atcoCode: "450010001",
   name: "Boar Lane",
   locationCoordinate: { lat: 53.7965, lon: -1.5445 },
-  stopType: "BCT",
+  stopType: "on_street_bus",
+  localityId: null,
+  amenities: [],
+  active: true,
+  naptanStatus: "active",
+  supersededByStopId: null,
 };
 
 function journey(id: string, departure: string, extra: Partial<ScheduledJourney> = {}) {
@@ -90,7 +93,7 @@ const patterns: PatternGeometry[] = [
       { lat: 53.7965, lon: -1.5445 },
       { lat: 53.81, lon: -1.53 },
     ],
-    stopDistances: [0, 4200],
+    stopDistancesMetres: [0, 4200],
   },
 ];
 
@@ -106,9 +109,9 @@ const services = new Map<string, ServiceRoute>([
       qualityFlags: [],
       operatorId: "00000000-0000-4000-8000-0000000000c1",
       publicName: "36",
-      lineName: "36",
       mode: "bus",
-    } as ServiceRoute,
+      coverageArea: "non_london",
+    },
   ],
 ]);
 

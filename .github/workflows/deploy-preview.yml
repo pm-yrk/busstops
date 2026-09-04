@@ -153,6 +153,42 @@ jobs:
           echo "::error::The Worker did not become healthy; not building a frontend against it."
           exit 1
 
+      # Asked here, before the frontend is even built, because this is the answer that decides
+      # whether the deployment is worth looking at. It puts a request through the Worker and an
+      # independent request straight to BODS from this runner into the same second, so "no buses"
+      # can be attributed to the upstream or to us rather than guessed at. It then walks the
+      # passenger surfaces that depend on that data.
+      #
+      # It reports rather than gates, for now: the run must reach the artifact upload for the
+      # evidence to survive, and the verdict is printed in the summary either way.
+      - name: Probe the deployed API as a passenger
+        id: probe
+        env:
+          BODS_API_KEY: ${{ secrets.BODS_API_KEY }}
+        run: |
+          set -o pipefail
+          npx tsx scripts/probe-deployment.ts \
+            --worker "${{ steps.worker.outputs.url }}" \
+            --json deployment-probe.json 2>&1 | tee probe.log
+          {
+            echo "## Passenger probe of the deployed API"
+            echo
+            echo '```'
+            sed -n '1,240p' probe.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the probe
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-probe
+          path: |
+            deployment-probe.json
+            probe.log
+          retention-days: 7
+          if-no-files-found: ignore
+
       # ----------------------------------------------------------- pages build
       - name: Build the frontend against the deployed Worker
         env:
