@@ -86,9 +86,10 @@ jobs:
       # The Worker is deployed before its secrets exist, because `wrangler secret put` needs the
       # script to be there. Secrets applied afterwards take effect on the live Worker immediately.
       # `--no-install`, because wrangler is a pinned devDependency that `npm ci` has already put in
-      # place. Plain `npx wrangler` fetches whatever is newest from the registry at deploy time —
-      # unpinned, unreviewed, and on one run it simply sat there downloading until the job was
-      # killed. A deploy should install nothing it did not install at the start.
+      # place. Plain `npx wrangler` fetched whatever the registry called newest at deploy time —
+      # unpinned, unreviewed, and a minute of download in the middle of a deploy. A deploy should
+      # install nothing it did not install at the start, and should not pick its own version of
+      # the tool that talks to the account.
       - name: Deploy the preview Worker
         id: worker
         env:
