@@ -147,14 +147,38 @@ for (const size of WIDTHS) {
         fullPage: false,
       });
 
-      // A page wider than its viewport is a defect at every width, and the one most easily missed.
-      const overflow = await page.evaluate(
-        () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
-      );
+      /*
+       * A page wider than its viewport is a defect at every width, and the one most easily missed.
+       * The measurement names the widest thing sticking out, because "48px" on its own sends you
+       * guessing at CSS — which cost a whole deploy cycle before this said anything useful.
+       */
+      const overflow = await page.evaluate(() => {
+        const doc = document.documentElement;
+        const px = doc.scrollWidth - doc.clientWidth;
+        if (px <= 0) return { px, culprit: "" };
+
+        let worst = null;
+        for (const el of document.querySelectorAll("body *")) {
+          const rect = el.getBoundingClientRect();
+          if (rect.width === 0 || rect.height === 0) continue;
+          const past = Math.round(rect.right - doc.clientWidth);
+          if (past <= 0) continue;
+          // The innermost offender is the useful one: its ancestors are only as wide as it is.
+          if (!worst || past > worst.past || (past === worst.past && el.contains(worst.el))) {
+            worst = { el, past };
+          }
+        }
+        if (!worst) return { px, culprit: "(nothing measurable sticks out)" };
+        const el = worst.el;
+        const classes = String(el.className || "").trim();
+        const name =
+          el.tagName.toLowerCase() + (classes ? `.${classes.split(/\s+/).join(".")}` : "");
+        return { px, culprit: `${name.slice(0, 120)} overhangs by ${worst.past}px` };
+      });
       record(
         `${size.name}/${target.name} does not scroll sideways`,
-        overflow <= 0,
-        `${overflow}px`,
+        overflow.px <= 0,
+        overflow.px <= 0 ? "0px" : `${overflow.px}px — ${overflow.culprit}`,
       );
 
       if (sink.consoleErrors.length > 0) {
