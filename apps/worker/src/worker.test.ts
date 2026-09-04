@@ -474,6 +474,37 @@ describe("cross-origin access from the Pages app", () => {
     expect(response.headers.get("Vary")).toContain("Origin");
   });
 
+  /*
+   * The bug: only the success path carried CORS headers. A 404, a 405, a 429 and a 500 were all
+   * returned before or outside the block that added them, so the browser refused the response and
+   * the app reported `net::ERR_FAILED` — no status, no code, nothing to distinguish a Worker
+   * exception from an unreachable API. It is how the deployed live map said "this stop could not
+   * be loaded" while the Worker was answering with a perfectly explicit error.
+   */
+  it.each([
+    ["an unknown endpoint", () => get("/v1/does-not-exist", { Origin: PAGES_ORIGIN }), 404],
+    [
+      "a refused method",
+      () =>
+        new Request("https://api.busstops.example/v1/sources/health", {
+          method: "PUT",
+          headers: { Origin: PAGES_ORIGIN },
+        }),
+      405,
+    ],
+    ["a bad request", () => get("/v1/map?bbox=nonsense", { Origin: PAGES_ORIGIN }), 400],
+  ])("returns CORS headers on %s, so the app can read the error", async (_label, build, status) => {
+    const store = await publishedStore();
+    const response = await worker.fetch(
+      build(),
+      makeEnv(store, { PUBLIC_BASE_URL: PAGES_ORIGIN }),
+      ctx,
+    );
+
+    expect(response.status).toBe(status);
+    expect(response.headers.get("Access-Control-Allow-Origin")).toBe(PAGES_ORIGIN);
+  });
+
   it("gives no CORS headers to an origin it was not configured for", async () => {
     const store = await publishedStore();
     const response = await worker.fetch(

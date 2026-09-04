@@ -1149,12 +1149,33 @@ export function initialiseWorker(
 export default {
   async fetch(request: Request, env: WorkerEnv, ctx: RequestContext): Promise<Response> {
     const url = new URL(request.url);
+    const origin = request.headers.get("Origin");
+
+    /*
+     * Every response leaves through here, errors included.
+     *
+     * It used to be only the success path: a 404, a 405, a 429 or a 500 was returned before or
+     * outside the block that added the CORS headers, so the browser refused to read it and the
+     * app saw `net::ERR_FAILED` with no status at all. A stop that failed to load looked exactly
+     * like a stop that could not be reached, which is precisely the distinction the passenger —
+     * and anyone debugging this — needs.
+     */
+    const respond = (response: Response, rateLimitRemaining?: number): Response => {
+      const headers = new Headers(response.headers);
+      if (rateLimitRemaining !== undefined) {
+        headers.set("X-RateLimit-Remaining", String(rateLimitRemaining));
+      }
+      for (const [key, value] of Object.entries(corsHeaders(origin, [env.PUBLIC_BASE_URL ?? ""]))) {
+        headers.set(key, value);
+      }
+      return new Response(response.body, { status: response.status, headers });
+    };
 
     if (request.method === "OPTIONS") {
       return withSecurityHeaders(
         new Response(null, {
           status: 204,
-          headers: corsHeaders(request.headers.get("Origin"), [env.PUBLIC_BASE_URL ?? ""]),
+          headers: corsHeaders(origin, [env.PUBLIC_BASE_URL ?? ""]),
         }),
       );
     }
@@ -1163,41 +1184,42 @@ export default {
     // clients offering their native unsubscribe button will not fall back to GET.
     const isOneClickUnsubscribe = request.method === "POST" && url.pathname === "/v1/unsubscribe";
     if (request.method !== "GET" && !isOneClickUnsubscribe) {
-      return errorResponse("bad_request", "Only GET is supported", 405);
+      return respond(errorResponse("bad_request", "Only GET is supported", 405));
     }
 
     const decision = rateLimiter.check(clientKeyFor(request));
     if (!decision.allowed) {
-      return errorResponse(
-        "rate_limited",
-        "Too many requests. Please slow down.",
-        429,
-        decision.retryAfterSeconds,
+      return respond(
+        errorResponse(
+          "rate_limited",
+          "Too many requests. Please slow down.",
+          429,
+          decision.retryAfterSeconds,
+        ),
+        decision.remaining,
       );
     }
 
     initialiseWorker(env);
 
     const matched = router.match(request.method, url.pathname);
-    if (!matched) return errorResponse("not_found", "Unknown endpoint", 404);
+    if (!matched) {
+      return respond(errorResponse("not_found", "Unknown endpoint", 404), decision.remaining);
+    }
 
     try {
       const response = await matched.handler(request, { env, ctx, params: matched.params, url });
-      const headers = new Headers(response.headers);
-      headers.set("X-RateLimit-Remaining", String(decision.remaining));
-      for (const [key, value] of Object.entries(
-        corsHeaders(request.headers.get("Origin"), [env.PUBLIC_BASE_URL ?? ""]),
-      )) {
-        headers.set(key, value);
-      }
-      return new Response(response.body, { status: response.status, headers });
+      return respond(response, decision.remaining);
     } catch (error) {
       // Never leak internals: the message is fixed and the detail stays in the log.
       console.error("Request failed", {
         path: url.pathname,
         message: error instanceof Error ? error.message : "unknown",
       });
-      return errorResponse("internal", "Something went wrong handling this request.", 500);
+      return respond(
+        errorResponse("internal", "Something went wrong handling this request.", 500),
+        decision.remaining,
+      );
     }
   },
 };

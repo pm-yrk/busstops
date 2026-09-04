@@ -236,42 +236,65 @@ async function main(): Promise<void> {
     );
   }
 
-  head("A real departure board");
+  head("Real departure boards");
 
-  // A stop from a viewport that actually has buses, so the board is judged where the data exists
-  // rather than at whichever stop happened to come first nationally.
-  const candidate = busiest?.stops[0];
-  const atcoCode = asText(at(candidate, "atcoCode"));
-  if (!atcoCode) {
+  /*
+   * Several stops, not one. A single stop's board proves nothing either way: an empty one may be
+   * a stop with no service at this hour, and a working one may be the only stop in the country
+   * whose operator happens to be inside the timetable cap. A sweep across the stops of a viewport
+   * that demonstrably has buses in it is the honest measurement.
+   */
+  const candidates = (busiest?.stops ?? []).slice(0, 6);
+  if (candidates.length === 0) {
     failures.push("Departures: no stop was returned by /v1/map, so no board could be tested.");
   } else {
-    const stopAnswer = await ask(`/v1/stops/${encodeURIComponent(atcoCode)}`);
-    const departures = asArray(at(stopAnswer.json, "data", "departures"));
-    console.log(
-      `Stop ${atcoCode} — ${asText(at(candidate, "name"))} (${busiest?.name}) : HTTP ${stopAnswer.status} · ${departures.length} departures`,
-    );
-    console.log(
-      `  meta: ${JSON.stringify(at(stopAnswer.json, "meta") ?? stopAnswer.text ?? null)}`,
-    );
-    for (const departure of departures.slice(0, 8)) {
+    const boards: unknown[] = [];
+    let withRows = 0;
+
+    for (const candidate of candidates) {
+      const atcoCode = asText(at(candidate, "atcoCode"));
+      if (!atcoCode) continue;
+      const answer = await ask(`/v1/stops/${encodeURIComponent(atcoCode)}`);
+      const departures = asArray(at(answer.json, "data", "departures"));
+      const routes = asArray(at(answer.json, "data", "routes"));
+      const statuses = [...new Set(departures.map((d) => asText(at(d, "status"))))];
+      if (departures.length > 0) withRows += 1;
+
       console.log(
-        `  ${asText(at(departure, "routePublicName")).padEnd(6)}` +
-          ` ${asText(at(departure, "destination")).slice(0, 28).padEnd(28)}` +
-          ` ${asText(at(departure, "status"))}` +
-          ` ${asText(at(departure, "expectedDepartureTime") ?? at(departure, "scheduledDepartureTime"))}`,
+        `${atcoCode.padEnd(14)} ${asText(at(candidate, "name")).slice(0, 26).padEnd(26)}` +
+          ` HTTP ${answer.status} · ${String(departures.length).padStart(2)} departures` +
+          ` · ${String(routes.length).padStart(2)} routes` +
+          ` · observedAt ${asText(at(answer.json, "meta", "observedAt")) || "null"}` +
+          ` · ${asText(at(answer.json, "meta", "degradation"))}`,
       );
+      if (answer.json !== null && at(answer.json, "error") !== undefined) {
+        console.log(`               error: ${JSON.stringify(at(answer.json, "error"))}`);
+      }
+      for (const departure of departures.slice(0, 4)) {
+        console.log(
+          `               ${asText(at(departure, "routePublicName")).padEnd(6)}` +
+            ` ${asText(at(departure, "destination")).slice(0, 26).padEnd(26)}` +
+            ` ${asText(at(departure, "status"))}` +
+            ` ${asText(at(departure, "expectedDepartureTime") ?? at(departure, "scheduledDepartureTime"))}`,
+        );
+      }
+
+      boards.push({
+        atcoCode,
+        name: asText(at(candidate, "name")),
+        status: answer.status,
+        departures: departures.length,
+        routes: routes.length,
+        statuses,
+        meta: at(answer.json, "meta"),
+      });
     }
-    report.departureBoard = {
-      atcoCode,
-      name: asText(at(candidate, "name")),
-      area: busiest?.name,
-      status: stopAnswer.status,
-      count: departures.length,
-      statuses: [...new Set(departures.map((d) => asText(at(d, "status"))))],
-      meta: at(stopAnswer.json, "meta"),
-    };
-    if (departures.length === 0) {
-      failures.push(`Departures: ${atcoCode} returned an empty board.`);
+
+    report.departureBoards = { area: busiest?.name, boards };
+    if (withRows === 0) {
+      failures.push(
+        `Departures: none of the ${candidates.length} stops sampled in ${busiest?.name} had a single departure.`,
+      );
     }
   }
 

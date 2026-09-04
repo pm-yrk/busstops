@@ -153,42 +153,6 @@ jobs:
           echo "::error::The Worker did not become healthy; not building a frontend against it."
           exit 1
 
-      # Asked here, before the frontend is even built, because this is the answer that decides
-      # whether the deployment is worth looking at. It puts a request through the Worker and an
-      # independent request straight to BODS from this runner into the same second, so "no buses"
-      # can be attributed to the upstream or to us rather than guessed at. It then walks the
-      # passenger surfaces that depend on that data.
-      #
-      # It reports rather than gates, for now: the run must reach the artifact upload for the
-      # evidence to survive, and the verdict is printed in the summary either way.
-      - name: Probe the deployed API as a passenger
-        id: probe
-        env:
-          BODS_API_KEY: ${{ secrets.BODS_API_KEY }}
-        run: |
-          set -o pipefail
-          npx tsx scripts/probe-deployment.ts \
-            --worker "${{ steps.worker.outputs.url }}" \
-            --json deployment-probe.json 2>&1 | tee probe.log
-          {
-            echo "## Passenger probe of the deployed API"
-            echo
-            echo '```'
-            sed -n '1,240p' probe.log
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload the probe
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: deployment-probe
-          path: |
-            deployment-probe.json
-            probe.log
-          retention-days: 7
-          if-no-files-found: ignore
-
       # ----------------------------------------------------------- pages build
       - name: Build the frontend against the deployed Worker
         env:
@@ -364,3 +328,61 @@ jobs:
             echo "| Artifact bucket | \`$R2_BUCKET_ARTIFACTS\` |"
           } >> "$GITHUB_STEP_SUMMARY"
           echo "Preview URL: ${{ steps.pages.outputs.url }}"
+
+  # Its own job, deliberately.
+  #
+  # This is the report that decides whether the deployment is any good, and when it was a step
+  # inside the deploy its output was buried in a log that also carries an apt-get, a browser
+  # download and fifty visual checks. A separate job gives it a log of its own that can be read
+  # in one screen — which is the difference between evidence that gets looked at and evidence
+  # that technically exists.
+  #
+  # It runs even when the deploy job failed, because a failed visual pass says nothing about
+  # whether the API is serving real data, and that is the question here.
+  probe:
+    name: Probe the deployed API as a passenger
+    needs: preview
+    if: ${{ always() && needs.preview.outputs.worker_url != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - run: npm ci --no-audit --no-fund
+
+      # A request through the Worker and an independent request straight to BODS, in the same
+      # second, for the same viewport — so "no buses" is attributed rather than guessed at.
+      - name: Probe
+        env:
+          BODS_API_KEY: ${{ secrets.BODS_API_KEY }}
+        run: |
+          set -o pipefail
+          npx tsx scripts/probe-deployment.ts \
+            --worker "${{ needs.preview.outputs.worker_url }}" \
+            --json deployment-probe.json 2>&1 | tee probe.log
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "## Passenger probe of the deployed API"
+            echo
+            echo "Worker: ${{ needs.preview.outputs.worker_url }}"
+            echo
+            echo '```'
+            sed -n '1,260p' probe.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deployment-probe
+          path: |
+            deployment-probe.json
+            probe.log
+          retention-days: 7
+          if-no-files-found: ignore
