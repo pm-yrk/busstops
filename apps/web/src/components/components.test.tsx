@@ -60,9 +60,10 @@ describe("Wordmark", () => {
 describe("pixel art", () => {
   it("is decorative by default, so rows do not announce a bus each time", () => {
     const { container } = render(<PixelBusSide />);
-    const svg = container.querySelector("svg")!;
-    expect(svg.getAttribute("aria-hidden")).toBe("true");
-    expect(svg.getAttribute("role")).toBe("presentation");
+    const sprite = container.querySelector("img")!;
+    expect(sprite.getAttribute("aria-hidden")).toBe("true");
+    expect(sprite.getAttribute("role")).toBe("presentation");
+    expect(sprite.getAttribute("alt")).toBe("");
   });
 
   it("becomes an image with a name when given a title", () => {

@@ -99,6 +99,14 @@ export default [
     },
   },
   {
+    // Node scripts that drive a browser: the bodies passed to page.evaluate run in the page, so
+    // they legitimately reference browser globals.
+    files: ["tools/pixel-art/page-shots.mjs"],
+    languageOptions: {
+      globals: browserGlobals,
+    },
+  },
+  {
     // The end-to-end suite runs in Node but evaluates code inside the browser via page.evaluate,
     // so it legitimately references browser globals.
     files: ["apps/web/**/*.{ts,tsx}", "tests/e2e/**/*.ts"],

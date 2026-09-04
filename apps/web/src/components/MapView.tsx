@@ -2,7 +2,12 @@ import { useEffect, useRef, useState } from "react";
 import maplibregl, { type Map as MapLibreMap, type StyleSpecification } from "maplibre-gl";
 import type { MapStopSummary, MapVehicleSummary } from "@busstops/contracts";
 import type { Bounds } from "../lib/geo.js";
-import { PIXEL_BUS_MARKER, PIXEL_STOP_MARKER } from "./pixel/pixelMarkers.js";
+import {
+  PIXEL_BUS_MARKER,
+  PIXEL_BUS_MARKER_STALE,
+  PIXEL_STOP_MARKER,
+  PIXEL_STOP_MARKER_SELECTED,
+} from "./pixel/pixelMarkers.js";
 import "maplibre-gl/dist/maplibre-gl.css";
 import "./MapView.css";
 
@@ -118,7 +123,9 @@ export function MapView({
           `${stop.name}${stop.indicator ? `, ${stop.indicator}` : ""}`,
         );
         // Static markup with no interpolated data; everything about this stop is on the element.
-        element.innerHTML = PIXEL_STOP_MARKER;
+        // The selected flag is a larger drawing rather than the same one under a transform.
+        element.innerHTML =
+          selectedStopId === stop.atcoCode ? PIXEL_STOP_MARKER_SELECTED : PIXEL_STOP_MARKER;
         element.addEventListener("click", () => onSelectStop?.(stop.atcoCode));
 
         markersRef.current.push(
@@ -138,7 +145,17 @@ export function MapView({
           "aria-label",
           `${vehicle.routePublicName ?? "Bus"} to ${vehicle.destinationName ?? "unknown destination"}`,
         );
-        element.innerHTML = PIXEL_BUS_MARKER;
+        // A stale position is drawn as a different vehicle, not as the same one faded.
+        const stale = vehicle.freshnessSeconds > 180;
+        element.innerHTML = stale ? PIXEL_BUS_MARKER_STALE : PIXEL_BUS_MARKER;
+        // The route number, revealed when the vehicle is pointed at or focused. Set as text, so
+        // an operator's own naming can never be markup.
+        if (vehicle.routePublicName) {
+          const route = document.createElement("span");
+          route.className = "map-marker__route";
+          route.textContent = vehicle.routePublicName;
+          element.appendChild(route);
+        }
         if (vehicle.bearingDegrees !== null) {
           element.style.setProperty("--bearing", `${vehicle.bearingDegrees}deg`);
           // A drawn bus has a front, unlike a dot: heading west it must be mirrored rather than
@@ -146,8 +163,7 @@ export function MapView({
           const westbound = vehicle.bearingDegrees > 180;
           element.classList.toggle("map-marker--westbound", westbound);
         }
-        // A stale position is drawn differently, so the map cannot imply false freshness.
-        if (vehicle.freshnessSeconds > 180) element.classList.add("map-marker--stale");
+        if (stale) element.classList.add("map-marker--stale");
 
         markersRef.current.push(
           new maplibregl.Marker({ element })

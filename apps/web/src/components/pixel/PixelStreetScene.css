@@ -1,138 +1,259 @@
 /*
- * The hero street scene.
+ * The hero street: sizing and motion only. The drawing is in the artwork.
  *
- * The SVG carries the drawing; this file carries only the sizing and the motion, so the
- * illustration itself stays readable as a picture rather than as a pile of transforms.
+ * Everything here is expressed in art pixels multiplied by --px, an integer. Pixel art scaled by
+ * 2.4 has some pixels two screen pixels wide and some three, which reads as a slightly wrong
+ * photograph of pixel art rather than as pixel art; so the scene is given a whole-number size and
+ * centred in whatever space is going, rather than stretched to fill it.
  */
 
 .street-scene {
+  --px: 2;
+  --edge: var(--edge-wide);
+  --edge-h: var(--wide-h, 144);
+  --edge-w: 32;
+  display: flex;
+  justify-content: center;
+  align-items: flex-end;
   width: 100%;
-  /*
-   * Sized by aspect ratio rather than by a height, so the canvas is shown at the proportion it
-   * was drawn for and nothing is cropped. The previous version fixed a height and let the SVG
-   * crop to fill it, which on a phone threw away three quarters of the artwork's width — both
-   * buses among it. The max-height is the one place cropping is still possible, and what it
-   * takes is sky.
-   */
-  aspect-ratio: 320 / 100;
-  max-height: min(48vh, 460px);
   overflow: hidden;
-
-  /* How far a bus travels before it wraps: the canvas width, plus its own length off each end. */
-  --scene-enter: -34px;
-  --scene-exit: 320px;
-  --scene-park-blue: 68px;
-  --scene-park-red: 196px;
+  /*
+   * The street runs off both edges. The artwork is scaled by whole numbers, so it is almost never
+   * exactly as wide as the window; centring it alone left the illustration sitting in a box with
+   * the page showing either side, which is not what a street does. This repeats a 32-pixel tile
+   * of the same terrace, pavement, kerb and road outward from the artwork in both directions.
+   */
+  background-image: var(--edge);
+  background-repeat: repeat-x;
+  background-position: bottom center;
+  background-size: calc(var(--edge-w) * var(--px) * 1px) calc(var(--edge-h) * var(--px) * 1px);
+  image-rendering: pixelated;
 }
 
-.street-scene__canvas {
+.street-scene__street {
+  position: relative;
+  /* Hand the container the composition's height so the repeating edge lines up with it exactly. */
+  z-index: 1;
+  width: calc(var(--art-w) * var(--px) * 1px);
+  height: calc(var(--art-h) * var(--px) * 1px);
+  overflow: hidden;
+}
+
+.street-scene img {
+  image-rendering: pixelated;
   display: block;
+  user-select: none;
+}
+
+.street-scene__ground {
   width: 100%;
   height: 100%;
-  /* Square pixels at every size: the whole idiom depends on edges staying hard. */
-  image-rendering: pixelated;
-  shape-rendering: crispEdges;
 }
 
 /*
- * One composition or the other, never both. The switch is a media query rather than a hook so
- * there is no first paint with the wrong street in it.
+ * One composition or the other, never both, and chosen by the shape of the space rather than by
+ * width alone: a tablet held upright is 768px across — wide by any breakpoint — but its hero box
+ * is taller than it is broad, and the wide street would sit in it as a thin band.
  */
-.street-scene__canvas--narrow {
+.street-scene__street--tall {
   display: none;
 }
 
-/*
- * The switch follows the shape of the space rather than the width alone. A tablet held upright is
- * 768px across — wide by any breakpoint — but its hero box is twice as tall as it is wide, and the
- * wide street shrank to a 240px band under 700px of nothing. What decides which street fits is the
- * proportion of the window, so that is what is asked.
- */
+@media (min-width: 1000px) {
+  .street-scene {
+    --px: 3;
+  }
+}
+
+/* Room for a fourth step: on a large desktop the hero is mostly empty space at three. */
+@media (min-width: 1340px) and (min-height: 820px) {
+  .street-scene {
+    --px: 4;
+  }
+}
+
 @media (max-width: 720px), (max-aspect-ratio: 5 / 4) {
   .street-scene {
-    aspect-ratio: 132 / 116;
-    max-height: min(62vh, 620px);
-    --scene-exit: 132px;
-    --scene-park-blue: 16px;
-    --scene-park-red: 74px;
+    --edge: var(--edge-tall);
+    --edge-h: var(--tall-h, 250);
   }
 
-  .street-scene__canvas--wide {
+  .street-scene__street--wide {
     display: none;
   }
 
-  .street-scene__canvas--narrow {
+  .street-scene__street--tall {
     display: block;
   }
 }
 
-/*
- * Buses run the full width and wrap. The red one runs left to right on the near lane and the
- * blue one right to left on the far lane, which is what makes it read as a road rather than a
- * conveyor belt. The distances come from the canvas the scene is currently drawn on, so the same
- * two keyframes serve both compositions.
- */
-.street-scene__bus {
+/* A phone at 2x, a portrait tablet at 3x: both whole numbers, neither cropped. */
+@media (max-aspect-ratio: 5 / 4) and (min-width: 700px) {
+  .street-scene {
+    --px: 3;
+  }
+}
+
+@media (max-width: 720px) {
+  .street-scene {
+    --px: 2;
+  }
+}
+
+/* ---------------------------------------------------------------- vehicles */
+
+.street-scene__lane {
+  position: absolute;
+  left: 0;
+  top: calc(var(--art-y) * var(--px) * 1px);
+  width: 100%;
+  height: 0;
+}
+
+.street-scene__vehicle {
+  position: absolute;
+  left: 0;
+  top: 0;
   will-change: transform;
 }
 
-.street-scene__bus--red {
-  animation: street-scene-drive-right 19s linear infinite;
+.street-scene__vehicle img {
+  width: auto;
+  height: auto;
+  transform: scale(var(--px));
+  transform-origin: top left;
 }
 
-.street-scene__bus--blue {
-  animation: street-scene-drive-left 26s linear infinite;
+/*
+ * Two wheel frames, alternated. It is two pixels of movement on each hub, and it is the whole
+ * difference between a bus that is travelling and a bus that is being slid across the picture.
+ */
+.street-scene__frame--b {
+  position: absolute;
+  inset: 0;
+}
+
+.street-scene__frame--a {
+  animation: street-scene-wheel 0.34s steps(1) infinite;
+}
+
+.street-scene__frame--b {
+  animation: street-scene-wheel 0.34s steps(1) infinite reverse;
+}
+
+@keyframes street-scene-wheel {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+
+/*
+ * The near lane runs left to right and the far lane right to left, which is what makes the road
+ * read as a road rather than as a conveyor belt. Distances are in art pixels so one pair of
+ * keyframes serves both compositions.
+ */
+/*
+ * The negative delays start each bus part-way across rather than off the edge. Without them the
+ * first thing anyone sees is an empty road for several seconds, which is a poor opening for a
+ * picture whose subject is buses.
+ */
+.street-scene__lane--near .street-scene__vehicle {
+  animation: street-scene-drive-right 21s linear infinite;
+  animation-delay: -6s;
+}
+
+.street-scene__lane--far .street-scene__vehicle {
+  animation: street-scene-drive-left 29s linear infinite;
+  animation-delay: -9s;
 }
 
 @keyframes street-scene-drive-right {
   from {
-    transform: translateX(var(--scene-enter));
+    transform: translateX(calc(-110 * var(--px) * 1px));
   }
   to {
-    transform: translateX(var(--scene-exit));
+    transform: translateX(calc(var(--art-w) * var(--px) * 1px));
   }
 }
 
 @keyframes street-scene-drive-left {
   from {
-    transform: translateX(var(--scene-exit)) scaleX(-1);
+    transform: translateX(calc(var(--art-w) * var(--px) * 1px)) scaleX(-1);
   }
   to {
-    transform: translateX(var(--scene-enter)) scaleX(-1);
+    transform: translateX(calc(-70 * var(--px) * 1px)) scaleX(-1);
   }
 }
 
-/* The lamp's glow is the one thing that pulses; slow enough to notice only if you look. */
-.street-scene__lamp rect:last-child {
-  animation: street-scene-glow 6s ease-in-out infinite;
+.street-scene__cloud {
+  position: absolute;
+  left: calc(var(--art-x) * var(--px) * 1px);
+  top: calc(var(--art-y) * var(--px) * 1px);
+  transform-origin: top left;
+  transform: scale(var(--px));
+  opacity: 0.9;
+  animation: street-scene-drift 90s linear infinite;
 }
 
-@keyframes street-scene-glow {
-  0%,
-  100% {
-    opacity: 0.85;
+@keyframes street-scene-drift {
+  from {
+    transform: scale(var(--px)) translateX(0);
   }
-  50% {
-    opacity: 0.45;
+  to {
+    transform: scale(var(--px)) translateX(120px);
   }
 }
 
 /*
- * Reduced motion stops the traffic; it does not empty the street. The buses are parked at
- * readable positions on the road rather than removed, so the scene is the same picture, still.
+ * The upright street is less than half as wide, so the same delays put the buses somewhere else
+ * entirely. These have to come after the rules above, not with the other narrow-screen overrides:
+ * same specificity, so the later declaration is the one that counts.
+ */
+@media (max-width: 720px), (max-aspect-ratio: 5 / 4) {
+  .street-scene__lane--near .street-scene__vehicle {
+    animation-delay: -10s;
+  }
+
+  .street-scene__lane--far .street-scene__vehicle {
+    animation-delay: -3s;
+  }
+}
+
+/*
+ * Reduced motion stops the traffic; it does not empty the street. The buses park at readable
+ * places on the road, so the scene is the same picture, still.
  */
 @media (prefers-reduced-motion: reduce) {
-  .street-scene__bus--red,
-  .street-scene__bus--blue,
-  .street-scene__lamp rect:last-child {
+  .street-scene__lane--near .street-scene__vehicle,
+  .street-scene__lane--far .street-scene__vehicle,
+  .street-scene__cloud,
+  .street-scene__frame--a,
+  .street-scene__frame--b {
     animation: none;
   }
 
-  .street-scene__bus--red {
-    transform: translateX(var(--scene-park-red));
+  .street-scene__frame--b {
+    opacity: 0;
   }
 
-  .street-scene__bus--blue {
-    transform: translateX(var(--scene-park-blue)) scaleX(-1);
+  .street-scene__lane--near .street-scene__vehicle {
+    transform: translateX(calc(24 * var(--px) * 1px));
+  }
+
+  .street-scene__lane--far .street-scene__vehicle {
+    transform: translateX(calc(148 * var(--px) * 1px)) scaleX(-1);
+  }
+}
+
+@media (max-aspect-ratio: 5 / 4) {
+  @media (prefers-reduced-motion: reduce) {
+    .street-scene__lane--far .street-scene__vehicle {
+      transform: translateX(calc(84 * var(--px) * 1px)) scaleX(-1);
+    }
   }
 }

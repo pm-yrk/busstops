@@ -40,18 +40,13 @@
   cursor: pointer;
   display: grid;
   place-items: center;
-  /* Consumed by the sprite markup, so one element can be red, blue or hollow without new SVG. */
-  --marker-body: var(--colour-red);
-  --marker-roof: var(--colour-red-dark);
-  --marker-flag: var(--colour-ink);
+  position: relative;
 }
 
-.map-marker--selected {
-  --marker-flag: var(--colour-red);
-}
-
-.map-marker--selected svg {
-  transform: scale(1.25);
+.map-marker__art {
+  display: block;
+  /* Square pixels: the marker is the hero artwork reduced, and it is drawn at whole multiples. */
+  image-rendering: pixelated;
 }
 
 .map-marker--vehicle {
@@ -65,17 +60,44 @@
 }
 
 /*
- * A stale position is hollow as well as paler: never colour alone, and never a bus drawn exactly
- * like a fresh one when we do not know where it is any more.
+ * A stale position is a different vehicle, ringed and faded: never colour alone, and never a bus
+ * drawn exactly like a fresh one when we do not know where it is any more.
  */
 .map-marker--stale {
-  --marker-body: var(--colour-surface);
-  --marker-roof: var(--colour-muted);
-  opacity: 0.75;
+  opacity: 0.8;
 }
 
-.map-marker--stale svg {
+.map-marker--stale .map-marker__art {
   outline: 1px dashed var(--colour-muted);
+  outline-offset: 1px;
+}
+
+/*
+ * The route number, on the vehicle rather than in a legend. Hidden until the marker is pointed at
+ * or focused, because a hundred numbered chips at once is a worse map than a hundred buses.
+ */
+.map-marker__route {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translate(-50%, 2px) rotate(calc(90deg - var(--bearing, 90deg)));
+  font-family: var(--font-pixel);
+  font-size: var(--font-size-micro);
+  line-height: 1;
+  padding: 2px 4px;
+  color: var(--colour-canvas);
+  background: var(--colour-ink);
+  border: 1px solid var(--colour-canvas);
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--duration-fast) ease;
+}
+
+.map-marker--vehicle:hover .map-marker__route,
+.map-marker--vehicle:focus-visible .map-marker__route,
+.map-marker--vehicle:focus-within .map-marker__route {
+  opacity: 1;
 }
 
 .map-marker:focus-visible {

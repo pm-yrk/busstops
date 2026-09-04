@@ -2,7 +2,7 @@
   "name": "busstops",
   "private": true,
   "version": "0.1.0",
-  "description": "Bus Stops. — England-wide live bus intelligence platform (Bus Stops Live + Bus Stops Pro).",
+  "description": "Bus Stops. \u2014 England-wide live bus intelligence platform (Bus Stops Live + Bus Stops Pro).",
   "license": "UNLICENSED",
   "engines": {
     "node": ">=20.0.0"
@@ -24,7 +24,8 @@
     "typecheck": "npm run typecheck --workspaces --if-present",
     "preflight": "node scripts/preflight.mjs",
     "test:e2e": "playwright test",
-    "test:e2e:ui": "playwright test --ui"
+    "test:e2e:ui": "playwright test --ui",
+    "art": "node tools/pixel-art/build.mjs"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.13.0",

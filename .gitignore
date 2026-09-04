@@ -24,3 +24,6 @@ network-changes.json
 /test-results/
 /playwright-report/
 /blob-report/
+
+# Pixel-art preview renders (tools/pixel-art/sheet.mjs, page-shots.mjs)
+art-preview/
