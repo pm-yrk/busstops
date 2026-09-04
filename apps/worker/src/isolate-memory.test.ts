@@ -74,7 +74,11 @@ function recordingStore() {
 async function publishedReader() {
   const recording = recordingStore();
   await publishNetworkShards(recording.store, network(), { version: "v1" });
-  return { reader: new NetworkReader(recording.store), reads: recording.reads };
+  return {
+    reader: new NetworkReader(recording.store),
+    reads: recording.reads,
+    store: recording.store,
+  };
 }
 
 describe("the edge never reads a national dataset", () => {
@@ -186,6 +190,54 @@ describe("national datasets the edge does still hold", () => {
     for (const expression of wholeDatasetReads) {
       expect(allowedExpressions.has(expression), `${expression} is read whole`).toBe(true);
     }
+  });
+});
+
+describe("one request stays bounded", () => {
+  it("stops reading tiles once a viewport costs more than it may hold", async () => {
+    /*
+     * The other end of the same defect. Sharding stops an endpoint loading the national network
+     * in one object; it does not stop a wide viewport loading it a tile at a time. The map caps a
+     * box at 1.5 square degrees, which on the pattern grid is ninety-six tiles — and every check
+     * that ever exercised this asked for a city centre, so a wide box was never tried.
+     *
+     * The fixture is tiny, so the budget is what is varied rather than the data: with a budget of
+     * nothing, a box spanning many tiles must stop after the first batch and say that it did.
+     */
+    // Stops spread across the country, so a wide box really does span many tiles. The documented
+    // fixture is one town, which is the reason a wide viewport was never exercised.
+    const spread = network();
+    const seed = spread.stops[0]!;
+    for (let lat = 50.2; lat < 55; lat += 0.3) {
+      for (let lon = -5.8; lon < 1; lon += 0.3) {
+        spread.stops.push({
+          ...seed,
+          id: `spread-${lat.toFixed(1)}-${lon.toFixed(1)}`,
+          atcoCode: `SPREAD${lat.toFixed(1)}${lon.toFixed(1)}`,
+          locationCoordinate: { lat, lon },
+        });
+      }
+    }
+
+    const recording = recordingStore();
+    await publishNetworkShards(recording.store, spread, { version: "v1" });
+    const reads = recording.reads;
+    const wide = { west: -6, south: 50, east: 1.4, north: 55.4 };
+
+    reads.length = 0;
+    const unbounded = await new NetworkReader(recording.store).stopsInBoundingBox(wide, 400);
+    const unboundedReads = reads.filter((key) => key.includes(SHARDED.stopTile)).length;
+    expect(unboundedReads).toBeGreaterThan(6);
+
+    reads.length = 0;
+    const bounded = new NetworkReader(recording.store, 15 * 60 * 1000, 0);
+    const result = await bounded.stopsInBoundingBox(wide, 400);
+
+    expect(result.truncated).toBe(true);
+    const boundedReads = reads.filter((key) => key.includes(SHARDED.stopTile)).length;
+    expect(boundedReads).toBeLessThan(unboundedReads);
+    // And it still answers rather than failing: a partial viewport beats a 500.
+    expect(unbounded.stops.length).toBeGreaterThanOrEqual(result.stops.length);
   });
 });
 

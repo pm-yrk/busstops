@@ -68,6 +68,25 @@ import type { PatternGeometry } from "@busstops/matching";
 const MAX_CACHED_SHARDS = 24;
 const MAX_CACHED_SHARD_CHARS = 12 * 1024 * 1024;
 
+/**
+ * How much shard text one request will open.
+ *
+ * The map caps a viewport at 1.5 square degrees, which on the pattern grid is ninety-six tiles.
+ * Reading all of them at once would put the national network back in the isolate a viewport at a
+ * time — the exact failure the sharding exists to prevent, arrived at from the other end, and
+ * invisible to a check that only ever asks for a city centre.
+ *
+ * So a request reads tiles outwards from the middle of the box until this budget is spent. What
+ * it buys adapts to where you are: rural tiles are small so many are read, a dense city is
+ * expensive so fewer are — which is right, because in a city a screen holds less ground anyway.
+ * The same figure as the cache budget, for the same reason: parsed objects are several times the
+ * size of the text they came from, and a request needs room to work on top of what it holds.
+ */
+const MAX_REQUEST_SHARD_CHARS = 12 * 1024 * 1024;
+
+/** Tiles read at once before the budget is checked again. */
+const TILE_READ_BATCH = 6;
+
 const INDEX_TTL_MS = 5 * 60 * 1000;
 
 interface CachedShard {
@@ -103,6 +122,8 @@ export class NetworkReader {
   constructor(
     private readonly store: ObjectStore,
     private readonly ttlMs = 15 * 60 * 1000,
+    /** Overridable so a test can make the budget bite on a fixture too small to reach it. */
+    private readonly requestChars = MAX_REQUEST_SHARD_CHARS,
   ) {}
 
   /** The version pointer. Null when nothing has been published, so callers degrade visibly. */
@@ -131,11 +152,20 @@ export class NetworkReader {
 
   /** Reads one shard at the pinned version. Missing shards are empty, not an error. */
   private async readShard<T>(dataset: string, version: string, now: number): Promise<T[]> {
+    return (await this.readShardSized<T>(dataset, version, now)).records;
+  }
+
+  /** As readShard, and also says how much text the shard cost, which is what bounds a request. */
+  private async readShardSized<T>(
+    dataset: string,
+    version: string,
+    now: number,
+  ): Promise<{ records: T[]; chars: number }> {
     const key = `${version}:${dataset}`;
     const cached = this.shards.get(key);
     if (cached && now - cached.usedAt < this.ttlMs) {
       cached.usedAt = now;
-      return cached.records as T[];
+      return { records: cached.records as T[], chars: cached.chars };
     }
 
     const raw = await this.store.get(objectKeyFor(dataset, version));
@@ -147,9 +177,10 @@ export class NetworkReader {
             .filter((line) => line.length > 0)
             .map((line) => JSON.parse(line) as T);
 
-    this.shards.set(key, { records, chars: raw?.length ?? 0, usedAt: now });
+    const chars = raw?.length ?? 0;
+    this.shards.set(key, { records, chars, usedAt: now });
     this.evictShards();
-    return records;
+    return { records, chars };
   }
 
   /**
@@ -184,34 +215,64 @@ export class NetworkReader {
     return total;
   }
 
+  /**
+   * Reads tiles in the order given, stopping when the request budget is spent.
+   *
+   * The caller orders them, and for a viewport that order is outwards from the middle, so a box
+   * too large to afford loses its far corners rather than an arbitrary set of tiles.
+   */
   private async readTiles<T>(
     dataset: (tile: string) => string,
     tiles: readonly string[],
     available: readonly string[],
     version: string,
     now: number,
-  ): Promise<T[]> {
+    budgetChars = this.requestChars,
+  ): Promise<{ records: T[]; truncated: boolean }> {
     // Only tiles the publish actually wrote are requested: asking for the rest would be a read
     // operation per empty tile, metered, for a guaranteed miss.
     const present = new Set(available);
     const wanted = tiles.filter((tile) => present.has(tile));
-    const results = await Promise.all(
-      wanted.map((tile) => this.readShard<T>(dataset(tile), version, now)),
-    );
-    return results.flat();
+
+    const records: T[] = [];
+    let chars = 0;
+    for (let start = 0; start < wanted.length; start += TILE_READ_BATCH) {
+      const batch = wanted.slice(start, start + TILE_READ_BATCH);
+      const results = await Promise.all(
+        batch.map((tile) => this.readShardSized<T>(dataset(tile), version, now)),
+      );
+      for (const result of results) {
+        records.push(...result.records);
+        chars += result.chars;
+      }
+      if (chars >= budgetChars) {
+        return { records, truncated: start + batch.length < wanted.length };
+      }
+    }
+    return { records, truncated: false };
   }
 
   /**
    * Every stop in the given tiles.
    *
-   * Uncapped, because the bound is the tile list: callers pass tiles they have already limited
-   * (a viewport, or a journey corridor the planner caps at a handful of tiles), and truncating
-   * inside a corridor would silently remove places a journey could legitimately board at.
+   * Bounded by what the request can afford to hold rather than by a stop count, and the caller
+   * orders the tiles so that what a large box loses is its far corners. `truncated` says whether
+   * anything was left unread, so the answer is never quietly partial.
    */
-  async stopsInTiles(tiles: readonly string[], now: number = Date.now()): Promise<Stop[]> {
+  async stopsInTiles(
+    tiles: readonly string[],
+    now: number = Date.now(),
+  ): Promise<{ stops: Stop[]; truncated: boolean }> {
     const index = await this.networkIndex(now);
-    if (!index) return [];
-    return this.readTiles<Stop>(stopTileDataset, tiles, index.stopTiles, index.version, now);
+    if (!index) return { stops: [], truncated: false };
+    const result = await this.readTiles<Stop>(
+      stopTileDataset,
+      tiles,
+      index.stopTiles,
+      index.version,
+      now,
+    );
+    return { stops: result.records, truncated: result.truncated };
   }
 
   async patternsInTiles(
@@ -227,7 +288,7 @@ export class NetworkReader {
       index.version,
       now,
     );
-    return toGeometries(assemblePatternTile(lines));
+    return toGeometries(assemblePatternTile(lines.records));
   }
 
   /**
@@ -249,7 +310,7 @@ export class NetworkReader {
       this.services(now),
     ]);
     return {
-      stopsById: new Map(stops.map((stop) => [stop.id, stop])),
+      stopsById: new Map(stops.stops.map((stop) => [stop.id, stop])),
       patternsById: new Map(patterns.map((geometry) => [geometry.pattern.id, geometry.pattern])),
       services,
     };
@@ -260,14 +321,17 @@ export class NetworkReader {
     limit: number,
     now: number = Date.now(),
   ): Promise<StopsInViewport> {
-    const stops = await this.stopsInTiles(stopTilesForBoundingBox(bbox), now);
+    const read = await this.stopsInTiles(stopTilesForBoundingBox(bbox), now);
 
-    const inside = stops.filter((stop) => {
+    const inside = read.stops.filter((stop) => {
       const { lat, lon } = stop.locationCoordinate;
       return lat >= bbox.south && lat <= bbox.north && lon >= bbox.west && lon <= bbox.east;
     });
 
-    if (inside.length <= limit) return { stops: inside, truncated: false };
+    // Truncated either because the box held more stops than the response may carry, or because
+    // it covered more tiles than the request may open. Both mean the same thing to a reader:
+    // what you are seeing is the middle of what you asked for.
+    if (inside.length <= limit) return { stops: inside, truncated: read.truncated };
 
     // When capped, keep the stops nearest the viewport centre: they are what the user is looking
     // at, and an arbitrary slice would drop the middle of the screen.
@@ -313,13 +377,9 @@ export class NetworkReader {
     if (tileByKey.size === 0) return resolved;
 
     const tiles = [...new Set(tileByKey.values())];
-    const stops = await this.readTiles<Stop>(
-      stopTileDataset,
-      tiles,
-      index.stopTiles,
-      index.version,
-      now,
-    );
+    const stops = (
+      await this.readTiles<Stop>(stopTileDataset, tiles, index.stopTiles, index.version, now)
+    ).records;
 
     const byId = new Map<string, Stop>();
     const byAtco = new Map<string, Stop>();
@@ -360,7 +420,7 @@ export class NetworkReader {
       index.version,
       now,
     );
-    const records = assemblePatternTile(lines);
+    const records = assemblePatternTile(lines.records);
     return toGeometries(records.filter((r) => r.pattern.serviceRouteId === serviceId));
   }
 
@@ -458,7 +518,11 @@ export class NetworkReader {
       now,
     );
 
-    const hits = nearbyStops({ entries, builtAt: index.publishedAt }, coordinate, options);
+    const hits = nearbyStops(
+      { entries: entries.records, builtAt: index.publishedAt },
+      coordinate,
+      options,
+    );
     return { hits, builtAt: index.publishedAt };
   }
 }

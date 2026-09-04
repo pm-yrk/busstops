@@ -232,13 +232,35 @@ export function tileForStop(stop: Stop): string {
   return tileIdFor(stop.locationCoordinate, STOP_TILE_DEGREES);
 }
 
+/**
+ * Tiles ordered outwards from the middle of the box.
+ *
+ * The edge reads until a byte budget runs out, so the order decides what a request keeps when a
+ * viewport is larger than it can afford. The middle of the screen is what someone is looking at,
+ * so that is what is read first and the far corners are what go.
+ */
+function centreOut(bbox: BoundingBox, sizeDegrees: number): string[] {
+  const centreLat = (bbox.south + bbox.north) / 2 / sizeDegrees;
+  const centreLon = (bbox.west + bbox.east) / 2 / sizeDegrees;
+  return tilesForBoundingBox(bbox, sizeDegrees)
+    .map((tile) => {
+      const [lat, lon] = tile.split("_").map(Number) as [number, number];
+      // Tile indices, so the distance is in tiles and the grid size cancels out.
+      const dLat = lat + 0.5 - centreLat;
+      const dLon = lon + 0.5 - centreLon;
+      return { tile, distance: dLat * dLat + dLon * dLon };
+    })
+    .sort((a, b) => a.distance - b.distance)
+    .map((entry) => entry.tile);
+}
+
 /** The stop tiles a viewport covers. Used by the edge, so the sizes cannot drift between sides. */
 export function stopTilesForBoundingBox(bbox: BoundingBox): string[] {
-  return tilesForBoundingBox(bbox, STOP_TILE_DEGREES);
+  return centreOut(bbox, STOP_TILE_DEGREES);
 }
 
 export function patternTilesForBoundingBox(bbox: BoundingBox): string[] {
-  return tilesForBoundingBox(bbox, PATTERN_TILE_DEGREES);
+  return centreOut(bbox, PATTERN_TILE_DEGREES);
 }
 
 /** Search entries are placed on the stop grid, because they are mostly stops. */
