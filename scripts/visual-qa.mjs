@@ -25,10 +25,10 @@ import { chromium } from "@playwright/test";
  */
 /* global document, window, getComputedStyle, HTMLCanvasElement */
 
-const [, , baseUrl, screenshotDir = "visual-qa"] = process.argv;
+const [, , baseUrl, screenshotDir = "visual-qa", apiUrlArg] = process.argv;
 
 if (!baseUrl) {
-  console.error("Usage: node scripts/visual-qa.mjs <base-url> [screenshot-dir]");
+  console.error("Usage: node scripts/visual-qa.mjs <base-url> [screenshot-dir] [api-url]");
   process.exit(2);
 }
 
@@ -46,6 +46,37 @@ const PAGES = [
   { name: "disruptions", path: "/disruptions" },
   { name: "pro", path: "/pro" },
 ];
+
+/**
+ * A real vehicle to look at, or none.
+ *
+ * The vehicle page cannot be reached by clicking: a bus on the map is a picture with a label, not
+ * a link. So the page needs a reference, and inventing one would test the not-found state rather
+ * than the page. Whether any bus is moving is a property of the hour — at three in the morning
+ * the honest answer is none — so this returns null and the sweep says so.
+ */
+async function findVehicleRef(apiUrl) {
+  if (!apiUrl) return null;
+  try {
+    const response = await fetch(
+      `${apiUrl.replace(/\/$/, "")}/v1/map?bbox=-2.26,53.46,-2.21,53.50&zoom=15`,
+      { signal: AbortSignal.timeout(20_000) },
+    );
+    if (!response.ok) return null;
+    const body = await response.json();
+    return body?.data?.vehicles?.[0]?.vehicleRef ?? null;
+  } catch {
+    return null;
+  }
+}
+
+const vehicleRef = await findVehicleRef(apiUrlArg);
+if (vehicleRef) {
+  PAGES.push({ name: "vehicle", path: `/vehicles/${encodeURIComponent(vehicleRef)}` });
+  console.log(`Following a real vehicle: ${vehicleRef}`);
+} else {
+  console.log("No live vehicle to follow, so the vehicle page is not in this sweep.");
+}
 
 const results = [];
 function record(name, ok, detail) {

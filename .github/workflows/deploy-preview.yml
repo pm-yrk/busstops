@@ -289,7 +289,12 @@ jobs:
       - name: Look at the deployed preview
         id: visual
         if: ${{ steps.bootstrap.outcome != 'failure' && steps.pages.outcome == 'success' }}
-        run: node scripts/visual-qa.mjs "${{ steps.pages.outputs.url }}" visual-qa
+        # The API URL as well, so the sweep can find a real vehicle to follow: a bus on the map is
+        # a picture with a label rather than a link, so the vehicle page needs a reference, and
+        # inventing one would look at the not-found state instead of the page.
+        run: |
+          node scripts/visual-qa.mjs \
+            "${{ steps.pages.outputs.url }}" visual-qa "${{ steps.worker.outputs.url }}"
 
       - name: Upload what it saw
         if: ${{ !cancelled() && steps.visual.outcome != 'skipped' }}
