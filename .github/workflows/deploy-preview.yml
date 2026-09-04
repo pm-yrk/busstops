@@ -265,9 +265,23 @@ jobs:
         if: ${{ steps.bootstrap.outcome != 'failure' && steps.pages.outcome == 'success' }}
         run: node scripts/smoke-test.mjs "${{ steps.pages.outputs.url }}" "${{ steps.worker.outputs.url }}"
 
+      # Separate from the smoke test on purpose. The smoke test asserts the deployment is sound
+      # whatever the upstreams are doing; this asserts there is real national data behind it and
+      # that a passenger can reach it, which is only a meaningful question after a bootstrap.
+      - name: Verify real data through the deployed API
+        if: ${{ steps.bootstrap.outcome == 'success' && steps.pages.outcome == 'success' }}
+        run: |
+          node scripts/verify-deployment.mjs \
+            "${{ steps.worker.outputs.url }}" \
+            "${{ steps.pages.outputs.url }}"
+
       # Run here rather than in CI because the thing being judged is the deployment: the basemap
       # comes from a third-party tile host and the policy that permits it is generated at deploy
       # time, so neither exists in a local build. The accessibility suite cannot see a blank map.
+      #
+      # And run it last. A step with an `if` is skipped once an earlier one has failed, so with
+      # the visual pass first a slow tile host would have taken the data verification down with
+      # it — hiding the more important answer behind the less important one.
       - name: Install a browser for the visual pass
         if: ${{ steps.bootstrap.outcome != 'failure' && steps.pages.outcome == 'success' }}
         run: npx playwright install --with-deps chromium
@@ -285,16 +299,6 @@ jobs:
           path: visual-qa
           retention-days: 7
           if-no-files-found: ignore
-
-      # Separate from the smoke test on purpose. The smoke test asserts the deployment is sound
-      # whatever the upstreams are doing; this asserts there is real national data behind it and
-      # that a passenger can reach it, which is only a meaningful question after a bootstrap.
-      - name: Verify real data through the deployed API
-        if: ${{ steps.bootstrap.outcome == 'success' && steps.pages.outcome == 'success' }}
-        run: |
-          node scripts/verify-deployment.mjs \
-            "${{ steps.worker.outputs.url }}" \
-            "${{ steps.pages.outputs.url }}"
 
       - name: Summary
         if: always()
