@@ -88,11 +88,11 @@
 .pro-grid {
   display: grid;
   /*
-   * `min(N, 100%)`, not N. A track with a hard minimum cannot shrink below it, so a tile whose
-   * own content is wider than its share pushes the track out and the page with it — measured on
-   * the deployed Pro at 768px, where two columns each overhung by 24px and the document scrolled
-   * sideways by exactly 48. Below the minimum the track now takes the width available and the
-   * content wraps, which is what the reader wanted anyway.
+   * `min(N, 100%)`, not N: a track with a hard minimum cannot shrink below it, so on a viewport
+   * narrower than one column the track would push the page out. This was not what made the
+   * deployed Pro scroll 48px sideways at 768px — that was a tile sizing its own inner track to
+   * the min-content of its facts list, fixed in ProPrimitives.css — but the guard is right in
+   * its own terms and stays.
    */
   grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
   gap: var(--space-md);
@@ -178,11 +178,11 @@
 .pro-two-up {
   display: grid;
   /*
-   * `min(N, 100%)`, not N. A track with a hard minimum cannot shrink below it, so a tile whose
-   * own content is wider than its share pushes the track out and the page with it — measured on
-   * the deployed Pro at 768px, where two columns each overhung by 24px and the document scrolled
-   * sideways by exactly 48. Below the minimum the track now takes the width available and the
-   * content wraps, which is what the reader wanted anyway.
+   * `min(N, 100%)`, not N: a track with a hard minimum cannot shrink below it, so on a viewport
+   * narrower than one column the track would push the page out. This was not what made the
+   * deployed Pro scroll 48px sideways at 768px — that was a tile sizing its own inner track to
+   * the min-content of its facts list, fixed in ProPrimitives.css — but the guard is right in
+   * its own terms and stays.
    */
   grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr));
   gap: var(--space-lg);
