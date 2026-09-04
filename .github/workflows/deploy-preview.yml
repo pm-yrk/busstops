@@ -267,9 +267,14 @@ jobs:
 
       # Separate from the smoke test on purpose. The smoke test asserts the deployment is sound
       # whatever the upstreams are doing; this asserts there is real national data behind it and
-      # that a passenger can reach it, which is only a meaningful question after a bootstrap.
+      # that a passenger can reach it.
+      #
+      # It runs whenever the bootstrap did not fail, not only when it ran. The question is whether
+      # real data is reachable through this deployment, and a bucket filled by an earlier run
+      # answers it just as well — skipping the check on a re-deploy only meant the run that
+      # changed the frontend was the one run with no evidence behind it.
       - name: Verify real data through the deployed API
-        if: ${{ steps.bootstrap.outcome == 'success' && steps.pages.outcome == 'success' }}
+        if: ${{ steps.bootstrap.outcome != 'failure' && steps.pages.outcome == 'success' }}
         run: |
           node scripts/verify-deployment.mjs \
             "${{ steps.worker.outputs.url }}" \
