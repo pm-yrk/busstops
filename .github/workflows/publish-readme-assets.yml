@@ -1,0 +1,52 @@
+name: Publish README image assets
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out Bus Stops
+        uses: actions/checkout@v4
+
+      - name: Collect portfolio screenshots
+        run: |
+          set -euxo pipefail
+          mkdir -p /tmp/readme-assets
+          cp apps/web/public/portfolio/busstops-home.png /tmp/readme-assets/busstops-home.png
+          cp apps/web/public/portfolio/busstops-pro.png /tmp/readme-assets/busstops-pro.png
+          git clone --depth 1 https://github.com/pm-yrk/Copycat-hl.git /tmp/copycat
+          cp /tmp/copycat/frontend/public/portfolio/copycat-home.png /tmp/readme-assets/copycat-home.png
+          cp /tmp/copycat/frontend/public/portfolio/copycat-dashboard.png /tmp/readme-assets/copycat-dashboard.png
+          file /tmp/readme-assets/*
+
+      - name: Publish to isolated Cloudflare Pages branch
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          npx --yes wrangler@4 pages deploy /tmp/readme-assets \
+            --project-name busstops \
+            --branch portfolio-assets
+
+      - name: Verify public image URLs
+        run: |
+          set -euxo pipefail
+          BASE='https://portfolio-assets.busstops.pages.dev'
+          for name in busstops-home.png busstops-pro.png copycat-home.png copycat-dashboard.png; do
+            for attempt in {1..12}; do
+              code=$(curl -L -sS -o "/tmp/$name" -w '%{http_code}' "$BASE/$name" || true)
+              if [ "$code" = '200' ]; then break; fi
+              sleep 5
+            done
+            test "$code" = '200'
+            test -s "/tmp/$name"
+            file "/tmp/$name"
+          done
