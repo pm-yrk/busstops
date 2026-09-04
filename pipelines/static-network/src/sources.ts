@@ -31,11 +31,19 @@ export interface StaticSourceResult {
  * How many timetable datasets a run takes by default.
  *
  * Raised from 25 after a national build produced stops for the whole country and services for a
- * fraction of it. Every part of the job scales with this — the download, the parse, the build and
- * the publish — so it is a figure to move deliberately and measure, which is why the build report
- * now carries the coverage it achieved against the count BODS published.
+ * fraction of it — a complete map with a departure board at some stops and nothing at others.
+ *
+ * The figure is bounded by arithmetic rather than taste. What is left of the national artifacts
+ * is what the weekly reconciliation reads, and each is published as a single object: at 25
+ * datasets `network/patterns` measured 100 MiB, so it grows to roughly 240 MiB at 60 and past
+ * what a runtime will hold in one string somewhere beyond 100. Sixty is therefore about as far
+ * as this shape of publish reaches.
+ *
+ * Going further is a real change, not a larger number: the weekly job would read pattern shards
+ * instead of a national object, and this cap would come off. Until then the build report carries
+ * what was taken against what BODS published, so the gap is a figure rather than a surprise.
  */
-export const DEFAULT_MAX_TIMETABLE_DATASETS = 150;
+export const DEFAULT_MAX_TIMETABLE_DATASETS = 60;
 
 export interface FetchStaticSourcesOptions {
   bodsApiKey: string | undefined;

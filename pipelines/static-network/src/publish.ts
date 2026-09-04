@@ -6,7 +6,6 @@ import {
   type ObjectStore,
 } from "@busstops/pipeline-core";
 import type { BuiltNetwork } from "./build-network.js";
-import { buildSearchIndex } from "./search-index.js";
 
 /**
  * Publishes a built network as versioned artifacts with atomic manifest swaps.
@@ -70,6 +69,20 @@ export async function publishNetwork(
   const partialCoverage =
     network.counts.danglingStopReferences > 0 || network.counts.parseErrors > 0;
 
+  /*
+   * The national datasets that something actually reads.
+   *
+   * Journeys, shapes and the search index used to be published here too, and nothing read any of
+   * them: the edge reads journey tiles, pattern tiles carry their own geometry, and search reads
+   * its prefix and tile shards. Journeys alone was 292 MiB of write-only data — and worse than
+   * wasteful, it was the ceiling on how much of England could have a timetable at all, because a
+   * dataset is serialised into one string and a string has a maximum length. Removing them is
+   * what lets the timetable ingest grow.
+   *
+   * What remains is read by the weekly reconciliation, which runs in Node with gigabytes. That is
+   * the next ceiling: patterns grows with coverage the same way, so reaching every published
+   * operator means the weekly job reading shards rather than a national object.
+   */
   const attempts: Array<{
     dataset: string;
     records: readonly unknown[];
@@ -83,22 +96,16 @@ export async function publishNetwork(
     { dataset: DATASETS.operators, records: network.operators, minimumRecordCount: 1 },
     { dataset: DATASETS.services, records: network.services, minimumRecordCount: 1 },
     { dataset: DATASETS.patterns, records: network.patterns, minimumRecordCount: 1 },
-    {
-      dataset: DATASETS.journeys,
-      records: network.journeys,
-      minimumRecordCount: options.minimumJourneys ?? 1,
-    },
-    {
-      dataset: DATASETS.shapes,
-      records: [...network.shapes.entries()].map(([shapeRef, points]) => ({ shapeRef, points })),
-      minimumRecordCount: 1,
-    },
-    {
-      dataset: DATASETS.searchIndex,
-      records: buildSearchIndex(network, { builtAt: now().toISOString() }).entries,
-      minimumRecordCount: 1,
-    },
   ];
+
+  // The journey count is still guarded, just not by publishing them all in one object: a build
+  // that parsed no journeys has misread its sources, and that must stop the publish.
+  if (network.journeys.length < (options.minimumJourneys ?? 1)) {
+    failed.push({
+      dataset: DATASETS.journeys,
+      reason: `only ${network.journeys.length} journeys were built; the timetable parse produced too little to publish`,
+    });
+  }
 
   for (const attempt of attempts) {
     if (attempt.records.length === 0) {

@@ -357,8 +357,27 @@ describe("publishNetwork", () => {
     const result = await publishNetwork(store, network, { version: "2026-09-02T06:00" });
 
     expect(result.complete).toBe(true);
-    expect(result.published.map((m) => m.dataset)).toContain(DATASETS.stops);
-    expect(result.published.map((m) => m.dataset)).toContain(DATASETS.searchIndex);
+
+    /*
+     * The national datasets are the ones something reads: the weekly reconciliation compares
+     * stops, operators, services and patterns against the previous week. Journeys, shapes and the
+     * search index were published here and read by nothing — the edge takes all three from shards
+     * — and were also the ceiling on how much of England could carry a timetable, because a
+     * dataset is serialised into one string and a string has a maximum length. Publishing them
+     * again would put that ceiling back.
+     */
+    const published = result.published.map((m) => m.dataset);
+    expect(published).toEqual(
+      expect.arrayContaining([
+        DATASETS.stops,
+        DATASETS.operators,
+        DATASETS.services,
+        DATASETS.patterns,
+      ]),
+    );
+    expect(published).not.toContain(DATASETS.journeys);
+    expect(published).not.toContain(DATASETS.shapes);
+    expect(published).not.toContain(DATASETS.searchIndex);
 
     const artifacts = new ArtifactStore(store);
     const stops = await artifacts.readCurrent(DATASETS.stops);
