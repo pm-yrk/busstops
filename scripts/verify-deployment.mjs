@@ -135,6 +135,27 @@ await check("search finds a real stop by name", async () => {
   return `"${term}" → ${matches.length} results`;
 });
 
+await check("live vehicles are reported for a covered area", async () => {
+  /*
+   * How many buses are moving is a property of the hour, not of the deployment — at three in the
+   * morning the honest answer is very few — so the count is reported rather than asserted. What
+   * is asserted is that the feed is wired up and that each vehicle carries what the map marker
+   * needs to draw it, which is a property of the deployment and would break silently.
+   */
+  const { response, body, text } = await getJson(`/v1/map?bbox=${BBOX}&zoom=15`);
+  assert(response.ok, `expected 2xx, got ${describe(response, body, text)}`);
+  const vehicles = body?.data?.vehicles;
+  assert(Array.isArray(vehicles), "the map response has no vehicles array");
+  for (const vehicle of vehicles) {
+    assert(vehicle.vehicleRef, "a vehicle has no reference");
+    assert(Number.isFinite(vehicle.coordinate?.lat), "a vehicle has no position to draw");
+    assert(Number.isFinite(vehicle.freshnessSeconds), "a vehicle does not state its age");
+    assert(vehicle.motionState !== undefined, "a vehicle does not say whether it is moving");
+  }
+  const sources = (body?.meta?.sources ?? []).map((source) => source.source ?? source).join(", ");
+  return `${vehicles.length} vehicles from [${sources}] at ${new Date().toISOString()}`;
+});
+
 await check("nearby stops come back for a real point", async () => {
   assert(observed.stop, "no stop was found by the earlier check");
   const { lat, lon } = observed.stop.coordinate;

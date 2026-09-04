@@ -502,23 +502,26 @@ Publishing the shards then failed twice more, and both were about size rather th
 Local checks run in the build container; live checks cite the GitHub Actions run that observed
 them, because this container has no egress (B1).
 
-| Check                         | Command or method                          | Result                                                           | Date       |
-| ----------------------------- | ------------------------------------------ | ---------------------------------------------------------------- | ---------- |
-| Install                       | `npm ci`                                   | Clean install from lockfile                                      | 2026-09-03 |
-| Unit + contract + integration | `npm test`                                 | 896 passed / 896 (792 root across 33 files, 104 web)             | 2026-09-03 |
-| Lint                          | `npm run lint`                             | Clean, `--max-warnings=0`                                        | 2026-09-03 |
-| Format                        | `npm run format:check`                     | Clean                                                            | 2026-09-03 |
-| Type check                    | `npm run typecheck`                        | Passed for every workspace                                       | 2026-09-03 |
-| Free-tier preflight (ci)      | `npm run preflight`                        | Passed, 0 warnings                                               | 2026-09-03 |
-| Free-tier preflight (deploy)  | `PREFLIGHT_STAGE=deploy npm run preflight` | Passed, 0 warnings                                               | 2026-09-03 |
-| Secret scan                   | `node scripts/secret-scan.mjs`             | Clean across 313 tracked files                                   | 2026-09-03 |
-| End-to-end + accessibility    | `npm run test:e2e`                         | 140 passed / 140 across desktop, tablet and two phone sizes      | 2026-09-03 |
-| Journey planner verification  | `npx vitest run packages/journey`          | Brute-force equivalence against exhaustive search                | 2026-09-03 |
-| Zip reader                    | `npx vitest run pipelines/static-network`  | 7 passed against a fixture written by Python's zipfile           | 2026-09-03 |
-| Live sources                  | `Verify live sources` run 2                | BODS, BODS timetables, TfL and NaPTAN all answered and parsed    | 2026-09-03 |
-| Provisioning                  | `Deploy Preview` run 1                     | R2 buckets and Pages project ensured; nothing chargeable enabled | 2026-09-03 |
-| Worker deploy                 | `Deploy Preview` run 1                     | Deployed, secrets set, `/v1/sources/health` answered 200         | 2026-09-03 |
-| Pages deploy                  | `Deploy Preview` run 1                     | Deployed to the `preview` branch alias                           | 2026-09-03 |
+| Check                         | Command or method                          | Result                                                                                  | Date       |
+| ----------------------------- | ------------------------------------------ | --------------------------------------------------------------------------------------- | ---------- |
+| Install                       | `npm ci`                                   | Clean install from lockfile                                                             | 2026-09-03 |
+| Unit + contract + integration | `npm test`                                 | 896 passed / 896 (792 root across 33 files, 104 web)                                    | 2026-09-03 |
+| Lint                          | `npm run lint`                             | Clean, `--max-warnings=0`                                                               | 2026-09-03 |
+| Format                        | `npm run format:check`                     | Clean                                                                                   | 2026-09-03 |
+| Type check                    | `npm run typecheck`                        | Passed for every workspace                                                              | 2026-09-03 |
+| Free-tier preflight (ci)      | `npm run preflight`                        | Passed, 0 warnings                                                                      | 2026-09-03 |
+| Free-tier preflight (deploy)  | `PREFLIGHT_STAGE=deploy npm run preflight` | Passed, 0 warnings                                                                      | 2026-09-03 |
+| Secret scan                   | `node scripts/secret-scan.mjs`             | Clean across 313 tracked files                                                          | 2026-09-03 |
+| End-to-end + accessibility    | `npm run test:e2e`                         | 140 passed / 140 across desktop, tablet and two phone sizes                             | 2026-09-03 |
+| Journey planner verification  | `npx vitest run packages/journey`          | Brute-force equivalence against exhaustive search                                       | 2026-09-03 |
+| Zip reader                    | `npx vitest run pipelines/static-network`  | 7 passed against a fixture written by Python's zipfile                                  | 2026-09-03 |
+| Live sources                  | `Verify live sources` run 2                | BODS, BODS timetables, TfL and NaPTAN all answered and parsed                           | 2026-09-03 |
+| Provisioning                  | `Deploy Preview` run 1                     | R2 buckets and Pages project ensured; nothing chargeable enabled                        | 2026-09-03 |
+| Worker deploy                 | `Deploy Preview` run 1                     | Deployed, secrets set, `/v1/sources/health` answered 200                                | 2026-09-03 |
+| Pages deploy                  | `Deploy Preview` run 1                     | Deployed to the `preview` branch alias                                                  | 2026-09-03 |
+| Data bootstrap                | `Deploy Preview` run 9                     | Outcome `published`; 349,531 stops, 1,043 services, 32,199 journeys                     | 2026-09-04 |
+| Real data through the edge    | `Deploy Preview` run 9                     | 400 stops for a Manchester viewport (first: Piccadilly); stop board and search answered | 2026-09-04 |
+| Deployed visual pass          | `node scripts/visual-qa.mjs <preview>`     | Desktop, tablet and phone in Chromium; screenshots kept as a run artifact               | 2026-09-04 |
 
 ### Acceptance audit (docs/17_ACCEPTANCE_CRITERIA.md)
 
