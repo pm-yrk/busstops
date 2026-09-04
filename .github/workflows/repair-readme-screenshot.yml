@@ -1,0 +1,37 @@
+name: Repair README screenshot
+
+on:
+  push:
+    paths:
+      - ".github/workflows/repair-readme-screenshot.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Convert existing valid screenshot to JPEG
+        run: |
+          python3 -m pip install --quiet pillow
+          python3 - <<'PY'
+          from PIL import Image
+          src = 'docs/portfolio/busstops-home.png'
+          dst = 'docs/portfolio/readme-preview.jpg'
+          im = Image.open(src).convert('RGB')
+          if im.width > 1000:
+              h = round(im.height * 1000 / im.width)
+              im = im.resize((1000, h), Image.Resampling.LANCZOS)
+          im.save(dst, 'JPEG', quality=82, optimize=True)
+          print('saved', dst, im.size)
+          PY
+      - name: Commit JPEG
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/portfolio/readme-preview.jpg
+          git commit -m "Add working Bus Stops README screenshot" || exit 0
+          git push
