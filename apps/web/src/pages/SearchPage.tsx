@@ -145,6 +145,7 @@ export function SearchPage() {
 
           {results.length === 0 ? (
             <EmptyState
+              art="shelter"
               title="Nothing matched that search"
               description="Try a shorter search, a stop code, or a route number. Coverage is England-wide, so a place name usually works."
             />

@@ -43,6 +43,7 @@ export function SavedPage() {
 
       {favourites.length === 0 ? (
         <EmptyState
+          art="stop"
           title="Nothing saved yet"
           description="Save a stop from its page and it will appear here, ready for next time."
           action={

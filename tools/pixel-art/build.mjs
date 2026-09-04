@@ -22,8 +22,24 @@ const FILES = {
   streetTall: ["street-tall", tallScene()],
   busNear: ["bus-near", busSide({ route: "36" })],
   busNearB: ["bus-near-b", busSide({ route: "36", wheelPhase: Math.PI / 4 })],
+  // The far carriageway runs the second livery; everywhere else in the interface a bus is red.
   busFar: ["bus-far", busMid({ route: "12" })],
   busFarB: ["bus-far-b", busMid({ route: "12", wheelPhase: Math.PI / 4 })],
+  busMid: [
+    "bus-mid",
+    busMid({ body: "t", bodyDark: "s", bodyDeep: "r", bodyLight: "u", route: "36" }),
+  ],
+  busMidB: [
+    "bus-mid-b",
+    busMid({
+      body: "t",
+      bodyDark: "s",
+      bodyDeep: "r",
+      bodyLight: "u",
+      route: "36",
+      wheelPhase: Math.PI / 4,
+    }),
+  ],
   busFront: ["bus-front", busFront({ route: "36" })],
   shelter: ["shelter", shelter({})],
   stopFlag: ["stop-flag", stopFlag({})],

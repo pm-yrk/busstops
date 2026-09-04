@@ -163,6 +163,7 @@ export function JourneyPage() {
           </ol>
         ) : (
           <EmptyState
+            art="front"
             title="No bus journey found"
             description={
               plan.data.unavailableReason ??

@@ -103,6 +103,7 @@ export function DisruptionsPage() {
         </ul>
       ) : (
         <EmptyState
+          art="stop"
           title="Nothing to report from this ranking"
           description="No disruption meets the evidence threshold right now. That is not the same as everywhere running well — see the coverage note below."
         />

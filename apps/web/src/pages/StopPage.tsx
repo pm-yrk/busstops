@@ -102,6 +102,7 @@ export function StopPage() {
       <div className="page">
         {isNotFound ? (
           <EmptyState
+            art="bus"
             title="We could not find that stop"
             description="The link may be out of date, or the stop may have been withdrawn. Try searching for it by name or code."
             action={
@@ -203,6 +204,7 @@ export function StopPage() {
 
         {departures.length === 0 ? (
           <EmptyState
+            art="bus"
             title="No departures to show"
             description={
               response.meta.degradation === "scheduled_only"

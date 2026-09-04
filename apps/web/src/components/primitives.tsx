@@ -1,7 +1,13 @@
 import type { ReactNode } from "react";
 import type { Confidence, ResponseMeta } from "@busstops/contracts";
 import { confidenceLabel, degradationMessage, freshnessLabel } from "../lib/format.js";
-import { PixelWarning } from "./pixel/PixelArt.js";
+import {
+  PixelBusFront,
+  PixelBusSide,
+  PixelShelter,
+  PixelStopPole,
+  PixelWarning,
+} from "./pixel/PixelArt.js";
 import "./primitives.css";
 
 /**
@@ -123,17 +129,37 @@ export function ServiceBanner({
   );
 }
 
+/**
+ * The artwork an empty passenger surface may carry.
+ *
+ * Opt-in rather than automatic: an empty Pro table wants a sentence and nothing else, and a
+ * drawing on every one of the two dozen empty states in the product would be decoration rather
+ * than design. These are the same sprites as the hero and the map, at a small size.
+ */
+const EMPTY_ART = {
+  // Each carries its own whole-number scale: the sprites are different shapes, and one shared
+  // target height renders a tall thin stop flag at 1x and a wide bus at 3x.
+  bus: [PixelBusSide, 3],
+  front: [PixelBusFront, 2],
+  stop: [PixelStopPole, 2],
+  shelter: [PixelShelter, 2],
+} as const;
+
 export function EmptyState({
   title,
   description,
   action,
+  art,
 }: {
   title: string;
   description: string;
   action?: ReactNode;
+  art?: keyof typeof EMPTY_ART;
 }) {
+  const [Art, scale] = art ? EMPTY_ART[art] : [null, 1];
   return (
     <div className="state-block surface">
+      {Art && <Art scale={scale} className="state-block__art" />}
       <h2 className="state-block__title">{title}</h2>
       <p className="muted">{description}</p>
       {action}

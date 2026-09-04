@@ -13,29 +13,53 @@
 .loading-bus__scene {
   position: relative;
   width: 100%;
-  max-width: 240px;
-  height: 44px;
+  max-width: 264px;
+  height: 58px;
   overflow: hidden;
 }
 
+/* A kerb and a broken centre line, drawn the same way the hero's road is. */
 .loading-bus__road {
   position: absolute;
   left: 0;
   right: 0;
-  bottom: 6px;
-  height: 2px;
-  background: repeating-linear-gradient(
-    to right,
-    var(--colour-hairline) 0 12px,
-    transparent 12px 20px
-  );
+  bottom: 4px;
+  height: 4px;
+  background:
+    repeating-linear-gradient(to right, var(--colour-muted) 0 10px, transparent 10px 20px) center /
+      auto 2px no-repeat,
+    linear-gradient(var(--colour-hairline), var(--colour-hairline)) bottom / 100% 1px no-repeat;
 }
 
 .loading-bus__vehicle {
   position: absolute;
-  bottom: 8px;
+  bottom: 6px;
   left: 0;
   animation: loading-bus-travel var(--duration-bus-loop) linear infinite;
+}
+
+.loading-bus__frame--b {
+  position: absolute;
+  inset: 0;
+}
+
+.loading-bus__frame--a {
+  animation: loading-bus-wheel 0.3s steps(1) infinite;
+}
+
+.loading-bus__frame--b {
+  animation: loading-bus-wheel 0.3s steps(1) infinite reverse;
+}
+
+@keyframes loading-bus-wheel {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
 }
 
 @keyframes loading-bus-travel {
@@ -43,7 +67,7 @@
     transform: translateX(-40px);
   }
   to {
-    transform: translateX(240px);
+    transform: translateX(264px);
   }
 }
 
@@ -56,8 +80,17 @@
  * state still reads as a loading state, without any movement at all.
  */
 @media (prefers-reduced-motion: reduce) {
-  .loading-bus__vehicle {
+  .loading-bus__vehicle,
+  .loading-bus__frame--a,
+  .loading-bus__frame--b {
     animation: none;
+  }
+
+  .loading-bus__frame--b {
+    opacity: 0;
+  }
+
+  .loading-bus__vehicle {
     left: 50%;
     transform: translateX(-50%);
   }

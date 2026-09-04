@@ -1,5 +1,6 @@
 import type { DeparturePrediction } from "@busstops/contracts";
 import { countdownLabel, formatLondonTime, freshnessLabel } from "../lib/format.js";
+import { PixelBusSide } from "./pixel/PixelArt.js";
 import "./ArrivalBoard.css";
 
 /**
@@ -37,9 +38,13 @@ export function ArrivalBoard({
 
   return (
     <section className="arrival-board" aria-labelledby="arrival-board-heading">
+      {/* The bezel: a printed label on the housing, not part of the display. */}
       <header className="arrival-board__header">
-        <div>
+        <div className="arrival-board__plate">
+          <PixelBusSide size={22} className="arrival-board__mark" />
           <p className="arrival-board__next">NEXT BUS</p>
+        </div>
+        <div>
           <h2 id="arrival-board-heading" className="arrival-board__stop">
             {stopName}
           </h2>
@@ -47,31 +52,34 @@ export function ArrivalBoard({
         </div>
       </header>
 
-      {rows.length === 0 ? (
-        <p className="arrival-board__empty">
-          {degraded
-            ? "No live departures available right now. Timetabled departures are shown below where we have them."
-            : "No departures in the next hour."}
-        </p>
-      ) : (
-        <table className="arrival-board__table">
-          <caption className="visually-hidden">
-            Next departures from {stopName}, stop {stopCode}
-          </caption>
-          <thead>
-            <tr>
-              <th scope="col">Route</th>
-              <th scope="col">Destination</th>
-              <th scope="col">Due</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((departure) => (
-              <ArrivalRow key={departure.id} departure={departure} now={now} />
-            ))}
-          </tbody>
-        </table>
-      )}
+      {/* The screen. Everything inside it is under the dot matrix. */}
+      <div className="arrival-board__screen">
+        {rows.length === 0 ? (
+          <p className="arrival-board__empty">
+            {degraded
+              ? "No live departures available right now. Timetabled departures are shown below where we have them."
+              : "No departures in the next hour."}
+          </p>
+        ) : (
+          <table className="arrival-board__table">
+            <caption className="visually-hidden">
+              Next departures from {stopName}, stop {stopCode}
+            </caption>
+            <thead>
+              <tr>
+                <th scope="col">Route</th>
+                <th scope="col">Destination</th>
+                <th scope="col">Due</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((departure) => (
+                <ArrivalRow key={departure.id} departure={departure} now={now} />
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
 
       <footer className="arrival-board__footer">
         <p className="arrival-board__freshness micro">
@@ -109,8 +117,9 @@ function ArrivalRow({ departure, now }: { departure: DeparturePrediction; now: D
               ? countdownLabel(new Date(time), now)
               : "—"}
         </span>
-        {/* Status is never colour alone: it is always spelled out. */}
+        {/* Status is never colour alone: a lamp, and the word beside it. */}
         <span className={`arrival-board__state arrival-board__state--${state.tone}`}>
+          <span className="arrival-board__lamp" aria-hidden="true" />
           {state.label}
         </span>
         {time && (

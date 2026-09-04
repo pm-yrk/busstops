@@ -8,6 +8,11 @@
  * exactly the set of defects this preview kept shipping. So this runs against the deployed URL,
  * at three real widths, and reports numbers rather than opinions.
  *
+ * What it cannot do is judge the artwork. Every check here is structural: that a drawing loaded,
+ * that it is scaled by a whole number, that nothing overflows. Whether a bus looks like a bus is
+ * a question for the screenshots this saves, and answering it by counting nodes is how
+ * placeholder art survives a green build.
+ *
  * It lives outside the Playwright projects on purpose: those build and serve the app themselves,
  * and the point here is the thing that is actually deployed, basemap and CSP included.
  *
@@ -222,9 +227,21 @@ for (const size of WIDTHS) {
             ctaTop: cta?.getBoundingClientRect().top ?? null,
             viewportHeight: window.innerHeight,
             // Both compositions are in the DOM and one is hidden, so only the drawn one counts.
-            sceneRects: [...document.querySelectorAll(".home__hero-scene .street-scene__canvas")]
-              .filter((svg) => svg.getBoundingClientRect().height > 0)
-              .reduce((total, svg) => total + svg.querySelectorAll("rect").length, 0),
+            street: (() => {
+              const shown = [...document.querySelectorAll(".street-scene__street")].find(
+                (el) => el.getBoundingClientRect().height > 0,
+              );
+              const ground = shown?.querySelector(".street-scene__ground");
+              if (!ground) return null;
+              const box = ground.getBoundingClientRect();
+              return {
+                natural: `${ground.naturalWidth}x${ground.naturalHeight}`,
+                drawn: `${Math.round(box.width)}x${Math.round(box.height)}`,
+                scale: ground.naturalWidth ? box.width / ground.naturalWidth : 0,
+                complete: ground.complete && ground.naturalWidth > 0,
+                buses: shown.querySelectorAll(".street-scene__vehicle img").length,
+              };
+            })(),
           };
         });
 
@@ -233,10 +250,31 @@ for (const size of WIDTHS) {
           hero.heroBottom !== null && Math.abs(hero.heroBottom - hero.viewportHeight) <= 2,
           `hero ends at ${Math.round(hero.heroBottom ?? -1)}, viewport ${hero.viewportHeight}`,
         );
+        /*
+         * Structural only, and named so. Whether the artwork is any good is a question for the
+         * screenshots this sweep saves, not for a number: a node count says nothing about
+         * whether a bus looks like a bus, and reporting one as if it did is how placeholder art
+         * survives a green build. What can be checked mechanically is that the drawing loaded,
+         * that it is the composition meant for this shape of window, and that it is scaled by a
+         * whole number — pixel art at 2.4x is a photograph of pixel art.
+         */
+        const street = hero.street;
         record(
-          `${size.name}/home street scene is drawn, not a row of icons`,
-          hero.sceneRects >= 60 && (hero.sceneHeight ?? 0) > 100,
-          `${hero.sceneRects} shapes, ${Math.round(hero.sceneHeight ?? 0)}px tall`,
+          `${size.name}/home hero artwork loads`,
+          !!street && street.complete && street.buses >= 2,
+          street
+            ? `${street.natural} drawn at ${street.drawn}, ${street.buses} vehicle frames`
+            : "(no street found)",
+        );
+        record(
+          `${size.name}/home hero artwork is scaled by a whole number`,
+          !!street && street.scale >= 2 && Number.isInteger(Math.round(street.scale * 1000) / 1000),
+          street ? `${street.scale}x` : "(no street found)",
+        );
+        record(
+          `${size.name}/home hero artwork actually paints`,
+          (hero.sceneHeight ?? 0) > 100,
+          `${Math.round(hero.sceneHeight ?? 0)}px tall`,
         );
         record(
           `${size.name}/home keeps the explanation below the fold`,

@@ -44,6 +44,16 @@ export const ART: Record<string, PixelImage> = {
     w: 64,
     h: 22,
   },
+  busMid: {
+    src: "/art/bus-mid.png",
+    w: 64,
+    h: 22,
+  },
+  busMidB: {
+    src: "/art/bus-mid-b.png",
+    w: 64,
+    h: 22,
+  },
   busFront: {
     src: "/art/bus-front.png",
     w: 40,

@@ -198,6 +198,7 @@ export function LiveMapPage() {
 
                 {vehicles.length === 0 ? (
                   <EmptyState
+                    art="bus"
                     title="No buses in view"
                     description={
                       response.meta.degradation === "scheduled_only"
@@ -248,6 +249,7 @@ export function LiveMapPage() {
 
                 {stops.length === 0 ? (
                   <EmptyState
+                    art="stop"
                     title="No stops in view"
                     description="There are no bus stops in this area. Try panning the map or searching for a place."
                   />

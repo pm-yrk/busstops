@@ -69,6 +69,7 @@ export function VehiclePage() {
   if (!bbox) {
     return (
       <EmptyState
+        art="front"
         title="This link needs a map area"
         description="Buses are looked up within the part of the map you were viewing, because the live feeds are area-based. Open the bus from the live map or a route page."
         action={<Link to="/live">Go to the live map</Link>}
@@ -171,6 +172,7 @@ export function VehiclePage() {
           </>
         ) : (
           <EmptyState
+            art="bus"
             title="No stop sequence to show"
             description="We could not match this bus to a published route with enough confidence to list its stops. Showing a guessed sequence would be worse than showing none."
           />

@@ -25,6 +25,8 @@ const BLUE = "var(--colour-blue)";
 
 export interface SpriteProps {
   size?: number;
+  /** Explicit whole-number scale, for artwork whose shape makes a target height meaningless. */
+  scale?: number;
   /** Accessible name. When omitted the sprite is decorative and hidden from screen readers. */
   title?: string;
   className?: string;
@@ -36,13 +38,22 @@ interface CanvasProps extends SpriteProps {
   children: ReactNode;
 }
 
-function PixelCanvas({ viewBox, size = 24, title, className, style, children }: CanvasProps) {
+function PixelCanvas({
+  viewBox,
+  size = 24,
+  scale,
+  title,
+  className,
+  style,
+  children,
+}: CanvasProps) {
+  const rendered = scale ? 16 * scale : size;
   const decorative = title === undefined;
   return (
     <svg
       viewBox={viewBox}
-      width={size}
-      height={size}
+      width={rendered}
+      height={rendered}
       className={className}
       style={{ display: "block", imageRendering: "pixelated", ...style }}
       role={decorative ? "presentation" : "img"}
@@ -57,8 +68,8 @@ function PixelCanvas({ viewBox, size = 24, title, className, style, children }: 
 }
 
 /** Side-on bus: the workhorse sprite for rows, loading and anywhere a vehicle is named. */
-export function PixelBusSide(props: SpriteProps) {
-  return <PixelSprite image={ART.busFar!} {...props} />;
+export function PixelBusSide({ frame = "a", ...props }: SpriteProps & { frame?: "a" | "b" }) {
+  return <PixelSprite image={(frame === "b" ? ART.busMidB : ART.busMid)!} {...props} />;
 }
 
 /** The same vehicle head on. */

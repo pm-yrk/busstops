@@ -1,31 +1,100 @@
 /*
- * The arrival board deliberately evokes a roadside digital display: near-black ground, pixel
- * face, generous spacing. It stays a real table so it is readable, selectable and accessible.
+ * A roadside departure display, drawn as the object rather than as a black card.
+ *
+ * There are two surfaces here and they behave differently. The housing is painted metal: it
+ * carries the printed label, the stop name and the controls, and it catches light along its top
+ * edge. The screen is inset into it, and everything shown on the screen is under a dot matrix
+ * and lit in amber, which is what a real display looks like.
+ *
+ * The matrix is why there is no pixel webfont: the LED character comes from the grid laid over
+ * the glass, exactly as it does on the street, so the board needs no font we would have to fetch
+ * from somewhere else. Underneath it is still an ordinary accessible table.
  */
 
 .arrival-board {
-  background: var(--colour-ink);
+  --led: #ffd08a;
+  --led-bright: #ffe6bd;
+  --led-dim: #c9a267;
+  --screen: #0a0b0c;
+
+  background: linear-gradient(180deg, #34322e 0%, #1c1b19 42%, #131211 100%);
   color: var(--colour-surface);
   border-radius: var(--radius-md);
-  padding: var(--space-md);
+  padding: var(--space-sm) var(--space-md) var(--space-md);
   container-type: inline-size;
+  /* A lit top edge and a hard bottom: the two things that make a panel read as an object. */
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.6),
+    0 2px 0 rgba(0, 0, 0, 0.45);
 }
 
 .arrival-board__header {
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
+  align-items: flex-end;
   gap: var(--space-md);
   padding-bottom: var(--space-sm);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.18);
+}
+
+/* The printed plate on the housing, with the same bus that drives across the home page. */
+.arrival-board__plate {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex-shrink: 0;
+}
+
+.arrival-board__mark {
+  opacity: 0.95;
 }
 
 .arrival-board__next {
-  font-family: var(--font-pixel);
+  font-family: var(--font-mono);
   font-size: var(--font-size-small);
-  letter-spacing: 0.14em;
+  font-weight: 700;
+  letter-spacing: 0.18em;
   color: var(--colour-red-on-dark);
-  margin: 0 0 var(--space-xs);
+  margin: 0;
+}
+
+/* ------------------------------------------------------------------ screen */
+
+.arrival-board__screen {
+  position: relative;
+  background: var(--screen);
+  border-radius: 2px;
+  padding: var(--space-sm) var(--space-md);
+  /* Inset, with the glass sitting below the bezel rather than flush with it. */
+  box-shadow:
+    inset 0 2px 5px rgba(0, 0, 0, 0.9),
+    inset 0 0 0 1px #000,
+    0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+/*
+ * The matrix. A grid of unlit gaps laid over everything on the glass, which is what turns
+ * ordinary type into LED type without shipping a font to do it.
+ */
+.arrival-board__screen::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: 2px;
+  background-image:
+    repeating-linear-gradient(to right, rgba(0, 0, 0, 0.42) 0 1px, transparent 1px 3px),
+    repeating-linear-gradient(to bottom, rgba(0, 0, 0, 0.42) 0 1px, transparent 1px 3px);
+}
+
+/* A faint fall-off toward the corners, so the glass is not perfectly flat. */
+.arrival-board__screen::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: 2px;
+  background: radial-gradient(120% 140% at 50% 30%, transparent 55%, rgba(0, 0, 0, 0.55) 100%);
 }
 
 .arrival-board__stop {
@@ -48,10 +117,11 @@
 
 .arrival-board__table th {
   text-align: left;
+  font-family: var(--font-mono);
   font-size: var(--font-size-micro);
   text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: rgba(255, 255, 255, 0.6);
+  letter-spacing: 0.1em;
+  color: var(--led-dim);
   font-weight: 500;
   padding: var(--space-xs) 0;
 }
@@ -63,43 +133,66 @@
 
 .arrival-board__row td {
   padding: var(--space-sm) 0;
-  border-top: 1px solid rgba(255, 255, 255, 0.12);
+  border-top: 1px solid rgba(255, 208, 138, 0.16);
   vertical-align: top;
 }
 
+/* A route block, square-cornered like the ones on a real blind. */
 .route-badge {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 42px;
+  min-width: 44px;
   min-height: 28px;
   padding: 0 var(--space-sm);
   background: var(--colour-red);
   color: var(--colour-surface);
-  border-radius: var(--radius-sm);
-  font-family: var(--font-pixel);
+  border-radius: var(--radius-none);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  font-family: var(--font-mono);
   font-size: var(--font-size-body);
   font-weight: 700;
+  letter-spacing: 0.04em;
 }
 
 .arrival-board__destination {
   padding-left: var(--space-sm);
   padding-right: var(--space-sm);
-  color: rgba(255, 255, 255, 0.92);
+  font-family: var(--font-mono);
+  letter-spacing: 0.02em;
+  color: var(--led);
 }
 
+/* The countdown is the thing anyone at a stop is actually reading, so it is the biggest thing. */
 .arrival-board__countdown {
   display: block;
-  font-family: var(--font-pixel);
-  font-size: var(--font-size-lead);
-  color: var(--colour-surface);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-h3);
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: 0.02em;
+  color: var(--led-bright);
+  text-shadow: 0 0 7px rgba(255, 190, 110, 0.35);
 }
 
 .arrival-board__state {
-  display: block;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  font-family: var(--font-mono);
   font-size: var(--font-size-micro);
-  letter-spacing: 0.06em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+/* A square lamp rather than a dot: this is a pixel board, and round is the wrong shape for it. */
+.arrival-board__lamp {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  background: currentcolor;
+  box-shadow: 0 0 5px currentcolor;
 }
 
 /* Status carries a word as well as a colour, so colour is never the only signal. */
@@ -118,16 +211,18 @@
 
 .arrival-board__clock {
   display: block;
+  font-family: var(--font-mono);
   /*
    * Overrides the .muted class, which is calibrated for the light canvas and is unreadable on the
-   * board's near-black ground. Specificity here is deliberate, not accidental.
+   * board's ground. Specificity here is deliberate, not accidental.
    */
-  color: var(--colour-muted-on-dark);
+  color: var(--led-dim);
 }
 
 .arrival-board__empty {
-  margin: var(--space-md) 0;
-  color: rgba(255, 255, 255, 0.78);
+  margin: var(--space-sm) 0;
+  font-family: var(--font-mono);
+  color: var(--led-dim);
 }
 
 .arrival-board__footer {
@@ -136,8 +231,6 @@
   justify-content: space-between;
   gap: var(--space-sm);
   margin-top: var(--space-sm);
-  padding-top: var(--space-sm);
-  border-top: 1px solid rgba(255, 255, 255, 0.18);
 }
 
 .arrival-board__freshness {
@@ -159,10 +252,29 @@
 
 /* On the narrowest screens the destination column wraps rather than overflowing. */
 @container (max-width: 380px) {
+  .arrival-board {
+    padding-inline: var(--space-sm);
+  }
+  .arrival-board__screen {
+    padding-inline: var(--space-sm);
+  }
   .arrival-board__destination {
     font-size: var(--font-size-small);
   }
   .arrival-board__countdown {
-    font-size: var(--font-size-body);
+    font-size: var(--font-size-lead);
+  }
+}
+
+/* The matrix is a texture, not information; at very high contrast it only gets in the way. */
+@media (prefers-contrast: more) {
+  .arrival-board__screen::after,
+  .arrival-board__screen::before {
+    display: none;
+  }
+
+  .arrival-board {
+    --led: #ffe9cd;
+    --led-dim: #e2c69a;
   }
 }
