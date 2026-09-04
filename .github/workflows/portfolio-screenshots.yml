@@ -1,0 +1,78 @@
+name: Portfolio screenshots
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/portfolio-screenshots.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: portfolio-screenshots
+  cancel-in-progress: true
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Chromium
+        run: npx --yes playwright@1.55.0 install --with-deps chromium
+
+      - name: Check the public preview is available
+        run: |
+          for attempt in {1..12}; do
+            if curl -fsS --max-time 15 https://preview.busstops.pages.dev/ >/dev/null; then
+              exit 0
+            fi
+            echo "Preview not ready on attempt $attempt"
+            sleep 10
+          done
+          echo "::error::The public Bus Stops preview is not available."
+          exit 1
+
+      - name: Capture the current public build
+        run: |
+          mkdir -p docs/portfolio
+
+          npx --yes playwright@1.55.0 screenshot \
+            --browser chromium \
+            --viewport-size "1440,900" \
+            --wait-for-timeout 5000 \
+            https://preview.busstops.pages.dev/ \
+            docs/portfolio/busstops-home.png
+
+          npx --yes playwright@1.55.0 screenshot \
+            --browser chromium \
+            --viewport-size "1440,900" \
+            --wait-for-timeout 6000 \
+            https://preview.busstops.pages.dev/pro \
+            docs/portfolio/busstops-pro.png
+
+      - name: Upload screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: portfolio-screenshots
+          path: docs/portfolio
+          retention-days: 7
+
+      - name: Keep the latest screenshots in the repository
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/portfolio/busstops-home.png docs/portfolio/busstops-pro.png
+          if git diff --cached --quiet; then
+            echo "Portfolio screenshots are already current."
+          else
+            git commit -m "Refresh Bus Stops portfolio screenshots"
+            git push
+          fi
