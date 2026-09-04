@@ -69,10 +69,11 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git pull --rebase origin main
           git add docs/portfolio/busstops-home.png docs/portfolio/busstops-pro.png
           if git diff --cached --quiet; then
             echo "Portfolio screenshots are already current."
           else
             git commit -m "Refresh Bus Stops portfolio screenshots"
-            git push
+            git push origin HEAD:main
           fi
