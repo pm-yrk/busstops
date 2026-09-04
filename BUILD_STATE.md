@@ -29,6 +29,16 @@ Last updated: 2026-09-04 (artwork rebuilt as a real sprite library; preview gree
   is scaled by a whole number, the basemap paints, nothing scrolls sideways — and keeps its
   screenshots as a run artifact. It does not judge the artwork, and says so: `npm run art:bench`
   renders every surface carrying artwork for that.
+- **B4 — GitHub Actions is disabled on this account (2026-09-04 12:09 UTC).** Dispatching any
+  workflow returns `Actions has been disabled for this user`, and the run history now lists zero
+  runs where it listed twenty-six an hour earlier. This container has no upstream egress of its
+  own — the agent proxy answers 403 to `data.bus-data.dft.gov.uk` and to the Actions artifact
+  host — so with Actions off there is no route to a real upstream, no way to deploy, and no way
+  to run the deployed probe or the GTFS measurement. Everything that needs a runner is stopped
+  until Actions is re-enabled (usually a spending limit or an account flag, in the repository's
+  Actions settings or the account's billing page). Everything that does not need one continues:
+  adapters, pipelines, the Worker, the app, tests and the artwork are all buildable and testable
+  here, and Chromium is installed locally for visual work.
 - Blockers: B1 and B2 are unchanged and are properties of _this build container_, not of the
   platform — the GitHub Actions runner has the egress and the credentials that this container
   lacks, which is precisely why the deploy happens there. B3 is resolved (see below).
