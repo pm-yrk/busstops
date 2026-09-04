@@ -129,10 +129,15 @@ export function App() {
             <Link to="/terms">Terms</Link>
             <Link to="/contact">Contact</Link>
           </nav>
+          {/*
+           * Every source the product uses, including the basemap. MapLibre also renders the
+           * style's own attribution on the map itself, but that only appears on pages with a map
+           * — and the licence is owed whether or not someone opened one.
+           */}
           <p className="app__attribution micro muted">
             Contains public sector information licensed under the Open Government Licence v3.0.
-            Powered by TfL Open Data. © OpenStreetMap contributors, ODbL. Weather data by
-            Open-Meteo.com.
+            Powered by TfL Open Data. © OpenStreetMap contributors, ODbL. Basemap tiles by
+            OpenFreeMap, © OpenMapTiles. Weather data by Open-Meteo.com.
           </p>
         </div>
       </footer>
