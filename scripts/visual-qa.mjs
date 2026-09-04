@@ -226,6 +226,43 @@ for (const size of WIDTHS) {
         map.attribution.slice(0, 80) || "(none)",
       );
       console.log(`        markers on the map: ${map.markers}`);
+
+      /*
+       * Clicking a stop is the one interaction the whole Live page exists for, and nothing else
+       * checks it end to end: the API test proves the endpoint answers, and the accessibility
+       * suite runs against a mocked map. Only here is it a real marker, drawn from real published
+       * stops, opening a real board.
+       */
+      if (map.markers > 0) {
+        await page.locator(".map-marker--stop").first().click();
+        await page.waitForTimeout(3_000);
+        const board = await page.evaluate(() => {
+          const panel = document.querySelector(".selected-stop");
+          return {
+            open: !!panel,
+            heading: panel?.querySelector(".arrival-board__stop")?.textContent?.trim() ?? "",
+            label: panel?.querySelector(".arrival-board__next")?.textContent?.trim() ?? "",
+            rows: panel?.querySelectorAll(".arrival-board__table tbody tr").length ?? 0,
+            error: panel?.querySelector(".selected-stop__error")?.textContent?.trim() ?? "",
+          };
+        });
+        await page.screenshot({
+          path: join(screenshotDir, `${size.name}-live-selected.png`),
+          fullPage: false,
+        });
+        record(
+          `${size.name}/live opens the arrival board when a stop is clicked`,
+          board.open && board.error === "" && board.label === "NEXT BUS",
+          board.open
+            ? `${board.label || "(no label)"} — ${board.heading || "(no stop)"}, ${board.rows} row(s)${
+                board.error ? `, error: ${board.error}` : ""
+              }`
+            : "no board opened",
+        );
+      } else {
+        // Not a failure of the page: no stops in view is a data question, answered elsewhere.
+        console.log("        no stop markers to click, so the board was not exercised");
+      }
     }
 
     if (sink.failedRequests.length > 0) {
