@@ -71,6 +71,61 @@ jobs:
             diagnosis.log
           retention-days: 7
 
+  # What the GTFS timetable downloads actually contain.
+  #
+  # The static network takes the first 60 of 945 published TransXChange datasets, which is why a
+  # stop in Manchester comes back with no routes. BODS publishes its own GTFS extract, nationally
+  # and by region, and the choice between them — and whether a two-day horizon holds enough — is
+  # a measurement, not a preference. This makes it: download sizes, inflated entry sizes, row
+  # counts, services and trips inside the horizon, and how long stop_times takes to stream.
+  gtfs:
+    name: Measure the GTFS timetable downloads
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - run: npm ci --no-audit --no-fund
+
+      - name: Disk before
+        run: df -h /
+
+      - name: Measure
+        env:
+          BODS_API_KEY: ${{ secrets.BODS_API_KEY }}
+          # The reader streams, so this is headroom for the trip and service-id indexes rather
+          # than for file contents. It spends nothing: the runner's memory is already paid for.
+          NODE_OPTIONS: "--max-old-space-size=8192"
+        run: |
+          set -o pipefail
+          npx tsx scripts/measure-gtfs.ts \
+            --regions all,yorkshire,north_west \
+            --json gtfs-measurement.json 2>&1 | tee gtfs.log
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "## GTFS timetable measurement"
+            echo
+            echo '```'
+            sed -n '1,200p' gtfs.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gtfs-measurement
+          path: |
+            gtfs-measurement.json
+            gtfs.log
+          retention-days: 7
+          if-no-files-found: ignore
+
   verify:
     name: Fetch and parse real upstream responses
     runs-on: ubuntu-latest
