@@ -49,6 +49,23 @@ export const LOCATOR_BUCKETS = 256;
 export const SEARCH_PREFIX_LENGTH = 2;
 
 /**
+ * Where a two-character bucket is split into three-character ones.
+ *
+ * Two characters is right for most of the alphabet and hopeless for a few of it. Measured
+ * nationally, "bo" held 69,659 entries and could publish 31,570 of them; "st", "ma", "nw" and
+ * "s_" were the same story, while most buckets are a few hundred rows. A single length cannot
+ * serve both, so the ones that overflow are split and the index records which were written —
+ * making the depth a property of the published data rather than a constant both sides have to
+ * agree on in advance.
+ *
+ * The threshold is in records rather than bytes because it decides the shape of the index, and
+ * the shape should not change because a name got longer. It sits well below the byte budget so
+ * splitting happens before truncation would.
+ */
+export const SEARCH_BUCKET_SPLIT_AT = 6_000;
+export const SEARCH_SPLIT_PREFIX_LENGTH = 3;
+
+/**
  * A shard that grew without bound would reintroduce the original defect quietly, so each is
  * capped. The cap is high enough that no real bucket approaches it and low enough that hitting it
  * cannot exhaust an isolate; publishing records when it bites, rather than silently truncating.
@@ -131,6 +148,33 @@ export function searchPrefixFor(token: string, length = SEARCH_PREFIX_LENGTH): s
   const normalized = token.toLowerCase().replace(/[^a-z0-9]/g, "");
   if (normalized.length === 0) return "_".repeat(length);
   return normalized.slice(0, length).padEnd(length, "_");
+}
+
+/**
+ * The prefix buckets a query word could be in, given what was actually published.
+ *
+ * The publisher splits a bucket that would overflow, so the depth varies by letter and only the
+ * index knows which. A word of three characters or more resolves to exactly one bucket at either
+ * depth. A word of one or two characters against a split letter has no single bucket, so it reads
+ * the sub-buckets — capped, because "bo" is a vague question and reading forty objects to answer
+ * it would be a worse answer than reading eight.
+ */
+export const MAX_SEARCH_BUCKETS_PER_WORD = 8;
+
+export function searchPrefixesForWord(word: string, published: ReadonlySet<string>): string[] {
+  const shallow = searchPrefixFor(word, SEARCH_PREFIX_LENGTH);
+  if (published.has(shallow)) return [shallow];
+
+  const deep = searchPrefixFor(word, SEARCH_SPLIT_PREFIX_LENGTH);
+  if (published.has(deep)) return [deep];
+
+  // The letter was split and the word is too short to name one of its parts.
+  const parts: string[] = [];
+  for (const candidate of published) {
+    if (candidate.length > shallow.length && candidate.startsWith(shallow)) parts.push(candidate);
+    if (parts.length >= MAX_SEARCH_BUCKETS_PER_WORD) break;
+  }
+  return parts;
 }
 
 /** What the edge needs to resolve an identifier to the shard holding it. */

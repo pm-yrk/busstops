@@ -22,7 +22,7 @@ import {
   patternTileDataset,
   searchIndex as rankSearch,
   searchPrefixDataset,
-  searchPrefixFor,
+  searchPrefixesForWord,
   searchTileDataset,
   searchTilesForBoundingBox,
   stopLocatorDataset,
@@ -473,13 +473,18 @@ export class NetworkReader {
     if (!index) return null;
 
     const words = tokenize(query);
-    const prefixes = new Set(words.map((word) => searchPrefixFor(word)));
     // A query of only stop-words still deserves an answer rather than an error; its raw form is
     // the best available key.
-    if (prefixes.size === 0) prefixes.add(searchPrefixFor(query));
+    const lookups = words.length > 0 ? words : [query];
 
+    /*
+     * How deep a letter's buckets go is a property of the published data, not a constant: the
+     * publisher splits the few letters that would overflow and the index says which. Asking the
+     * shared resolver rather than computing a key here is what keeps the two sides from
+     * disagreeing about where an entry was filed.
+     */
     const available = new Set(index.searchPrefixes);
-    const wanted = [...prefixes].filter((prefix) => available.has(prefix));
+    const wanted = [...new Set(lookups.flatMap((word) => searchPrefixesForWord(word, available)))];
     const buckets = await Promise.all(
       wanted.map((prefix) =>
         this.readShard<SearchIndexEntry>(searchPrefixDataset(prefix), index.version, now),

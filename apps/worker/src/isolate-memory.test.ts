@@ -149,6 +149,35 @@ describe("the edge never reads a national dataset", () => {
     expect(serving.length).toBeGreaterThan(0);
   });
 
+  it("finds a stop whose letter had to be split into deeper buckets", async () => {
+    /*
+     * The publisher splits a two-character bucket that would overflow, and only the index says
+     * which letters it did that to. If the edge computed the key itself instead of asking, every
+     * stop under a split letter would simply stop being findable — no error, no empty bucket,
+     * just nothing.
+     */
+    const crowded = network();
+    const seed = crowded.stops[0]!;
+    for (let i = 0; i < 6_200; i++) {
+      crowded.stops.push({
+        ...seed,
+        id: `crowded-${i}`,
+        atcoCode: `CRW${i}`,
+        name: `Bolton Interchange ${i}`,
+      });
+    }
+
+    const store = new InMemoryObjectStore();
+    await publishNetworkShards(store, crowded, { version: "v1" });
+    const reader = new NetworkReader(store);
+
+    const index = await reader.networkIndex();
+    expect(index!.searchPrefixes).not.toContain("bo");
+
+    const found = await reader.search("Bolton", { limit: 10 });
+    expect(found?.hits.length).toBeGreaterThan(0);
+  });
+
   it("reads only the tiles a viewport covers, not every published tile", async () => {
     const { reader, reads } = await publishedReader();
     const index = await reader.networkIndex();

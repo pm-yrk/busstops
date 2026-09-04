@@ -15,7 +15,7 @@ export interface R2StoreConfig {
   fetchImpl?: typeof fetch;
   /** Requests are bounded so a hung call cannot consume the job's runtime budget. */
   timeoutMs?: number;
-  /** How many times to wait out a 429 before giving up on a request. */
+  /** How many times to wait out a 429 or a 5xx before giving up on a request. */
   maxRateLimitRetries?: number;
   sleep?: (ms: number) => Promise<void>;
 }
@@ -67,7 +67,17 @@ export class R2ObjectStore implements ObjectStore {
         clearTimeout(timer);
       }
 
-      if (response.status !== 429 || attempt > this.maxRateLimitRetries) return response;
+      /*
+       * 429 is the API asking for less; 502, 503 and 504 are it being briefly unable to answer.
+       * Both are transient and both are expected when a national build writes thousands of
+       * objects — a run that treats either as final throws away three quarters of an hour of work
+       * over a moment of load. A national publish lost 376 shards, and then its own rollback, to
+       * a run of 503s. Every other status, including 413 and 404, is answered honestly and at
+       * once, because retrying those would only be slower.
+       */
+      const transient =
+        response.status === 429 || (response.status >= 502 && response.status <= 504);
+      if (!transient || attempt > this.maxRateLimitRetries) return response;
 
       const retryAfter = Number(response.headers.get("retry-after"));
       const waitMs =

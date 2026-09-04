@@ -20,11 +20,15 @@ import { buildSearchIndex } from "./search-index.js";
 export const NETWORK_SCHEMA_VERSION = "1.0.0";
 
 /**
- * How many journey tiles are published at once. Chosen to keep a national build's wall clock
- * reasonable without flooding object storage; the writes are independent, so the only reason for
- * a bound is politeness to the other end and to the runner's sockets.
+ * How many objects are published at once.
+ *
+ * The writes are independent, so the only reason for a bound is politeness to the other end and
+ * to the runner's sockets. Twelve was fine for fifteen hundred objects and not for three thousand:
+ * the API started answering 503, and a build lost 376 shards and then its own rollback to a run
+ * of them. Eight, with transient statuses now retried rather than treated as final, trades a
+ * little wall clock for a build that finishes.
  */
-export const TILE_PUBLISH_CONCURRENCY = 12;
+export const TILE_PUBLISH_CONCURRENCY = 8;
 
 export const DATASETS = {
   stops: "network/stops",

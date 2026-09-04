@@ -7,8 +7,11 @@ import type { Coordinate } from "@busstops/contracts";
 import { buildNetwork } from "./build-network.js";
 import { publishNetworkShards } from "./publish-shards.js";
 import {
+  MAX_SEARCH_BUCKETS_PER_WORD,
   MAX_SHARD_BYTES,
+  SEARCH_BUCKET_SPLIT_AT,
   assemblePatternTile,
+  searchPrefixesForWord,
   patternTileDataset,
   type PatternTileLine,
 } from "./shards.js";
@@ -156,6 +159,55 @@ describe("shard size", () => {
     expect(result.truncated[0]!.dropped).toBeGreaterThan(0);
     // And the size of the largest shard in each family is reported, not just whether it fitted.
     expect(result.largest.some((entry) => entry.bytes > 0)).toBe(true);
+  });
+});
+
+describe("search buckets", () => {
+  it("splits a letter that will not fit rather than truncating it", async () => {
+    /*
+     * Two characters suits most of the alphabet and not all of it. Nationally "bo" held 69,659
+     * entries where most buckets hold a few hundred, and truncating it lost every stop whose only
+     * distinctive word began that way — which is most of a city.
+     */
+    const network = build([txcXml]);
+    const stop = network.stops[0];
+    expect(stop).toBeDefined();
+
+    // Enough entries under one two-character prefix to force the split, spread over three third
+    // characters so the result is a real division rather than a rename.
+    const thirds = ["l", "u", "w"];
+    for (let i = 0; i < SEARCH_BUCKET_SPLIT_AT + 60; i++) {
+      network.stops.push({
+        ...stop!,
+        id: `bo-${i}`,
+        atcoCode: `BO${i}`,
+        name: `Bo${thirds[i % thirds.length]}ton Interchange ${i}`,
+      });
+    }
+
+    const { result } = await publish(network);
+    expect(result.index).not.toBeNull();
+    const prefixes = result.index!.searchPrefixes;
+
+    expect(prefixes).not.toContain("bo");
+    for (const third of thirds) expect(prefixes).toContain(`bo${third}`);
+
+    // And nothing was dropped to make it fit.
+    expect(result.truncated.filter((entry) => entry.dataset.includes("search-prefix"))).toEqual([]);
+  });
+
+  it("sends a word to the buckets it was actually published in", () => {
+    // The edge asks this rather than computing a key, because only the index knows how deep a
+    // letter went. A three-letter word resolves to one object at either depth.
+    const split = new Set(["bol", "bou", "bow", "pi"]);
+    expect(searchPrefixesForWord("bolton", split)).toEqual(["bol"]);
+    expect(searchPrefixesForWord("piccadilly", split)).toEqual(["pi"]);
+
+    // Two characters against a split letter has no single bucket, so it reads the parts — capped,
+    // because "bo" is a vague question and forty reads would be a worse answer than eight.
+    const parts = searchPrefixesForWord("bo", split);
+    expect(parts.sort()).toEqual(["bol", "bou", "bow"]);
+    expect(parts.length).toBeLessThanOrEqual(MAX_SEARCH_BUCKETS_PER_WORD);
   });
 });
 

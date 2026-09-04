@@ -12,6 +12,9 @@ import { NETWORK_SCHEMA_VERSION, TILE_PUBLISH_CONCURRENCY } from "./publish.js";
 import {
   MAX_SHARD_BYTES,
   MAX_SHARD_RECORDS,
+  SEARCH_BUCKET_SPLIT_AT,
+  SEARCH_PREFIX_LENGTH,
+  SEARCH_SPLIT_PREFIX_LENGTH,
   SHARDED,
   type NetworkIndexRecord,
   type PatternTileLine,
@@ -438,10 +441,48 @@ function groupSearchByPrefix(
     }
   }
 
+  /*
+   * A letter that will not fit is split rather than truncated.
+   *
+   * Two characters suits most of the alphabet and not all of it: nationally "bo" held 69,659
+   * entries where most buckets hold a few hundred, and truncating it lost every stop whose only
+   * distinctive word began that way. Splitting the few that overflow keeps one small object per
+   * lookup without making every other letter deeper than it needs to be, and the index records
+   * which depth each letter ended up at so the edge does not have to guess.
+   */
+  const split = new Map<string, SearchIndexEntry[]>();
+  for (const [key, bucket] of byPrefix) {
+    if (bucket.length <= SEARCH_BUCKET_SPLIT_AT) {
+      split.set(key, bucket);
+      continue;
+    }
+    for (const entry of bucket) {
+      const deeper = deepestPrefixFor(entry, key);
+      const existing = split.get(deeper);
+      if (existing) existing.push(entry);
+      else split.set(deeper, [entry]);
+    }
+  }
+
   // Sorted rather than truncated arbitrarily: what survives a full bucket should be what people
   // mean by the word they typed.
-  for (const bucket of byPrefix.values()) bucket.sort((a, b) => b.prominence - a.prominence);
-  return byPrefix;
+  for (const bucket of split.values()) bucket.sort((a, b) => b.prominence - a.prominence);
+  return split;
+}
+
+/**
+ * Which three-character bucket an entry belongs in, once its two-character one has been split.
+ *
+ * An entry can reach a bucket by any of its words, so the one that put it there is the one that
+ * decides where it goes next. Anything else would file it under a word it does not have.
+ */
+function deepestPrefixFor(entry: SearchIndexEntry, shallowKey: string): string {
+  for (const token of [...entry.tokens, ...entry.codes]) {
+    if (searchPrefixFor(token, SEARCH_PREFIX_LENGTH) === shallowKey) {
+      return searchPrefixFor(token, SEARCH_SPLIT_PREFIX_LENGTH);
+    }
+  }
+  return searchPrefixFor(shallowKey, SEARCH_SPLIT_PREFIX_LENGTH);
 }
 
 function groupLocators(network: BuiltNetwork): Map<number, StopLocatorRecord[]> {
