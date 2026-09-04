@@ -85,6 +85,10 @@ jobs:
       # -------------------------------------------------------- worker deploy
       # The Worker is deployed before its secrets exist, because `wrangler secret put` needs the
       # script to be there. Secrets applied afterwards take effect on the live Worker immediately.
+      # `--no-install`, because wrangler is a pinned devDependency that `npm ci` has already put in
+      # place. Plain `npx wrangler` fetches whatever is newest from the registry at deploy time —
+      # unpinned, unreviewed, and on one run it simply sat there downloading until the job was
+      # killed. A deploy should install nothing it did not install at the start.
       - name: Deploy the preview Worker
         id: worker
         env:
@@ -92,7 +96,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           set -o pipefail
-          npx wrangler deploy \
+          npx --no-install wrangler deploy \
             --config apps/worker/wrangler.toml \
             --env "$WORKER_ENV" 2>&1 | tee deploy.log
 
@@ -126,7 +130,7 @@ jobs:
             # stdout is discarded because wrangler echoes a success banner per secret; stderr is
             # kept, because it names the secret and the failure but never the value, and losing
             # the diagnostic would be worse than the negligible risk of showing it.
-            printf '%s' "${!NAME}" | npx wrangler secret put "$NAME" \
+            printf '%s' "${!NAME}" | npx --no-install wrangler secret put "$NAME" \
               --config apps/worker/wrangler.toml \
               --env "$WORKER_ENV" >/dev/null \
               && echo "  $NAME: set" \
@@ -174,7 +178,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           set -o pipefail
-          npx wrangler pages deploy apps/web/dist \
+          npx --no-install wrangler pages deploy apps/web/dist \
             --project-name "$PAGES_PROJECT" \
             --branch "$PAGES_BRANCH" \
             --commit-dirty=true 2>&1 | tee pages.log

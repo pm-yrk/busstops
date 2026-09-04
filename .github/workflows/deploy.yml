@@ -78,7 +78,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           set -o pipefail
-          npx wrangler deploy \
+          npx --no-install wrangler deploy \
             --config apps/worker/wrangler.toml \
             --env "${{ steps.target.outputs.worker_env }}" 2>&1 | tee deploy.log
           URL=$(grep -oE 'https://[a-z0-9.-]+\.workers\.dev' deploy.log | head -1)
@@ -103,7 +103,7 @@ jobs:
               echo "::error::Repository secret $NAME is empty."
               exit 1
             fi
-            printf '%s' "${!NAME}" | npx wrangler secret put "$NAME" \
+            printf '%s' "${!NAME}" | npx --no-install wrangler secret put "$NAME" \
               --config apps/worker/wrangler.toml \
               --env "${{ steps.target.outputs.worker_env }}" >/dev/null \
               && echo "  $NAME: set" \
@@ -130,7 +130,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
-          npx wrangler pages deploy apps/web/dist \
+          npx --no-install wrangler pages deploy apps/web/dist \
             --project-name busstops \
             --branch "${{ steps.target.outputs.pages_branch }}"
 
