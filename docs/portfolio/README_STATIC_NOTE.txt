@@ -1,0 +1,1 @@
+Static portfolio screenshot copied from the current Bus Stops build on 2026-09-04.
