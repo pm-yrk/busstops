@@ -1,0 +1,72 @@
+name: Disruptions — official notices
+
+# Collects what operators and authorities are currently announcing, and publishes it as one small
+# artifact the Worker reads whole.
+#
+# It is separate from the intelligence pipeline on purpose. A passenger must not have to wait for
+# a statistical baseline before an operator's own "this route is suspended" reaches them, and the
+# two have completely different cadences: a baseline is a daily batch, a notice is worth having
+# within minutes.
+#
+# Why not fetch it in the Worker: measured. The BODS SIRI-SX document was 6,016,038 bytes when a
+# runner fetched it on 2026-09-04. Parsing six megabytes of XML inside an edge isolate, per
+# viewport, per request, is neither free nor fast — and a cold isolate would pay it again.
+#
+# Cost: three upstream requests every ten minutes, well inside every publisher's guidance, and
+# Actions minutes are free and unmetered for public repositories.
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Never two collectors at once; the second would spend upstream requests on data the first has.
+concurrency:
+  group: disruptions
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    name: Ask every publisher what it is saying
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - run: npm ci --no-audit --no-fund
+
+      - name: Collect and publish
+        env:
+          BODS_API_KEY: ${{ secrets.BODS_API_KEY }}
+          TFL_APP_KEY: ${{ secrets.TFL_APP_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          R2_BUCKET_ARTIFACTS: busstops-artifacts-preview
+        run: |
+          set -o pipefail
+          npx tsx pipelines/disruptions/run-collect.ts 2>&1 | tee disruptions.log
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "## Official disruption notices"
+            echo
+            echo '```'
+            sed -n '1,60p' disruptions.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: disruptions-report
+          path: disruptions-report.json
+          retention-days: 7
+          if-no-files-found: ignore

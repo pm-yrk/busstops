@@ -7,6 +7,7 @@ import {
 } from "./common.js";
 import { DeparturePredictionSchema, VehicleStateSchema } from "./live.js";
 import { GovernorStateSchema, IncidentSchema, SourceHealthSchema } from "./derived.js";
+import { DisruptionBoardSchema, DisruptionNoticeSchema } from "./disruptions.js";
 import { OperatorSchema, ServiceRouteSchema, StopSchema } from "./static.js";
 
 /**
@@ -94,6 +95,14 @@ export const MapResponseDataSchema = z.object({
   stops: z.array(MapStopSummarySchema),
   vehicles: z.array(MapVehicleSummarySchema),
   incidents: z.array(IncidentSchema),
+  /**
+   * Official disruption notices touching this viewport.
+   *
+   * Separate from `incidents` because they are different claims: an incident is something Bus
+   * Stops inferred from watching buses, a notice is something an operator published. The map
+   * draws both, and says which is which.
+   */
+  disruptions: z.array(DisruptionNoticeSchema),
   /** True when results were capped, so the UI can prompt the user to zoom in. */
   truncated: z.object({
     stops: z.boolean(),
@@ -223,6 +232,21 @@ export type DisruptionItem = z.infer<typeof DisruptionItemSchema>;
 
 export const DisruptionsResponseSchema = apiEnvelope(
   z.object({
+    /*
+     * Two layers, kept apart on purpose.
+     *
+     * `official` is what an operator or authority published. The rankings below are what Bus
+     * Stops worked out from watching buses. A passenger deciding whether to wait is entitled to
+     * know which of those they are reading, and merging them into one list would take that away.
+     * The official layer also does not wait for an analytics baseline: an operator saying a route
+     * is suspended is useful on the first day, before anything has a baseline at all.
+     */
+    official: z.array(DisruptionNoticeSchema),
+    /** Which publishers were asked and what came back, so silence is attributable. */
+    sourcesQueried: DisruptionBoardSchema.shape.sourcesQueried,
+    /** When the notices were collected from the publishers — not when this response was built. */
+    officialCollectedAt: IsoInstantSchema.nullable(),
+
     /** Two rankings, never merged into one league table: they answer different questions. */
     byDelayBurden: z.array(DisruptionItemSchema),
     byAbnormality: z.array(DisruptionItemSchema),

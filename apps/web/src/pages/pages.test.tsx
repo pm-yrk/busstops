@@ -194,6 +194,9 @@ describe("DisruptionsPage", () => {
   const response: DisruptionsResponse = {
     meta,
     data: {
+      official: [],
+      sourcesQueried: [],
+      officialCollectedAt: null,
       byDelayBurden: [],
       byAbnormality: [],
       uncoveredAreas: ["No incident analysis has been published yet."],

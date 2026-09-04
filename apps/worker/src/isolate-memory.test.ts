@@ -222,7 +222,14 @@ describe("national datasets the edge does still hold", () => {
       expect(allowance.maxRecords, allowance.why).toBeGreaterThan(0);
     }
 
-    const readerSource = readFileSync(join(here, "network-reader.ts"), "utf8");
+    /*
+     * Every reader in the Worker, not just the network one. The guard used to scan a single file,
+     * which meant a new reader could add a whole-dataset read and never be asked about it — and
+     * one promptly did.
+     */
+    const readerSource = ["network-reader.ts", "disruption-reader.ts"]
+      .map((name) => readFileSync(join(here, name), "utf8"))
+      .join("\n");
     /*
      * readCurrent reads a whole dataset. It may only ever be used on the allowed ones.
      *
@@ -244,6 +251,13 @@ describe("national datasets the edge does still hold", () => {
        * has to be able to load the timetable for its own tile.
        */
       "journeyTileDataset(tile)",
+      /*
+       * The disruption set is bounded at publish time — MAX_PUBLISHED_NOTICES, ordered
+       * worst-first — so its size is a property of the pipeline rather than of how disrupted
+       * England happens to be today. That is what makes reading it whole safe, and it is the
+       * only reason: if the cap ever comes off, this entry must come off with it.
+       */
+      "DISRUPTIONS_DATASET",
     ]);
     for (const expression of wholeDatasetReads) {
       expect(allowedExpressions.has(expression), `${expression} is read whole`).toBe(true);

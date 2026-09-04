@@ -6,6 +6,7 @@ import {
   type SearchResult,
 } from "@busstops/contracts";
 import { safeModeActive } from "@busstops/governor";
+import { DisruptionReader, noticesFor } from "./disruption-reader.js";
 import {
   boundingBoxAreaSquareDegrees,
   corridorBoundingBox,
@@ -57,6 +58,7 @@ let network: NetworkReader | null = null;
 let liveService: LiveService | null = null;
 let journeyService: JourneyService | null = null;
 let proService: ProService | null = null;
+let disruptions: DisruptionReader | null = null;
 const rateLimiter = new RateLimiter();
 
 interface RequestContext {
@@ -262,6 +264,30 @@ router.get("/v1/map", async (_request, { env, url }) => {
     });
   }
 
+  /*
+   * Official notices for this viewport, matched on the stops it contains and the routes drawn in
+   * it. This used to be a literal `incidents: []` with no comment, which meant the map could never
+   * show a closure however loudly an operator announced it.
+   */
+  const snapshot = await disruptions?.snapshot();
+  const viewportRouteNames = [
+    ...new Set(
+      vehicles
+        .map((vehicle) => vehicle.routePublicName)
+        .filter((name): name is string => typeof name === "string" && name.length > 0),
+    ),
+  ];
+  const viewportDisruptions = snapshot
+    ? noticesFor(
+        snapshot.notices,
+        {
+          atcoCodes: stopsResult.stops.map((stop) => stop.atcoCode),
+          routeNames: viewportRouteNames,
+        },
+        MAP_QUERY_LIMITS.maxIncidents,
+      )
+    : [];
+
   const data: MapResponseData = {
     stops: stopsResult.stops.map((stop) => ({
       id: stop.id,
@@ -273,7 +299,10 @@ router.get("/v1/map", async (_request, { env, url }) => {
       hasLiveCoverage: liveAllowed,
     })),
     vehicles,
+    // Derived incidents come from the intelligence pipeline, which has not published yet; when it
+    // does they arrive here alongside the notices rather than instead of them.
     incidents: [],
+    disruptions: viewportDisruptions,
     truncated: {
       stops: stopsResult.truncated,
       vehicles: vehiclesTruncated,
@@ -953,19 +982,25 @@ router.get("/v1/operators/:id", async (_request, { env, params }) => {
 router.get("/v1/disruptions", async (_request, { env }) => {
   const state = governorState(env);
   const index = network ? await network.networkIndex() : null;
+  const snapshot = (await disruptions?.snapshot()) ?? null;
 
   return json(
     {
       meta: buildMeta({
         sources: [],
-        observedAt: null,
-        coverage: 0,
+        // The freshness of this page is when the publishers were last asked, which is a fact
+        // about the notices rather than about the moment this JSON was assembled.
+        observedAt: snapshot?.collectedAt ?? null,
+        coverage: snapshot === null || snapshot.neverPublished ? 0 : 1,
         governorState: state,
         now: new Date(),
         networkPartialCoverage: index?.partialCoverage ?? true,
         safeMode: safeModeActive(state),
       }),
       data: {
+        official: snapshot?.notices ?? [],
+        sourcesQueried: snapshot?.sourcesQueried ?? [],
+        officialCollectedAt: snapshot?.collectedAt ?? null,
         byDelayBurden: [],
         byAbnormality: [],
         // Naming what is not covered matters more than listing what is: an empty list must not
@@ -1125,6 +1160,7 @@ export function resetWorkerState(): void {
   liveService = null;
   journeyService = null;
   proService = null;
+  disruptions = null;
 }
 
 export function initialiseWorker(
@@ -1143,6 +1179,9 @@ export function initialiseWorker(
   }
   if (!proService) {
     proService = new ProService(env.ARTIFACTS ? new R2BindingStore(env.ARTIFACTS) : null);
+  }
+  if (!disruptions && env.ARTIFACTS) {
+    disruptions = new DisruptionReader(new R2BindingStore(env.ARTIFACTS));
   }
 }
 

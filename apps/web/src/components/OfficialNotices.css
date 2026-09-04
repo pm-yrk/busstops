@@ -1,0 +1,205 @@
+/*
+ * Official notices read as posted announcements, not as analytics.
+ *
+ * The visual language is deliberately different from the ranked cards below them: a coloured
+ * severity edge, a printed-looking severity chip, the operator's own words set as prose. Anyone
+ * scanning the page should be able to tell without reading the headings that these came from
+ * somewhere else.
+ */
+
+.official-notices {
+  display: grid;
+  gap: var(--space-md);
+}
+
+.official-notices__header h2 {
+  margin: 0;
+}
+
+.official-notices__header p {
+  margin: var(--space-xs) 0 0;
+}
+
+.official-notices__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-md);
+}
+
+.notice {
+  background: var(--colour-surface);
+  border: 1px solid var(--colour-hairline);
+  /* The severity edge: the one piece of colour that carries meaning on this card. */
+  border-left: 4px solid var(--colour-hairline);
+  border-radius: var(--radius-md);
+  padding: var(--space-md);
+  display: grid;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+.notice--severe {
+  border-left-color: var(--colour-critical);
+}
+.notice--moderate {
+  border-left-color: var(--colour-amber);
+}
+.notice--minor {
+  border-left-color: var(--colour-blue);
+}
+.notice--information,
+.notice--unknown {
+  border-left-color: var(--colour-hairline);
+}
+
+.notice__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+.notice__summary {
+  margin: 0;
+  font-size: 1.05rem;
+  line-height: 1.35;
+  /* Takes the rest of the row, and wraps rather than pushing the chips off the card. */
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
+.notice__severity,
+.notice__planned {
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+}
+
+.notice__severity--severe {
+  background: var(--colour-critical-pale);
+  color: var(--colour-critical);
+}
+.notice__severity--moderate {
+  background: var(--colour-amber-pale);
+  color: var(--colour-amber);
+}
+.notice__severity--minor {
+  background: var(--colour-blue-pale);
+  color: var(--colour-blue);
+}
+.notice__severity--information,
+.notice__severity--unknown {
+  background: var(--colour-canvas);
+  color: var(--colour-muted);
+}
+
+.notice__planned {
+  background: var(--colour-canvas);
+  color: var(--colour-muted);
+  border: 1px solid var(--colour-hairline);
+}
+
+.notice__description,
+.notice__advice {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.notice__advice {
+  background: var(--colour-canvas);
+  border-radius: var(--radius-sm);
+  padding: var(--space-sm);
+}
+
+.notice__facts {
+  margin: 0;
+  display: grid;
+  /* minmax(0,…), so a long stop list wraps instead of widening the card past the page. */
+  grid-template-columns: repeat(auto-fit, minmax(min(14rem, 100%), 1fr));
+  gap: var(--space-sm) var(--space-md);
+}
+
+.notice__facts > div {
+  min-width: 0;
+}
+
+.notice__facts dt {
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--colour-muted);
+}
+
+.notice__facts dd {
+  margin: 2px 0 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.notice__routes,
+.notice__stops {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs) var(--space-sm);
+}
+
+.notice__route {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.notice__attribution {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+  margin: 0;
+}
+
+.official-notices__empty {
+  margin: 0;
+  padding: var(--space-md);
+  background: var(--colour-canvas);
+  border: 1px dashed var(--colour-hairline);
+  border-radius: var(--radius-md);
+}
+
+.official-notices__sources summary {
+  cursor: pointer;
+  color: var(--colour-muted);
+  font-size: 0.9rem;
+}
+
+.official-notices__sources ul {
+  list-style: none;
+  margin: var(--space-sm) 0 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-xs);
+}
+
+.official-notices__sources li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+  align-items: baseline;
+  min-width: 0;
+}
+
+.official-notices__source-name {
+  flex: 1 1 14rem;
+  min-width: 0;
+}
+
+.official-notices__outcome.is-failed {
+  color: var(--colour-critical);
+}
+
+.official-notices__outcome.is-ok {
+  color: var(--colour-success);
+}

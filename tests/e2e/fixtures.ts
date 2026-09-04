@@ -249,6 +249,7 @@ export const EMPTY_MAP = {
     stops: [],
     vehicles: [],
     incidents: [],
+    disruptions: [],
     truncated: { stops: false, vehicles: false, incidents: false },
   },
 };

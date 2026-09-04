@@ -9,6 +9,7 @@ import {
   ServiceBanner,
   StateLozenge,
 } from "../components/primitives.js";
+import { OfficialNotices } from "../components/OfficialNotices.js";
 import { apiClient } from "../lib/api.js";
 import { useFetch } from "../lib/use-fetch.js";
 import { minutesLabel, percentLabel } from "../lib/format.js";
@@ -64,50 +65,67 @@ export function DisruptionsPage() {
       <header className="disruptions-page__header">
         <h1>Disruption</h1>
         <p className="muted">
-          Two ways of asking what is wrong. They rarely agree, and both are worth reading.
+          What operators have announced, and what we have observed. They are different claims, so
+          they are shown separately.
         </p>
       </header>
 
-      <div className="disruptions-page__tabs" role="tablist" aria-label="Ranking">
-        <button
-          type="button"
-          role="tab"
-          aria-selected={ranking === "burden"}
-          className={ranking === "burden" ? "is-selected" : ""}
-          onClick={() => setRanking("burden")}
-        >
-          Largest delay burden
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={ranking === "abnormal"}
-          className={ranking === "abnormal" ? "is-selected" : ""}
-          onClick={() => setRanking("abnormal")}
-        >
-          Most abnormal
-        </button>
-      </div>
+      <OfficialNotices
+        notices={response.data.official}
+        sourcesQueried={response.data.sourcesQueried}
+        collectedAt={response.data.officialCollectedAt}
+      />
 
-      <p className="disruptions-page__explainer muted small">
-        {ranking === "burden"
-          ? "Ranked by total passenger time lost. A busy corridor running slightly late usually outranks a quiet road running very late."
-          : "Ranked by how far conditions are from normal for this time and place. A quiet road behaving unusually badly usually outranks a busy one behaving as it always does."}
-      </p>
+      <section className="disruptions-page__observed" aria-labelledby="observed-heading">
+        <header className="disruptions-page__header">
+          <h2 id="observed-heading">Observed by Bus Stops</h2>
+          <p className="muted">
+            Worked out from watching buses, not announced by anyone. Two ways of asking what is
+            wrong: they rarely agree, and both are worth reading.
+          </p>
+        </header>
 
-      {items.length > 0 ? (
-        <ul className="disruptions-page__list">
-          {items.map((item) => (
-            <DisruptionCard key={item.incident.id} item={item} />
-          ))}
-        </ul>
-      ) : (
-        <EmptyState
-          art="stop"
-          title="Nothing to report from this ranking"
-          description="No disruption meets the evidence threshold right now. That is not the same as everywhere running well — see the coverage note below."
-        />
-      )}
+        <div className="disruptions-page__tabs" role="tablist" aria-label="Ranking">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={ranking === "burden"}
+            className={ranking === "burden" ? "is-selected" : ""}
+            onClick={() => setRanking("burden")}
+          >
+            Largest delay burden
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={ranking === "abnormal"}
+            className={ranking === "abnormal" ? "is-selected" : ""}
+            onClick={() => setRanking("abnormal")}
+          >
+            Most abnormal
+          </button>
+        </div>
+
+        <p className="disruptions-page__explainer muted small">
+          {ranking === "burden"
+            ? "Ranked by total passenger time lost. A busy corridor running slightly late usually outranks a quiet road running very late."
+            : "Ranked by how far conditions are from normal for this time and place. A quiet road behaving unusually badly usually outranks a busy one behaving as it always does."}
+        </p>
+
+        {items.length > 0 ? (
+          <ul className="disruptions-page__list">
+            {items.map((item) => (
+              <DisruptionCard key={item.incident.id} item={item} />
+            ))}
+          </ul>
+        ) : (
+          <EmptyState
+            art="stop"
+            title="Nothing to report from this ranking"
+            description="No disruption meets the evidence threshold right now. That is not the same as everywhere running well — see the coverage note below."
+          />
+        )}
+      </section>
 
       <section aria-labelledby="coverage-heading" className="disruptions-page__coverage">
         <h2 id="coverage-heading">What this does not cover</h2>
