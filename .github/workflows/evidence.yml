@@ -1,0 +1,180 @@
+name: Evidence
+
+# Runs the diagnostics and writes what they saw back into the repository.
+#
+# Why it exists: this session's GitHub token lost its Actions scope mid-build — `workflow_dispatch`
+# answers "Actions has been disabled for this user" and a run that was read in full an hour earlier
+# now 404s — while pushes and the repository's own Actions continue to work normally. A push
+# trigger therefore still runs, and committing the reports into `evidence/` puts them somewhere
+# readable over git rather than only in a run log.
+#
+# It costs nothing when it is not wanted: every job is gated on `[evidence]` appearing in the
+# pushed commit's message. Preview only. Nothing here can touch production.
+#
+# Pushes made with GITHUB_TOKEN do not start new workflow runs, so the commit this makes cannot
+# retrigger it.
+
+on:
+  push:
+    branches:
+      - claude/bus-stops-platform-build-f7qztb
+
+permissions:
+  contents: write
+
+concurrency:
+  group: evidence-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  WORKER_ENV: preview
+  R2_BUCKET_ARTIFACTS: busstops-artifacts-preview
+
+jobs:
+  # The live-data question: why does a viewport with hundreds of buses in it come back empty
+  # through the deployment? The Worker is redeployed first, so the probe runs against this commit.
+  probe:
+    name: Probe the deployed API, and ask BODS the same question
+    if: contains(github.event.head_commit.message, '[evidence]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - run: npm ci --no-audit --no-fund
+
+      - name: Deploy the preview Worker
+        id: worker
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -o pipefail
+          npx --no-install wrangler deploy \
+            --config apps/worker/wrangler.toml \
+            --env "$WORKER_ENV" 2>&1 | tee deploy.log
+          URL=$(grep -oE 'https://[a-z0-9.-]+\.workers\.dev' deploy.log | head -1)
+          [ -n "$URL" ] || { echo "::error::No Worker URL in the wrangler output."; exit 1; }
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Configure Worker runtime secrets
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          BODS_API_KEY: ${{ secrets.BODS_API_KEY }}
+          TFL_APP_KEY: ${{ secrets.TFL_APP_KEY }}
+          VEHICLE_SALT_SECRET: ${{ secrets.VEHICLE_SALT_SECRET }}
+          UNSUBSCRIBE_SECRET: ${{ secrets.UNSUBSCRIBE_SECRET }}
+        run: |
+          # Piped on stdin, never as arguments: an argument appears in the process list.
+          set -u
+          for NAME in BODS_API_KEY TFL_APP_KEY VEHICLE_SALT_SECRET UNSUBSCRIBE_SECRET; do
+            [ -n "${!NAME:-}" ] || { echo "::error::Repository secret $NAME is empty."; exit 1; }
+            printf '%s' "${!NAME}" | npx --no-install wrangler secret put "$NAME" \
+              --config apps/worker/wrangler.toml --env "$WORKER_ENV" >/dev/null \
+              && echo "  $NAME: set" \
+              || { echo "::error::Failed to set Worker secret $NAME"; exit 1; }
+          done
+
+      - name: Wait for the Worker
+        run: |
+          for attempt in 1 2 3 4 5 6; do
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 \
+              "${{ steps.worker.outputs.url }}/v1/sources/health" || echo 000)
+            if [ "$CODE" = "200" ]; then
+              echo "Worker healthy on attempt $attempt"
+              exit 0
+            fi
+            echo "Attempt $attempt: HTTP $CODE"
+            sleep 10
+          done
+          echo "::error::The Worker did not become healthy."
+          exit 1
+
+      - name: Probe the deployment
+        run: |
+          set -o pipefail
+          mkdir -p evidence
+          npx tsx scripts/probe-deployment.ts \
+            --worker "${{ steps.worker.outputs.url }}" \
+            --json evidence/deployment-probe.json 2>&1 | tee evidence/probe.log
+
+      # The independent request. Same viewports, same minute, straight to the source.
+      - name: Ask the upstreams directly
+        if: always()
+        env:
+          BODS_API_KEY: ${{ secrets.BODS_API_KEY }}
+          TFL_APP_KEY: ${{ secrets.TFL_APP_KEY }}
+        run: |
+          set -o pipefail
+          mkdir -p evidence
+          npx tsx scripts/diagnose-upstreams.ts \
+            --json evidence/upstream-diagnosis.json 2>&1 | tee evidence/upstreams.log
+
+      - name: Commit what it saw
+        if: always()
+        run: |
+          node scripts/commit-evidence.mjs probe "Worker: ${{ steps.worker.outputs.url }}"
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "## Probe"
+            echo
+            echo '```'
+            sed -n '1,200p' evidence/probe.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # The timetable question: what is actually inside the BODS GTFS archives, and does the streaming
+  # reader hold up against a national one?
+  gtfs:
+    name: Measure the GTFS timetable downloads
+    if: contains(github.event.head_commit.message, '[evidence]')
+    needs: probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - run: npm ci --no-audit --no-fund
+
+      - name: Measure
+        env:
+          BODS_API_KEY: ${{ secrets.BODS_API_KEY }}
+          # Headroom for the trip and service-id indexes, not for file contents: the reader
+          # streams. It spends nothing — the runner's memory is already paid for.
+          NODE_OPTIONS: "--max-old-space-size=8192"
+        run: |
+          set -o pipefail
+          mkdir -p evidence
+          {
+            echo "# Runner before the measurement"
+            df -h /
+            free -h
+          } > evidence/gtfs-host.log
+          npx tsx scripts/measure-gtfs.ts \
+            --regions all,yorkshire,north_west \
+            --json evidence/gtfs-measurement.json 2>&1 | tee evidence/gtfs.log
+
+      - name: Commit what it measured
+        if: always()
+        run: node scripts/commit-evidence.mjs gtfs "GTFS timetable measurement"
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "## GTFS measurement"
+            echo
+            echo '```'
+            sed -n '1,200p' evidence/gtfs.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

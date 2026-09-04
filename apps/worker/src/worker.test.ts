@@ -1161,3 +1161,182 @@ describe("R2 binding adapter", () => {
     expect(await binding.get("a/b.json")).toBeNull();
   });
 });
+
+/*
+ * The run 26 mismatch, preserved.
+ *
+ * On 2026-09-04 at 09:38 UTC, one request from a GitHub runner straight to the BODS datafeed and
+ * one request through the deployed Worker were made in the same second, for the same four
+ * viewports. BODS answered with 237 vehicles for Leeds, 364 for Manchester, 338 for Birmingham
+ * and 233 for Bristol. The deployment answered zero for all four, and said nothing about why.
+ *
+ * Two separate defects are pinned here, because the second is what made the first so expensive:
+ *
+ *  1. Given a feed carrying those vehicles, the Worker must publish them — capped, but never
+ *     dropped, and never silently.
+ *  2. When a viewport genuinely has no buses, the Worker must be able to say which of the four
+ *     things happened: the request failed, the feed was empty, everything in it was rejected, or
+ *     it was fine. "Zero, unexplained" is the state this build spent a day in.
+ */
+describe("live vehicles: the run 26 mismatch", () => {
+  const AREAS = [
+    {
+      name: "Leeds",
+      bbox: "-1.62,53.75,-1.46,53.84",
+      at: { lat: 53.8, lon: -1.54 },
+      observed: 237,
+    },
+    {
+      name: "Manchester",
+      bbox: "-2.32,53.42,-2.16,53.52",
+      at: { lat: 53.48, lon: -2.24 },
+      observed: 364,
+    },
+    {
+      name: "Birmingham",
+      bbox: "-1.96,52.42,-1.8,52.52",
+      at: { lat: 52.48, lon: -1.9 },
+      observed: 338,
+    },
+    {
+      name: "Bristol",
+      bbox: "-2.66,51.42,-2.5,51.51",
+      at: { lat: 51.45, lon: -2.59 },
+      observed: 233,
+    },
+  ];
+
+  const NOW = new Date("2026-09-04T09:38:48.000Z");
+
+  /** A feed of `count` vehicles inside one viewport, recorded a few seconds ago. */
+  function feedFor(area: (typeof AREAS)[number]): string {
+    const recordedAt = new Date(NOW.getTime() - 6_000).toISOString();
+    const activities = Array.from({ length: area.observed }, (_, index) => {
+      // Spread them over the box so none lands on an edge and every one is plausibly in England.
+      const lat = area.at.lat + ((index % 20) - 10) * 0.001;
+      const lon = area.at.lon + ((Math.floor(index / 20) % 20) - 10) * 0.001;
+      return `<VehicleActivity>
+        <RecordedAtTime>${recordedAt}</RecordedAtTime>
+        <MonitoredVehicleJourney>
+          <LineRef>${(index % 90) + 1}</LineRef>
+          <PublishedLineName>${(index % 90) + 1}</PublishedLineName>
+          <OperatorRef>OP${index % 7}</OperatorRef>
+          <DestinationName>${area.name} Interchange</DestinationName>
+          <VehicleLocation><Longitude>${lon.toFixed(5)}</Longitude><Latitude>${lat.toFixed(5)}</Latitude></VehicleLocation>
+          <Bearing>${index % 360}</Bearing>
+          <VehicleRef>${area.name.toUpperCase()}-${10000 + index}</VehicleRef>
+        </MonitoredVehicleJourney>
+      </VehicleActivity>`;
+    }).join("\n");
+
+    return `<?xml version="1.0" encoding="UTF-8"?>
+<Siri xmlns="http://www.siri.org.uk/siri" version="2.0">
+  <ServiceDelivery>
+    <ResponseTimestamp>${NOW.toISOString()}</ResponseTimestamp>
+    <ProducerRef>DepartmentForTransport</ProducerRef>
+    <VehicleMonitoringDelivery version="2.0">
+      <ResponseTimestamp>${NOW.toISOString()}</ResponseTimestamp>
+      ${activities}
+    </VehicleMonitoringDelivery>
+  </ServiceDelivery>
+</Siri>`;
+  }
+
+  async function envServing(body: string, status = 200) {
+    const store = await publishedStore();
+    const env = makeEnv(store);
+    resetWorkerState();
+    initialiseWorker(
+      env,
+      () => NOW,
+      (async () => new Response(body, { status })) as unknown as typeof fetch,
+    );
+    return env;
+  }
+
+  it.each(AREAS)("publishes the $observed vehicles BODS returned for $name", async (area) => {
+    const env = await envServing(feedFor(area));
+    const response = await worker.fetch(get(`/v1/map?bbox=${area.bbox}&zoom=14`), env, ctx);
+    const body = (await response.json()) as {
+      data: { vehicles: unknown[]; truncated: { vehicles: boolean } };
+    };
+
+    // The map caps a viewport at MAX_VEHICLES and says so, rather than quietly shipping fewer.
+    const expected = Math.min(area.observed, MAP_QUERY_LIMITS.maxVehicles);
+    expect(body.data.vehicles.length).toBe(expected);
+    expect(body.data.truncated.vehicles).toBe(area.observed > expected);
+  });
+
+  it.each(AREAS)("accounts for every one of $name's records in the diagnostics", async (area) => {
+    const env = await envServing(feedFor(area));
+    const response = await worker.fetch(get(`/v1/diagnostics/live?bbox=${area.bbox}`), env, ctx);
+    const body = (await response.json()) as {
+      data: {
+        vehiclesReturned: number;
+        diagnostics: Array<{
+          source: string;
+          outcome: string;
+          accepted: number;
+          rawRecords: number;
+        }>;
+      };
+    };
+
+    const bods = body.data.diagnostics.find((entry) => entry.source === "bods")!;
+    expect(bods.outcome).toBe("ok");
+    expect(bods.accepted).toBe(area.observed);
+    expect(bods.rawRecords).toBe(area.observed);
+    // The diagnostics count observations, not the capped map payload.
+    expect(body.data.vehiclesReturned).toBe(area.observed);
+  });
+
+  it.each([
+    {
+      label: "the request was refused",
+      body: "no",
+      status: 503,
+      outcome: "request_failed",
+    },
+    {
+      label: "the feed was empty",
+      body: `<?xml version="1.0" encoding="UTF-8"?>
+<Siri xmlns="http://www.siri.org.uk/siri" version="2.0"><ServiceDelivery>
+  <ResponseTimestamp>${NOW.toISOString()}</ResponseTimestamp>
+  <VehicleMonitoringDelivery version="2.0"/>
+</ServiceDelivery></Siri>`,
+      status: 200,
+      outcome: "empty_feed",
+    },
+    {
+      label: "every record was too old to use",
+      body: `<?xml version="1.0" encoding="UTF-8"?>
+<Siri xmlns="http://www.siri.org.uk/siri" version="2.0"><ServiceDelivery>
+  <ResponseTimestamp>${NOW.toISOString()}</ResponseTimestamp>
+  <VehicleMonitoringDelivery version="2.0"><VehicleActivity>
+    <RecordedAtTime>2026-09-04T08:00:00.000Z</RecordedAtTime>
+    <MonitoredVehicleJourney>
+      <VehicleLocation><Longitude>-1.54000</Longitude><Latitude>53.80000</Latitude></VehicleLocation>
+      <VehicleRef>LEEDS-1</VehicleRef>
+    </MonitoredVehicleJourney>
+  </VehicleActivity></VehicleMonitoringDelivery>
+</ServiceDelivery></Siri>`,
+      status: 200,
+      outcome: "all_rejected",
+    },
+  ])("says $label rather than reporting an unexplained zero", async (scenario) => {
+    const env = await envServing(scenario.body, scenario.status);
+    const response = await worker.fetch(
+      get(`/v1/diagnostics/live?bbox=${AREAS[0]!.bbox}`),
+      env,
+      ctx,
+    );
+    const body = (await response.json()) as {
+      data: { vehiclesReturned: number; diagnostics: Array<{ source: string; outcome: string }> };
+    };
+
+    expect(body.data.vehiclesReturned).toBe(0);
+    expect(body.data.diagnostics.find((entry) => entry.source === "bods")!.outcome).toBe(
+      scenario.outcome,
+    );
+  });
+});

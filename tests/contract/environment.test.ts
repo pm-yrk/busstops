@@ -61,9 +61,11 @@ const readInCode = new Set(
 
 describe(".env.example matches what the platform actually uses", () => {
   it("documents every variable the code reads from the process environment", () => {
-    // PREFLIGHT_STAGE is a CI switch rather than deployment configuration; the template explains
-    // it in prose instead of offering it as a value to set.
-    const exempt = new Set(["PREFLIGHT_STAGE"]);
+    // Two exemptions, both runner-supplied rather than platform configuration: PREFLIGHT_STAGE is
+    // a CI switch the template explains in prose instead of offering as a value to set, and
+    // GITHUB_REF_NAME is set by GitHub Actions itself — nobody configures it, and putting it in
+    // the template would suggest somebody should.
+    const exempt = new Set(["PREFLIGHT_STAGE", "GITHUB_REF_NAME"]);
     const undocumented = [...readInCode].filter((name) => !declared.has(name) && !exempt.has(name));
     expect(undocumented).toEqual([]);
   });
