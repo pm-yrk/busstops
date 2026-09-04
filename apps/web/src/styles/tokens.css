@@ -112,11 +112,13 @@
 }
 
 /*
- * On a phone the header wraps the nav onto a second row, so it is taller. The hero subtracts
- * whichever value is live, which is why there is one variable and not two independent guesses.
+ * On a phone the nav sits on a second row, so the header is taller. The hero subtracts whichever
+ * value is live, which is why there is one variable and not two independent guesses — and why
+ * this figure is measured in a browser rather than estimated: the brand line, the nav's touch
+ * target and the header's own padding, with nothing left over.
  */
 @media (max-width: 640px) {
   :root {
-    --header-height: 7.6rem;
+    --header-height: 6.1rem;
   }
 }

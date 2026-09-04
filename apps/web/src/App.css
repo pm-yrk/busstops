@@ -50,6 +50,13 @@
 .app__nav-link {
   display: inline-flex;
   align-items: center;
+  /*
+   * Wrap between items, never inside one. Below 640px the nav is a scrolling strip rather than a
+   * wrapping block (see the media query), and without this its items broke across two lines
+   * inside that strip — "Live map" reading as two separate links and costing the header an extra
+   * row it did not need.
+   */
+  white-space: nowrap;
   min-height: var(--min-touch-target);
   padding: 0 var(--space-sm);
   text-decoration: none;
