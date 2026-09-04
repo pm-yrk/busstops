@@ -1,6 +1,6 @@
 # Bus Stops. Build State
 
-Last updated: 2026-09-03 (deployment automated; preview deploy executing in GitHub Actions)
+Last updated: 2026-09-04 (preview serving real national data; edge reads shards, not the country)
 
 ## Current status
 
@@ -13,6 +13,14 @@ Last updated: 2026-09-03 (deployment automated; preview deploy executing in GitH
 - Deployment: preview deploy runs from `Deploy Preview`, which provisions Cloudflare resources,
   sets the Worker's runtime secrets, deploys both halves, bootstraps real national data and smoke
   tests what it deployed. Production stays behind a separate, reviewer-gated button.
+- Data: the preview serves real national data. A bootstrap publishes 349,531 NaPTAN stops, 1,043
+  services, 48,448 patterns and 32,199 journeys from live BODS and NaPTAN, sharded so the edge
+  reads only what a request spans — see ADR 0002 for why the mechanism differs from the letter of
+  the architecture document, and what it costs.
+- Design: the approved direction is applied and checked in a browser against the deployment, not
+  only in the DOM. `scripts/visual-qa.mjs` opens the deployed preview at desktop, tablet and
+  phone widths, measures the hero, the basemap and the page gutters, clicks a real stop, and
+  keeps its screenshots as a run artifact.
 - Blockers: B1 and B2 are unchanged and are properties of _this build container_, not of the
   platform — the GitHub Actions runner has the egress and the credentials that this container
   lacks, which is precisely why the deploy happens there. B3 is resolved (see below).
@@ -381,9 +389,11 @@ A dead `quota:check` npm script pointing at a file that was never written has be
 
 ### Next
 
-1. Observe the preview run, fix anything it surfaces, and record the preview URL and the live
-   BODS/TfL/NaPTAN behaviour actually observed — not assumed — in the source registry.
-2. Production remains un-deployed pending explicit approval after the preview is reviewed.
+1. Watch the shard sizes each publish reports. The byte budget is a backstop, not a target: a
+   family that starts truncating is telling you its key needs to be finer, and it says which.
+2. The remaining TfL adapters (route sequence, stop point, disruptions) are still verified
+   against published documentation rather than against a live response.
+3. Production remains un-deployed pending explicit approval after the preview is reviewed.
 
 ### Deployment evidence
 
