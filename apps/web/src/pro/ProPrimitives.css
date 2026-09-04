@@ -61,6 +61,8 @@
 }
 
 .pro-metric {
+  /* A grid child sizes to its content unless told it may be narrower than that. */
+  min-width: 0;
   display: grid;
   gap: var(--space-sm);
   padding: var(--space-md);

@@ -87,7 +87,14 @@
 
 .pro-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  /*
+   * `min(N, 100%)`, not N. A track with a hard minimum cannot shrink below it, so a tile whose
+   * own content is wider than its share pushes the track out and the page with it — measured on
+   * the deployed Pro at 768px, where two columns each overhung by 24px and the document scrolled
+   * sideways by exactly 48. Below the minimum the track now takes the width available and the
+   * content wraps, which is what the reader wanted anyway.
+   */
+  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
   gap: var(--space-md);
 }
 
@@ -170,7 +177,14 @@
 
 .pro-two-up {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  /*
+   * `min(N, 100%)`, not N. A track with a hard minimum cannot shrink below it, so a tile whose
+   * own content is wider than its share pushes the track out and the page with it — measured on
+   * the deployed Pro at 768px, where two columns each overhung by 24px and the document scrolled
+   * sideways by exactly 48. Below the minimum the track now takes the width available and the
+   * content wraps, which is what the reader wanted anyway.
+   */
+  grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr));
   gap: var(--space-lg);
 }
 

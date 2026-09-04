@@ -206,7 +206,14 @@ input[type="email"] {
 .grid-cards {
   display: grid;
   gap: var(--space-md);
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  /*
+   * `min(N, 100%)`, not N. A track with a hard minimum cannot shrink below it, so a tile whose
+   * own content is wider than its share pushes the track out and the page with it — measured on
+   * the deployed Pro at 768px, where two columns each overhung by 24px and the document scrolled
+   * sideways by exactly 48. Below the minimum the track now takes the width available and the
+   * content wraps, which is what the reader wanted anyway.
+   */
+  grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr));
 }
 
 /* Reduced motion: no travelling bus, no transitions. Content must never depend on motion. */

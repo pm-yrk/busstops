@@ -23,7 +23,7 @@ import { chromium } from "@playwright/test";
  * The bodies passed to page.evaluate are serialised and run inside the browser, not here, so the
  * DOM globals they use are legitimately undefined in this file's own scope.
  */
-/* global document, window, getComputedStyle, HTMLCanvasElement */
+/* global document, window, getComputedStyle */
 
 const [, , baseUrl, screenshotDir = "visual-qa", apiUrlArg] = process.argv;
 
@@ -213,37 +213,35 @@ for (const size of WIDTHS) {
         const map = await page.evaluate(() => {
           const canvas = document.querySelector("canvas.maplibregl-canvas");
           const unavailable = document.querySelector(".map-view--unavailable");
-          let painted = 0;
-          if (canvas instanceof HTMLCanvasElement) {
-            // A style that failed to load leaves a canvas of one flat colour. Sampling a grid is
-            // the only way to tell "a map rendered" from "a rectangle exists".
-            const probe = document.createElement("canvas");
-            probe.width = 40;
-            probe.height = 40;
-            const context2d = probe.getContext("2d");
-            if (context2d) {
-              try {
-                context2d.drawImage(canvas, 0, 0, 40, 40);
-                const data = context2d.getImageData(0, 0, 40, 40).data;
-                const seen = new Set();
-                for (let i = 0; i < data.length; i += 4) {
-                  seen.add(`${data[i]},${data[i + 1]},${data[i + 2]}`);
-                }
-                painted = seen.size;
-              } catch {
-                painted = -1;
-              }
-            }
-          }
           return {
             hasCanvas: !!canvas,
             unavailable: !!unavailable,
-            distinctColours: painted,
             markers: document.querySelectorAll(".map-marker").length,
             attribution:
               document.querySelector(".maplibregl-ctrl-attrib")?.textContent?.trim() ?? "",
           };
         });
+
+        /*
+         * Whether the map drew anything, measured from a screenshot rather than from the canvas.
+         *
+         * Reading the canvas directly does not work and is not the map's fault: MapLibre renders
+         * with WebGL and does not ask for `preserveDrawingBuffer`, so the drawing buffer is cleared
+         * once it has been composited and `drawImage` copies an empty one. That reported "1 distinct
+         * colour" on a map that was demonstrably drawing — twelve tiles answered 200 and the
+         * attribution was on screen.
+         *
+         * A screenshot captures what was composited, which is what a person sees. It is compared by
+         * size because PNG compresses flat colour to almost nothing: a blank rectangle of this area
+         * is a few hundred bytes, and one with roads, water and labels in it is tens of thousands.
+         * The number is far enough from the boundary that it does not need to be precise.
+         */
+        const BLANK_CANVAS_BYTES = 8_000;
+        let paintedBytes = 0;
+        const canvas = page.locator("canvas.maplibregl-canvas").first();
+        if (await canvas.count()) {
+          paintedBytes = (await canvas.screenshot()).length;
+        }
 
         const tileHits = sink.tileResponses.filter((r) => r.status === 200).length;
         const tileErrors = sink.tileResponses.filter((r) => r.status >= 400);
@@ -257,8 +255,8 @@ for (const size of WIDTHS) {
         );
         record(
           `${size.name}/live basemap actually paints`,
-          map.distinctColours > 8,
-          `${map.distinctColours} distinct colours sampled`,
+          paintedBytes > BLANK_CANVAS_BYTES,
+          `${paintedBytes} bytes of rendered map (a blank one is a few hundred)`,
         );
         record(
           `${size.name}/live loads tiles from the configured host`,
