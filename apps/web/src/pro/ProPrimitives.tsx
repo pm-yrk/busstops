@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { ProMetric, ProProvenance } from "@busstops/contracts";
 import { StateLozenge } from "../components/primitives.js";
+import { PixelClock, PixelWarning } from "../components/pixel/PixelArt.js";
 import "./ProPrimitives.css";
 
 /**
@@ -21,6 +22,12 @@ export function DataModeBanner({ provenance }: { provenance: ProProvenance }) {
       role="status"
       data-testid="pro-data-mode"
     >
+      {/*
+       * Pro is restrained rather than plain. The two shared notices are where a pixel detail
+       * earns its place — they appear on every section, so one mark each is the whole product
+       * carrying the language without any page having to decorate itself.
+       */}
+      <PixelClock size={18} className="pro-mode__mark" />
       <strong>
         {provenance.dataMode === "demo_snapshot"
           ? `Demonstration snapshot — ${provenance.snapshotDate ?? "undated"}`
@@ -147,6 +154,7 @@ export function CoverageWarning({ message }: { message: string | null }) {
   if (!message) return null;
   return (
     <div className="pro-coverage-warning" role="status">
+      <PixelWarning size={18} className="pro-coverage-warning__mark" />
       <strong>Read this first</strong>
       <p>{message}</p>
     </div>
