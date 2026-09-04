@@ -223,14 +223,27 @@ describe("national datasets the edge does still hold", () => {
     }
 
     const readerSource = readFileSync(join(here, "network-reader.ts"), "utf8");
-    // readCurrent reads a whole dataset. It may only ever be used on the allowed ones.
-    const wholeDatasetReads = [...readerSource.matchAll(/readCurrent<[^>]+>\(\s*([^,\n)]+)/g)].map(
-      (match) => match[1]!.trim(),
-    );
+    /*
+     * readCurrent reads a whole dataset. It may only ever be used on the allowed ones.
+     *
+     * The argument may itself be a call — `journeyTileDataset(tile)` — so one level of nesting is
+     * matched. Stopping at the first bracket truncated it to `journeyTileDataset(tile`, which then
+     * failed the check for a reason that had nothing to do with what was being read.
+     */
+    const wholeDatasetReads = [
+      ...readerSource.matchAll(/readCurrent<[^>]+>\(\s*([A-Za-z_$][\w$.]*(?:\([^()]*\))?)/g),
+    ].map((match) => match[1]!.trim());
     const allowedExpressions = new Set([
       "SHARDED.index",
       "DATASETS.operators",
       "DATASETS.services",
+      /*
+       * A journey tile is already one spatial shard — the same bounded read the journey planner
+       * makes — so reading it whole is reading a shard, not a nation. It is on this list because
+       * the guard matches on the call rather than on what the call resolves to, and a stop board
+       * has to be able to load the timetable for its own tile.
+       */
+      "journeyTileDataset(tile)",
     ]);
     for (const expression of wholeDatasetReads) {
       expect(allowedExpressions.has(expression), `${expression} is read whole`).toBe(true);

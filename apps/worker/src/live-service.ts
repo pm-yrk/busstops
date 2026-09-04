@@ -252,9 +252,13 @@ export class LiveService {
   }
 
   /** Departures for one stop, from whichever source covers it. */
-  async departuresForStop(
-    atcoCode: string,
-  ): Promise<{ departures: DeparturePrediction[]; health: SourceHealth[]; failed: boolean }> {
+  async departuresForStop(atcoCode: string): Promise<{
+    departures: DeparturePrediction[];
+    health: SourceHealth[];
+    failed: boolean;
+    /** When the data behind these departures was observed — never a future arrival time. */
+    observedAt: string | null;
+  }> {
     const now = this.deps.now();
 
     if (isLondonAtcoCode(atcoCode)) {
@@ -268,16 +272,30 @@ export class LiveService {
           client.fetchJson<unknown>(url, { timeoutMs: MAP_QUERY_LIMITS.timeoutMs }),
         );
         const normalized = normalizeTflArrivals(payload, { retrievedAt: now.toISOString(), now });
-        return { departures: normalized.departures, health: [client.health(now)], failed: false };
+        return {
+          departures: normalized.departures,
+          health: [client.health(now)],
+          failed: false,
+          // TfL answers with predictions it has just computed, so the fetch is the observation.
+          observedAt: now.toISOString(),
+        };
       } catch {
-        return { departures: [], health: [client.health(now)], failed: true };
+        return {
+          departures: [],
+          health: [client.health(now)],
+          failed: true,
+          observedAt: null,
+        };
       }
     }
 
-    // Outside London, live departures are derived from matched vehicle positions plus the
-    // timetable; the caller composes them, so this reports only source health.
+    /*
+     * Outside London there is no per-stop live source: BODS publishes vehicle positions, not
+     * arrival predictions. The board is composed from the timetable by the caller, which is
+     * exactly what this used to say and exactly what nothing did.
+     */
     const client = this.client("bods");
-    return { departures: [], health: [client.health(now)], failed: false };
+    return { departures: [], health: [client.health(now)], failed: false, observedAt: null };
   }
 
   health(): SourceHealth[] {

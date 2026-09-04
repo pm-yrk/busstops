@@ -18,11 +18,13 @@ import {
   LiveService,
   buildMeta,
   cacheTtlSeconds,
+  isLondonAtcoCode,
   oldestObservedAt,
   sourcesForBoundingBox,
   toMapVehicle,
 } from "./live-service.js";
 import { NetworkReader } from "./network-reader.js";
+import { scheduledDeparturesForStop, serviceDatesForBoard } from "./stop-departures.js";
 import { JOURNEY_LIMITS, JourneyService } from "./journey-service.js";
 import { ProService, resolveScope, DEFAULT_WINDOW_MINUTES } from "./pro-service.js";
 import {
@@ -322,14 +324,50 @@ router.get("/v1/stops/:id", async (_request, { env, params }) => {
 
   const live = liveService
     ? await liveService.departuresForStop(stop.atcoCode)
-    : { departures: [], health: [], failed: true };
+    : { departures: [], health: [], failed: true, observedAt: null };
+
+  const patterns = await network.patternsServingStop(stop);
+  const services = await network.services();
+
+  /*
+   * Outside London the timetable is the board.
+   *
+   * `departuresForStop` returns nothing outside London and its comment said the caller would
+   * compose scheduled departures — which the caller did not do, so every stop in England outside
+   * London had an empty arrival board on a deployment whose checks were all green. This is that
+   * composition: one journey tile, the service dates a board can still show, merged with whatever
+   * live matching can explain.
+   */
+  let departures = live.departures;
+  let scheduledRows = 0;
+  if (departures.length === 0 && !isLondonAtcoCode(stop.atcoCode)) {
+    const serviceDates = serviceDatesForBoard(now);
+    const journeys = await network.journeysServingStop(stop, serviceDates);
+    const stopNamesById = await network.stopsByIdsForJourneys(journeys);
+    departures = scheduledDeparturesForStop({
+      stop,
+      journeys,
+      patterns,
+      services,
+      stopNamesById,
+      now,
+    });
+    scheduledRows = departures.length;
+  }
+
+  /*
+   * `observedAt` is the age of the observation behind the answer. It used to be set to the first
+   * departure's expected time — a moment in the future — so the board reported its own freshness
+   * as a negative age and "Updated..." counted down to the next bus.
+   */
+  const observedAt = live.observedAt ?? null;
 
   return json(
     {
       meta: buildMeta({
         sources: live.health,
-        observedAt: live.departures[0]?.expectedTime ?? null,
-        coverage: live.failed ? 0 : 1,
+        observedAt,
+        coverage: departures.length > 0 ? 1 : live.failed ? 0 : 0.5,
         governorState: state,
         now,
         failedSources: live.failed ? ["live departures"] : [],
@@ -337,16 +375,12 @@ router.get("/v1/stops/:id", async (_request, { env, params }) => {
       }),
       data: {
         stop,
-        departures: live.departures,
-        routes: routesServingStop(
-          await network.patternsServingStop(stop),
-          stop.id,
-          await network.services(),
-          await network.operators(),
-        ),
+        departures,
+        routes: routesServingStop(patterns, stop.id, services, await network.operators()),
       },
     },
-    cacheTtlSeconds("tfl", state),
+    // A board built only from the timetable can be cached longer than one carrying live times.
+    cacheTtlSeconds(scheduledRows > 0 && !live.observedAt ? "static" : "tfl", state),
   );
 });
 
