@@ -670,6 +670,20 @@ where the deploy runs: `Deploy Preview` provisions, deploys and verifies from a 
 container's inability to reach `api.cloudflare.com` no longer matters. See "Deployment evidence"
 above for the URLs and the checks that passed against them.
 
+**Timetable coverage is a fraction of England, and the figure is published.** NaPTAN gives every
+stop in the country — 349,531 of them — so the map, search and nearby are national. Services,
+routes and departures come only from the BODS timetable datasets a build downloads, and that is
+capped: 25 originally, 60 now, against the 945 BODS publishes. The visible effect is a complete
+map with a departure board at some stops and nothing at others, which reads as a defect at the
+stop and is really this number — so the build report carries what was taken against what exists,
+and the deployed verification reports how many stops in a viewport have any service at all.
+
+Raising the cap further is a change rather than a larger number. Three national artifacts that
+nothing read — journeys at 292 MiB, shapes and the search index — have been removed, which is what
+allowed 60. The next ceiling is `network/patterns`, still a single object because the weekly
+reconciliation reads it: 100 MiB at 25 datasets, so it runs out of room somewhere past 100.
+Reaching every published operator means the weekly job reading pattern shards instead.
+
 **Live verification is narrower than "the adapters work".** What was observed is recorded in
 `packages/contracts/src/source-registry.ts` with the observation, not the conclusion:
 
