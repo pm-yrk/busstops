@@ -19,6 +19,7 @@ import {
   buildMeta,
   cacheTtlSeconds,
   oldestObservedAt,
+  sourcesForBoundingBox,
   toMapVehicle,
 } from "./live-service.js";
 import { NetworkReader } from "./network-reader.js";
@@ -123,6 +124,61 @@ router.get("/v1/sources/health", async (_request, { env }) => {
       data: { sources: live, governorState: state, safeMode: safeModeActive(state) },
     },
     30,
+  );
+});
+
+/**
+ * Why a viewport has no buses.
+ *
+ * The preview reported zero live vehicles while every structural check passed, and the Worker had
+ * no way to say which of four things had happened: the request never left, it was refused, the
+ * body was empty, or the body was full and we rejected all of it. This answers that question from
+ * inside the deployment, which is the only place some of those distinctions exist.
+ *
+ * It publishes counts, reasons and ages. It never publishes a vehicle, a position or a source
+ * vehicle reference, and it costs exactly what the same /v1/map request costs, because it shares
+ * the same bounding-box limits and the same request coalescing.
+ */
+router.get("/v1/diagnostics/live", async (_request, { env, url }) => {
+  const state = governorState(env);
+  const bboxResult = parseBoundingBox(url);
+  if (!bboxResult.ok) return errorResponse("bad_request", bboxResult.message, 400);
+  const bbox = bboxResult.bbox;
+
+  if (boundingBoxAreaSquareDegrees(bbox) > MAP_QUERY_LIMITS.maxBboxAreaSquareDegrees) {
+    return errorResponse("bbox_too_large", "Requested area is too large; zoom in.", 400);
+  }
+
+  const now = new Date();
+  initialiseWorker(env);
+  if (!liveService) {
+    return errorResponse(
+      "upstream_unavailable",
+      "Live sources are not configured on this deployment",
+      503,
+    );
+  }
+
+  const live = await liveService.vehiclesInBoundingBox(bbox);
+  return json(
+    {
+      meta: buildMeta({
+        sources: live.health,
+        observedAt: oldestObservedAt(live.observations),
+        coverage: live.failedSources.length === 0 ? 1 : 0,
+        governorState: state,
+        now,
+        failedSources: live.failedSources,
+        safeMode: safeModeActive(state),
+      }),
+      data: {
+        boundingBox: bbox,
+        sourcesConsulted: sourcesForBoundingBox(bbox),
+        vehiclesReturned: live.observations.length,
+        diagnostics: live.diagnostics,
+      },
+    },
+    15,
   );
 });
 

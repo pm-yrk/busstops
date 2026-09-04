@@ -150,6 +150,13 @@ export interface SiriNormalizeResult {
     }
   >;
   rejected: Array<{ reason: string; vehicleRef?: string }>;
+  /**
+   * Age in seconds of every record the feed offered, accepted or not.
+   *
+   * A viewport with no buses because the feed was empty and one with no buses because every
+   * record was twenty minutes old are different faults, and only the ages tell them apart.
+   */
+  recordAgeSeconds: number[];
 }
 
 export function normalizeSiriVm(xml: string, options: SiriNormalizeOptions): SiriNormalizeResult {
@@ -162,6 +169,7 @@ export function normalizeSiriVm(xml: string, options: SiriNormalizeOptions): Sir
   const rejected: SiriNormalizeResult["rejected"] = parseRejected.map((r) => ({
     reason: r.reason,
   }));
+  const recordAgeSeconds: number[] = [];
 
   for (const activity of activities) {
     const journey = activity.MonitoredVehicleJourney;
@@ -186,6 +194,7 @@ export function normalizeSiriVm(xml: string, options: SiriNormalizeOptions): Sir
     }
 
     const ageSeconds = (now.getTime() - observedAt.getTime()) / 1000;
+    recordAgeSeconds.push(Math.round(ageSeconds));
     if (ageSeconds > maxAgeSeconds) {
       rejected.push({
         reason: `observation ${Math.round(ageSeconds)}s old`,
@@ -244,7 +253,7 @@ export function normalizeSiriVm(xml: string, options: SiriNormalizeOptions): Sir
     });
   }
 
-  return { observations, journeyContext, rejected };
+  return { observations, journeyContext, rejected, recordAgeSeconds };
 }
 
 /**

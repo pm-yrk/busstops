@@ -75,6 +75,79 @@ export interface VehicleFetchResult {
   health: SourceHealth[];
   /** Sources that were expected to contribute but failed. */
   failedSources: string[];
+  /**
+   * Why a viewport came back with no buses.
+   *
+   * "Zero vehicles" has four causes that look identical from outside — the request never left,
+   * it was refused, the body was empty, or the body was full and every record was rejected — and
+   * a bare catch collapsed all four into "bods failed". Each is a different bug, so each is
+   * reported separately. Counts and reasons only: never a source vehicle reference.
+   */
+  diagnostics: VehicleSourceDiagnostics[];
+}
+
+export interface VehicleSourceDiagnostics {
+  source: string;
+  /** "ok" | "request_failed" | "empty_feed" | "all_rejected" */
+  outcome: "ok" | "request_failed" | "empty_feed" | "all_rejected";
+  rawRecords: number;
+  accepted: number;
+  /** Rejection reasons with the numbers generalised, so this is a handful of keys not thousands. */
+  rejectedBy: Record<string, number>;
+  /** Age in seconds of the newest and oldest record the feed offered, accepted or not. */
+  newestRecordAgeSeconds: number | null;
+  oldestRecordAgeSeconds: number | null;
+  error?: string;
+}
+
+/**
+ * What went wrong, in a form that is safe to publish.
+ *
+ * An upstream error message can carry the request URL, and the request URL carries the API key,
+ * so the message is reduced to its class and its status. That is enough to tell a refused request
+ * from a timed-out one, which is the distinction that matters.
+ */
+export function describeFetchFailure(error: unknown): string {
+  if (error instanceof Error) {
+    const status = /\b([45]\d\d)\b/.exec(error.message)?.[1];
+    if (error.name === "TimeoutError" || /abort|timeout/i.test(error.message)) return "timeout";
+    if (status) return `http_${status}`;
+    return error.name === "Error" ? "network_error" : error.name;
+  }
+  return "unknown_error";
+}
+
+/**
+ * Turns one source's normalisation result into a publishable diagnosis.
+ *
+ * The distinction it exists to draw: a feed that returned nothing, and a feed that returned
+ * plenty which we then threw away. The second is our bug and used to be invisible.
+ */
+export function summariseVehicleSource(
+  source: string,
+  accepted: number,
+  rejected: ReadonlyArray<{ reason: string }>,
+  now: Date,
+  recordAgeSeconds: readonly number[] = [],
+): VehicleSourceDiagnostics {
+  void now;
+  const rejectedBy: Record<string, number> = {};
+  for (const entry of rejected) {
+    // Bucket by shape: "observation 812s old" would otherwise be a thousand distinct keys.
+    const key = entry.reason.replace(/\d+/g, "N");
+    rejectedBy[key] = (rejectedBy[key] ?? 0) + 1;
+  }
+  const rawRecords = accepted + rejected.length;
+  const ages = [...recordAgeSeconds].sort((a, b) => a - b);
+  return {
+    source,
+    outcome: accepted > 0 ? "ok" : rawRecords === 0 ? "empty_feed" : "all_rejected",
+    rawRecords,
+    accepted,
+    rejectedBy,
+    newestRecordAgeSeconds: ages.length > 0 ? ages[0]! : null,
+    oldestRecordAgeSeconds: ages.length > 0 ? ages[ages.length - 1]! : null,
+  };
 }
 
 export class LiveService {
@@ -115,6 +188,7 @@ export class LiveService {
     >();
     const health: SourceHealth[] = [];
     const failedSources: string[] = [];
+    const diagnostics: VehicleSourceDiagnostics[] = [];
 
     const sources = sourcesForBoundingBox(bbox);
 
@@ -142,8 +216,27 @@ export class LiveService {
               : { destinationName: context.destinationName }),
           });
         }
-      } catch {
+        diagnostics.push(
+          summariseVehicleSource(
+            "bods",
+            normalized.observations.length,
+            normalized.rejected,
+            now,
+            normalized.recordAgeSeconds,
+          ),
+        );
+      } catch (error) {
         failedSources.push("bods");
+        diagnostics.push({
+          source: "bods",
+          outcome: "request_failed",
+          rawRecords: 0,
+          accepted: 0,
+          rejectedBy: {},
+          newestRecordAgeSeconds: null,
+          oldestRecordAgeSeconds: null,
+          error: describeFetchFailure(error),
+        });
       }
       health.push(client.health(now));
     }
@@ -155,7 +248,7 @@ export class LiveService {
       health.push(client.health(now));
     }
 
-    return { observations, journeyContext, health, failedSources };
+    return { observations, journeyContext, health, failedSources, diagnostics };
   }
 
   /** Departures for one stop, from whichever source covers it. */
