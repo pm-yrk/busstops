@@ -58,7 +58,7 @@ export function DisruptionsPage() {
   const items = ranking === "burden" ? response.data.byDelayBurden : response.data.byAbnormality;
 
   return (
-    <article className="disruptions-page">
+    <article className="page disruptions-page">
       <ServiceBanner meta={response.meta} />
 
       <header className="disruptions-page__header">

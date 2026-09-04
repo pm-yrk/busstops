@@ -98,7 +98,7 @@ export function JourneyPage() {
   }, [destination]);
 
   return (
-    <article className="journey-page">
+    <article className="page journey-page">
       {plan ? <ServiceBanner meta={plan.meta} /> : null}
 
       <header className="journey-page__header">

@@ -1,3 +1,9 @@
+/*
+ * Pro wears the shared page container (see global.css). It did not, and at every width its
+ * heading, its section tabs and its panels ran flush to the window edge while the app header
+ * above them kept the page's margin — with the pixel mark half off the screen. It is on the
+ * layout rather than on each Pro route, so a new section cannot be added without it.
+ */
 .pro-layout {
   display: grid;
   gap: var(--space-lg);

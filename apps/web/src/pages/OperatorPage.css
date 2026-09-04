@@ -1,7 +1,7 @@
 .operator-page {
   display: grid;
   gap: var(--space-xl);
-  max-width: 860px;
+  --page-max: 860px;
 }
 
 .operator-page__header h1 {

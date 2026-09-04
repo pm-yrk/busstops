@@ -97,7 +97,7 @@ export function VehiclePage() {
   const visibleStops = showAllStops ? nextStops : nextStops.slice(0, NEXT_STOPS_VISIBLE);
 
   return (
-    <article className="vehicle-page">
+    <article className="page vehicle-page">
       <ServiceBanner meta={response.meta} />
 
       <header className="vehicle-page__header">

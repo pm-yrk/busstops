@@ -141,8 +141,16 @@ input[type="email"] {
   top: var(--space-md);
 }
 
+/*
+ * The page gutter, and the only place it is defined.
+ *
+ * Several page roots used to set a max-width and nothing else, which centres nothing and leaves a
+ * heading hard against the edge of a phone while the footer below it keeps its margin. They set
+ * `--page-max` now and wear this class, so a narrower column is a variable rather than a second,
+ * competing rule whose winner depends on stylesheet order.
+ */
 .page {
-  max-width: 1180px;
+  max-width: var(--page-max, 1180px);
   margin: 0 auto;
   padding: var(--space-lg) var(--space-md) var(--space-xxl);
 }

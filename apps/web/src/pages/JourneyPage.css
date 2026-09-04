@@ -1,7 +1,7 @@
 .journey-page {
   display: grid;
   gap: var(--space-lg);
-  max-width: 780px;
+  --page-max: 780px;
 }
 
 .journey-page__header h1 {

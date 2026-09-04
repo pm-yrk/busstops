@@ -1,7 +1,7 @@
 .disruptions-page {
   display: grid;
   gap: var(--space-lg);
-  max-width: 900px;
+  --page-max: 900px;
 }
 
 .disruptions-page__header h1 {

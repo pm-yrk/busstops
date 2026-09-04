@@ -26,7 +26,7 @@ const SECTIONS = [
 
 export function ProLayout() {
   return (
-    <div className="pro-layout">
+    <div className="page pro-layout">
       <header className="pro-layout__header">
         <div className="pro-layout__title">
           {/*

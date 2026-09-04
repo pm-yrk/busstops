@@ -69,7 +69,7 @@ export function RoutePage() {
   const variant = variants[Math.min(selectedVariant, Math.max(0, variants.length - 1))];
 
   return (
-    <article className="route-page">
+    <article className="page route-page">
       <ServiceBanner meta={response.meta} />
 
       <header className="route-page__header">

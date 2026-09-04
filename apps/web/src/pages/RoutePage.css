@@ -1,7 +1,7 @@
 .route-page {
   display: grid;
   gap: var(--space-xl);
-  max-width: 900px;
+  --page-max: 900px;
 }
 
 .route-page__header {

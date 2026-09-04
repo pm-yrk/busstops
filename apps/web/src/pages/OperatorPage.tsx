@@ -57,7 +57,7 @@ export function OperatorPage() {
     response.data;
 
   return (
-    <article className="operator-page">
+    <article className="page operator-page">
       <ServiceBanner meta={response.meta} />
 
       <header className="operator-page__header">
