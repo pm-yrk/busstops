@@ -4,7 +4,7 @@ import {
   MapResponseSchema,
   StopDeparturesResponseSchema,
 } from "@busstops/contracts";
-import { EMPTY_MAP, PRO_CONTROL_TOWER, STOP_RESPONSE } from "../e2e/fixtures.js";
+import { EMPTY_MAP, MAP_WITH_TRAFFIC, PRO_CONTROL_TOWER, STOP_RESPONSE } from "../e2e/fixtures.js";
 
 /**
  * The end-to-end fixtures must satisfy the same contracts the real API does.
@@ -22,6 +22,11 @@ describe("end-to-end fixtures match the published contracts", () => {
 
   it("map viewport", () => {
     const result = MapResponseSchema.safeParse(EMPTY_MAP);
+    expect(result.success ? [] : result.error.issues).toEqual([]);
+  });
+
+  it("map viewport with traffic in it", () => {
+    const result = MapResponseSchema.safeParse(MAP_WITH_TRAFFIC);
     expect(result.success ? [] : result.error.issues).toEqual([]);
   });
 

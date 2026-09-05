@@ -1,8 +1,61 @@
 # Bus Stops. Build State
 
-Last updated: 2026-09-04 (the timetable cap is gone; disruptions and accessibility are real)
+Last updated: 2026-09-05 (weather at the stop; the preview deploy is blocked by Actions)
 
 ## Current status
+
+### The recruiter preview cut (2026-09-05) — built, not deployed
+
+> **The one thing that was asked for could not be done.** The deliberate `Deploy Preview`
+> dispatch was refused: `failed to run workflow: Actions has been disabled for this user`, at
+> 2026-09-05T17:14Z, on `deploy-preview.yml` at `claude/bus-stops-platform-build-f7qztb` with
+> `bootstrap_data: false`. A repository-wide `list_workflow_runs` a minute earlier returned
+> `total_count: 0` — not one run, historic ones included — so this is execution being withheld
+> rather than a workflow that failed. The Cloudflare API says the preview Worker was last
+> modified at 2026-09-04T09:38:13Z, which is the run-26 build: **nothing from 2026-09-04 or
+> 2026-09-05 is deployed**, including the CORS-on-error fix, the diagnostics endpoint,
+> disruptions, accessibility, GTFS or any of the below. This container cannot substitute: the
+> egress policy refuses `preview.busstops.pages.dev` and `*.workers.dev` with a 403 at CONNECT,
+> and the Cloudflare MCP surface can read Workers but not deploy one.
+>
+> So the live-bus failure is **still not diagnosed**. The deployed probe is what would diagnose
+> it, and the probe cannot run. Nothing below should be read as "the preview shows real buses".
+
+- **The one fetch path that only ran in a deployment is gone.** `SourceClient` read the global
+  fetch as a property and called it as a method, so `fetch` ran with the client as its receiver:
+  Node tolerates that, workerd refuses it. It is bound to `globalThis` now. This is hazard
+  removal and not a diagnosis — reproduced locally, Node threw identically either way — but every
+  test injects its own `fetchImpl`, so that line was the only code in the live path that a test
+  never executed, which is the shape of thing that turns out to be broken in production.
+- **`network_error` says which network error.** The Worker reported a fetch that never left, a
+  runtime that refused the call and an unreachable host under one label, and telling those apart
+  is the entire diagnosis. The class now carries the message with URLs replaced wholesale and any
+  `api_key` redacted first.
+- **Weather at the stop is real, end to end.** A scheduled job (`pipelines/weather`) asks
+  Open-Meteo about every 0.10° cell that has a bus stop in it — derived from the published stop
+  tile _names_, so no stop is loaded to find out — and publishes one artifact per degree square.
+  The Worker reads exactly one square and attaches `weather` to the stop response, or null. The
+  cost is arithmetic: about 2,500 cells, batched a hundred to a request, is ~25 requests a run and
+  ~1,200 a day against an allowance of 10,000, and the job refuses to run a schedule that would
+  not fit rather than trusting the comment above its cron. A cell the model did not answer for is
+  reported missing and published as nothing: the stop page then shows no vignette.
+- **The live map's default view opens on Leeds, ~12 km across** rather than ~4 km. A camera
+  position, not data: whatever is in frame is whatever is really there. The tight version framed
+  three streets, and a first view holding two buses demonstrates far less than one holding twenty.
+- **Buses on the map stay upright and wear their number.** The marker used to rotate to the
+  reported bearing, which looked right heading east and stood the bus on its back end heading
+  north — the sprite is a side view, and a side view has no top-down rotation to give; an
+  arbitrary angle also destroyed the pixel grid. It now mirrors east/west only, and the compass
+  direction is a pip that orbits it. Route numbers, previously hover-only, are shown outright
+  while the viewport holds 40 buses or fewer.
+- **Every marker announces itself again.** MapLibre overwrites the `aria-label` on the element it
+  is handed, so a map of named stops and numbered buses told a screen reader "Map marker" a
+  hundred times. The name is reapplied after construction, and the bench asserts it.
+- **A green bench over a broken page, found by looking at it.** The art bench asserted that every
+  sprite loaded; a page in its error state has no sprites, so it passed for days over a live map
+  reading "Something went wrong" — its fixture had gone on missing `disruptions` after that field
+  was added to the map contract. The fixture now lives in `tests/e2e/fixtures.ts` where the
+  contract test parses it, and the bench fails on a rendered error state.
 
 ### Passenger product recovery (2026-09-04)
 
@@ -451,11 +504,27 @@ A dead `quota:check` npm script pointing at a file that was never written has be
 
 ### Next
 
-1. Watch the shard sizes each publish reports. The byte budget is a backstop, not a target: a
+1. **Run `Deploy Preview` the moment Actions executes again.** Everything the recruiter cut needs
+   is committed and pushed; the deploy is the only remaining step, and its probe is also what
+   diagnoses the live-bus failure. Then verify, in order: home loads with the artwork, the live
+   map loads, the basemap loads, the deployed `/v1/map` returns more than zero real vehicles for
+   Leeds, buses render on the map, clicking a stop opens NEXT BUS, and the console carries no
+   major failures.
+2. **The deployed live-bus failure is unexplained.** BODS answered 237/364/338/233 vehicles for
+   Leeds/Manchester/Birmingham/Bristol from a runner while the deployment answered zero for all
+   four; both halves are a passing regression test, which itself says the code path is correct
+   given a healthy feed. `/v1/diagnostics/live` will name which of `request_failed`, `empty_feed`
+   or `all_rejected` actually happens up there.
+3. Deferred to the next session, deliberately and with nothing started: GTFS verified against a
+   real archive, departures at every non-London stop, place-first search, "take me to York
+   Minster", the rest of accessibility, "Bus stopped?", mobile bottom sheets and the phone map
+   layout (the live map on a phone still puts its controls above the map), a Pro baseline from
+   real observations, the final art passes, and the full deployed product audit.
+4. Watch the shard sizes each publish reports. The byte budget is a backstop, not a target: a
    family that starts truncating is telling you its key needs to be finer, and it says which.
-2. The remaining TfL adapters (route sequence, stop point, disruptions) are still verified
+5. The remaining TfL adapters (route sequence, stop point, disruptions) are still verified
    against published documentation rather than against a live response.
-3. Production remains un-deployed pending explicit approval after the preview is reviewed.
+6. Production remains un-deployed pending explicit approval after the preview is reviewed.
 
 ### Deployment evidence
 
@@ -712,6 +781,18 @@ provider, the governor stops work at self-imposed ceilings below each free allow
 provider rejection is never used as the governor.
 
 ### Known limitations
+
+**B0 — GitHub Actions execution withheld (blocking, unresolved).** Dispatch is refused with
+`failed to run workflow: Actions has been disabled for this user`, most recently at
+2026-09-05T17:14Z on `deploy-preview.yml`, and a repository-wide run listing returns
+`total_count: 0`. Read access to the API works; execution does not. This is the single blocker on
+everything that needs a deployment or a runner: the preview cut, the live-bus diagnosis, the GTFS
+measurement against a real archive, and every claim in this file that cites a run. It also
+supersedes B1's resolution — a runner with ordinary egress is only useful if a runner runs. There
+is no way around it from here: this container's egress policy denies `*.pages.dev` and
+`*.workers.dev` at CONNECT, no Cloudflare credential is present in the environment, and the
+Cloudflare tool surface available can read Workers but not deploy one. _Resolution:_ re-enable
+Actions for the account, then dispatch `Deploy Preview` once.
 
 **B1 — Upstream egress blocked from the build container (resolved for verification).** The build
 sandbox's egress policy still denies CONNECT to every transport, weather, flood and map host and

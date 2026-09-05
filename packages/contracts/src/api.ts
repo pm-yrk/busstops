@@ -9,6 +9,7 @@ import { DeparturePredictionSchema, VehicleStateSchema } from "./live.js";
 import { GovernorStateSchema, IncidentSchema, SourceHealthSchema } from "./derived.js";
 import { StopAccessibilitySchema } from "./accessibility.js";
 import { DisruptionBoardSchema, DisruptionNoticeSchema } from "./disruptions.js";
+import { StopWeatherSchema } from "./weather.js";
 import { OperatorSchema, ServiceRouteSchema, StopSchema } from "./static.js";
 
 /**
@@ -133,6 +134,16 @@ export const StopDeparturesResponseSchema = apiEnvelope(
     accessibility: StopAccessibilitySchema,
     /** Official notices naming this stop or a route that calls here. */
     disruptions: z.array(DisruptionNoticeSchema),
+    /**
+     * What it is like standing here, or null.
+     *
+     * Null is a real answer and a common one: the weather job publishes a degree square at a
+     * time and a square it has not reached yet, or could not get an answer for, has none. The
+     * stop page then shows no vignette. Filling the gap with a nearby square, or with a picture
+     * of a sky nobody measured, would make the one thing on the page that is a drawing also the
+     * one thing that is not true.
+     */
+    weather: StopWeatherSchema.nullable(),
   }),
 );
 export type StopDeparturesResponse = z.infer<typeof StopDeparturesResponseSchema>;

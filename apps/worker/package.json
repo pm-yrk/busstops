@@ -13,11 +13,12 @@
     "@busstops/adapters": "*",
     "@busstops/contracts": "*",
     "@busstops/governor": "*",
+    "@busstops/journey": "*",
     "@busstops/matching": "*",
     "@busstops/pipeline-core": "*",
     "@busstops/pipeline-static-network": "*",
-    "zod": "^3.24.1",
-    "@busstops/journey": "*"
+    "@busstops/pipeline-weather": "*",
+    "zod": "^3.24.1"
   },
   "devDependencies": {
     "typescript": "^5.7.2"

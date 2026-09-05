@@ -129,6 +129,46 @@ export const STOP_RESPONSE = {
       ],
     },
     disruptions: [],
+    /*
+     * Rain at the stop, so the vignette in the art bench is the one worth looking at — the
+     * umbrella, the near and far rain layers, and advice with the numbers it was chosen from.
+     * Real weather is not reproducible on demand and a screenshot of a clear sky proves nothing
+     * about the states that have to work.
+     */
+    weather: {
+      cell: "537_-16",
+      cellCentre: { lat: 53.75, lon: -1.55 },
+      cellSizeDegrees: 0.1,
+      current: {
+        time: "2026-09-03T09:00:00.000Z",
+        temperatureCelsius: 11.4,
+        apparentTemperatureCelsius: 8.9,
+        precipitationMm: 1.8,
+        precipitationProbability: 82,
+        weatherCode: 63,
+        windSpeedKph: 21,
+        windGustKph: 38,
+        uvIndex: 1.2,
+        isDay: true,
+      },
+      next: [
+        {
+          time: "2026-09-03T10:00:00.000Z",
+          temperatureCelsius: 11.9,
+          apparentTemperatureCelsius: 9.4,
+          precipitationMm: 0.9,
+          precipitationProbability: 61,
+          weatherCode: 61,
+          windSpeedKph: 19,
+          windGustKph: 34,
+          uvIndex: 1.6,
+          isDay: true,
+        },
+      ],
+      retrievedAt: "2026-09-03T08:55:00.000Z",
+      attribution:
+        "Weather data by Open-Meteo.com (CC BY 4.0), used under its free non-commercial terms",
+    },
   },
 };
 
@@ -284,6 +324,84 @@ export const EMPTY_MAP = {
   data: {
     stops: [],
     vehicles: [],
+    incidents: [],
+    disruptions: [],
+    truncated: { stops: false, vehicles: false, incidents: false },
+  },
+};
+
+/**
+ * A viewport with buses in it.
+ *
+ * Lives here rather than in the bench that uses it so the contract test parses it. It did not,
+ * once, and the map fixture went on missing `disruptions` for as long as it took someone to look
+ * at a screenshot: the bench asserted that every sprite loaded, a page in its error state has no
+ * sprites, and so it passed over a live map that said "Something went wrong".
+ */
+export const MAP_WITH_TRAFFIC = {
+  meta: META,
+  data: {
+    stops: [
+      {
+        id: "00000000-0000-5000-8000-0000000000d1",
+        atcoCode: "450010001",
+        name: "Boar Lane",
+        indicator: "Stand A",
+        coordinate: { lat: 53.7965, lon: -1.5445 },
+        routePublicNames: ["36"],
+        hasLiveCoverage: true,
+      },
+      {
+        id: "00000000-0000-5000-8000-0000000000d2",
+        atcoCode: "450010002",
+        name: "City Square",
+        indicator: "B",
+        coordinate: { lat: 53.7952, lon: -1.5478 },
+        routePublicNames: ["12"],
+        hasLiveCoverage: true,
+      },
+      {
+        id: "00000000-0000-5000-8000-0000000000d3",
+        atcoCode: "450010003",
+        name: "Park Row",
+        coordinate: { lat: 53.7988, lon: -1.5462 },
+        routePublicNames: [],
+        hasLiveCoverage: false,
+      },
+    ],
+    vehicles: [
+      {
+        vehicleRef: "v1",
+        coordinate: { lat: 53.7972, lon: -1.5432 },
+        bearingDegrees: 90,
+        routePublicName: "36",
+        destinationName: "Ripon",
+        delaySeconds: 60,
+        freshnessSeconds: 20,
+        motionState: "moving" as const,
+      },
+      {
+        vehicleRef: "v2",
+        coordinate: { lat: 53.7944, lon: -1.5495 },
+        bearingDegrees: 260,
+        routePublicName: "12",
+        destinationName: "Beeston",
+        delaySeconds: null,
+        freshnessSeconds: 40,
+        motionState: "moving" as const,
+      },
+      {
+        // Old enough to be drawn as a stale vehicle rather than a fresh one.
+        vehicleRef: "v3",
+        coordinate: { lat: 53.7995, lon: -1.543 },
+        bearingDegrees: 10,
+        routePublicName: "X84",
+        destinationName: "Otley",
+        delaySeconds: null,
+        freshnessSeconds: 900,
+        motionState: "stationary" as const,
+      },
+    ],
     incidents: [],
     disruptions: [],
     truncated: { stops: false, vehicles: false, incidents: false },

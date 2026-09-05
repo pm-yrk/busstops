@@ -8,6 +8,7 @@ import {
 import { safeModeActive } from "@busstops/governor";
 import { DisruptionReader, noticesFor } from "./disruption-reader.js";
 import { stopAccessibility } from "./stop-accessibility.js";
+import { WeatherReader } from "./weather-reader.js";
 import {
   boundingBoxAreaSquareDegrees,
   corridorBoundingBox,
@@ -60,6 +61,7 @@ let liveService: LiveService | null = null;
 let journeyService: JourneyService | null = null;
 let proService: ProService | null = null;
 let disruptions: DisruptionReader | null = null;
+let weather: WeatherReader | null = null;
 const rateLimiter = new RateLimiter();
 
 interface RequestContext {
@@ -394,6 +396,13 @@ router.get("/v1/stops/:id", async (_request, { env, params }) => {
 
   const routes = routesServingStop(patterns, stop.id, services, await network.operators());
   const snapshot = (await disruptions?.snapshot()) ?? null;
+  /*
+   * Read alongside the board rather than ahead of it. A degree square that is missing or slow
+   * must cost the stop page a picture, never a departure, so a failure here resolves to null and
+   * the vignette is simply absent.
+   */
+  const stopWeather =
+    (await weather?.forCoordinate(stop.locationCoordinate).catch(() => null)) ?? null;
 
   return json(
     {
@@ -417,6 +426,7 @@ router.get("/v1/stops/:id", async (_request, { env, params }) => {
               routeNames: routes.map((route) => route.publicName),
             })
           : [],
+        weather: stopWeather,
       },
     },
     // A board built only from the timetable can be cached longer than one carrying live times.
@@ -1172,6 +1182,7 @@ export function resetWorkerState(): void {
   journeyService = null;
   proService = null;
   disruptions = null;
+  weather = null;
 }
 
 export function initialiseWorker(
@@ -1193,6 +1204,9 @@ export function initialiseWorker(
   }
   if (!disruptions && env.ARTIFACTS) {
     disruptions = new DisruptionReader(new R2BindingStore(env.ARTIFACTS));
+  }
+  if (!weather && env.ARTIFACTS) {
+    weather = new WeatherReader(new R2BindingStore(env.ARTIFACTS));
   }
 }
 

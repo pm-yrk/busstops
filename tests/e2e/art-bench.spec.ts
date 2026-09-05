@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { mockApi, META, STOP_ID } from "./fixtures.js";
+import { MAP_WITH_TRAFFIC, mockApi, STOP_ID } from "./fixtures.js";
 
 /**
  * A style with one background layer. MapLibre draws a blank ground and puts the markers on it,
@@ -12,75 +12,6 @@ const BLANK_STYLE = {
   layers: [{ id: "ground", type: "background", paint: { "background-color": "#eef1f2" } }],
 };
 
-const MAP_WITH_TRAFFIC = {
-  meta: META,
-  data: {
-    stops: [
-      {
-        id: "00000000-0000-5000-8000-0000000000d1",
-        atcoCode: "450010001",
-        name: "Boar Lane",
-        indicator: "Stand A",
-        coordinate: { lat: 53.7965, lon: -1.5445 },
-        routePublicNames: ["36"],
-        hasLiveCoverage: true,
-      },
-      {
-        id: "00000000-0000-5000-8000-0000000000d2",
-        atcoCode: "450010002",
-        name: "City Square",
-        indicator: "B",
-        coordinate: { lat: 53.7952, lon: -1.5478 },
-        routePublicNames: ["12"],
-        hasLiveCoverage: true,
-      },
-      {
-        id: "00000000-0000-5000-8000-0000000000d3",
-        atcoCode: "450010003",
-        name: "Park Row",
-        coordinate: { lat: 53.7988, lon: -1.5462 },
-        routePublicNames: [],
-        hasLiveCoverage: false,
-      },
-    ],
-    vehicles: [
-      {
-        vehicleRef: "v1",
-        coordinate: { lat: 53.7972, lon: -1.5432 },
-        bearingDegrees: 90,
-        routePublicName: "36",
-        destinationName: "Ripon",
-        delaySeconds: 60,
-        freshnessSeconds: 20,
-        motionState: "moving" as const,
-      },
-      {
-        vehicleRef: "v2",
-        coordinate: { lat: 53.7944, lon: -1.5495 },
-        bearingDegrees: 260,
-        routePublicName: "12",
-        destinationName: "Beeston",
-        delaySeconds: null,
-        freshnessSeconds: 40,
-        motionState: "moving" as const,
-      },
-      {
-        // Old enough to be drawn as a stale vehicle rather than a fresh one.
-        vehicleRef: "v3",
-        coordinate: { lat: 53.7995, lon: -1.543 },
-        bearingDegrees: 10,
-        routePublicName: "X84",
-        destinationName: "Otley",
-        delaySeconds: null,
-        freshnessSeconds: 900,
-        motionState: "stationary" as const,
-      },
-    ],
-    incidents: [],
-    truncated: { stops: false, vehicles: false, incidents: false },
-  },
-};
-
 test("art bench", async ({ page }, testInfo) => {
   await page.route("**/style.json", (route) =>
     route.fulfill({
@@ -91,6 +22,8 @@ test("art bench", async ({ page }, testInfo) => {
   );
   await mockApi(page, { "/v1/map": MAP_WITH_TRAFFIC });
   const shots: Array<[string, string]> = [
+    // The home page is the first thing anyone sees, so it is the first thing this looks at.
+    ["home", "/"],
     ["stop", `/stops/${STOP_ID}`],
     ["live", "/live"],
     ["journey", "/journey"],
@@ -105,6 +38,18 @@ test("art bench", async ({ page }, testInfo) => {
     await page.waitForLoadState("networkidle");
     await page.waitForTimeout(400);
     await page.screenshot({ path: `art-preview/${testInfo.project.name}-${name}.png` });
+
+    /*
+     * A page in its error state has no artwork on it, so "every sprite loaded" is trivially true
+     * and this bench passed for days over a live map that said "Something went wrong". It did,
+     * because the map fixture here was not updated when official disruptions were added to the
+     * response contract, and a schema the client rejects looks exactly like a failed request.
+     * Looking at the picture caught it; the assertion is here so the next one does not need to.
+     */
+    await expect(
+      page.getByRole("heading", { name: "Something went wrong" }),
+      `${name}: rendered its error state`,
+    ).toHaveCount(0);
 
     // Every sprite on the page decoded. `complete` alone is true for a 404, so the size is what
     // is checked.
@@ -137,4 +82,14 @@ test("art bench", async ({ page }, testInfo) => {
   // The markers are the hero artwork reduced; if they stop being drawn, they stop being that.
   await expect(page.locator(".map-marker--vehicle .map-marker__art")).toHaveCount(3);
   await expect(page.locator(".map-marker--stop .map-marker__art")).toHaveCount(3);
+
+  /*
+   * Every marker says what it is. MapLibre writes `aria-label="Map marker"` onto the element it
+   * is handed, so a map of named stops and numbered buses announced a hundred identical objects
+   * until the name was reapplied after construction. This is the assertion that catches it
+   * coming back.
+   */
+  await expect(page.locator('.map-marker[aria-label="Map marker"]')).toHaveCount(0);
+  await expect(page.getByRole("img", { name: "36 to Ripon" })).toHaveCount(1);
+  await expect(page.getByRole("button", { name: "Boar Lane, Stand A" })).toHaveCount(1);
 });

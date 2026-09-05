@@ -130,3 +130,17 @@
 .live-map__canvas {
   position: relative;
 }
+
+/*
+ * On a desktop window the map is the page, not an illustration inside it.
+ *
+ * The shared component sizes itself for a map embedded in a longer document, which on a 900px
+ * screen left it under half the height with empty warm white below — the first thing a visitor
+ * sees is then mostly nothing. Here it takes the window and stops short, so the "Buses in view"
+ * heading still shows underneath and says the list is there.
+ */
+@media (min-width: 901px) {
+  .live-map__canvas .map-view {
+    height: clamp(360px, calc(100vh - 250px), 780px);
+  }
+}

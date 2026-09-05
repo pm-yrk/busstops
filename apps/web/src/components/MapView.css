@@ -50,18 +50,58 @@
 }
 
 /*
- * Rotation follows the reported bearing, offset because the sprite is drawn facing east — and it
- * is applied to the drawing rather than to the marker, because MapLibre writes its own transform
- * onto the marker element to position it and an inline style wins. The bus was drawn facing east
- * whichever way it was going.
+ * The bus stays upright and faces the way it is going.
+ *
+ * It used to rotate to the reported bearing, which looked right heading east and put the bus on
+ * its back end heading north: the sprite is a side view — the bus a passenger sees from the
+ * pavement, and the same drawing as the hero scene — and a side view has no top-down rotation to
+ * give. An arbitrary angle also destroys the pixel grid, so a rotated marker was blurred as well
+ * as wrong. Mirroring is the one turn a side view can honestly make.
  */
-.map-marker--vehicle .map-marker__art {
-  transform: rotate(calc(var(--bearing, 90deg) - 90deg));
+.map-marker--westbound .map-marker__art {
+  transform: scaleX(-1);
 }
 
-/* Heading west, the bus is mirrored rather than turned upside down. */
-.map-marker--westbound .map-marker__art {
-  transform: rotate(calc(270deg - var(--bearing, 90deg))) scaleX(-1);
+/*
+ * The compass direction, as a pip that orbits the bus.
+ *
+ * Chrome rather than artwork, so it can point at any angle without the pixel grid caring. It is
+ * applied to a wrapper inside the marker because MapLibre writes its own transform onto the
+ * marker element to position it, and an inline style wins.
+ */
+.map-marker__heading {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  /*
+   * Wider than the marker on purpose. The bus is 48 art pixels across inside a 44px target, so a
+   * pip orbiting at the target's own radius disappears behind the vehicle exactly when it is
+   * pointing east or west — which is most buses. This orbit clears the artwork at every angle.
+   */
+  width: 68px;
+  height: 68px;
+  margin: -34px 0 0 -34px;
+  pointer-events: none;
+  transform: rotate(var(--bearing, 0deg));
+}
+
+.map-marker__heading::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 0;
+  height: 0;
+  margin-left: -4px;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-bottom: 6px solid var(--colour-ink);
+  /* A halo, so the pip is still legible over dark ground or a busy tile. */
+  filter: drop-shadow(0 0 1px var(--colour-canvas));
+}
+
+.map-marker--stale .map-marker__heading::before {
+  border-bottom-color: var(--colour-muted);
 }
 
 /*
@@ -101,7 +141,9 @@
 
 .map-marker--vehicle:hover .map-marker__route,
 .map-marker--vehicle:focus-visible .map-marker__route,
-.map-marker--vehicle:focus-within .map-marker__route {
+.map-marker--vehicle:focus-within .map-marker__route,
+/* A quiet viewport shows every number at once; MapView decides when it is quiet enough. */
+.map-view--labelled .map-marker--vehicle .map-marker__route {
   opacity: 1;
 }
 

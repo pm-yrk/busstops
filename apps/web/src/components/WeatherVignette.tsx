@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import type { StopWeather, WeatherAdviceKind } from "@busstops/contracts";
 import { describeCondition, weatherAdvice, weatherConditionKind } from "@busstops/adapters";
 import {
@@ -60,17 +61,57 @@ function personIndexFor(atcoCode: string, serviceDate: string): number {
 export interface WeatherVignetteProps {
   weather: StopWeather;
   atcoCode: string;
-  /** Art pixels per CSS pixel. Whole numbers only — a fractional scale is not pixel art. */
+  /**
+   * The largest number of CSS pixels per art pixel this may be drawn at.
+   *
+   * A maximum rather than a setting: the scene is 96 art pixels wide, so four of them is 384 CSS
+   * pixels and does not fit a 375-pixel phone, let alone a 320-pixel one. The component drops to
+   * the largest whole number that fits the space it is actually in. Whole numbers only — a
+   * vignette scaled by 3.6 to fill the column would not be pixel art any more, it would be a
+   * blurred photograph of some.
+   */
   scale?: 3 | 4;
   now?: Date;
+}
+
+/**
+ * The largest whole scale that fits the width the component was given.
+ *
+ * Measured rather than guessed from a media query, because the vignette sits in a column whose
+ * width is decided by the page around it. Before the first measurement — and in a test renderer,
+ * where nothing has a width — it stays at the maximum, which is the desktop case.
+ */
+function useFittingScale(available: number | null, maximum: number): number {
+  if (available === null || available <= 0) return maximum;
+  return Math.max(1, Math.min(maximum, Math.floor(available / VIGNETTE_SIZE.w)));
 }
 
 export function WeatherVignette({
   weather,
   atcoCode,
-  scale = 4,
+  scale: maximumScale = 4,
   now = new Date(),
 }: WeatherVignetteProps) {
+  const holder = useRef<HTMLDivElement>(null);
+  const [available, setAvailable] = useState<number | null>(null);
+  const scale = useFittingScale(available, maximumScale);
+
+  useEffect(() => {
+    const element = holder.current;
+    if (!element) return;
+
+    const measure = () => setAvailable(element.clientWidth || null);
+    measure();
+
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", measure);
+      return () => window.removeEventListener("resize", measure);
+    }
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
   const hour = weather.current;
   const advice = weatherAdvice(hour);
   const condition = describeCondition(hour.weatherCode);
@@ -125,117 +166,121 @@ export function WeatherVignette({
   })();
 
   return (
-    <figure
-      className={`vignette vignette--${advice.kind}`}
-      style={{ width, height: "auto" }}
-      data-condition={kind}
-      data-person={person.id}
-    >
-      <div className="vignette__scene" style={{ width, height }}>
-        <img
-          className="vignette__backdrop"
-          src={backdrop.src}
-          width={width}
-          height={height}
-          alt=""
-        />
-
-        {EFFECTS_FOR[advice.kind].map((name, index) => {
-          const art = ART[name]!;
-          return (
-            <img
-              key={name}
-              className={`vignette__effect vignette__effect--${name.replace("effect_", "")}`}
-              src={art.src}
-              width={art.w * scale}
-              height={art.h * scale}
-              // The sun sits top-left; every other effect covers the whole scene.
-              style={
-                name === "effect_sun"
-                  ? { left: 4 * scale, top: 2 * scale }
-                  : { left: 0, top: 0, animationDelay: `${index * -0.7}s` }
-              }
-              alt=""
-            />
-          );
-        })}
-
-        <img
-          className="vignette__person"
-          src={personArt.src}
-          width={PERSON_SIZE.w * scale}
-          height={PERSON_SIZE.h * scale}
-          style={{ left: personLeft, top: personTop }}
-          alt=""
-        />
-
-        {accessoryArt && accessoryStyle ? (
+    <div className="vignette__holder" ref={holder}>
+      <figure
+        className={`vignette vignette--${advice.kind}`}
+        style={{ width, height: "auto" }}
+        data-condition={kind}
+        data-person={person.id}
+      >
+        <div className="vignette__scene" style={{ width, height }}>
           <img
-            className="vignette__accessory"
-            src={accessoryArt.src}
-            width={accessoryArt.w * scale}
-            height={accessoryArt.h * scale}
-            style={accessoryStyle}
+            className="vignette__backdrop"
+            src={backdrop.src}
+            width={width}
+            height={height}
             alt=""
           />
-        ) : null}
-      </div>
 
-      <figcaption className="vignette__caption">
-        <p className="vignette__reading">
-          <strong>{Math.round(hour.temperatureCelsius)}°C</strong>
-          <span className="muted">feels like {Math.round(hour.apparentTemperatureCelsius)}°C</span>
-          <span>{condition}</span>
-        </p>
+          {EFFECTS_FOR[advice.kind].map((name, index) => {
+            const art = ART[name]!;
+            return (
+              <img
+                key={name}
+                className={`vignette__effect vignette__effect--${name.replace("effect_", "")}`}
+                src={art.src}
+                width={art.w * scale}
+                height={art.h * scale}
+                // The sun sits top-left; every other effect covers the whole scene.
+                style={
+                  name === "effect_sun"
+                    ? { left: 4 * scale, top: 2 * scale }
+                    : { left: 0, top: 0, animationDelay: `${index * -0.7}s` }
+                }
+                alt=""
+              />
+            );
+          })}
 
-        {advice.message ? (
-          <p className="vignette__advice">
-            {advice.message}
-            {advice.because.length > 0 ? (
-              <span className="vignette__because muted small"> {advice.because.join(" · ")}</span>
-            ) : null}
+          <img
+            className="vignette__person"
+            src={personArt.src}
+            width={PERSON_SIZE.w * scale}
+            height={PERSON_SIZE.h * scale}
+            style={{ left: personLeft, top: personTop }}
+            alt=""
+          />
+
+          {accessoryArt && accessoryStyle ? (
+            <img
+              className="vignette__accessory"
+              src={accessoryArt.src}
+              width={accessoryArt.w * scale}
+              height={accessoryArt.h * scale}
+              style={accessoryStyle}
+              alt=""
+            />
+          ) : null}
+        </div>
+
+        <figcaption className="vignette__caption">
+          <p className="vignette__reading">
+            <strong>{Math.round(hour.temperatureCelsius)}°C</strong>
+            <span className="muted">
+              feels like {Math.round(hour.apparentTemperatureCelsius)}°C
+            </span>
+            <span>{condition}</span>
           </p>
-        ) : null}
 
-        {/* Every published number, so the picture is never the only thing said. */}
-        <dl className="vignette__facts">
-          <div>
-            <dt>Rain</dt>
-            <dd>
-              {hour.precipitationMm.toFixed(1)} mm
-              {hour.precipitationProbability === null
-                ? ""
-                : ` · ${hour.precipitationProbability}% chance`}
-            </dd>
-          </div>
-          <div>
-            <dt>Wind</dt>
-            <dd>
-              {Math.round(hour.windSpeedKph)} km/h
-              {hour.windGustKph === null ? "" : ` · gusts ${Math.round(hour.windGustKph)}`}
-            </dd>
-          </div>
-          <div>
-            <dt>UV</dt>
-            <dd>{hour.uvIndex === null ? "Not published" : hour.uvIndex.toFixed(1)}</dd>
-          </div>
-          <div>
-            <dt>Daylight</dt>
-            <dd>{hour.isDay ? "Daytime" : "After dark"}</dd>
-          </div>
-        </dl>
+          {advice.message ? (
+            <p className="vignette__advice">
+              {advice.message}
+              {advice.because.length > 0 ? (
+                <span className="vignette__because muted small"> {advice.because.join(" · ")}</span>
+              ) : null}
+            </p>
+          ) : null}
 
-        <p className="vignette__source small muted">
-          For the {weather.cellSizeDegrees}° area around this stop, read{" "}
-          <time dateTime={weather.retrievedAt}>
-            {new Date(weather.retrievedAt).toLocaleTimeString("en-GB", {
-              hour: "2-digit",
-              minute: "2-digit",
-            })}
-          </time>
-          . {weather.attribution}.
-        </p>
-      </figcaption>
-    </figure>
+          {/* Every published number, so the picture is never the only thing said. */}
+          <dl className="vignette__facts">
+            <div>
+              <dt>Rain</dt>
+              <dd>
+                {hour.precipitationMm.toFixed(1)} mm
+                {hour.precipitationProbability === null
+                  ? ""
+                  : ` · ${hour.precipitationProbability}% chance`}
+              </dd>
+            </div>
+            <div>
+              <dt>Wind</dt>
+              <dd>
+                {Math.round(hour.windSpeedKph)} km/h
+                {hour.windGustKph === null ? "" : ` · gusts ${Math.round(hour.windGustKph)}`}
+              </dd>
+            </div>
+            <div>
+              <dt>UV</dt>
+              <dd>{hour.uvIndex === null ? "Not published" : hour.uvIndex.toFixed(1)}</dd>
+            </div>
+            <div>
+              <dt>Daylight</dt>
+              <dd>{hour.isDay ? "Daytime" : "After dark"}</dd>
+            </div>
+          </dl>
+
+          <p className="vignette__source small muted">
+            For the {weather.cellSizeDegrees}° area around this stop, read{" "}
+            <time dateTime={weather.retrievedAt}>
+              {new Date(weather.retrievedAt).toLocaleTimeString("en-GB", {
+                hour: "2-digit",
+                minute: "2-digit",
+              })}
+            </time>
+            . {weather.attribution}.
+          </p>
+        </figcaption>
+      </figure>
+    </div>
   );
 }

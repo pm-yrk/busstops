@@ -13,6 +13,7 @@ import {
   ServiceBanner,
   StateLozenge,
 } from "../components/primitives.js";
+import { WeatherVignette } from "../components/WeatherVignette.js";
 import { WillIMakeItPanel } from "../components/WillIMakeItPanel.js";
 import { apiClient, ApiError } from "../lib/api.js";
 import { useFetch, useTicker } from "../lib/use-fetch.js";
@@ -244,6 +245,20 @@ export function StopPage() {
           </>
         )}
       </section>
+
+      {/*
+       * What it is like standing here.
+       *
+       * Absent rather than empty when there is no answer: the weather job publishes a degree
+       * square at a time, and a square it has not reached has none. A placeholder sky would make
+       * the one drawing on the page also the one thing on it that is not measured.
+       */}
+      {response.data.weather && (
+        <section className="stop-page__weather" aria-labelledby="stop-weather-heading">
+          <h2 id="stop-weather-heading">At the stop</h2>
+          <WeatherVignette weather={response.data.weather} atcoCode={stop.atcoCode} now={now} />
+        </section>
+      )}
 
       <AccessibilityCard accessibility={response.data.accessibility} />
 

@@ -6,8 +6,19 @@
  * pass and heat wavers, and nothing else moves — a stop that jiggles would be a toy.
  */
 
+/*
+ * The scene measures the room it has and picks a whole scale that fits it. The holder is what it
+ * measures: the figure itself is exactly as wide as the artwork, so measuring that would only
+ * ever return the size it already chose.
+ */
+.vignette__holder {
+  width: 100%;
+  min-width: 0;
+}
+
 .vignette {
   margin: 0;
+  max-width: 100%;
   display: grid;
   gap: var(--space-sm);
   min-width: 0;

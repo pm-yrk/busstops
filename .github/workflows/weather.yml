@@ -1,0 +1,72 @@
+name: Weather — what it is like at the stop
+
+# Asks Open-Meteo about every cell that has a bus stop in it and publishes one small artifact per
+# degree square. The Worker reads one square to show one stop and never asks Open-Meteo anything
+# itself, which is the whole arrangement: the number of upstream calls is a property of this
+# schedule rather than of how many people are looking at the site.
+#
+# The cost is arithmetic, not a hope. Answers are cached per 0.10° cell — about 11 km
+# north-south, finer than a shower and far coarser than a bus stop — and Open-Meteo takes
+# comma-separated coordinate lists, so England's roughly two and a half thousand cells cost about
+# twenty-five requests a run. Half-hourly that is around 1,200 a day against a free
+# non-commercial allowance of 10,000. The job computes the same figure from WEATHER_REFRESH_MINUTES
+# and refuses to run a schedule that would not fit, so this comment cannot quietly become wrong.
+#
+# Open-Meteo's free tier is for non-commercial use and requires attribution; every response
+# carries it and the stop page prints it.
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Never two collectors at once; the second would spend the allowance on data the first has.
+concurrency:
+  group: weather
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    name: Ask about every populated cell
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - run: npm ci --no-audit --no-fund
+
+      - name: Collect and publish
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          R2_BUCKET_ARTIFACTS: busstops-artifacts-preview
+          # Must match the cron above. The job proves its own schedule against the allowance.
+          WEATHER_REFRESH_MINUTES: "30"
+        run: |
+          set -o pipefail
+          npx tsx pipelines/weather/run-collect.ts 2>&1 | tee weather.log
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "## Stop weather"
+            echo
+            echo '```'
+            sed -n '1,60p' weather.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: weather-report
+          path: weather-report.json
+          retention-days: 7
+          if-no-files-found: ignore

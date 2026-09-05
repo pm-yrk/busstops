@@ -124,3 +124,12 @@
 .stop-page__plan {
   align-self: center;
 }
+
+/*
+ * The weather sits with the rest of what is known about the stop, below the board and above the
+ * accessibility facts. It is a picture with numbers under it, not a hero: at this width the
+ * vignette is the same size as a photograph would be in a newspaper column.
+ */
+.stop-page__weather {
+  margin-bottom: var(--space-xl);
+}
