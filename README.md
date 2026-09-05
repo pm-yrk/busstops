@@ -4,7 +4,7 @@
 
 [**Open the live preview →**](https://preview.busstops.pages.dev)
 
-![Bus Stops current build](https://raw.githubusercontent.com/pm-yrk/busstops/main/docs/portfolio/busstops-home.png?v=20260905a)
+<img width="1440" height="900" alt="BusStops_Home" src="https://github.com/user-attachments/assets/07fadc9b-feb2-43e5-9853-29e95573e5e0" />
 
 ## Why I built it
 
@@ -31,7 +31,7 @@ That became **Bus Stops Live** for passengers and **Bus Stops Pro** for the oper
 
 A public, read-only demonstration of the operational side of the product, including Control Tower, Live Operations, Routes, Operators, Congestion, Analytics, Disruptions, Reports and a Daily Brief.
 
-![Bus Stops Pro current build](https://raw.githubusercontent.com/pm-yrk/busstops/main/docs/portfolio/busstops-pro.png?v=20260905a)
+<img width="1440" height="900" alt="BusStops_Pro" src="https://github.com/user-attachments/assets/bae6c588-37fa-4d98-b93e-8da9d585e32f" />
 
 The aim is not to throw as many numbers as possible onto a screen. The useful bit is knowing **what the number is based on, how fresh it is and whether there is enough coverage to trust it**.
 
