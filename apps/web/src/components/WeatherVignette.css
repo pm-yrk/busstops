@@ -1,0 +1,178 @@
+/*
+ * The weather vignette.
+ *
+ * Every sprite is positioned in whole art pixels and scaled by a whole number, so the scene never
+ * lands on a half pixel. The animation is restrained on purpose: rain falls, snow drifts, streaks
+ * pass and heat wavers, and nothing else moves — a stop that jiggles would be a toy.
+ */
+
+.vignette {
+  margin: 0;
+  display: grid;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+.vignette__scene {
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--colour-hairline);
+  /* The picture is the object; the border is the frame it sits in. */
+  background: var(--colour-canvas);
+}
+
+.vignette__scene img {
+  position: absolute;
+  image-rendering: pixelated;
+  /* Everything is placed by its own left/top; this stops a stray baseline gap. */
+  display: block;
+}
+
+.vignette__backdrop {
+  left: 0;
+  top: 0;
+}
+
+.vignette__person,
+.vignette__accessory {
+  /* Above the weather that falls behind them, below the weather that falls in front. */
+  z-index: 2;
+}
+
+.vignette__effect {
+  z-index: 1;
+}
+
+/* The near rain layer passes in front of the person; the far one stays behind. */
+.vignette__effect--rainNear {
+  z-index: 3;
+}
+
+@keyframes vignette-rain {
+  from {
+    transform: translate3d(0, -100%, 0);
+  }
+  to {
+    transform: translate3d(0, 100%, 0);
+  }
+}
+
+@keyframes vignette-snow {
+  from {
+    transform: translate3d(0, -100%, 0);
+  }
+  to {
+    transform: translate3d(4px, 100%, 0);
+  }
+}
+
+@keyframes vignette-drift {
+  from {
+    transform: translate3d(-100%, 0, 0);
+  }
+  to {
+    transform: translate3d(100%, 0, 0);
+  }
+}
+
+@keyframes vignette-shimmer {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+    opacity: 0.85;
+  }
+  50% {
+    transform: translate3d(2px, -1px, 0);
+    opacity: 1;
+  }
+}
+
+/*
+ * Two copies of each falling layer, one offset by half the cycle, so the loop has no seam. The
+ * duplicate is drawn by the same element twice over via `background`-style repetition — here it
+ * is simpler: the layer is twice the scene's height and translates through a full cycle.
+ */
+.vignette__effect--rainNear {
+  animation: vignette-rain 0.9s linear infinite;
+}
+.vignette__effect--rainFar {
+  animation: vignette-rain 1.6s linear infinite;
+}
+.vignette__effect--snow {
+  animation: vignette-snow 6s linear infinite;
+}
+.vignette__effect--wind {
+  animation: vignette-drift 3.2s linear infinite;
+}
+.vignette__effect--heat {
+  animation: vignette-shimmer 2.4s ease-in-out infinite;
+}
+.vignette__effect--fog {
+  animation: vignette-drift 22s linear infinite;
+  opacity: 0.9;
+}
+
+/*
+ * Reduced motion stops the weather rather than hiding it: a still frame of rain still says it is
+ * raining, and removing the layer entirely would remove the information.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .vignette__effect {
+    animation: none !important;
+  }
+}
+
+.vignette__caption {
+  display: grid;
+  gap: var(--space-xs);
+  min-width: 0;
+}
+
+.vignette__reading {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-sm);
+}
+
+.vignette__reading strong {
+  font-size: 1.4rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.vignette__advice {
+  margin: 0;
+  font-weight: 600;
+}
+
+.vignette__because {
+  font-weight: 400;
+}
+
+.vignette__facts {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(9rem, 100%), 1fr));
+  gap: var(--space-xs) var(--space-md);
+}
+
+.vignette__facts dt {
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--colour-muted);
+}
+
+.vignette__facts dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.vignette__source {
+  margin: 0;
+}

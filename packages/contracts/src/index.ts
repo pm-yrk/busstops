@@ -4,6 +4,7 @@ export * from "./live.js";
 export * from "./accessibility.js";
 export * from "./derived.js";
 export * from "./disruptions.js";
+export * from "./weather.js";
 export * from "./account.js";
 export * from "./api.js";
 export * from "./source-registry.js";

@@ -6,6 +6,14 @@ Last updated: 2026-09-04 (the timetable cap is gone; disruptions and accessibili
 
 ### Passenger product recovery (2026-09-04)
 
+> **Locally complete, not yet verified against real data.** Everything in this section is built,
+> unit- and integration-tested, and green on the full local gate — but this container has no
+> upstream egress and no deploy, so none of it has met a real BODS archive, a real SIRI-SX
+> document or a deployed Worker. "The GTFS ingest reads the whole archive" is a claim about code
+> that has been proved against archives built byte by byte in tests; it becomes a claim about
+> England when the deliberate online verification run measures it. Until then, treat every count,
+> size and coverage figure below as a design target rather than an observation.
+
 - **The 60-of-945 timetable cap is retired.** It was a memory limit wearing a coverage limit's
   clothes: everything fetched was assembled into one in-memory network, so how much of England
   could have a departure board was decided by how much would fit in a heap. The daily and weekly

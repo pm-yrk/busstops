@@ -4,6 +4,8 @@ import { encodePng } from "./png.mjs";
 import { busSide, busMid, busFront, busMarker, stopMarker } from "./bus.mjs";
 import { wideScene, tallScene, edgeStrip, GEOMETRY } from "./scene.mjs";
 import { shelter, stopFlag, tree, person, cloud, bin } from "./street.mjs";
+import { PEOPLE, ACCESSORIES, drawPerson, drawAccessory, PERSON_W, PERSON_H } from "./people.mjs";
+import { vignetteScene, EFFECTS, VIGNETTE_W, VIGNETTE_H, VIGNETTE_GROUND } from "./vignette.mjs";
 
 /**
  * Emits the finished artwork into the web app.
@@ -50,6 +52,32 @@ const FILES = {
   edgeWide: ["street-wide-edge", edgeStrip(GEOMETRY.WIDE, { height: 72 })],
   edgeTall: ["street-tall-edge", edgeStrip(GEOMETRY.TALL, { height: 108, wall: "pale" })],
 };
+
+/*
+ * The weather vignette: one backdrop per light, one sprite per person per pose, one per
+ * accessory, and the effect layers. Composed in the DOM rather than baked, so twelve people in
+ * seven kinds of weather is twelve drawings and seven effects rather than eighty-four pictures.
+ */
+for (const night of [false, true]) {
+  FILES[`vignette${night ? "Night" : "Day"}`] = [
+    `vignette-${night ? "night" : "day"}`,
+    vignetteScene({ night }),
+  ];
+}
+for (const person of PEOPLE) {
+  for (const pose of ["plain", "holding"]) {
+    FILES[`person_${person.id.replace(/-/g, "_")}_${pose}`] = [
+      `person-${person.id}-${pose}`,
+      drawPerson(person, pose),
+    ];
+  }
+}
+for (const name of Object.keys(ACCESSORIES)) {
+  FILES[`accessory_${name}`] = [`accessory-${name}`, drawAccessory(name)];
+}
+for (const [name, make] of Object.entries(EFFECTS)) {
+  FILES[`effect_${name}`] = [`effect-${name.replace(/([A-Z])/g, "-$1").toLowerCase()}`, make()];
+}
 
 const INLINE = {
   busMarkerRed: busMarker({}),
@@ -105,6 +133,52 @@ export const MARKERS: Record<string, PixelImage> = ${JSON.stringify(inlineMeta, 
 
 /** Where the ground and the carriageway sit in each composition, so buses can be driven along it. */
 export const SCENE_GEOMETRY = ${JSON.stringify(GEOMETRY, null, 2)} as const;
+
+/**
+ * The cast, and where things attach to each of them.
+ *
+ * \`hand\` is where an umbrella's handle goes in the holding pose and \`headTop\` is where a hat
+ * sits, both in art pixels from the sprite's own top-left. The vignette multiplies them by the
+ * scale it is drawn at, which is why they are whole numbers.
+ */
+export interface PixelPerson {
+  readonly id: string;
+  readonly description: string;
+  readonly hand: { readonly x: number; readonly y: number };
+  readonly headTop: number;
+  readonly eyes: { readonly x: number; readonly y: number };
+  readonly neck: { readonly x: number; readonly y: number };
+}
+
+export const PEOPLE_META: readonly PixelPerson[] = ${JSON.stringify(
+  PEOPLE.map((p) => ({
+    id: p.id,
+    description: p.description,
+    hand: p.hand,
+    headTop: p.headTop,
+    // Derived from where each figure's head was drawn, so an accessory lands on the face and the
+    // throat rather than at a guessed offset from the sprite's own top.
+    eyes: p.eyes ?? { x: 8, y: p.headTop + 4 },
+    neck: p.neck ?? { x: 8, y: p.headTop + 8 },
+  })),
+  null,
+  2,
+)};
+
+export const PERSON_SIZE = { w: ${PERSON_W}, h: ${PERSON_H} } as const;
+
+/**
+ * Where each accessory attaches.
+ *
+ * "hand" is carried, "head" sits on the crown, "neck" wraps the throat and "eyes" sits across the
+ * face. A scarf placed at the crown reads as a flag, which is what the first composition did.
+ */
+export const ACCESSORY_ANCHORS: Record<string, "hand" | "head" | "neck" | "eyes"> = ${JSON.stringify(
+  Object.fromEntries(Object.entries(ACCESSORIES).map(([k, v]) => [k, v.anchor ?? "head"])),
+  null,
+  2,
+)};
+export const VIGNETTE_SIZE = { w: ${VIGNETTE_W}, h: ${VIGNETTE_H}, ground: ${VIGNETTE_GROUND} } as const;
 `;
 
 const out = "apps/web/src/components/pixel/sprites/generated.ts";

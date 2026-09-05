@@ -10,6 +10,7 @@ export * from "./bods-siri.js";
 export * from "./bods-situations.js";
 export * from "./transxchange.js";
 export * from "./open-meteo.js";
+export * from "./stop-weather.js";
 export * from "./environment-agency.js";
 export * from "./road-events.js";
 export * from "./osm.js";

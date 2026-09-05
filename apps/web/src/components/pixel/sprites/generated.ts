@@ -99,6 +99,196 @@ export const ART: Record<string, PixelImage> = {
     w: 32,
     h: 250,
   },
+  vignetteDay: {
+    src: "/art/vignette-day.png",
+    w: 96,
+    h: 72,
+  },
+  vignetteNight: {
+    src: "/art/vignette-night.png",
+    w: 96,
+    h: 72,
+  },
+  person_commuter_red_coat_plain: {
+    src: "/art/person-commuter-red-coat-plain.png",
+    w: 24,
+    h: 44,
+  },
+  person_commuter_red_coat_holding: {
+    src: "/art/person-commuter-red-coat-holding.png",
+    w: 24,
+    h: 44,
+  },
+  person_student_headphones_plain: {
+    src: "/art/person-student-headphones-plain.png",
+    w: 24,
+    h: 44,
+  },
+  person_student_headphones_holding: {
+    src: "/art/person-student-headphones-holding.png",
+    w: 24,
+    h: 44,
+  },
+  person_wheelchair_user_plain: {
+    src: "/art/person-wheelchair-user-plain.png",
+    w: 24,
+    h: 44,
+  },
+  person_wheelchair_user_holding: {
+    src: "/art/person-wheelchair-user-holding.png",
+    w: 24,
+    h: 44,
+  },
+  person_older_with_stick_plain: {
+    src: "/art/person-older-with-stick-plain.png",
+    w: 24,
+    h: 44,
+  },
+  person_older_with_stick_holding: {
+    src: "/art/person-older-with-stick-holding.png",
+    w: 24,
+    h: 44,
+  },
+  person_child_in_yellow_plain: {
+    src: "/art/person-child-in-yellow-plain.png",
+    w: 24,
+    h: 44,
+  },
+  person_child_in_yellow_holding: {
+    src: "/art/person-child-in-yellow-holding.png",
+    w: 24,
+    h: 44,
+  },
+  person_nurse_in_scrubs_plain: {
+    src: "/art/person-nurse-in-scrubs-plain.png",
+    w: 24,
+    h: 44,
+  },
+  person_nurse_in_scrubs_holding: {
+    src: "/art/person-nurse-in-scrubs-holding.png",
+    w: 24,
+    h: 44,
+  },
+  person_rollator_user_plain: {
+    src: "/art/person-rollator-user-plain.png",
+    w: 24,
+    h: 44,
+  },
+  person_rollator_user_holding: {
+    src: "/art/person-rollator-user-holding.png",
+    w: 24,
+    h: 44,
+  },
+  person_cyclist_waiting_plain: {
+    src: "/art/person-cyclist-waiting-plain.png",
+    w: 24,
+    h: 44,
+  },
+  person_cyclist_waiting_holding: {
+    src: "/art/person-cyclist-waiting-holding.png",
+    w: 24,
+    h: 44,
+  },
+  person_parent_with_buggy_plain: {
+    src: "/art/person-parent-with-buggy-plain.png",
+    w: 24,
+    h: 44,
+  },
+  person_parent_with_buggy_holding: {
+    src: "/art/person-parent-with-buggy-holding.png",
+    w: 24,
+    h: 44,
+  },
+  person_worker_with_flask_plain: {
+    src: "/art/person-worker-with-flask-plain.png",
+    w: 24,
+    h: 44,
+  },
+  person_worker_with_flask_holding: {
+    src: "/art/person-worker-with-flask-holding.png",
+    w: 24,
+    h: 44,
+  },
+  person_person_in_headscarf_plain: {
+    src: "/art/person-person-in-headscarf-plain.png",
+    w: 24,
+    h: 44,
+  },
+  person_person_in_headscarf_holding: {
+    src: "/art/person-person-in-headscarf-holding.png",
+    w: 24,
+    h: 44,
+  },
+  person_teen_with_skateboard_plain: {
+    src: "/art/person-teen-with-skateboard-plain.png",
+    w: 24,
+    h: 44,
+  },
+  person_teen_with_skateboard_holding: {
+    src: "/art/person-teen-with-skateboard-holding.png",
+    w: 24,
+    h: 44,
+  },
+  accessory_umbrella: {
+    src: "/art/accessory-umbrella.png",
+    w: 26,
+    h: 24,
+  },
+  accessory_sunglasses: {
+    src: "/art/accessory-sunglasses.png",
+    w: 11,
+    h: 4,
+  },
+  accessory_scarf: {
+    src: "/art/accessory-scarf.png",
+    w: 13,
+    h: 11,
+  },
+  accessory_woollyHat: {
+    src: "/art/accessory-woollyHat.png",
+    w: 11,
+    h: 8,
+  },
+  accessory_sunHat: {
+    src: "/art/accessory-sunHat.png",
+    w: 16,
+    h: 8,
+  },
+  effect_rainNear: {
+    src: "/art/effect-rain-near.png",
+    w: 96,
+    h: 72,
+  },
+  effect_rainFar: {
+    src: "/art/effect-rain-far.png",
+    w: 96,
+    h: 72,
+  },
+  effect_snow: {
+    src: "/art/effect-snow.png",
+    w: 96,
+    h: 72,
+  },
+  effect_sun: {
+    src: "/art/effect-sun.png",
+    w: 28,
+    h: 28,
+  },
+  effect_fog: {
+    src: "/art/effect-fog.png",
+    w: 96,
+    h: 72,
+  },
+  effect_wind: {
+    src: "/art/effect-wind.png",
+    w: 96,
+    h: 72,
+  },
+  effect_heat: {
+    src: "/art/effect-heat.png",
+    w: 96,
+    h: 72,
+  },
 };
 
 /** Small enough to inline, and MapLibre needs them without a round trip. */
@@ -142,3 +332,243 @@ export const SCENE_GEOMETRY = {
     road: 200,
   },
 } as const;
+
+/**
+ * The cast, and where things attach to each of them.
+ *
+ * `hand` is where an umbrella's handle goes in the holding pose and `headTop` is where a hat
+ * sits, both in art pixels from the sprite's own top-left. The vignette multiplies them by the
+ * scale it is drawn at, which is why they are whole numbers.
+ */
+export interface PixelPerson {
+  readonly id: string;
+  readonly description: string;
+  readonly hand: { readonly x: number; readonly y: number };
+  readonly headTop: number;
+  readonly eyes: { readonly x: number; readonly y: number };
+  readonly neck: { readonly x: number; readonly y: number };
+}
+
+export const PEOPLE_META: readonly PixelPerson[] = [
+  {
+    id: "commuter-red-coat",
+    description: "Adult in a red winter coat with a satchel",
+    hand: {
+      x: 18,
+      y: 12,
+    },
+    headTop: 3,
+    eyes: {
+      x: 8,
+      y: 9,
+    },
+    neck: {
+      x: 10,
+      y: 13,
+    },
+  },
+  {
+    id: "student-headphones",
+    description: "Young adult in a hoodie with over-ear headphones",
+    hand: {
+      x: 18,
+      y: 13,
+    },
+    headTop: 2,
+    eyes: {
+      x: 8,
+      y: 10,
+    },
+    neck: {
+      x: 10,
+      y: 14,
+    },
+  },
+  {
+    id: "wheelchair-user",
+    description: "Wheelchair user in a blue jacket",
+    hand: {
+      x: 19,
+      y: 17,
+    },
+    headTop: 8,
+    eyes: {
+      x: 9,
+      y: 14,
+    },
+    neck: {
+      x: 11,
+      y: 18,
+    },
+  },
+  {
+    id: "older-with-stick",
+    description: "Older person with a walking stick and a shopping bag",
+    hand: {
+      x: 4,
+      y: 15,
+    },
+    headTop: 3,
+    eyes: {
+      x: 8,
+      y: 9,
+    },
+    neck: {
+      x: 10,
+      y: 13,
+    },
+  },
+  {
+    id: "child-in-yellow",
+    description: "Child in a bright yellow coat and red wellies",
+    hand: {
+      x: 17,
+      y: 22,
+    },
+    headTop: 12,
+    eyes: {
+      x: 9,
+      y: 18,
+    },
+    neck: {
+      x: 11,
+      y: 22,
+    },
+  },
+  {
+    id: "nurse-in-scrubs",
+    description: "Adult in scrubs with a lanyard, coming off shift",
+    hand: {
+      x: 18,
+      y: 12,
+    },
+    headTop: 3,
+    eyes: {
+      x: 8,
+      y: 9,
+    },
+    neck: {
+      x: 10,
+      y: 13,
+    },
+  },
+  {
+    id: "rollator-user",
+    description: "Older person using a rollator",
+    hand: {
+      x: 3,
+      y: 20,
+    },
+    headTop: 4,
+    eyes: {
+      x: 10,
+      y: 10,
+    },
+    neck: {
+      x: 12,
+      y: 14,
+    },
+  },
+  {
+    id: "cyclist-waiting",
+    description: "Adult in a hi-vis jacket and helmet",
+    hand: {
+      x: 18,
+      y: 13,
+    },
+    headTop: 2,
+    eyes: {
+      x: 8,
+      y: 10,
+    },
+    neck: {
+      x: 10,
+      y: 14,
+    },
+  },
+  {
+    id: "parent-with-buggy",
+    description: "Adult pushing a pram",
+    hand: {
+      x: 4,
+      y: 16,
+    },
+    headTop: 3,
+    eyes: {
+      x: 11,
+      y: 9,
+    },
+    neck: {
+      x: 13,
+      y: 13,
+    },
+  },
+  {
+    id: "worker-with-flask",
+    description: "Adult in a heavy green jacket with a flask",
+    hand: {
+      x: 18,
+      y: 13,
+    },
+    headTop: 3,
+    eyes: {
+      x: 8,
+      y: 9,
+    },
+    neck: {
+      x: 10,
+      y: 13,
+    },
+  },
+  {
+    id: "person-in-headscarf",
+    description: "Adult in a headscarf and a long coat",
+    hand: {
+      x: 18,
+      y: 12,
+    },
+    headTop: 3,
+    eyes: {
+      x: 8,
+      y: 9,
+    },
+    neck: {
+      x: 10,
+      y: 13,
+    },
+  },
+  {
+    id: "teen-with-skateboard",
+    description: "Teenager with a skateboard stood against their leg",
+    hand: {
+      x: 18,
+      y: 13,
+    },
+    headTop: 2,
+    eyes: {
+      x: 8,
+      y: 9,
+    },
+    neck: {
+      x: 10,
+      y: 13,
+    },
+  },
+];
+
+export const PERSON_SIZE = { w: 24, h: 44 } as const;
+
+/**
+ * Where each accessory attaches.
+ *
+ * "hand" is carried, "head" sits on the crown, "neck" wraps the throat and "eyes" sits across the
+ * face. A scarf placed at the crown reads as a flag, which is what the first composition did.
+ */
+export const ACCESSORY_ANCHORS: Record<string, "hand" | "head" | "neck" | "eyes"> = {
+  umbrella: "hand",
+  sunglasses: "eyes",
+  scarf: "neck",
+  woollyHat: "head",
+  sunHat: "head",
+};
+export const VIGNETTE_SIZE = { w: 96, h: 72, ground: 60 } as const;

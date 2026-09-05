@@ -93,6 +93,28 @@ export class Canvas {
           this.px(x, y, c);
       }
   }
+  /**
+   * A contour drawn *outside* the silhouette, into the transparent pixels around it.
+   *
+   * `outline` recolours the sprite's own edge pixels, which is right for a large shape and wrong
+   * for a face: on a seven-pixel head it ate the eyes and the jaw, and every character came back
+   * from the first pass looking hooded. This one leaves the artwork alone and grows a one-pixel
+   * skirt around it, which is what lifts a figure off a background without costing it detail.
+   */
+  outerOutline(c) {
+    const copy = this.g.map((r) => r.slice());
+    const solid = (x, y) => {
+      if (x < 0 || y < 0 || x >= this.w || y >= this.h) return false;
+      return copy[y][x] !== ".";
+    };
+    for (let y = 0; y < this.h; y++)
+      for (let x = 0; x < this.w; x++) {
+        if (solid(x, y)) continue;
+        if (solid(x - 1, y) || solid(x + 1, y) || solid(x, y - 1) || solid(x, y + 1)) {
+          this.px(x, y, c);
+        }
+      }
+  }
   /** Copy another canvas's opaque pixels onto this one. */
   blit(src, x, y, { flip = false } = {}) {
     for (let j = 0; j < src.h; j++)
