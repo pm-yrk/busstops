@@ -1,8 +1,34 @@
 # Bus Stops. Build State
 
-Last updated: 2026-09-04 (artwork rebuilt as a real sprite library; preview green end to end)
+Last updated: 2026-09-04 (the timetable cap is gone; disruptions and accessibility are real)
 
 ## Current status
+
+### Passenger product recovery (2026-09-04)
+
+- **The 60-of-945 timetable cap is retired.** It was a memory limit wearing a coverage limit's
+  clothes: everything fetched was assembled into one in-memory network, so how much of England
+  could have a departure board was decided by how much would fit in a heap. The daily and weekly
+  jobs now read BODS's own GTFS extract as a stream — `gtfs-zip.ts` reads the central directory
+  off disk (Zip64 included), `gtfs-csv.ts` parses RFC 4180 rows off that stream, `gtfs-network.ts`
+  emits one journey at a time, and `gtfs-spill.ts` sorts them into tiles on disk. Only journeys
+  moved to disk, because only journeys scale with every trip on every service date; stops,
+  patterns, services and the search index are unchanged. `BODS_MAX_TIMETABLE_DATASETS` is gone and
+  `BODS_GTFS_REGION` replaces it.
+- **Official disruption notices are real.** A separate model from `Incident` — one is what an
+  operator published, the other is what Bus Stops inferred — collected every ten minutes from BODS
+  SIRI-SX and TfL, published as a bounded artifact, and shown as "Official now" above "Observed by
+  Bus Stops". The map's hardcoded `incidents: []` is gone.
+- **Accessibility is a set of sourced facts.** Fourteen stop facts and three vehicle facts, each
+  with a status, a source, the field it came from, a provenance sentence and a confidence. A
+  missing value is UNKNOWN and never NO. No score.
+- **A Worker error is readable again.** CORS headers were only on successful responses, so every
+  404, 405, 429 and 500 reached the browser as `net::ERR_FAILED` with no status — which is what
+  the live map's "This stop could not be loaded" actually was.
+- **Run 26's mismatch is a regression test.** BODS answered 237/364/338/233 vehicles for
+  Leeds/Manchester/Birmingham/Bristol at 09:38Z while the deployment answered zero for all four.
+  Both halves are pinned: the counts must be published, and an empty viewport must name which of
+  `request_failed`, `empty_feed` or `all_rejected` happened.
 
 - Phase: P0–P9 complete → P10 (deployment, automated and executing)
 - Overall: foundations, all eight source adapters, the national static-network pipeline, the
@@ -29,7 +55,16 @@ Last updated: 2026-09-04 (artwork rebuilt as a real sprite library; preview gree
   is scaled by a whole number, the basemap paints, nothing scrolls sideways — and keeps its
   screenshots as a run artifact. It does not judge the artwork, and says so: `npm run art:bench`
   renders every surface carrying artwork for that.
-- **B4 — GitHub Actions is disabled on this account (2026-09-04 12:09 UTC).** Dispatching any
+- **B4 — GitHub Actions stopped executing (2026-09-04, ~09:40 UTC onwards).** Dispatch answered
+  `Actions has been disabled for this user` at 14:03Z, and — the decisive evidence — CI, which
+  triggers on push to this branch, has not produced a run since `run_number: 94` at 09:36:47Z
+  across four subsequent pushes. Read access to the Actions API returned later in the day, so this
+  was never a token being blind; nothing was being _run_. Everything needing a runner is blocked
+  until execution resumes: the deployed probe, the GTFS measurement, deploys, and the product
+  audit. Everything else continues here — the container has no upstream egress of its own (the
+  agent proxy answers 403 to `data.bus-data.dft.gov.uk`), but adapters, pipelines, the Worker, the
+  app, tests and the artwork are all buildable and testable locally, and Chromium is installed.
+- **B4 (original note) — GitHub Actions is disabled on this account (2026-09-04 12:09 UTC).** Dispatching any
   workflow returns `Actions has been disabled for this user`, and the run history now lists zero
   runs where it listed twenty-six an hour earlier. This container has no upstream egress of its
   own — the agent proxy answers 403 to `data.bus-data.dft.gov.uk` and to the Actions artifact

@@ -30,20 +30,20 @@ export interface StaticSourceResult {
 /**
  * How many timetable datasets a run takes by default.
  *
- * Raised from 25 after a national build produced stops for the whole country and services for a
- * fraction of it — a complete map with a departure board at some stops and nothing at others.
+ * Zero, because the timetable no longer comes from here.
  *
- * The figure is bounded by arithmetic rather than taste. What is left of the national artifacts
- * is what the weekly reconciliation reads, and each is published as a single object: at 25
- * datasets `network/patterns` measured 100 MiB, so it grows to roughly 240 MiB at 60 and past
- * what a runtime will hold in one string somewhere beyond 100. Sixty is therefore about as far
- * as this shape of publish reaches.
+ * This used to page the BODS dataset catalogue and unpack the first N archives, and N was a
+ * memory limit wearing a coverage limit's clothes: everything it fetched was assembled into one
+ * in-memory network, so the ceiling on how much of England could have a timetable was how much of
+ * England would fit in a heap. At 60 of 945 that meant a complete national map with a departure
+ * board at some stops and nothing at others.
  *
- * Going further is a real change, not a larger number: the weekly job would read pattern shards
- * instead of a national object, and this cap would come off. Until then the build report carries
- * what was taken against what BODS published, so the gap is a figure rather than a surprise.
+ * The timetable now comes from BODS's own GTFS extract, read as a stream and spilled to disk, so
+ * there is no ceiling to set — see `gtfs-sources.ts` and `gtfs-network.ts`. This path is kept for
+ * NaPTAN, which is still fetched here, and the cap stays as a parameter so a test can ask for a
+ * TransXChange document without the default being to fetch dozens.
  */
-export const DEFAULT_MAX_TIMETABLE_DATASETS = 60;
+export const DEFAULT_MAX_TIMETABLE_DATASETS = 0;
 
 export interface FetchStaticSourcesOptions {
   bodsApiKey: string | undefined;

@@ -54,6 +54,14 @@ export interface PublishOptions {
   /** Guards against a broken upstream parse publishing a near-empty national dataset. */
   minimumStops?: number;
   minimumJourneys?: number;
+  /**
+   * How many journeys the build actually produced.
+   *
+   * Defaults to what the network carries, which is right when journeys are in memory. A streamed
+   * build has already spilled them to disk and carries none, so it passes its own count — the
+   * guard still bites on a parse that produced nothing, which is the thing it exists to catch.
+   */
+  journeyCount?: number;
 }
 
 export async function publishNetwork(
@@ -100,10 +108,11 @@ export async function publishNetwork(
 
   // The journey count is still guarded, just not by publishing them all in one object: a build
   // that parsed no journeys has misread its sources, and that must stop the publish.
-  if (network.journeys.length < (options.minimumJourneys ?? 1)) {
+  const journeyCount = options.journeyCount ?? network.journeys.length;
+  if (journeyCount < (options.minimumJourneys ?? 1)) {
     failed.push({
       dataset: DATASETS.journeys,
-      reason: `only ${network.journeys.length} journeys were built; the timetable parse produced too little to publish`,
+      reason: `only ${journeyCount} journeys were built; the timetable parse produced too little to publish`,
     });
   }
 

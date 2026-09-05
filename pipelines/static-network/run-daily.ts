@@ -8,14 +8,16 @@
 
 import { writeFileSync } from "node:fs";
 import { ArtifactStore, r2StoreFromEnv } from "@busstops/pipeline-core";
-import { buildNetwork } from "./src/build-network.js";
+import { assembleGtfsNetwork } from "./src/gtfs-assemble.js";
+import { discardGtfsArchive, fetchGtfsArchive } from "./src/gtfs-sources.js";
 import {
   compareFingerprints,
   fingerprintFromBody,
   fingerprintFromParts,
   type SourceFingerprint,
 } from "./src/fingerprint.js";
-import { publishJourneyTiles, publishNetwork, rollbackNetwork } from "./src/publish.js";
+import { publishNetwork, rollbackNetwork } from "./src/publish.js";
+import { publishSpilledJourneyTiles } from "./src/publish-spilled-journeys.js";
 import { publishNetworkShards } from "./src/publish-shards.js";
 import { fetchStaticSources } from "./src/sources.js";
 
@@ -37,11 +39,10 @@ async function main(): Promise<number> {
   const store = storeResult.store;
   const artifacts = new ArtifactStore(store);
 
+  // NaPTAN only. The timetable no longer comes from paging the dataset catalogue.
   const sources = await fetchStaticSources({
     bodsApiKey: process.env.BODS_API_KEY,
-    ...(process.env.BODS_MAX_TIMETABLE_DATASETS
-      ? { maxTimetableDatasets: Number(process.env.BODS_MAX_TIMETABLE_DATASETS) }
-      : {}),
+    maxTimetableDatasets: 0,
   });
   report.sourceHealth = sources.health;
   report.sourceErrors = sources.errors;
@@ -53,14 +54,29 @@ async function main(): Promise<number> {
    * complete map with a departure board at some of its stops and none at others, which looks like
    * a defect at the stop and is really a coverage figure — so the figure is published.
    */
-  report.timetableCoverage = sources.timetableCoverage;
-  if (sources.timetableCoverage) {
-    const { fetched, published } = sources.timetableCoverage;
-    console.log(
-      `Timetable coverage: ${fetched} of ${published ?? "an unstated number of"} published ` +
-        `BODS datasets. Stops are national either way; services are not.`,
+  const region = process.env.BODS_GTFS_REGION ?? "all";
+  const archive = await fetchGtfsArchive({ apiKey: process.env.BODS_API_KEY, region });
+  if (!archive.ok) {
+    report.outcome = "source_unavailable";
+    report.timetableSource = { region, error: archive.failure.error, ms: archive.failure.ms };
+    console.error(
+      `The ${region} GTFS timetable archive could not be fetched (${archive.failure.error}); ` +
+        `keeping the previous good network.`,
     );
+    writeReport(report);
+    return 1;
   }
+  archiveToDiscard = archive.download.path;
+  report.timetableSource = {
+    region,
+    bytes: archive.download.bytes,
+    ms: archive.download.ms,
+    contentType: archive.download.contentType,
+  };
+  console.log(
+    `Timetable source: BODS GTFS "${region}", ${(archive.download.bytes / 1024 / 1024).toFixed(1)} MiB ` +
+      `in ${(archive.download.ms / 1000).toFixed(1)}s. Every registration in it is read; there is no cap.`,
+  );
 
   if (!sources.naptanCsv) {
     report.outcome = "source_unavailable";
@@ -71,10 +87,17 @@ async function main(): Promise<number> {
 
   const currentFingerprints: SourceFingerprint[] = [
     fingerprintFromBody("naptan", sources.naptanCsv, startedAt.toISOString()),
-    // Hashed in place rather than joined: the decompressed timetable documents are hundreds of
-    // megabytes together, and concatenating them to fingerprint them is a second copy the heap
-    // cannot afford.
-    fingerprintFromParts("bods", sources.transXChangeDocuments, startedAt.toISOString()),
+    /*
+     * The archive is fingerprinted by its size and the region it came from rather than by its
+     * bytes: it is measured in hundreds of megabytes, and hashing it would mean reading the whole
+     * thing an extra time to answer a question — "has this changed?" — that its length answers
+     * well enough to decide whether to rebuild. FORCE_REBUILD exists for when it does not.
+     */
+    fingerprintFromParts(
+      "bods",
+      [`gtfs:${region}:${archive.download.bytes}`],
+      startedAt.toISOString(),
+    ),
   ];
 
   const previous = await artifacts.readCurrent<SourceFingerprint>(FINGERPRINT_DATASET);
@@ -107,34 +130,79 @@ async function main(): Promise<number> {
     return 0;
   }
 
-  const serviceDate = startedAt.toISOString().slice(0, 10);
-  const network = buildNetwork({
+  /*
+   * Today and tomorrow.
+   *
+   * Tomorrow is not decoration: a board consulted at 23:50 needs the journeys that leave after
+   * midnight, and a journey planner asked for "first bus" at any hour needs somewhere to look.
+   * Going further costs a multiple of the largest table for service dates nobody is asking about.
+   */
+  const today = startedAt.toISOString().slice(0, 10);
+  const tomorrow = new Date(startedAt.getTime() + 86_400_000).toISOString().slice(0, 10);
+  const serviceDates = [today, tomorrow];
+
+  const assembled = await assembleGtfsNetwork({
     naptanCsv: sources.naptanCsv,
-    transXChangeDocuments: sources.transXChangeDocuments,
+    archivePath: archive.download.path,
+    serviceDates,
     retrievedAt: startedAt.toISOString(),
-    serviceDate,
   });
+  spillToDispose = assembled.spill;
+  const network = assembled.network;
   report.counts = network.counts;
   report.warnings = network.warnings.slice(0, 50);
+  report.serviceDates = serviceDates;
+  report.gtfs = assembled.gtfsCounts;
+  report.gtfsTables = assembled.tables;
+  report.spill = assembled.spill.stats();
 
-  const result = await publishNetwork(store, network, { version: startedAt.toISOString() });
+  /*
+   * Coverage, as a measurement rather than a claim.
+   *
+   * NaPTAN gives every stop in the country whatever happens here. What this figure says is how
+   * much of the *timetable* was read — which is now the whole archive, so the number that matters
+   * is how many of the country's stops have a journey calling at them.
+   */
+  report.timetableCoverage = {
+    source: `bods_gtfs_${region}`,
+    routesRead: assembled.gtfsCounts.routes,
+    routesKept: assembled.gtfsCounts.routes - assembled.gtfsCounts.routesSkippedByMode,
+    tripsInHorizon: assembled.gtfsCounts.tripsInHorizon,
+    stopTimeRowsRead: assembled.gtfsCounts.stopTimeRows,
+    journeys: assembled.journeyCount,
+    stopsMatchedToNaptan: assembled.gtfsCounts.stopsMatchedToNaptan,
+    stopsWithoutNaptan: assembled.gtfsCounts.stopsWithoutNaptan,
+    outOfOrderTrips: assembled.gtfsCounts.outOfOrderTrips,
+  };
+  console.log(
+    `Read ${assembled.gtfsCounts.stopTimeRows} stop_times rows across ` +
+      `${assembled.gtfsCounts.routes} routes; ${assembled.journeyCount} journeys on ` +
+      `${serviceDates.join(" and ")}.`,
+  );
+
+  const result = await publishNetwork(store, network, {
+    version: startedAt.toISOString(),
+    journeyCount: assembled.journeyCount,
+  });
   report.published = result.published.map((m) => ({ dataset: m.dataset, records: m.recordCount }));
   report.failed = result.failed;
 
   // Journeys are also published per spatial tile, so the edge can plan a journey without
   // loading the national timetable. Published after the main datasets so a tile can never point
   // at journeys the network itself does not have.
-  const tileResult = await publishJourneyTiles(store, network, {
+  const tileResult = await publishSpilledJourneyTiles(store, assembled.spill, {
     version: startedAt.toISOString(),
   });
   report.journeyTiles = {
     published: tileResult.tiles.length,
+    records: tileResult.records,
     failed: tileResult.failed.slice(0, 10),
-    journeysWithoutGeometry: tileResult.journeysWithoutGeometry,
+    largest: tileResult.largest,
   };
-  if (tileResult.journeysWithoutGeometry > 0) {
+  if (tileResult.failed.length > 0) {
     console.error(
-      `${tileResult.journeysWithoutGeometry} journeys could not be placed in a tile because their stops are unlocatable; they will not be plannable.`,
+      `${tileResult.failed.length} journey tile(s) failed to write; those areas will have no ` +
+        `timetable at the edge.`,
     );
   }
 
@@ -226,6 +294,24 @@ async function main(): Promise<number> {
   return 0;
 }
 
+/**
+ * The archive and the spill are build intermediates; neither survives the run.
+ *
+ * Tracked at module scope rather than passed around because `main` returns from a dozen places —
+ * a missing credential, an unavailable source, a failed publish — and a temporary file left
+ * behind on any of those paths is hundreds of megabytes of a runner's disk that the next job
+ * needs. They are cleaned up once, after main, whatever happened.
+ */
+let archiveToDiscard: string | null = null;
+let spillToDispose: { dispose(): void } | null = null;
+
+async function cleanUp(): Promise<void> {
+  if (archiveToDiscard) await discardGtfsArchive(archiveToDiscard);
+  spillToDispose?.dispose();
+  archiveToDiscard = null;
+  spillToDispose = null;
+}
+
 function writeReport(report: Record<string, unknown>): void {
   report.finishedAt = new Date().toISOString();
   writeFileSync("build-report.json", JSON.stringify(report, null, 2));
@@ -238,4 +324,5 @@ main()
   .catch((error: unknown) => {
     console.error("Daily static-network job failed:", error);
     process.exitCode = 1;
-  });
+  })
+  .finally(() => cleanUp());

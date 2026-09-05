@@ -191,6 +191,8 @@ jobs:
           echo "Pages deployed at $ALIAS"
 
       # ------------------------------------------------------ data bootstrap
+      # Reads the whole BODS GTFS archive, not a capped slice of the dataset catalogue: this is
+      # the step that decides how much of England has a departure board.
       - name: Bootstrap the national network artifact
         id: bootstrap
         if: ${{ inputs.bootstrap_data }}
@@ -200,10 +202,11 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           FORCE_REBUILD: "true"
-          # A national build holds the NaPTAN CSV and every decompressed timetable document in
-          # memory at once. Node's default heap is a fraction of the runner's 16 GB, and the first
-          # real bootstrap died on it. This spends nothing: the memory is already paid for by the
-          # runner we are using either way.
+          # Headroom for the indexes the streamed build holds — stops, routes, the calendar and
+          # the trips inside the horizon — not for file contents: the GTFS archive is read as a
+          # stream and the journeys spill to disk. Node's default heap is a fraction of the
+          # runner's 16 GB and an earlier bootstrap died on it. This spends nothing: the memory is
+          # already paid for by the runner we are using either way.
           NODE_OPTIONS: "--max-old-space-size=12288"
         run: |
           # The pipeline's own exit code is captured rather than allowed to abort the step,

@@ -10,7 +10,8 @@
 import { writeFileSync } from "node:fs";
 import { ArtifactStore, r2StoreFromEnv } from "@busstops/pipeline-core";
 import type { Operator, RoutePattern, ServiceRoute, Stop } from "@busstops/contracts";
-import { buildNetwork } from "./src/build-network.js";
+import { assembleGtfsNetwork } from "./src/gtfs-assemble.js";
+import { discardGtfsArchive, fetchGtfsArchive } from "./src/gtfs-sources.js";
 import { DATASETS, publishNetwork } from "./src/publish.js";
 import { reconcileNetwork, summariseNetworkChanges } from "./src/reconcile.js";
 import { fetchStaticSources } from "./src/sources.js";
@@ -40,12 +41,35 @@ async function main(): Promise<number> {
     return 1;
   }
 
-  const network = buildNetwork({
+  /*
+   * Reconciliation rebuilds from source and compares. It reads the same GTFS archive the daily
+   * job does — comparing today's published network against a rebuild from a *different* source
+   * would report differences between the two sources rather than drift in the network.
+   */
+  const region = process.env.BODS_GTFS_REGION ?? "all";
+  const archive = await fetchGtfsArchive({ apiKey: process.env.BODS_API_KEY, region });
+  if (!archive.ok) {
+    report.outcome = "source_unavailable";
+    report.timetableSource = { region, error: archive.failure.error };
+    console.error(
+      `The ${region} GTFS archive could not be fetched (${archive.failure.error}); ` +
+        `reconciliation cannot run.`,
+    );
+    writeReport(report);
+    return 1;
+  }
+
+  const assembled = await assembleGtfsNetwork({
     naptanCsv: sources.naptanCsv,
-    transXChangeDocuments: sources.transXChangeDocuments,
+    archivePath: archive.download.path,
+    serviceDates: [startedAt.toISOString().slice(0, 10)],
     retrievedAt: startedAt.toISOString(),
-    serviceDate: startedAt.toISOString().slice(0, 10),
   });
+  const network = assembled.network;
+  // The rebuild's journeys are not compared — reconciliation is about the shape of the network,
+  // not about today's timetable — so the spill and the archive go now rather than at the end.
+  assembled.spill.dispose();
+  await discardGtfsArchive(archive.download.path);
 
   const [stops, operators, services, patterns] = await Promise.all([
     artifacts.readCurrent<Stop>(DATASETS.stops),
