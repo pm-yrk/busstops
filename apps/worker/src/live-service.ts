@@ -108,13 +108,28 @@ export interface VehicleSourceDiagnostics {
  * from a timed-out one, which is the distinction that matters.
  */
 export function describeFetchFailure(error: unknown): string {
-  if (error instanceof Error) {
-    const status = /\b([45]\d\d)\b/.exec(error.message)?.[1];
-    if (error.name === "TimeoutError" || /abort|timeout/i.test(error.message)) return "timeout";
-    if (status) return `http_${status}`;
-    return error.name === "Error" ? "network_error" : error.name;
-  }
-  return "unknown_error";
+  if (!(error instanceof Error)) return "unknown_error";
+
+  const status = /\b([45]\d\d)\b/.exec(error.message)?.[1];
+  if (error.name === "TimeoutError" || /abort|timeout/i.test(error.message)) return "timeout";
+  if (status) return `http_${status}`;
+
+  /*
+   * The class alone was not enough.
+   *
+   * "network_error" is what a deployment reports when its fetch never left, when the runtime
+   * refused the call and when the host was unreachable — three different faults with one label,
+   * and the whole point of this diagnosis is telling them apart. So the message comes too, with
+   * anything that could carry a secret taken out of it first: query strings go entirely, and any
+   * host is reduced to the fact that there was one.
+   */
+  const safeMessage = error.message
+    .replace(/https?:\/\/[^\s"']+/g, "<url>")
+    .replace(/api_key=[^&\s]*/gi, "api_key=<redacted>")
+    .slice(0, 120);
+
+  const name = error.name === "Error" ? "network_error" : error.name;
+  return safeMessage.length > 0 ? `${name}: ${safeMessage}` : name;
 }
 
 /**

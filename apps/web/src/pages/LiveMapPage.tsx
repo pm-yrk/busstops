@@ -26,12 +26,21 @@ import "./LiveMapPage.css";
  * smaller query rather than a rejected one.
  */
 
+/**
+ * Where the map opens.
+ *
+ * Leeds, because a non-London default is the quickest way to show the product is not a London
+ * app. Widened from a 4 km box to roughly 12 km across: the tight version framed three streets,
+ * and a first view that happens to contain two buses demonstrates far less than one that contains
+ * twenty. It is still an order of magnitude inside the API's maximum query area.
+ *
+ * This is a camera position, not data. Whatever is in frame is whatever is really there.
+ */
 const DEFAULT_VIEW: Bounds = {
-  // Leeds city centre: a sensible non-London default that proves the product is not London-only.
-  west: -1.56,
-  south: 53.786,
-  east: -1.52,
-  north: 53.806,
+  west: -1.6,
+  south: 53.775,
+  east: -1.49,
+  north: 53.825,
 };
 
 const REFRESH_INTERVAL_MS = 20_000;

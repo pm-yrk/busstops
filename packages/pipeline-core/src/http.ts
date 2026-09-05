@@ -134,8 +134,20 @@ export class SourceClient {
     this.breaker = new CircuitBreaker(breakerOptions);
   }
 
+  /**
+   * The fetch this client calls.
+   *
+   * Bound to `globalThis` rather than read as a property and called as a method. `this.fetchImpl(url)`
+   * invokes the global with the SourceClient as its receiver, which Node tolerates and some
+   * runtimes — Cloudflare's among them — refuse outright with an illegal-invocation TypeError.
+   *
+   * This is hazard removal, not a diagnosis: every test injects its own `fetchImpl`, so the
+   * unbound path is the one code that only ever runs in a deployment and never in a test, which
+   * is precisely the shape of thing that turns out to be broken in production. Binding it costs
+   * nothing and removes the question.
+   */
   private get fetchImpl(): typeof fetch {
-    return this.deps.fetchImpl ?? fetch;
+    return this.deps.fetchImpl ?? globalThis.fetch.bind(globalThis);
   }
   private get sleep(): (ms: number) => Promise<void> {
     return this.deps.sleep ?? defaultSleep;
