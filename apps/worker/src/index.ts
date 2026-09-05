@@ -7,6 +7,7 @@ import {
 } from "@busstops/contracts";
 import { safeModeActive } from "@busstops/governor";
 import { DisruptionReader, noticesFor } from "./disruption-reader.js";
+import { stopAccessibility } from "./stop-accessibility.js";
 import {
   boundingBoxAreaSquareDegrees,
   corridorBoundingBox,
@@ -391,6 +392,9 @@ router.get("/v1/stops/:id", async (_request, { env, params }) => {
    */
   const observedAt = live.observedAt ?? null;
 
+  const routes = routesServingStop(patterns, stop.id, services, await network.operators());
+  const snapshot = (await disruptions?.snapshot()) ?? null;
+
   return json(
     {
       meta: buildMeta({
@@ -405,7 +409,14 @@ router.get("/v1/stops/:id", async (_request, { env, params }) => {
       data: {
         stop,
         departures,
-        routes: routesServingStop(patterns, stop.id, services, await network.operators()),
+        routes,
+        accessibility: stopAccessibility(stop),
+        disruptions: snapshot
+          ? noticesFor(snapshot.notices, {
+              atcoCodes: [stop.atcoCode],
+              routeNames: routes.map((route) => route.publicName),
+            })
+          : [],
       },
     },
     // A board built only from the timetable can be cached longer than one carrying live times.

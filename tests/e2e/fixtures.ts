@@ -93,6 +93,42 @@ export const STOP_RESPONSE = {
         operatorName: "First West Yorkshire",
       },
     ],
+    /*
+     * A stop where the register says what kind of boarding point it is and nobody has surveyed
+     * anything else — which is the commonest real case, and the one the card has to handle
+     * without implying the stop is inaccessible.
+     */
+    accessibility: {
+      atcoCode: "450010001",
+      facts: [
+        {
+          key: "shelter",
+          status: "yes",
+          source: "naptan",
+          sourceField: "amenities.shelter",
+          sourceUpdatedAt: null,
+          provenance: "NaPTAN stop record",
+          confidence: "high",
+        },
+        {
+          key: "step_free",
+          status: "unknown",
+          detail: "An on-street stop, usually a pole or shelter on the pavement",
+          source: "naptan",
+          sourceField: "StopType",
+          sourceUpdatedAt: "2026-01-15T09:00:00.000Z",
+          provenance:
+            "NaPTAN records the kind of boarding point, not whether the approach to it is step-free.",
+          confidence: "high",
+        },
+      ],
+      sourcesConsulted: [
+        { source: "naptan", outcome: "had_data" },
+        { source: "gtfs_stop", outcome: "not_available" },
+        { source: "osm", outcome: "not_available" },
+      ],
+    },
+    disruptions: [],
   },
 };
 

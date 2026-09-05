@@ -1,7 +1,9 @@
 import { useCallback, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import type { StopDeparturesResponse } from "@busstops/contracts";
+import { AccessibilityCard } from "../components/AccessibilityCard.js";
 import { ArrivalBoard } from "../components/ArrivalBoard.js";
+import { OfficialNotices } from "../components/OfficialNotices.js";
 import { LoadingBus } from "../components/LoadingBus.js";
 import {
   ConfidenceChip,
@@ -163,6 +165,15 @@ export function StopPage() {
         degraded={response.meta.degradation !== "normal"}
       />
 
+      {response.data.disruptions.length > 0 ? (
+        <OfficialNotices
+          notices={response.data.disruptions}
+          sourcesQueried={[]}
+          collectedAt={response.meta.observedAt}
+          headingId="stop-official-now"
+        />
+      ) : null}
+
       <div className="stop-page__actions">
         <button
           type="button"
@@ -234,6 +245,8 @@ export function StopPage() {
         )}
       </section>
 
+      <AccessibilityCard accessibility={response.data.accessibility} />
+
       <section className="stop-page__details" aria-labelledby="stop-details-heading">
         <h2 id="stop-details-heading">About this stop</h2>
         <dl className="stop-page__facts">
@@ -260,23 +273,6 @@ export function StopPage() {
             </dd>
           </div>
         </dl>
-
-        {/* Amenities are shown only when a source states them; nothing is inferred. */}
-        {stop.amenities.length === 0 ? (
-          <p className="muted small">
-            We do not have sourced accessibility or facilities information for this stop, so none is
-            shown.
-          </p>
-        ) : (
-          <ul className="stop-page__amenities">
-            {stop.amenities.map((amenity) => (
-              <li key={amenity.key}>
-                {amenity.key.replace(/_/g, " ")} — {amenity.value ? "yes" : "no"}{" "}
-                <span className="muted small">({amenity.provenance})</span>
-              </li>
-            ))}
-          </ul>
-        )}
 
         <p className="stop-page__sources small muted">
           Sources: {response.meta.sources.map((s) => s.source).join(", ") || "timetable data"}.{" "}

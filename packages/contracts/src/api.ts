@@ -7,6 +7,7 @@ import {
 } from "./common.js";
 import { DeparturePredictionSchema, VehicleStateSchema } from "./live.js";
 import { GovernorStateSchema, IncidentSchema, SourceHealthSchema } from "./derived.js";
+import { StopAccessibilitySchema } from "./accessibility.js";
 import { DisruptionBoardSchema, DisruptionNoticeSchema } from "./disruptions.js";
 import { OperatorSchema, ServiceRouteSchema, StopSchema } from "./static.js";
 
@@ -123,6 +124,15 @@ export const StopDeparturesResponseSchema = apiEnvelope(
     routes: z.array(
       z.object({ id: z.string().uuid(), publicName: z.string(), operatorName: z.string() }),
     ),
+    /**
+     * Accessibility, as facts with sources rather than a verdict.
+     *
+     * Mostly `unknown` today and honestly so: the sources that would answer these questions are
+     * sparse, and a stop nobody has surveyed must say that rather than default to "no".
+     */
+    accessibility: StopAccessibilitySchema,
+    /** Official notices naming this stop or a route that calls here. */
+    disruptions: z.array(DisruptionNoticeSchema),
   }),
 );
 export type StopDeparturesResponse = z.infer<typeof StopDeparturesResponseSchema>;

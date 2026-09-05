@@ -1,0 +1,124 @@
+/*
+ * Accessibility reads as a reference table, not as a badge.
+ *
+ * The status is the thing people scan for, so it sits right of the label with its own colour and
+ * enough weight to find at a glance — but "Not recorded" is deliberately quiet rather than
+ * alarming, because it is the commonest answer and a page of red would say something untrue.
+ */
+
+.a11y-card {
+  background: var(--colour-surface);
+  border: 1px solid var(--colour-hairline);
+  border-radius: var(--radius-md);
+  padding: var(--space-md);
+  display: grid;
+  gap: var(--space-md);
+  min-width: 0;
+}
+
+.a11y-card__header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.a11y-card__header p {
+  margin: var(--space-xs) 0 0;
+}
+
+.a11y-card__facts {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  /* Two columns where there is room, one where there is not; minmax(0,…) so a long detail
+     string wraps instead of widening the card. */
+  grid-template-columns: repeat(auto-fit, minmax(min(16rem, 100%), 1fr));
+  gap: var(--space-sm) var(--space-md);
+}
+
+.a11y-fact {
+  min-width: 0;
+  padding: var(--space-sm) 0;
+  border-top: 1px solid var(--colour-hairline);
+}
+
+.a11y-fact__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+.a11y-fact__label {
+  font-weight: 600;
+  min-width: 0;
+}
+
+.a11y-fact__status {
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+}
+
+.a11y-fact__status--yes {
+  background: var(--colour-success-pale);
+  color: var(--colour-success);
+}
+.a11y-fact__status--no {
+  background: var(--colour-critical-pale);
+  color: var(--colour-critical);
+}
+.a11y-fact__status--partial {
+  background: var(--colour-amber-pale);
+  color: var(--colour-amber);
+}
+/* Quiet on purpose: "not recorded" is the commonest answer and is not a warning. */
+.a11y-fact__status--unknown {
+  background: var(--colour-canvas);
+  color: var(--colour-muted);
+  border: 1px solid var(--colour-hairline);
+}
+
+.a11y-fact__detail {
+  margin: var(--space-xs) 0 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.a11y-fact__source {
+  margin: 2px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.a11y-card__empty {
+  margin: 0;
+  padding: var(--space-md);
+  background: var(--colour-canvas);
+  border: 1px dashed var(--colour-hairline);
+  border-radius: var(--radius-md);
+}
+
+.a11y-card__toggle {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--colour-blue);
+  font: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.a11y-card__vehicle h3 {
+  margin: 0 0 var(--space-xs);
+  font-size: 0.95rem;
+}
+
+.a11y-card__vehicle p,
+.a11y-card__sources {
+  margin: 0;
+}

@@ -1,6 +1,7 @@
 export * from "./common.js";
 export * from "./static.js";
 export * from "./live.js";
+export * from "./accessibility.js";
 export * from "./derived.js";
 export * from "./disruptions.js";
 export * from "./account.js";
