@@ -1,13 +1,14 @@
 import { useCallback, useMemo, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import { MAP_QUERY_LIMITS, type MapResponse } from "@busstops/contracts";
 import { apiClient, ApiError } from "../lib/api.js";
 import { useFetch, useTicker } from "../lib/use-fetch.js";
-import { clampBoundsToMaxArea, type Bounds } from "../lib/geo.js";
+import { boundsFromParam, clampBoundsToMaxArea, vehicleHref, type Bounds } from "../lib/geo.js";
 import { delayLabel, distanceLabel, freshnessLabel } from "../lib/format.js";
 import { LoadingBus } from "../components/LoadingBus.js";
 import { MapView } from "../components/MapView.js";
 import { SelectedStopBoard } from "../components/SelectedStopBoard.js";
+import { SelectedVehicleBoard } from "../components/SelectedVehicleBoard.js";
 import {
   DataAge,
   EmptyState,
@@ -58,35 +59,55 @@ type LayerKey = "stops" | "vehicles";
  *
  * Anything that is not four finite numbers in the right order is ignored rather than corrected:
  * a half-understood bbox would frame somewhere nobody asked for, and the default camera is a
- * better answer than a wrong one.
+ * better answer than a wrong one. The parsing lives in geo.ts now, because the vehicle page needs
+ * exactly the same rules and two copies of them is how they come to disagree.
  */
-function boundsFromSearch(raw: string | null): Bounds | null {
-  if (!raw) return null;
-  const parts = raw.split(",").map(Number);
-  if (parts.length !== 4 || parts.some((value) => !Number.isFinite(value))) return null;
-  const [west, south, east, north] = parts as [number, number, number, number];
-  if (west >= east || south >= north) return null;
-  if (Math.abs(west) > 180 || Math.abs(east) > 180) return null;
-  if (Math.abs(south) > 90 || Math.abs(north) > 90) return null;
-  return { west, south, east, north };
-}
 
 export function LiveMapPage() {
   const [searchParams] = useSearchParams();
+  /*
+   * `/live/stops/:stopId` — a link to a stop on the map rather than to its page.
+   *
+   * The route existed and nothing read it: the page opened on its default camera with no board,
+   * so every one of these links was a link to Leeds. The stop opens here, and the camera follows
+   * once the board has found out where the stop is.
+   */
+  const { stopId: deepLinkedStop } = useParams();
   /*
    * Read once, as the initial camera. The map is a live surface after that: panning changes the
    * viewport and the URL is deliberately left alone rather than rewritten on every `moveend`,
    * which would fill the history with a hundred entries between two streets.
    */
   const [bounds, setBounds] = useState<Bounds>(
-    () => boundsFromSearch(searchParams.get("bbox")) ?? DEFAULT_VIEW,
+    () => boundsFromParam(searchParams.get("bbox")) ?? DEFAULT_VIEW,
   );
   // The stop whose arrival board is open over the map, by ATCO code. Null when none is selected.
-  const [selectedStop, setSelectedStop] = useState<string | null>(null);
+  const [selectedStop, setSelectedStop] = useState<string | null>(deepLinkedStop ?? null);
+  /*
+   * And the bus, which is a separate selection and a mutually exclusive one.
+   *
+   * Two panels open at once would cover the map between them, and they answer different questions
+   * — "when is my bus" and "where is that bus going" — so choosing one closes the other.
+   */
+  const [selectedVehicle, setSelectedVehicle] = useState<string | null>(null);
   const [zoom, setZoom] = useState(15);
   const [layers, setLayers] = useState<Record<LayerKey, boolean>>({ stops: true, vehicles: true });
   const [locating, setLocating] = useState(false);
   const [locationDenied, setLocationDenied] = useState(false);
+  /*
+   * The camera follows a deep-linked stop exactly once.
+   *
+   * Recentring on every load of the board would fight the user: they open the link, pan away to
+   * see what else is nearby, the board refreshes and the map snaps back.
+   */
+  const [followedDeepLink, setFollowedDeepLink] = useState(deepLinkedStop === undefined);
+  /*
+   * Where the page has asked the camera to go, as distinct from where the camera is.
+   *
+   * The nonce is the whole point: `bounds` changes on every pan, and a map that followed it would
+   * fight the person moving it. This only changes when the page deliberately moves the view.
+   */
+  const [focus, setFocus] = useState<{ bounds: Bounds; nonce: number } | null>(null);
 
   // The viewport is clamped before the request, so panning out shrinks the query rather than
   // producing a rejected one.
@@ -121,12 +142,14 @@ export function LiveMapPage() {
     globalThis.navigator.geolocation.getCurrentPosition(
       (position) => {
         const { latitude, longitude } = position.coords;
-        setBounds({
+        const here = {
           west: longitude - 0.02,
           east: longitude + 0.02,
           south: latitude - 0.01,
           north: latitude + 0.01,
-        });
+        };
+        setBounds(here);
+        setFocus({ bounds: here, nonce: Date.now() });
         setZoom(15);
         setLocating(false);
       },
@@ -210,16 +233,25 @@ export function LiveMapPage() {
             <div className="live-map__canvas">
               <MapView
                 bounds={bounds}
+                focus={focus}
                 stops={stops}
                 vehicles={vehicles}
                 selectedStopId={selectedStop}
+                selectedVehicleRef={selectedVehicle}
                 degraded={response.data.degraded}
                 intent={
                   selectedStop ? { kind: "stop", atcoCode: selectedStop } : { kind: "explore" }
                 }
                 showStops={layers.stops}
                 showVehicles={layers.vehicles}
-                onSelectStop={setSelectedStop}
+                onSelectStop={(code) => {
+                  setSelectedVehicle(null);
+                  setSelectedStop(code);
+                }}
+                onSelectVehicle={(ref) => {
+                  setSelectedStop(null);
+                  setSelectedVehicle(ref);
+                }}
                 onBoundsChange={(next, nextZoom) => {
                   setBounds(next);
                   setZoom(nextZoom);
@@ -227,7 +259,38 @@ export function LiveMapPage() {
               />
 
               {selectedStop && (
-                <SelectedStopBoard atcoCode={selectedStop} onClose={() => setSelectedStop(null)} />
+                <SelectedStopBoard
+                  key={selectedStop}
+                  atcoCode={selectedStop}
+                  onClose={() => setSelectedStop(null)}
+                  onResolved={({ coordinate }) => {
+                    if (followedDeepLink) return;
+                    setFollowedDeepLink(true);
+                    const around = {
+                      west: coordinate.lon - 0.012,
+                      east: coordinate.lon + 0.012,
+                      south: coordinate.lat - 0.006,
+                      north: coordinate.lat + 0.006,
+                    };
+                    setBounds(around);
+                    setFocus({ bounds: around, nonce: Date.now() });
+                    setZoom(16);
+                  }}
+                />
+              )}
+
+              {selectedVehicle && (
+                <SelectedVehicleBoard
+                  key={selectedVehicle}
+                  vehicleRef={selectedVehicle}
+                  /*
+                   * The clamped box, which is the one the vehicle was actually returned in. The
+                   * raw viewport can be larger than the API accepts, and a lookup in a box the
+                   * API rejects is a bus that cannot be opened.
+                   */
+                  bounds={clamped}
+                  onClose={() => setSelectedVehicle(null)}
+                />
               )}
             </div>
 
@@ -259,9 +322,21 @@ export function LiveMapPage() {
                           {vehicle.routePublicName ?? "—"}
                         </span>
                         <span className="live-map__item-main">
-                          <span className="live-map__item-title">
+                          {/*
+                            The list is the map's equal, so a bus in it opens the same way a bus on
+                            the map does. It is a link rather than a button so it can be opened in
+                            a new tab and read by anything that lists a page's links — and it
+                            carries the viewport, because the live feeds are area-scoped.
+                          */}
+                          <Link
+                            to={vehicleHref(vehicle.vehicleRef, {
+                              bounds: clamped,
+                              coordinate: vehicle.coordinate,
+                            })}
+                            className="live-map__item-title"
+                          >
                             {vehicle.destinationName ?? "Destination unknown"}
-                          </span>
+                          </Link>
                           <span className="muted small">
                             {delayLabel(vehicle.delaySeconds)} ·{" "}
                             {vehicle.motionState === "stationary"

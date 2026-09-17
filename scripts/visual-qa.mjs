@@ -93,6 +93,29 @@ async function clickPaintedStop(page) {
   await page.mouse.click(point.x, point.y);
 }
 
+/**
+ * Clicks a bus where the renderer actually drew one.
+ *
+ * The same problem as a stop and, until now, without the same answer: the buses were a symbol
+ * layer with no click handler at all, so a passenger watching the 36 go past could not ask it
+ * anything. This exercises the handler the way a person does — find where a bus was painted,
+ * convert it back to the page, click there.
+ */
+async function clickPaintedBus(page) {
+  const point = await page.evaluate(() => {
+    const map = globalThis.__busstopsMap;
+    if (!map) return null;
+    const features = map.queryRenderedFeatures({ layers: ["vehicle-buses", "vehicle-pips"] });
+    const feature = features[0];
+    if (!feature) return null;
+    const projected = map.project(feature.geometry.coordinates);
+    const box = map.getCanvas().getBoundingClientRect();
+    return { x: box.left + projected.x, y: box.top + projected.y };
+  });
+  if (!point) throw new Error("no bus was painted, so none could be clicked");
+  await page.mouse.click(point.x, point.y);
+}
+
 async function findVehicleRef(apiUrl) {
   if (!apiUrl) return null;
   try {
@@ -513,6 +536,78 @@ for (const size of WIDTHS) {
         } else {
           // Not a failure of the page: no stops in view is a data question, answered elsewhere.
           console.log("        no stop markers to click, so the board was not exercised");
+        }
+
+        /*
+         * And a bus, which is the interaction that did not exist at all.
+         *
+         * Whether any bus is on screen is a property of the hour, so an empty street is reported
+         * rather than failed. What is checked when one is there is that clicking it opens a panel
+         * that says which bus it is and where it is going — the questions a person points at a
+         * bus to ask.
+         */
+        if (map.busesDrawn > 0) {
+          let busClickFailed = null;
+          try {
+            await clickPaintedBus(page);
+          } catch (error) {
+            busClickFailed = error instanceof Error ? error.message.split("\n")[0] : String(error);
+          }
+          await page.waitForTimeout(3_000);
+          const busPanel = await page.evaluate(() => {
+            const panel = document.querySelector(".selected-vehicle");
+            if (!panel) return { open: false };
+            return {
+              open: true,
+              route: panel.querySelector(".route-badge")?.textContent?.trim() ?? "",
+              destination:
+                panel.querySelector(".selected-vehicle__destination")?.textContent?.trim() ?? "",
+              facts: [...panel.querySelectorAll(".selected-vehicle__facts dd")].map((node) =>
+                node.textContent.trim(),
+              ),
+              routeLink:
+                panel
+                  .querySelector(".selected-vehicle__links a[href*='/routes/']")
+                  ?.getAttribute("href") ?? "",
+              vehicleLink:
+                panel
+                  .querySelector(".selected-vehicle__links a[href*='/vehicles/']")
+                  ?.getAttribute("href") ?? "",
+              error: panel.querySelector(".selected-vehicle__error")?.textContent?.trim() ?? "",
+            };
+          });
+          await page.screenshot({
+            path: join(screenshotDir, `${size.name}-live-bus-selected.png`),
+            fullPage: false,
+          });
+          record(
+            `${size.name}/live opens a bus when one is clicked`,
+            busClickFailed === null &&
+              busPanel.open &&
+              busPanel.error === "" &&
+              busPanel.destination.length > 0,
+            busClickFailed !== null
+              ? `the click did not land: ${busClickFailed}`
+              : busPanel.open
+                ? `${busPanel.route || "(no route)"} to ${busPanel.destination || "(no destination)"} — ` +
+                  `${busPanel.facts.join(", ") || "no facts"}` +
+                  (busPanel.routeLink ? `; route link ${busPanel.routeLink}` : "; no route link") +
+                  (busPanel.error ? `; error: ${busPanel.error}` : "")
+                : "no bus panel opened",
+          );
+          /*
+           * A link built from the number on the front would be a link to somebody else's route.
+           * When there is one at all it has to be an identifier, not "36".
+           */
+          if (busPanel.open && busPanel.routeLink) {
+            record(
+              `${size.name}/live links a bus to its route by identity`,
+              /\/routes\/[0-9a-f]{8}-/.test(busPanel.routeLink),
+              busPanel.routeLink,
+            );
+          }
+        } else {
+          console.log("        no buses in view, so the bus panel was not exercised");
         }
       }
 

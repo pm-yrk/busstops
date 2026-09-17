@@ -39,7 +39,15 @@ export function scaleForZoom(zoom: number): MapScale {
  */
 export type MapIntent =
   | { kind: "explore" }
-  | { kind: "route"; routePublicName: string }
+  /*
+   * A route is identified by its published service id, not by the number on the front.
+   *
+   * These were the same field, and they are not the same thing: several operators run a 36, so
+   * emphasising "the 36" emphasised all of them. The public name is carried alongside because a
+   * stop only knows which route *numbers* call at it — that is all the map response gives — so
+   * the vehicles are matched exactly and the stops as closely as the data allows.
+   */
+  | { kind: "route"; routeId: string; routePublicName: string | null }
   | { kind: "stop"; atcoCode: string }
   | { kind: "journey"; stopIds: readonly string[] };
 
@@ -54,10 +62,14 @@ export interface StopFeatureProperties {
 export interface VehicleFeatureProperties {
   vehicleRef: string;
   route: string;
+  /** The published service, or an empty string when this viewport could not identify it. */
+  routeId: string;
   destination: string;
   bearing: number | null;
   stale: boolean;
   emphasis: number;
+  /** 1 when this is the bus whose panel is open, which the layers draw differently. */
+  selected: number;
 }
 
 type Feature<P> = {
@@ -87,7 +99,10 @@ function stopEmphasis(stop: MapStopSummary, intent: MapIntent, selectedId: strin
     case "stop":
       return stop.atcoCode === intent.atcoCode ? 1 : 0;
     case "route":
-      return stop.routePublicNames.includes(intent.routePublicName) ? 1 : 0;
+      return intent.routePublicName !== null &&
+        stop.routePublicNames.includes(intent.routePublicName)
+        ? 1
+        : 0;
     case "journey":
       return intent.stopIds.includes(stop.id) ? 1 : 0;
     case "explore":
@@ -95,10 +110,24 @@ function stopEmphasis(stop: MapStopSummary, intent: MapIntent, selectedId: strin
   }
 }
 
-function vehicleEmphasis(vehicle: MapVehicleSummary, intent: MapIntent): number {
+function vehicleEmphasis(
+  vehicle: MapVehicleSummary,
+  intent: MapIntent,
+  selectedRef: string | null,
+): number {
+  // A selected bus is the thing on screen; everything else is the street it is on.
+  if (selectedRef !== null) return vehicle.vehicleRef === selectedRef ? 1 : 0;
+
   switch (intent.kind) {
     case "route":
-      return vehicle.routePublicName === intent.routePublicName ? 1 : 0;
+      /*
+       * By identity where we have it, and never by name alone.
+       *
+       * `routeId` is null when the viewport's patterns could not say which service a bus is on.
+       * Falling back to the public name there would emphasise every operator's 36 — which is the
+       * bug this pair of fields exists to stop — so an unidentified bus stays context.
+       */
+      return vehicle.routeId !== null && vehicle.routeId === intent.routeId ? 1 : 0;
     case "stop":
     case "journey":
     case "explore":
@@ -133,6 +162,7 @@ export function stopFeatures(
 export function vehicleFeatures(
   vehicles: readonly MapVehicleSummary[],
   intent: MapIntent,
+  selectedRef: string | null = null,
 ): FeatureCollection<VehicleFeatureProperties> {
   return {
     type: "FeatureCollection",
@@ -143,12 +173,14 @@ export function vehicleFeatures(
       properties: {
         vehicleRef: vehicle.vehicleRef,
         route: vehicle.routePublicName ?? "",
+        routeId: vehicle.routeId ?? "",
         destination: vehicle.destinationName ?? "",
         bearing: vehicle.bearingDegrees,
         // A stale position is a different drawing, never the same one faded: colour alone is
         // never the signal.
         stale: vehicle.freshnessSeconds > 180,
-        emphasis: vehicleEmphasis(vehicle, intent),
+        emphasis: vehicleEmphasis(vehicle, intent, selectedRef),
+        selected: vehicle.vehicleRef === selectedRef ? 1 : 0,
       },
     })),
   };

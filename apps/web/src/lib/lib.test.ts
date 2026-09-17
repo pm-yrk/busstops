@@ -25,7 +25,13 @@ import {
   walkingUrlFor,
 } from "./navigation-handoff.js";
 import { TICKET_REGISTRY, isAllowedTicketDomain, ticketLinkFor } from "./tickets.js";
-import { clampBoundsToMaxArea, boundsArea, haversineMetresBrowser } from "./geo.js";
+import {
+  clampBoundsToMaxArea,
+  boundsArea,
+  boundsFromParam,
+  haversineMetresBrowser,
+  vehicleHref,
+} from "./geo.js";
 import { RAW_TRACE_MAX_AGE_HOURS_DISPLAY } from "./constants.js";
 import { arrivalIntervalSeconds, nextUsefulService, willIMakeIt } from "./will-i-make-it.js";
 import { assessBusStopped, STATIONARY_SUGGESTION_SECONDS } from "./bus-stopped.js";
@@ -190,6 +196,63 @@ describe("browser geometry", () => {
   it("leaves a viewport within the cap untouched", () => {
     const city = { west: -1.6, south: 53.7, east: -1.5, north: 53.85 };
     expect(clampBoundsToMaxArea(city, 1.5)).toEqual(city);
+  });
+});
+
+/*
+ * The dead end every route page led to.
+ *
+ * `/v1/vehicles/:ref` needs a viewport because the live feeds are area-scoped. That is a fact
+ * about the upstream. Requiring the *caller* to have a map viewport was a design choice, and it
+ * meant the route page — which has vehicle coordinates and no map — sent every "buses running
+ * now" link to "This link needs a map area".
+ */
+describe("links to a bus", () => {
+  it("prefers the viewport the bus was actually seen in", () => {
+    const href = vehicleHref("v-1", {
+      bounds: { west: -1.6, south: 53.7, east: -1.5, north: 53.85 },
+      coordinate: { lat: 53.8, lon: -1.55 },
+    });
+    expect(href).toContain("/vehicles/v-1?bbox=");
+    expect(boundsFromParam(decodeURIComponent(href.split("bbox=")[1]!))).toEqual({
+      west: -1.6,
+      south: 53.7,
+      east: -1.5,
+      north: 53.85,
+    });
+  });
+
+  it("builds a box from the bus's own position when there is no map to borrow one from", () => {
+    const href = vehicleHref("v-2", { coordinate: { lat: 53.8, lon: -1.55 } });
+    const bounds = boundsFromParam(decodeURIComponent(href.split("bbox=")[1]!));
+    expect(bounds).not.toBeNull();
+    expect(bounds!.west).toBeLessThan(-1.55);
+    expect(bounds!.east).toBeGreaterThan(-1.55);
+    expect(bounds!.south).toBeLessThan(53.8);
+    expect(bounds!.north).toBeGreaterThan(53.8);
+    // Inside the API's maximum area, or the request it produces is rejected instead of answered.
+    expect(boundsArea(bounds!)).toBeLessThan(1.5);
+  });
+
+  it("escapes a reference rather than pasting it into a path", () => {
+    expect(vehicleHref("a/b c", { coordinate: { lat: 53.8, lon: -1.55 } })).toContain(
+      "/vehicles/a%2Fb%20c?",
+    );
+  });
+
+  it("refuses a bbox that is not four numbers in the right order", () => {
+    expect(boundsFromParam(null)).toBeNull();
+    expect(boundsFromParam("1,2,3")).toBeNull();
+    expect(boundsFromParam("a,b,c,d")).toBeNull();
+    // East of west and north of south, or the box is inside out.
+    expect(boundsFromParam("-1.5,53.7,-1.6,53.85")).toBeNull();
+    expect(boundsFromParam("-1.6,53.85,-1.5,53.7")).toBeNull();
+    expect(boundsFromParam("-1.6,53.7,-1.5,53.85")).toEqual({
+      west: -1.6,
+      south: 53.7,
+      east: -1.5,
+      north: 53.85,
+    });
   });
 });
 

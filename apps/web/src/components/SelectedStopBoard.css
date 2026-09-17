@@ -2,12 +2,21 @@
  * The board sits over the map rather than beside it: on a phone it is a sheet at the bottom of
  * the screen, on a wide screen a panel in the corner. Either way the map stays visible behind it,
  * which is the reason for opening it in place instead of navigating.
+ *
+ * **Width is a decision, not a leftover.** It was 380px at every size, which on a desktop is a
+ * column narrow enough to wrap "Leeds Bradford Airport" onto three lines and push the next
+ * departure below the fold — the one thing on the panel a passenger came for. The sizes below are
+ * three intentional shapes: a wide sheet across the bottom of a phone, a side panel on a tablet,
+ * and a panel on a desktop wide enough for a destination and a time on one line.
  */
 .selected-stop {
   position: absolute;
   z-index: 2;
   inset: auto var(--space-md) var(--space-md) var(--space-md);
-  max-width: 380px;
+  /* A phone gets the full width of the map: a bottom sheet, not a card floating in a corner. */
+  max-height: 62vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: var(--space-md);
   border-radius: var(--radius-md);
   background: var(--colour-surface);
@@ -15,9 +24,23 @@
   box-shadow: 0 12px 32px rgb(0 0 0 / 18%);
 }
 
-@media (min-width: 900px) {
+/* Tablet and up: a side panel, so the map keeps its width and the board keeps its own. */
+@media (min-width: 700px) {
   .selected-stop {
-    inset: var(--space-md) var(--space-md) auto auto;
+    inset: var(--space-md) var(--space-md) var(--space-md) auto;
+    width: 420px;
+    max-height: none;
+  }
+}
+
+/*
+ * Desktop: five hundred to five hundred and sixty. Wide enough that the stop name, the route
+ * badge and the time it is due sit on one line each, which is what makes NEXT BUS readable at a
+ * glance rather than something to be parsed.
+ */
+@media (min-width: 1100px) {
+  .selected-stop {
+    width: clamp(500px, 34vw, 560px);
   }
 }
 
@@ -52,4 +75,17 @@
   display: inline-block;
   margin-top: var(--space-sm);
   font-size: var(--font-size-small);
+}
+
+/*
+ * The weather sits under the next bus, never above it.
+ *
+ * Someone opening a stop wants to know when their bus is; whether they will get wet while they
+ * wait is the second question. Putting the vignette first would be a decorative panel with a
+ * timetable underneath it.
+ */
+.selected-stop__weather {
+  margin-top: var(--space-md);
+  padding-top: var(--space-md);
+  border-top: 1px solid var(--colour-hairline);
 }

@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import type { StopDeparturesResponse } from "@busstops/contracts";
 import { apiClient, ApiError } from "../lib/api.js";
 import { useTicker } from "../lib/use-fetch.js";
 import { ArrivalBoard } from "./ArrivalBoard.js";
+import { WeatherVignette } from "./WeatherVignette.js";
 import { LoadingBus } from "./LoadingBus.js";
 import "./SelectedStopBoard.css";
 
@@ -23,20 +24,40 @@ import "./SelectedStopBoard.css";
 export interface SelectedStopBoardProps {
   atcoCode: string;
   onClose: () => void;
+  /**
+   * Where the stop turned out to be, once it is known.
+   *
+   * Only a deep link needs this. `/live/stops/:stopId` names a stop and not a camera, so the page
+   * opens on its default view with the board showing a stop that may be a county away and not on
+   * screen at all. The board is the thing that fetches the stop, so it is the thing that learns
+   * the coordinate, and the page uses it to move the map there — once, on arrival.
+   */
+  onResolved?: (stop: { atcoCode: string; coordinate: { lat: number; lon: number } }) => void;
 }
 
-export function SelectedStopBoard({ atcoCode, onClose }: SelectedStopBoardProps) {
+export function SelectedStopBoard({ atcoCode, onClose, onResolved }: SelectedStopBoardProps) {
   const [response, setResponse] = useState<StopDeparturesResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const now = useTicker(10_000);
+
+  const resolvedRef = useRef(onResolved);
+  useEffect(() => {
+    resolvedRef.current = onResolved;
+  }, [onResolved]);
 
   useEffect(() => {
     const controller = new AbortController();
 
     apiClient
       .stop(atcoCode, controller.signal)
-      .then(setResponse)
+      .then((loaded) => {
+        setResponse(loaded);
+        resolvedRef.current?.({
+          atcoCode: loaded.data.stop.atcoCode,
+          coordinate: loaded.data.stop.locationCoordinate,
+        });
+      })
       .catch((cause: unknown) => {
         if (controller.signal.aborted) return;
         setError(
@@ -90,6 +111,27 @@ export function SelectedStopBoard({ atcoCode, onClose }: SelectedStopBoardProps)
             ageSeconds={ageSeconds}
             degraded={response.meta.degradation !== "normal"}
           />
+          {/*
+            Real weather for this stop, under the next bus.
+
+            It was only on the full stop page, so the panel a passenger actually opens — the one
+            over the map, at the stop they are standing at — said nothing about whether they were
+            about to get wet. The board already fetches it: `/v1/stops/:atco` carries the weather
+            in the same response as the departures, so this costs no extra request. Null is a real
+            answer where the weather job has not published that degree square yet, and nothing is
+            drawn rather than a placeholder implying it is calm.
+          */}
+          {response.data.weather && (
+            <div className="selected-stop__weather">
+              <WeatherVignette
+                weather={response.data.weather}
+                atcoCode={response.data.stop.atcoCode}
+                now={now}
+                compact
+              />
+            </div>
+          )}
+
           <Link to={`/stops/${response.data.stop.atcoCode}`} className="selected-stop__more">
             Everything about this stop
           </Link>

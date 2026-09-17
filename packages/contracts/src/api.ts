@@ -97,7 +97,18 @@ export const MapVehicleSummarySchema = z.object({
   vehicleRef: z.string(),
   coordinate: CoordinateSchema,
   bearingDegrees: z.number().nullable(),
+  /**
+   * What is on the front of the bus, and — separately — which service that actually is.
+   *
+   * These are not interchangeable and were being treated as though they were. `routePublicName`
+   * is "36": several operators run one, it is what a passenger reads, and it is not an
+   * identifier. `routeId` is the published service, which is what a link to the route page has to
+   * be built from. Null when the viewport's patterns cannot say which service this is — a bus
+   * whose route we are unsure of is shown without a route link rather than with a wrong one.
+   */
   routePublicName: z.string().nullable(),
+  routeId: z.string().nullable().default(null),
+  routePatternId: z.string().nullable().default(null),
   destinationName: z.string().nullable(),
   delaySeconds: z.number().nullable(),
   freshnessSeconds: z.number().nonnegative(),
@@ -178,7 +189,17 @@ export type StopDeparturesResponse = z.infer<typeof StopDeparturesResponseSchema
 export const VehicleDetailResponseSchema = apiEnvelope(
   z.object({
     vehicle: VehicleStateSchema,
+    /**
+     * What is on the front, and which service that is.
+     *
+     * The page could only ever link back to a route by its public name, which is not an
+     * identifier — so "which route is this bus on" had no answer a link could be built from.
+     * `routeId` is null when the viewport's patterns could not identify the service, and the page
+     * says so rather than offering a link to somebody else's route of the same number.
+     */
     routePublicName: z.string().nullable(),
+    routeId: z.string().nullable().default(null),
+    routePatternId: z.string().nullable().default(null),
     destinationName: z.string().nullable(),
     nextStops: z.array(
       z.object({

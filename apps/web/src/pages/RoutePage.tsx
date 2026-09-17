@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import type { RouteDetailResponse } from "@busstops/contracts";
 import { LoadingBus } from "../components/LoadingBus.js";
+import { vehicleHref } from "../lib/geo.js";
 import {
   DataAge,
   EmptyState,
@@ -93,7 +94,16 @@ export function RoutePage() {
           <ul className="route-page__vehicles">
             {activeVehicles.map((vehicle) => (
               <li key={vehicle.vehicleRef}>
-                <Link to={`/vehicles/${encodeURIComponent(vehicle.vehicleRef)}`}>
+                {/*
+                  A link that works from here.
+
+                  It was a bare `/vehicles/:ref`, and the vehicle page needs a viewport because
+                  the live feeds are area-scoped — so every bus on every route page landed on
+                  "This link needs a map area", which is a dead end presented as an explanation.
+                  The route page has no map, but it does have the bus's position, and a position
+                  is enough to build the box the lookup needs.
+                */}
+                <Link to={vehicleHref(vehicle.vehicleRef, { coordinate: vehicle.coordinate })}>
                   {vehicle.destinationName ?? "Destination not published"}
                 </Link>
                 <span className="muted small">

@@ -1,0 +1,113 @@
+/*
+ * The bus panel is the stop panel's opposite number, and sits opposite it.
+ *
+ * A stop is a place and opens on the right; a bus is a thing that is moving and opens on the
+ * left, so selecting one does not cover the other. Same three shapes: a sheet across the bottom
+ * of a phone, a side panel on a tablet, a panel on a desktop.
+ */
+.selected-vehicle {
+  position: absolute;
+  z-index: 2;
+  inset: auto var(--space-md) var(--space-md) var(--space-md);
+  max-height: 55vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--space-md);
+  border-radius: var(--radius-md);
+  background: var(--colour-surface);
+  border: 1px solid var(--colour-hairline);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 18%);
+}
+
+@media (min-width: 700px) {
+  .selected-vehicle {
+    inset: var(--space-md) auto var(--space-md) var(--space-md);
+    width: 340px;
+    max-height: none;
+  }
+}
+
+@media (min-width: 1100px) {
+  .selected-vehicle {
+    width: clamp(360px, 26vw, 420px);
+  }
+}
+
+.selected-vehicle__close {
+  position: absolute;
+  top: var(--space-xs);
+  right: var(--space-xs);
+  width: var(--min-touch-target);
+  height: var(--min-touch-target);
+  border: none;
+  background: transparent;
+  font-size: var(--font-size-h3);
+  line-height: 1;
+  color: var(--colour-muted);
+  cursor: pointer;
+}
+
+.selected-vehicle__close:focus-visible {
+  outline: 2px solid var(--colour-red);
+  outline-offset: -2px;
+  border-radius: var(--radius-sm);
+}
+
+.selected-vehicle__header {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-sm);
+  padding-right: var(--space-lg);
+}
+
+.selected-vehicle__destination {
+  margin: 0;
+  font-size: var(--font-size-h3);
+  line-height: 1.2;
+}
+
+.selected-vehicle__facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-xs) var(--space-sm);
+  margin: var(--space-sm) 0 0;
+}
+
+.selected-vehicle__facts dt {
+  margin: 0;
+  color: var(--colour-muted);
+  font-size: var(--font-size-micro);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.selected-vehicle__facts dd {
+  margin: 0;
+  font-size: var(--font-size-small);
+}
+
+.selected-vehicle__stops {
+  margin: var(--space-sm) 0 0;
+  padding-left: var(--space-md);
+  font-size: var(--font-size-small);
+}
+
+.selected-vehicle__stops li + li {
+  margin-top: 2px;
+}
+
+.selected-vehicle__links {
+  margin: var(--space-sm) 0 0;
+  font-size: var(--font-size-small);
+}
+
+.selected-vehicle__error,
+.selected-vehicle__caveat {
+  margin: var(--space-xs) 0 0;
+  padding-right: var(--space-lg);
+}
+
+.selected-vehicle__error {
+  color: var(--colour-muted);
+  font-size: var(--font-size-small);
+}

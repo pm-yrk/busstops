@@ -42,8 +42,23 @@ export interface MapViewProps {
   stops: readonly MapStopSummary[];
   vehicles: readonly MapVehicleSummary[];
   selectedStopId?: string | null;
+  selectedVehicleRef?: string | null;
   onSelectStop?: (atcoCode: string) => void;
+  /** A bus is a thing on the map, not decoration: clicking one opens it. */
+  onSelectVehicle?: (vehicleRef: string) => void;
   onBoundsChange?: (bounds: Bounds, zoom: number) => void;
+  /**
+   * A deliberate camera move, as opposed to where the map happens to be.
+   *
+   * `bounds` is only read when the map is built, and nothing else moved it — so "Use my location"
+   * refetched the data for a box the camera was not looking at, and `/live/stops/:stopId` opened
+   * the board for a stop that was not on screen. Both looked like the map ignoring you.
+   *
+   * It cannot simply follow `bounds`: the map reports its own viewport back on every `moveend`,
+   * so a synced prop would fight the user's panning in a loop. The nonce is what separates "the
+   * page asked to go here" from "this is where the map ended up", and each one is applied once.
+   */
+  focus?: { bounds: Bounds; nonce: number } | null;
   showStops: boolean;
   showVehicles: boolean;
   /** What the map is being used for. Decides emphasis, never what is loaded. */
@@ -63,8 +78,11 @@ export function MapView({
   stops,
   vehicles,
   selectedStopId,
+  selectedVehicleRef,
   onSelectStop,
+  onSelectVehicle,
   onBoundsChange,
+  focus = null,
   showStops,
   showVehicles,
   intent = { kind: "explore" },
@@ -73,6 +91,7 @@ export function MapView({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const selectRef = useRef(onSelectStop);
+  const selectVehicleRef = useRef(onSelectVehicle);
   const [failed, setFailed] = useState(false);
   const [ready, setReady] = useState(false);
   const [scale, setScale] = useState<MapScale>(() => scaleForZoom(14));
@@ -90,13 +109,17 @@ export function MapView({
     selectRef.current = onSelectStop;
   }, [onSelectStop]);
 
+  useEffect(() => {
+    selectVehicleRef.current = onSelectVehicle;
+  }, [onSelectVehicle]);
+
   const stopData = useMemo(
     () => stopFeatures(showStops ? stops : [], intent, selectedStopId ?? null),
     [stops, showStops, intent, selectedStopId],
   );
   const vehicleData = useMemo(
-    () => vehicleFeatures(showVehicles ? vehicles : [], intent),
-    [vehicles, showVehicles, intent],
+    () => vehicleFeatures(showVehicles ? vehicles : [], intent, selectedVehicleRef ?? null),
+    [vehicles, showVehicles, intent, selectedVehicleRef],
   );
 
   useEffect(() => {
@@ -161,17 +184,38 @@ export function MapView({
       map.on("mouseleave", layer, () => (map.getCanvas().style.cursor = ""));
     }
 
-    // Clicking a cluster zooms into it, which is what a count is an invitation to do.
-    map.on("click", "stop-clusters", (event) => {
-      const feature = event.features?.[0];
-      if (!feature) return;
-      // A cluster is always a Point; the cast is narrowing MapLibre's union, not asserting a fact.
-      const geometry = feature.geometry as unknown as { coordinates: [number, number] };
-      map.easeTo({
-        center: geometry.coordinates,
-        zoom: Math.max(map.getZoom() + 2, ZOOM.neighbourhood),
+    /*
+     * And a bus, at whatever scale it is drawn.
+     *
+     * The buses were painted and inert: a passenger could see the 36 going past and had no way to
+     * ask anything about it. Both representations answer — the drawing at street zoom and the
+     * directional mark over a neighbourhood — because which one is on screen is a fact about the
+     * camera, not about whether the bus is selectable.
+     */
+    for (const layer of ["vehicle-buses", "vehicle-pips"]) {
+      map.on("click", layer, (event) => {
+        const ref = event.features?.[0]?.properties?.vehicleRef;
+        if (typeof ref === "string") selectVehicleRef.current?.(ref);
       });
-    });
+      map.on("mouseenter", layer, () => (map.getCanvas().style.cursor = "pointer"));
+      map.on("mouseleave", layer, () => (map.getCanvas().style.cursor = ""));
+    }
+
+    // Clicking a cluster zooms into it, which is what a count is an invitation to do.
+    for (const layer of ["stop-clusters", "vehicle-clusters"]) {
+      map.on("click", layer, (event) => {
+        const feature = event.features?.[0];
+        if (!feature) return;
+        // A cluster is always a Point; the cast narrows MapLibre's union rather than asserting.
+        const geometry = feature.geometry as unknown as { coordinates: [number, number] };
+        map.easeTo({
+          center: geometry.coordinates,
+          zoom: Math.max(map.getZoom() + 2, ZOOM.neighbourhood),
+        });
+      });
+      map.on("mouseenter", layer, () => (map.getCanvas().style.cursor = "pointer"));
+      map.on("mouseleave", layer, () => (map.getCanvas().style.cursor = ""));
+    }
 
     mapRef.current = map;
     /*
@@ -194,6 +238,21 @@ export function MapView({
     // fight the user's own navigation.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [styleUrl]);
+
+  const appliedFocus = useRef<number | null>(null);
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready || !focus) return;
+    if (appliedFocus.current === focus.nonce) return;
+    appliedFocus.current = focus.nonce;
+    map.fitBounds(
+      [
+        [focus.bounds.west, focus.bounds.south],
+        [focus.bounds.east, focus.bounds.north],
+      ],
+      prefersReducedMotion() ? { animate: false } : { duration: 600 },
+    );
+  }, [ready, focus]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -350,6 +409,27 @@ function addSourcesAndLayers(map: MapLibreMap): void {
     paint: {
       "text-color": ["case", ["get", "stale"], "#a49b90", "#e5242a"],
       "text-opacity": ["case", ["==", ["get", "emphasis"], 1], 1, 0.35],
+    },
+  });
+
+  /*
+   * The selected bus, under everything, so a chosen bus is findable in a street full of them.
+   *
+   * A ring rather than a different drawing: the bus is the same bus, and swapping its artwork on
+   * selection would read as a different kind of vehicle. Drawn at both scales because a selection
+   * has to survive a zoom out.
+   */
+  map.addLayer({
+    id: "vehicle-selected",
+    type: "circle",
+    source: SOURCES.vehicles,
+    filter: ["all", ["!", ["has", "point_count"]], ["==", ["get", "selected"], 1]],
+    paint: {
+      "circle-radius": 16,
+      "circle-color": "#e5242a",
+      "circle-opacity": 0.16,
+      "circle-stroke-color": "#e5242a",
+      "circle-stroke-width": 2,
     },
   });
 

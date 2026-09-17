@@ -72,6 +72,16 @@ export interface WeatherVignetteProps {
    */
   scale?: 3 | 4;
   now?: Date;
+  /**
+   * The panel version: the same picture and the same numbers, fewer of them.
+   *
+   * A selected stop on the map is answering "when is my bus", and the weather is the second
+   * question, so it gets a band under the board rather than a full figure. Temperature, what it
+   * feels like, the condition, rain, wind and one line of advice — which is what somebody
+   * deciding whether to wait outside actually uses. UV, daylight and the reading time stay on the
+   * stop page, where there is room for them.
+   */
+  compact?: boolean;
 }
 
 /**
@@ -91,10 +101,11 @@ export function WeatherVignette({
   atcoCode,
   scale: maximumScale = 4,
   now = new Date(),
+  compact = false,
 }: WeatherVignetteProps) {
   const holder = useRef<HTMLDivElement>(null);
   const [available, setAvailable] = useState<number | null>(null);
-  const scale = useFittingScale(available, maximumScale);
+  const scale = useFittingScale(available, compact ? Math.min(3, maximumScale) : maximumScale);
 
   useEffect(() => {
     const element = holder.current;
@@ -168,7 +179,7 @@ export function WeatherVignette({
   return (
     <div className="vignette__holder" ref={holder}>
       <figure
-        className={`vignette vignette--${advice.kind}`}
+        className={`vignette vignette--${advice.kind}${compact ? " vignette--compact" : ""}`}
         style={{ width, height: "auto" }}
         data-condition={kind}
         data-person={person.id}
@@ -259,26 +270,38 @@ export function WeatherVignette({
                 {hour.windGustKph === null ? "" : ` · gusts ${Math.round(hour.windGustKph)}`}
               </dd>
             </div>
-            <div>
-              <dt>UV</dt>
-              <dd>{hour.uvIndex === null ? "Not published" : hour.uvIndex.toFixed(1)}</dd>
-            </div>
-            <div>
-              <dt>Daylight</dt>
-              <dd>{hour.isDay ? "Daytime" : "After dark"}</dd>
-            </div>
+            {compact ? null : (
+              <>
+                <div>
+                  <dt>UV</dt>
+                  <dd>{hour.uvIndex === null ? "Not published" : hour.uvIndex.toFixed(1)}</dd>
+                </div>
+                <div>
+                  <dt>Daylight</dt>
+                  <dd>{hour.isDay ? "Daytime" : "After dark"}</dd>
+                </div>
+              </>
+            )}
           </dl>
 
-          <p className="vignette__source small muted">
-            For the {weather.cellSizeDegrees}° area around this stop, read{" "}
-            <time dateTime={weather.retrievedAt}>
-              {new Date(weather.retrievedAt).toLocaleTimeString("en-GB", {
-                hour: "2-digit",
-                minute: "2-digit",
-              })}
-            </time>
-            . {weather.attribution}.
-          </p>
+          {/*
+            The attribution is not optional in either form. Open-Meteo's licence requires it, and
+            a compact panel is a smaller place to say it, not a reason not to.
+          */}
+          {compact ? (
+            <p className="vignette__source micro muted">{weather.attribution}</p>
+          ) : (
+            <p className="vignette__source small muted">
+              For the {weather.cellSizeDegrees}° area around this stop, read{" "}
+              <time dateTime={weather.retrievedAt}>
+                {new Date(weather.retrievedAt).toLocaleTimeString("en-GB", {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                })}
+              </time>
+              . {weather.attribution}.
+            </p>
+          )}
         </figcaption>
       </figure>
     </div>

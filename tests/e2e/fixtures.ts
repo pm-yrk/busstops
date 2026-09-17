@@ -377,6 +377,8 @@ export const MAP_WITH_TRAFFIC = {
         coordinate: { lat: 53.7972, lon: -1.5432 },
         bearingDegrees: 90,
         routePublicName: "36",
+        routeId: "00000000-0000-5000-8000-0000000000e1",
+        routePatternId: "00000000-0000-5000-8000-0000000000f1",
         destinationName: "Ripon",
         delaySeconds: 60,
         freshnessSeconds: 20,
@@ -387,6 +389,8 @@ export const MAP_WITH_TRAFFIC = {
         coordinate: { lat: 53.7944, lon: -1.5495 },
         bearingDegrees: 260,
         routePublicName: "12",
+        routeId: "00000000-0000-5000-8000-0000000000e2",
+        routePatternId: null,
         destinationName: "Beeston",
         delaySeconds: null,
         freshnessSeconds: 40,
@@ -398,6 +402,10 @@ export const MAP_WITH_TRAFFIC = {
         coordinate: { lat: 53.7995, lon: -1.543 },
         bearingDegrees: 10,
         routePublicName: "X84",
+        // Null on purpose: the viewport could not say which operator's X84 this is, and the map
+        // must show it without offering a link to somebody else's route.
+        routeId: null,
+        routePatternId: null,
         destinationName: "Otley",
         delaySeconds: null,
         freshnessSeconds: 900,

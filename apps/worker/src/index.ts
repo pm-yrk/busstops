@@ -448,20 +448,60 @@ router.get("/v1/map", async (_request, { env, url }) => {
       geometries.map((geometry) => [geometry.pattern.id, geometry.pattern]),
     );
 
+    /*
+     * Which service a route number refers to, where this viewport can say so unambiguously.
+     *
+     * A live feed publishes "36" and nothing that identifies the service, and the map was
+     * carrying that straight through as though it were an identifier — so a bus could only ever
+     * link to a route page by its public name, which several operators share. Within one viewport
+     * the name is usually unique, and where it is not, the answer here is null: a bus linked to
+     * somebody else's 36 is a worse answer than a bus with no route link.
+     *
+     * Built once by walking the viewport's services rather than matching per vehicle, because
+     * running the geometry matcher for three hundred vehicles against several hundred patterns is
+     * exactly the kind of work that took this endpoint over its limit.
+     */
+    const serviceIdByName = new Map<string, string | null>();
+    for (const geometry of geometries) {
+      const service = services.get(geometry.pattern.serviceRouteId);
+      if (!service) continue;
+      const name = routeBadgeName(service.publicName);
+      const existing = serviceIdByName.get(name);
+      if (existing === undefined) serviceIdByName.set(name, service.id);
+      else if (existing !== service.id) serviceIdByName.set(name, null);
+    }
+
     vehicles = capped.map((observation) => {
       const context = live.journeyContext.get(observation.vehicleRef);
       const summary = toMapVehicle(observation, context, now);
 
       // Matching only runs when routes for this viewport are published. Without them a vehicle is
       // still shown — just without a route name — rather than being hidden from the map.
-      if (geometries.length === 0 || summary.routePublicName !== null) return summary;
+      if (geometries.length === 0) return summary;
+
+      if (summary.routePublicName !== null) {
+        const resolved = serviceIdByName.get(summary.routePublicName) ?? null;
+        return resolved ? { ...summary, routeId: resolved } : summary;
+      }
 
       const match = matchObservation(observation, geometries);
       if (!match.best || match.confidence.level === "low") return summary;
 
       const pattern = patternsById.get(match.best.patternId);
       const service = pattern ? services.get(pattern.serviceRouteId) : undefined;
-      return service ? { ...summary, routePublicName: service.publicName } : summary;
+      /*
+       * A matched vehicle is the one case where the identity is known exactly: the match names the
+       * pattern, the pattern names the service. Both travel with it so the marker can open the
+       * route page and draw the line it was matched to.
+       */
+      return service
+        ? {
+            ...summary,
+            routePublicName: routeBadgeName(service.publicName),
+            routeId: service.id,
+            routePatternId: match.best.patternId,
+          }
+        : summary;
     });
   }
 
@@ -1196,7 +1236,21 @@ router.get("/v1/vehicles/:ref", async (_request, { env, params, url }) => {
       }),
       data: {
         vehicle,
-        routePublicName: service?.publicName ?? context?.publishedLineName ?? null,
+        routePublicName: service
+          ? routeBadgeName(service.publicName)
+          : context?.publishedLineName
+            ? routeBadgeName(context.publishedLineName)
+            : null,
+        /*
+         * Only from a match, never from the name.
+         *
+         * The service is known exactly when the observation matched a pattern: the match names
+         * the pattern and the pattern names the service. Without a match there is a number on the
+         * front and nothing that identifies which operator's route it is, and null is the honest
+         * answer — the page then shows the number without making it a link.
+         */
+        routeId: service?.id ?? null,
+        routePatternId: match?.best?.patternId ?? null,
         destinationName: context?.destinationName ? passengerName(context.destinationName) : null,
         nextStops,
         recentTrace: [],

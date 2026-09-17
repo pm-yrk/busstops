@@ -26,6 +26,8 @@ const bus = (over: Partial<MapVehicleSummary> = {}): MapVehicleSummary =>
     vehicleRef: "v1",
     coordinate: { lat: 53.797, lon: -1.542 },
     routePublicName: "36",
+    routeId: "svc-36",
+    routePatternId: "pattern-36",
     destinationName: "Ripon",
     bearingDegrees: 90,
     freshnessSeconds: 20,
@@ -54,15 +56,52 @@ describe("what the map draws at each zoom", () => {
 describe("what the map emphasises", () => {
   it("keeps the rest of the street when one route is selected", () => {
     const features = vehicleFeatures(
-      [bus({ routePublicName: "36" }), bus({ routePublicName: "1" })],
-      {
-        kind: "route",
-        routePublicName: "36",
-      },
+      [
+        bus({ routePublicName: "36", routeId: "svc-36" }),
+        bus({ routePublicName: "1", routeId: "svc-1" }),
+      ],
+      { kind: "route", routeId: "svc-36", routePublicName: "36" },
     );
     // Both are still there — a passenger looking at the 36 still wants to see the road is busy.
     expect(features.features).toHaveLength(2);
     expect(features.features.map((f) => f.properties.emphasis)).toEqual([1, 0]);
+  });
+
+  /*
+   * The bug this pair of fields exists to stop.
+   *
+   * "36" is a number several operators put on the front of a bus. Emphasising by it emphasised
+   * every 36 in the viewport, and a link built from it opened somebody else's route page.
+   */
+  it("does not emphasise another operator's bus with the same number on the front", () => {
+    const features = vehicleFeatures(
+      [
+        bus({ vehicleRef: "mine", routePublicName: "36", routeId: "svc-36" }),
+        bus({ vehicleRef: "theirs", routePublicName: "36", routeId: "svc-other-36" }),
+      ],
+      { kind: "route", routeId: "svc-36", routePublicName: "36" },
+    );
+    expect(features.features.map((f) => f.properties.emphasis)).toEqual([1, 0]);
+  });
+
+  it("leaves a bus we could not identify as context rather than guessing by its number", () => {
+    const features = vehicleFeatures([bus({ routePublicName: "36", routeId: null })], {
+      kind: "route",
+      routeId: "svc-36",
+      routePublicName: "36",
+    });
+    expect(features.features[0]!.properties.emphasis).toBe(0);
+    expect(features.features[0]!.properties.routeId).toBe("");
+  });
+
+  it("emphasises the selected bus and no other, whatever the intent was", () => {
+    const features = vehicleFeatures(
+      [bus({ vehicleRef: "a" }), bus({ vehicleRef: "b" })],
+      { kind: "explore" },
+      "b",
+    );
+    expect(features.features.map((f) => f.properties.emphasis)).toEqual([0, 1]);
+    expect(features.features.map((f) => f.properties.selected)).toEqual([0, 1]);
   });
 
   it("emphasises the selected stop and no other", () => {

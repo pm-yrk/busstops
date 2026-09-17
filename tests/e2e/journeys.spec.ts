@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { EMPTY_MAP, META, STOP_ID, STOP_RESPONSE, mockApi } from "./fixtures.js";
+import { EMPTY_MAP, MAP_WITH_TRAFFIC, META, STOP_ID, STOP_RESPONSE, mockApi } from "./fixtures.js";
 
 /**
  * Passenger journeys end to end (docs/15_TESTING.md "End-to-end").
@@ -105,6 +105,52 @@ test.describe("degraded and stale states", () => {
     // The map is never the only way to read the data.
     const listRegion = page.getByRole("list").or(page.getByText(/no (stops|vehicles|buses)/i));
     await expect(listRegion.first()).toBeVisible();
+  });
+
+  /*
+   * A bus you can open.
+   *
+   * The buses were drawn and inert, and the list under the map named destinations with nothing to
+   * click. The list is the map's accessible equal, so it is the right place to assert this: the
+   * painted bus and the listed bus go to the same URL, and that URL has to carry a viewport,
+   * because the live feeds are area-scoped and a bare reference cannot be looked up.
+   */
+  test("every bus in view can be opened, and the link carries the viewport", async ({ page }) => {
+    await mockApi(page, { "/v1/map": MAP_WITH_TRAFFIC });
+    await page.goto("/live");
+
+    const link = page.getByRole("link", { name: "Ripon" });
+    await expect(link).toBeVisible();
+    const href = await link.getAttribute("href");
+    expect(href).toContain("/vehicles/v1");
+    expect(href).toContain("bbox=");
+  });
+
+  /*
+   * `/live/stops/:stopId` was a route nothing read.
+   *
+   * The page opened on its default camera with no board, so the link a stop page offers back to
+   * the map, and any link anyone shared, was a link to Leeds in general.
+   */
+  test("a link to a stop on the map opens that stop's board", async ({ page }) => {
+    await mockApi(page, { "/v1/map": MAP_WITH_TRAFFIC });
+    await page.goto("/live/stops/450010001");
+
+    await expect(page.getByText("Leeds City Bus Station").first()).toBeVisible();
+    await expect(page.getByRole("link", { name: /everything about this stop/i })).toBeVisible();
+  });
+
+  /*
+   * The weather belongs in the panel a passenger actually opens, not only on the full stop page.
+   */
+  test("the stop board over the map carries real weather for that stop", async ({ page }) => {
+    await mockApi(page, { "/v1/map": MAP_WITH_TRAFFIC });
+    await page.goto("/live/stops/450010001");
+
+    const panel = page.locator(".selected-stop");
+    await expect(panel.locator(".vignette")).toBeVisible();
+    await expect(panel.getByText(/feels like/i)).toBeVisible();
+    await expect(panel.getByText(/Open-Meteo/i)).toBeVisible();
   });
 });
 

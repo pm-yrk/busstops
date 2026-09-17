@@ -94,7 +94,8 @@ export function VehiclePage() {
     );
   }
 
-  const { vehicle, routePublicName, destinationName, nextStops, scheduledShape } = response.data;
+  const { vehicle, routePublicName, routeId, destinationName, nextStops, scheduledShape } =
+    response.data;
   const visibleStops = showAllStops ? nextStops : nextStops.slice(0, NEXT_STOPS_VISIBLE);
 
   return (
@@ -106,10 +107,22 @@ export function VehiclePage() {
         <div>
           <h1>{destinationName ?? "Destination not published"}</h1>
           <p className="muted">
-            {routePublicName ? (
+            {/*
+              The link is built from the service id, never from the number on the front.
+
+              It was `/routes/${routePublicName}` — the route endpoint looks a service up by its
+              published identifier, so "Route 36" pointed at `/routes/36` and every one of these
+              links was a guaranteed 404. `routeId` is null when the match was not confident
+              enough to name the service, and then the number is shown as text: a passenger
+              reading "36" with no link is told the truth, and a link to a route we are not sure
+              about is not.
+            */}
+            {routePublicName && routeId ? (
               <>
-                Route <Link to={`/routes/${routePublicName}`}>{routePublicName}</Link>
+                Route <Link to={`/routes/${encodeURIComponent(routeId)}`}>{routePublicName}</Link>
               </>
+            ) : routePublicName ? (
+              <>Route {routePublicName} — we could not confirm which service this is.</>
             ) : (
               "We could not match this bus to a route confidently."
             )}

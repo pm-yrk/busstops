@@ -9,7 +9,7 @@ import type {
   VehicleObservation,
 } from "@busstops/contracts";
 import { MAP_QUERY_LIMITS, attributionsFor, getSourceRegistryEntry } from "@busstops/contracts";
-import { passengerName } from "@busstops/pipeline-static-network";
+import { passengerName, routeBadgeName } from "@busstops/pipeline-static-network";
 import { SourceClient, ageSeconds } from "@busstops/pipeline-core";
 import {
   bodsDatafeedUrl,
@@ -395,7 +395,17 @@ export function toMapVehicle(
     vehicleRef: observation.vehicleRef,
     coordinate: observation.coordinate,
     bearingDegrees: observation.bearingDegrees ?? null,
-    routePublicName: context?.publishedLineName ?? null,
+    routePublicName: context?.publishedLineName ? routeBadgeName(context.publishedLineName) : null,
+    /*
+     * Unknown until the viewport's patterns say otherwise.
+     *
+     * A live feed gives the number on the front and nothing that identifies the service, so this
+     * cannot be filled in here however tempting it is to reuse the name. The map handler resolves
+     * it where the viewport's own patterns make it unambiguous, and leaves it null where they do
+     * not — a bus linked to the wrong operator's 36 is worse than a bus with no route link.
+     */
+    routeId: null,
+    routePatternId: null,
     destinationName: context?.destinationName ? passengerName(context.destinationName) : null,
     delaySeconds,
     freshnessSeconds: ageSeconds(observation.observedAt, now),
