@@ -2,6 +2,14 @@ name: Deploy Preview
 
 # One button: Actions → Deploy Preview → Run workflow.
 #
+# It carries the retention and weather jobs as inputs rather than leaving them in their own
+# workflow files, for a reason worth writing down: GitHub only registers `workflow_dispatch` for
+# workflows that exist on the **default branch**. `prune-artifacts.yml`, `weather.yml` and
+# `disruptions.yml` live only on this feature branch, so dispatching them answers 404 — which is
+# also why the weather and disruption schedules have never once run against the preview bucket.
+# Dispatching a registered workflow with a ref runs *that ref's* version of the file, so routing
+# them through here is what makes them reachable before anything is merged.
+#
 # Provisions what is missing, deploys the Worker, points the frontend at it, deploys Pages,
 # bootstraps real national data, then smoke tests the result and prints the URL.
 #
@@ -19,6 +27,15 @@ on:
         # run at all. The published artifact survives between deploys, so a normal deploy reuses
         # the one already in the bucket; rebuilding it is a deliberate data task, asked for by
         # turning this on.
+        default: false
+      prune_artifacts:
+        description: "Network artifact retention: report | apply | skip"
+        type: choice
+        options: [skip, report, apply]
+        default: skip
+      run_weather:
+        description: "Also collect stop weather into the preview bucket"
+        type: boolean
         default: false
 
 permissions:
@@ -203,6 +220,61 @@ jobs:
           ALIAS="https://${PAGES_BRANCH}.${PAGES_PROJECT}.pages.dev"
           echo "url=$ALIAS" >> "$GITHUB_OUTPUT"
           echo "Pages deployed at $ALIAS"
+
+      # ------------------------------------------------------------ retention
+      # Before the bootstrap, deliberately. A national publish adds about a gigabyte and a half,
+      # R2 gives ten, and nothing used to remove the publish it replaced — so knowing what is in
+      # the bucket is worth more before another one is written than after.
+      #
+      # `report` never deletes. `apply` deletes only versions the manifest proves are superseded,
+      # and refuses outright on a missing manifest, a manifest that disagrees with the index
+      # record, an incomplete listing, or a live version with no objects under it.
+      - name: Network artifact retention
+        if: ${{ inputs.prune_artifacts != 'skip' }}
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          if [ "${{ inputs.prune_artifacts }}" = "apply" ]; then
+            npx tsx pipelines/static-network/run-prune.ts --apply
+          else
+            npx tsx pipelines/static-network/run-prune.ts
+          fi
+
+      - name: Upload the retention report
+        if: ${{ always() && inputs.prune_artifacts != 'skip' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: preview-prune-report
+          path: prune-report.json
+          retention-days: 14
+          if-no-files-found: ignore
+
+      # -------------------------------------------------------------- weather
+      # Same reason as the retention step above: `weather.yml` exists only on this branch, so its
+      # schedule has never fired and it cannot be dispatched. Run from here, once, when the stop
+      # weather artifacts need to exist in the preview bucket.
+      - name: Collect stop weather
+        if: ${{ inputs.run_weather }}
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          # Matches the cron in weather.yml, which the job checks against its own allowance.
+          WEATHER_REFRESH_MINUTES: "30"
+        run: |
+          set -o pipefail
+          npx tsx pipelines/weather/run-collect.ts 2>&1 | tee weather.log
+
+      - name: Upload the weather report
+        if: ${{ always() && inputs.run_weather }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: preview-weather-report
+          path: |
+            weather-report.json
+            weather.log
+          retention-days: 7
+          if-no-files-found: ignore
 
       # Installed before the data bootstrap, not after it.
       #
