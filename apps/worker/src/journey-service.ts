@@ -86,6 +86,18 @@ export interface JourneyDiagnostics {
   /** Trips that survived into the graph, and the stops the corridor kept. */
   tripsInGraph: number;
   stopsInGraph: number;
+  /** Walking transfers between those stops: the edges the search moves along between rides. */
+  transferEdges: number;
+  /**
+   * Stops within walking distance of each end, and how the search fared.
+   *
+   * Zero at either end is stop selection, not planning: nothing was close enough to walk to. A
+   * search that ran rounds and produced no itinerary is the planner genuinely finding no path.
+   */
+  originCandidates: number;
+  destinationCandidates: number;
+  rounds: number;
+  roundsWithOption: number;
   patternsInSlice: number;
   stopsInSlice: number;
   failures: Array<{ dataset: string; reason: string }>;
@@ -149,6 +161,11 @@ export class JourneyService {
       tripsWithoutPattern: 0,
       tripsInGraph: 0,
       stopsInGraph: 0,
+      transferEdges: 0,
+      originCandidates: 0,
+      destinationCandidates: 0,
+      rounds: 0,
+      roundsWithOption: 0,
       patternsInSlice: slice.patternsById.size,
       stopsInSlice: slice.stopsById.size,
       failures: [],
@@ -212,6 +229,9 @@ export class JourneyService {
     const graph = built.graph;
     diagnostics.tripsInGraph = graph.trips.length;
     diagnostics.stopsInGraph = graph.stops.size;
+    let transferEdges = 0;
+    for (const transfers of graph.transfers.values()) transferEdges += transfers.length;
+    diagnostics.transferEdges = transferEdges;
 
     const result = plan(graph, {
       origin: request.origin,
@@ -219,6 +239,11 @@ export class JourneyService {
       departAtSeconds: request.departAtSeconds,
       maxAccessWalkSeconds: Math.round(JOURNEY_LIMITS.maxAccessWalkMetres / 1.3),
     });
+
+    diagnostics.originCandidates = result.reach.originCandidates;
+    diagnostics.destinationCandidates = result.reach.destinationCandidates;
+    diagnostics.rounds = result.reach.rounds;
+    diagnostics.roundsWithOption = result.reach.roundsWithOption;
 
     return {
       ok: true,

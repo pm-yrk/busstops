@@ -61,6 +61,22 @@ export interface PlanResult {
   /** Stops considered for boarding, with the walk to each. */
   candidateStops: Array<{ stop: JourneyStop; walkSeconds: number }>;
   explanation: string | null;
+  /**
+   * Where a plan with no options stopped.
+   *
+   * `candidateStops` alone could not answer this: it holds the origin candidates, so a search
+   * that failed because nothing was within walking distance of the *destination* looked identical
+   * to one that failed in the search itself. Both counts are reported, and whether any round
+   * reached a destination at all, which separates "could not board" from "boarded and could not
+   * arrive".
+   */
+  reach: {
+    originCandidates: number;
+    destinationCandidates: number;
+    /** Rounds the search ran, and rounds that produced an itinerary. */
+    rounds: number;
+    roundsWithOption: number;
+  };
 }
 
 export const PLANNER_DEFAULTS = {
@@ -156,7 +172,17 @@ export function plan(graph: JourneyGraph, request: PlanRequest): PlanResult {
   );
 
   if (origins.length === 0 || destinations.length === 0) {
-    return { options: [], candidateStops: origins, explanation: null };
+    return {
+      options: [],
+      candidateStops: origins,
+      explanation: null,
+      reach: {
+        originCandidates: origins.length,
+        destinationCandidates: destinations.length,
+        rounds: 0,
+        roundsWithOption: 0,
+      },
+    };
   }
 
   const searchOrigins: SearchOrigin[] = origins.map((candidate) => ({
@@ -214,7 +240,17 @@ export function plan(graph: JourneyGraph, request: PlanRequest): PlanResult {
   }
 
   if (perRound.length === 0) {
-    return { options: [], candidateStops: origins, explanation: null };
+    return {
+      options: [],
+      candidateStops: origins,
+      explanation: null,
+      reach: {
+        originCandidates: origins.length,
+        destinationCandidates: destinations.length,
+        rounds: result.labelsByRound.length,
+        roundsWithOption: 0,
+      },
+    };
   }
 
   const options = rankOptions(perRound);
@@ -235,7 +271,17 @@ export function plan(graph: JourneyGraph, request: PlanRequest): PlanResult {
     nearestArrivalSeconds,
   });
 
-  return { options, candidateStops: origins, explanation };
+  return {
+    options,
+    candidateStops: origins,
+    explanation,
+    reach: {
+      originCandidates: origins.length,
+      destinationCandidates: destinations.length,
+      rounds: result.labelsByRound.length,
+      roundsWithOption: perRound.length,
+    },
+  };
 }
 
 /** Earliest arrival when only one boarding stop is permitted. Used by the stop explanation. */

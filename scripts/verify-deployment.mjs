@@ -485,8 +485,12 @@ await check("a journey can be planned across real timetable data", async () => {
       `windows [${diagnostics.windows.join(",")}], ${diagnostics.shardsRead} shard(s) read and ` +
       `${diagnostics.shardsMissing} missing, ${diagnostics.tripsLoaded} trip(s) loaded ` +
       `(${diagnostics.tripsWithPattern} matched a pattern, ${diagnostics.tripsWithoutPattern} did not), ` +
-      `${diagnostics.tripsInGraph} in the graph over ${diagnostics.stopsInGraph} stop(s); ` +
-      `slice held ${diagnostics.patternsInSlice} pattern(s) and ${diagnostics.stopsInSlice} stop(s)` +
+      `${diagnostics.tripsInGraph} in the graph over ${diagnostics.stopsInGraph} stop(s) ` +
+      `and ${diagnostics.transferEdges} transfer edge(s); ` +
+      `${diagnostics.originCandidates} origin and ${diagnostics.destinationCandidates} destination ` +
+      `candidate stop(s); ${diagnostics.roundsWithOption} of ${diagnostics.rounds} round(s) found ` +
+      `an itinerary; slice held ${diagnostics.patternsInSlice} pattern(s) and ` +
+      `${diagnostics.stopsInSlice} stop(s)` +
       (diagnostics.failures.length > 0
         ? `; failures: ${diagnostics.failures.map((f) => `${f.dataset} (${f.reason})`).join(", ")}`
         : "")
