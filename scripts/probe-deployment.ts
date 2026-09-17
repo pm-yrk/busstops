@@ -41,6 +41,8 @@ const AREAS = [
   { name: "Manchester", bbox: { west: -2.32, south: 53.42, east: -2.16, north: 53.52 } },
   { name: "Birmingham", bbox: { west: -1.96, south: 52.42, east: -1.8, north: 52.52 } },
   { name: "Bristol", bbox: { west: -2.66, south: 51.42, east: -2.5, north: 51.51 } },
+  // York, because the journey this product is meant to plan ends at York Minster.
+  { name: "York", bbox: { west: -1.12, south: 53.94, east: -1.03, north: 53.99 } },
   { name: "London (Westminster)", bbox: { west: -0.17, south: 51.48, east: -0.09, north: 51.53 } },
 ];
 
@@ -168,7 +170,12 @@ async function main(): Promise<void> {
 
   const areaReports: unknown[] = [];
   let areasWithBusesOutsideLondon = 0;
-  let busiest: { name: string; vehicles: number; stops: unknown[] } | null = null;
+  /*
+   * Every non-London area's stops, not just the busiest one's. A departure board sweep confined to
+   * one city cannot tell "the timetable covers England" from "the timetable covers Leeds", which
+   * is precisely the question the GTFS rebuild exists to answer.
+   */
+  const stopsByArea: Array<{ name: string; stops: unknown[] }> = [];
 
   for (const area of AREAS) {
     const param = bboxParam(area.bbox);
@@ -215,10 +222,8 @@ async function main(): Promise<void> {
     }
 
     const isLondon = area.name.startsWith("London");
+    if (!isLondon) stopsByArea.push({ name: area.name, stops });
     if (!isLondon && (vehicles ?? 0) > 0) areasWithBusesOutsideLondon += 1;
-    if (!isLondon && (vehicles ?? 0) >= (busiest?.vehicles ?? -1)) {
-      busiest = { name: area.name, vehicles: vehicles ?? 0, stops };
-    }
 
     areaReports.push({
       area: area.name,
@@ -230,26 +235,48 @@ async function main(): Promise<void> {
   }
   report.areas = areaReports;
 
+  const nonLondonAreas = AREAS.filter((area) => !area.name.startsWith("London")).length;
   if (areasWithBusesOutsideLondon < 2) {
     failures.push(
-      `Live vehicles: ${areasWithBusesOutsideLondon} of 4 non-London areas returned a bus through the deployment (at least 2 are required).`,
+      `Live vehicles: ${areasWithBusesOutsideLondon} of ${nonLondonAreas} non-London areas returned a bus through the deployment (at least 2 are required).`,
     );
   }
 
   head("Real departure boards");
 
   /*
-   * Several stops, not one. A single stop's board proves nothing either way: an empty one may be
-   * a stop with no service at this hour, and a working one may be the only stop in the country
-   * whose operator happens to be inside the timetable cap. A sweep across the stops of a viewport
-   * that demonstrably has buses in it is the honest measurement.
+   * Several stops in every city, not six stops in one.
+   *
+   * A single board proves nothing either way: an empty one may be a stop with no service at this
+   * hour, and a working one may be the only stop in the country whose operator happened to be
+   * inside the old timetable cap. Sweeping each city separately is what distinguishes a national
+   * timetable from a regional one — which is the whole point of the GTFS rebuild.
+   *
+   * Two different failures are separated here, because they have different causes and different
+   * fixes. A stop with **no routes at all** means the published timetable knows nothing about it:
+   * that is a coverage failure and it is a failure at any hour of the day or night. A stop with
+   * routes but **no departures right now** is what a quiet early morning genuinely looks like, so
+   * it is reported as a note rather than counted as a broken product.
    */
-  const candidates = (busiest?.stops ?? []).slice(0, 6);
-  if (candidates.length === 0) {
-    failures.push("Departures: no stop was returned by /v1/map, so no board could be tested.");
-  } else {
+  const boardsByArea: unknown[] = [];
+  const citiesWithNoTimetable: string[] = [];
+  const citiesQuiet: string[] = [];
+
+  for (const area of stopsByArea) {
+    const candidates = area.stops.slice(0, 4);
+    console.log("");
+    console.log(`--- ${area.name}`);
+
+    if (candidates.length === 0) {
+      console.log("  no stops in this viewport at all");
+      citiesWithNoTimetable.push(`${area.name} (no stops published)`);
+      boardsByArea.push({ area: area.name, boards: [], stops: 0 });
+      continue;
+    }
+
     const boards: unknown[] = [];
     let withRows = 0;
+    let withRoutes = 0;
 
     for (const candidate of candidates) {
       const atcoCode = asText(at(candidate, "atcoCode"));
@@ -258,22 +285,26 @@ async function main(): Promise<void> {
       const departures = asArray(at(answer.json, "data", "departures"));
       const routes = asArray(at(answer.json, "data", "routes"));
       const statuses = [...new Set(departures.map((d) => asText(at(d, "status"))))];
+      const weather = at(answer.json, "data", "weather");
+      const notices = asArray(at(answer.json, "data", "disruptions"));
       if (departures.length > 0) withRows += 1;
+      if (routes.length > 0) withRoutes += 1;
 
       console.log(
-        `${atcoCode.padEnd(14)} ${asText(at(candidate, "name")).slice(0, 26).padEnd(26)}` +
+        `  ${atcoCode.padEnd(14)} ${asText(at(candidate, "name")).slice(0, 24).padEnd(24)}` +
           ` HTTP ${answer.status} · ${String(departures.length).padStart(2)} departures` +
           ` · ${String(routes.length).padStart(2)} routes` +
-          ` · observedAt ${asText(at(answer.json, "meta", "observedAt")) || "null"}` +
+          ` · ${notices.length} notices` +
+          ` · weather ${weather === null || weather === undefined ? "none" : "yes"}` +
           ` · ${asText(at(answer.json, "meta", "degradation"))}`,
       );
       if (answer.json !== null && at(answer.json, "error") !== undefined) {
-        console.log(`               error: ${JSON.stringify(at(answer.json, "error"))}`);
+        console.log(`                 error: ${JSON.stringify(at(answer.json, "error"))}`);
       }
-      for (const departure of departures.slice(0, 4)) {
+      for (const departure of departures.slice(0, 3)) {
         console.log(
-          `               ${asText(at(departure, "routePublicName")).padEnd(6)}` +
-            ` ${asText(at(departure, "destination")).slice(0, 26).padEnd(26)}` +
+          `                 ${asText(at(departure, "routePublicName")).padEnd(6)}` +
+            ` ${asText(at(departure, "destination")).slice(0, 24).padEnd(24)}` +
             ` ${asText(at(departure, "status"))}` +
             ` ${asText(at(departure, "expectedDepartureTime") ?? at(departure, "scheduledDepartureTime"))}`,
         );
@@ -285,17 +316,29 @@ async function main(): Promise<void> {
         status: answer.status,
         departures: departures.length,
         routes: routes.length,
+        hasWeather: weather !== null && weather !== undefined,
+        notices: notices.length,
         statuses,
         meta: at(answer.json, "meta"),
       });
     }
 
-    report.departureBoards = { area: busiest?.name, boards };
-    if (withRows === 0) {
-      failures.push(
-        `Departures: none of the ${candidates.length} stops sampled in ${busiest?.name} had a single departure.`,
-      );
-    }
+    boardsByArea.push({ area: area.name, boards, stops: candidates.length });
+    if (withRoutes === 0) citiesWithNoTimetable.push(area.name);
+    else if (withRows === 0) citiesQuiet.push(area.name);
+  }
+
+  report.departureBoards = boardsByArea;
+
+  if (citiesWithNoTimetable.length > 0) {
+    failures.push(
+      `Departures: the published timetable knows no route at any sampled stop in ${citiesWithNoTimetable.join(", ")}.`,
+    );
+  }
+  if (citiesQuiet.length > 0) {
+    notes.push(
+      `Departures: ${citiesQuiet.join(", ")} had routes but no departure due at the moment of the probe — plausible off-peak, worth re-checking in service hours.`,
+    );
   }
 
   head("Search, journey, disruptions, health");
