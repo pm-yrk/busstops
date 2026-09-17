@@ -222,35 +222,42 @@ export function tallScene() {
   const c = new Canvas(g.w, g.h);
   sky(c, g.pavement);
 
-  c.blit(cloud({ seed: 5 }), 2, 8);
-  c.blit(cloud({ seed: 2 }), 80, 26);
-  c.blit(cloud({ seed: 8 }), 30, 44);
-  c.blit(distantBlock({ w: 46, h: 58, tone: "9" }), 92, 96 - 58);
+  c.blit(cloud({ seed: 5 }), 2, 6);
+  c.blit(cloud({ seed: 2 }), 80, 20);
+  c.blit(cloud({ seed: 8 }), 30, 36);
+  c.blit(distantBlock({ w: 46, h: 74, tone: "9" }), 92, 96 - 74);
+  c.blit(distantBlock({ w: 30, h: 52, tone: "8" }), 58, 96 - 52);
 
-  // Fewer buildings, taller, so the phone keeps the detail rather than the count.
-  // Two buildings, not three: on a phone the detail has to survive, and it survives by having
-  // fewer things in the frame rather than by being shrunk.
+  /*
+   * Fewer buildings, taller, so the phone keeps the detail rather than the count.
+   *
+   * Taller than they were. The upright composition is 250 rows and the terrace used to top out at
+   * 82, so a third of the picture was empty sky — on the surface with the least room to spare, the
+   * least was happening. Raising them is not stretching the desktop picture: these are more
+   * storeys, with more windows and more of them lit, which is what a city looks like from a phone
+   * held upright. The sky band that is left is the one the clouds drift across.
+   */
   const terrace = [
     {
       x: 0,
       w: 62,
-      h: 96,
+      h: 122,
       wall: "brick",
       sign: "t",
       signText: "CAFE",
       awning: true,
-      floors: 2,
-      lit: [1, 2],
+      floors: 3,
+      lit: [1, 3],
       shopH: 34,
     },
     {
       x: 62,
       w: 82,
-      h: 82,
+      h: 104,
       wall: "pale",
       shop: false,
-      floors: 2,
-      lit: [1],
+      floors: 3,
+      lit: [1, 2],
       shopH: 30,
       chimney: false,
     },
