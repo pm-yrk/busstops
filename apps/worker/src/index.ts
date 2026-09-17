@@ -9,6 +9,7 @@ import { safeModeActive } from "@busstops/governor";
 import { DisruptionReader, noticesFor } from "./disruption-reader.js";
 import { stopAccessibility } from "./stop-accessibility.js";
 import { WeatherReader } from "./weather-reader.js";
+import { DepartureReader } from "./departure-reader.js";
 import {
   boundingBoxAreaSquareDegrees,
   corridorBoundingBox,
@@ -27,7 +28,12 @@ import {
   toMapVehicle,
 } from "./live-service.js";
 import { NetworkReader } from "./network-reader.js";
-import { scheduledDeparturesForStop, serviceDatesForBoard } from "./stop-departures.js";
+import {
+  DEPARTURE_GRACE_MINUTES,
+  DEPARTURE_WINDOW_MINUTES,
+  departuresFromRows,
+  serviceDatesForBoard,
+} from "./stop-departures.js";
 import { JOURNEY_LIMITS, JourneyService } from "./journey-service.js";
 import { ProService, resolveScope, DEFAULT_WINDOW_MINUTES } from "./pro-service.js";
 import {
@@ -62,6 +68,7 @@ let journeyService: JourneyService | null = null;
 let proService: ProService | null = null;
 let disruptions: DisruptionReader | null = null;
 let weather: WeatherReader | null = null;
+let departures2: DepartureReader | null = null;
 const rateLimiter = new RateLimiter();
 
 interface RequestContext {
@@ -372,17 +379,35 @@ router.get("/v1/stops/:id", async (_request, { env, params }) => {
    */
   let departures = live.departures;
   let scheduledRows = 0;
+  /*
+   * Shards the board could not read.
+   *
+   * Carried out of this block because an incomplete board must say so. The previous version read
+   * a whole journey tile inside a `catch` that returned an empty array, so a stop whose timetable
+   * was unreadable and a stop with genuinely nothing due produced the same answer: 200, no rows,
+   * degradation `normal`. That is the single most misleading thing this API did.
+   */
+  let timetableFailures: Array<{ dataset: string; reason: string }> = [];
   if (departures.length === 0 && !isLondonAtcoCode(stop.atcoCode)) {
     const serviceDates = serviceDatesForBoard(now);
-    const journeys = await network.journeysServingStop(stop, serviceDates);
-    const stopNamesById = await network.stopsByIdsForJourneys(journeys);
-    departures = scheduledDeparturesForStop({
+    const fromSeconds = Math.floor(now.getTime() / 1000) - DEPARTURE_GRACE_MINUTES * 60;
+    const toSeconds = Math.floor(now.getTime() / 1000) + DEPARTURE_WINDOW_MINUTES * 60;
+    const read = departures2
+      ? await departures2.forStop(
+          stop.atcoCode,
+          serviceDates,
+          fromSeconds,
+          toSeconds,
+          index.version,
+        )
+      : { rows: [], shardsRead: 0, shardsMissing: 0, failures: [] };
+
+    timetableFailures = read.failures;
+    departures = departuresFromRows({
       stop,
-      journeys,
-      patterns,
-      services,
-      stopNamesById,
+      rows: read.rows,
       now,
+      retrievedAt: index.publishedAt ?? new Date(now).toISOString(),
     });
     scheduledRows = departures.length;
   }
@@ -409,10 +434,23 @@ router.get("/v1/stops/:id", async (_request, { env, params }) => {
       meta: buildMeta({
         sources: live.health,
         observedAt,
-        coverage: departures.length > 0 ? 1 : live.failed ? 0 : 0.5,
+        /*
+         * An unreadable timetable is not coverage, whatever the board happens to show.
+         *
+         * Zero when a shard failed, because the honest statement is that we cannot say what calls
+         * here — not that nothing does. This is what turns the old silent empty board into a
+         * response a passenger and a monitoring check can both read correctly.
+         */
+        coverage:
+          timetableFailures.length > 0 ? 0 : departures.length > 0 ? 1 : live.failed ? 0 : 0.5,
         governorState: state,
         now,
-        failedSources: live.failed ? ["live departures"] : [],
+        failedSources: [
+          ...(live.failed ? ["live departures"] : []),
+          // Named, not counted: which shard failed is the first thing worth knowing, and the
+          // dataset name carries the service date, window and bucket that produced it.
+          ...timetableFailures.map((failure) => `timetable ${failure.dataset}`),
+        ],
         safeMode: safeModeActive(state),
       }),
       data: {
@@ -1183,6 +1221,7 @@ export function resetWorkerState(): void {
   proService = null;
   disruptions = null;
   weather = null;
+  departures2 = null;
 }
 
 export function initialiseWorker(
@@ -1207,6 +1246,9 @@ export function initialiseWorker(
   }
   if (!weather && env.ARTIFACTS) {
     weather = new WeatherReader(new R2BindingStore(env.ARTIFACTS));
+  }
+  if (!departures2 && env.ARTIFACTS) {
+    departures2 = new DepartureReader(new R2BindingStore(env.ARTIFACTS));
   }
 }
 

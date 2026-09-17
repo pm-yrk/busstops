@@ -206,12 +206,50 @@ async function main(): Promise<number> {
     published: tileResult.tiles.length,
     records: tileResult.records,
     failed: tileResult.failed.slice(0, 10),
+    oversized: tileResult.oversized.slice(0, 10),
     largest: tileResult.largest,
   };
   if (tileResult.failed.length > 0) {
     console.error(
       `${tileResult.failed.length} journey tile(s) failed to write; those areas will have no ` +
         `timetable at the edge.`,
+    );
+  }
+  if (tileResult.oversized.length > 0) {
+    console.error(
+      `${tileResult.oversized.length} journey tile(s) were refused for exceeding the shard byte ` +
+        `budget; their areas have no plannable timetable and the tile key is too coarse for them.`,
+    );
+  }
+
+  /*
+   * The departure index: what an arrival board actually reads.
+   *
+   * Bucketed by a hash of the stop and split by four-hour window, so a board reads one small
+   * object instead of a region's entire timetable. The spill keys are already dataset names, so
+   * the publisher is handed identity rather than a tile-naming function.
+   */
+  const departureResult = await publishSpilledJourneyTiles(store, assembled.departureSpill, {
+    version: startedAt.toISOString(),
+    datasetFor: (dataset) => dataset,
+  });
+  report.departures = {
+    published: departureResult.tiles.length,
+    rows: departureResult.records,
+    rowsEmitted: assembled.departureRowCount,
+    failed: departureResult.failed.slice(0, 10),
+    oversized: departureResult.oversized.slice(0, 10),
+    largest: departureResult.largest,
+  };
+  console.log(
+    `Departure index: ${departureResult.records} rows across ${departureResult.tiles.length} ` +
+      `shards, largest ${departureResult.largest?.bytes ?? 0} bytes.`,
+  );
+  if (departureResult.failed.length > 0 || departureResult.oversized.length > 0) {
+    console.error(
+      `${departureResult.failed.length} departure shard(s) failed and ` +
+        `${departureResult.oversized.length} were refused as oversized; boards in those buckets ` +
+        `will report a degraded read rather than an empty timetable.`,
     );
   }
 

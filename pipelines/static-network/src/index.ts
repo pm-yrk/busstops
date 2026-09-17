@@ -12,4 +12,5 @@ export * from "./shards.js";
 export * from "./stop-distances.js";
 export * from "./publish-shards.js";
 export * from "./publish-spilled-journeys.js";
+export * from "./departures-index.js";
 export * from "./reconcile.js";

@@ -94,7 +94,18 @@ export interface GtfsBuildOptions {
    * actually needs — and `distanceMetres` is measured from it, so it is a stop-sequence distance
    * rather than a driven one and must not be presented as mileage.
    */
-  onPattern?: (pattern: RoutePattern, shape: readonly Coordinate[]) => void | Promise<void>;
+  /**
+   * The service is passed with the pattern because this is the only place it is known.
+   *
+   * A pattern carries `serviceRouteId` and no name, and the departure index needs the number on
+   * the front of the bus at the moment each row is written — the alternative is holding every
+   * service in memory in the consumer purely to look one up.
+   */
+  onPattern?: (
+    pattern: RoutePattern,
+    shape: readonly Coordinate[],
+    service: ServiceRoute,
+  ) => void | Promise<void>;
   /** Stops the read after this many journeys. For measurement and tests, not for production. */
   maxJourneys?: number;
 }
@@ -505,7 +516,7 @@ export async function buildNetworkFromGtfs(options: GtfsBuildOptions): Promise<G
       };
       patterns.set(patternKey, pattern);
       counts.patternsSeen += 1;
-      await options.onPattern?.(pattern, shape);
+      await options.onPattern?.(pattern, shape, service);
 
       // A route's coverage is decided by where it actually calls, which is only knowable here.
       if (coverageAreaForAtco(resolved[0]!.stop.atcoCode) === "london") {

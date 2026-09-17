@@ -6,6 +6,8 @@ import type {
   Stop,
 } from "@busstops/contracts";
 import type { PatternGeometry } from "@busstops/matching";
+import { deterministicUuid } from "@busstops/adapters";
+import type { DepartureRow } from "@busstops/pipeline-static-network";
 
 /**
  * Departures at one stop, composed from the published timetable.
@@ -177,4 +179,83 @@ export function mergeLiveIntoScheduled(
       confidence: hint.confidence,
     };
   });
+}
+
+/**
+ * Composes the board from published departure rows.
+ *
+ * The same output as `scheduledDeparturesForStop` from a hundredth of the input. That function
+ * takes whole journeys because that is what the old layout stored, and a journey is 10,313 bytes
+ * of which a board uses one call; a row is the call. The two are kept side by side rather than
+ * one replacing the other outright because the planner still reads journeys, and a single shape
+ * serving both is what produced a 281 MiB tile in the first place.
+ */
+export function departuresFromRows(input: {
+  stop: Stop;
+  rows: readonly DepartureRow[];
+  now: Date;
+  retrievedAt: string;
+  windowMinutes?: number;
+  maxRows?: number;
+}): DeparturePrediction[] {
+  const {
+    stop,
+    rows,
+    now,
+    retrievedAt,
+    windowMinutes = DEPARTURE_WINDOW_MINUTES,
+    maxRows = MAX_DEPARTURE_ROWS,
+  } = input;
+
+  const from = now.getTime() - DEPARTURE_GRACE_MINUTES * 60_000;
+  const until = now.getTime() + windowMinutes * 60_000;
+  const provenance = { source: "bods" as const, retrievedAt, externalIds: [] };
+
+  const board: DeparturePrediction[] = [];
+  for (const row of rows) {
+    const departure = row.t * 1000;
+    if (departure < from || departure > until) continue;
+
+    /*
+     * A timing point is a time the operator committed to; an interpolated stop is a straight-line
+     * guess between two of them. Publishing both at "high" would claim a precision the timetable
+     * does not have.
+     */
+    const timingPoint = row.k === 1;
+    const confidence: Confidence = {
+      level: timingPoint ? "medium" : "low",
+      score: timingPoint ? 0.6 : 0.35,
+      reasons: [
+        timingPoint
+          ? "timetabled departure at a timing point"
+          : "timetabled departure interpolated between timing points",
+      ],
+    };
+
+    board.push({
+      /*
+       * Deterministic in the trip, the stop and the instant, so the same row keeps the same id
+       * between requests and a client can follow it across a refresh. Namespaced as a journey
+       * because that is what it identifies a call of.
+       */
+      id: deterministicUuid("journey", `departure:${row.j}:${stop.atcoCode}:${row.t}`),
+      provenance,
+      ingestedAt: retrievedAt,
+      qualityFlags: timingPoint ? [] : ["interpolated"],
+      stopId: stop.id,
+      scheduledJourneyId: null,
+      routePatternId: row.p,
+      serviceRoutePublicName: row.r,
+      destinationName: row.d.length > 0 ? row.d : "Unknown destination",
+      scheduledTime: new Date(departure).toISOString(),
+      expectedTime: new Date(departure).toISOString(),
+      liveState: "scheduled_only",
+      uncertaintySeconds: timingPoint ? 120 : 300,
+      confidence,
+    });
+  }
+
+  // Sorted on the epoch seconds the rows carry rather than by re-parsing a nullable ISO string.
+  board.sort((a, b) => Date.parse(a.scheduledTime ?? "") - Date.parse(b.scheduledTime ?? ""));
+  return board.slice(0, maxRows);
 }

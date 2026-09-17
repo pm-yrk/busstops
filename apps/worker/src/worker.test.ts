@@ -14,7 +14,7 @@ import {
   RouteDetailResponseSchema,
   SearchResponseSchema,
 } from "@busstops/contracts";
-import { ArtifactStore, InMemoryObjectStore } from "@busstops/pipeline-core";
+import { ArtifactStore, InMemoryObjectStore, objectKeyFor } from "@busstops/pipeline-core";
 import {
   buildNetwork,
   publishJourneyTiles,
@@ -23,6 +23,12 @@ import {
 } from "@busstops/pipeline-static-network";
 import worker, { initialiseWorker, resetWorkerState } from "./index.js";
 import { R2BindingStore, readFeatureFlags, type R2BucketLike, type WorkerEnv } from "./env.js";
+import {
+  departureBucketFor,
+  departureShardDataset,
+  departureWindowFor,
+  type DepartureRow,
+} from "@busstops/pipeline-static-network";
 import {
   RateLimiter,
   clientKeyFor,
@@ -1338,5 +1344,126 @@ describe("live vehicles: the run 26 mismatch", () => {
     expect(body.data.diagnostics.find((entry) => entry.source === "bods")!.outcome).toBe(
       scenario.outcome,
     );
+  });
+});
+
+/**
+ * The stop board, from published shards to response.
+ *
+ * The failure this pins is the one that made every stop in England answer "no departures" with a
+ * 200 and the word `normal`: a whole-tile read inside a `catch` that returned an empty array. The
+ * three cases below are the answers that used to be indistinguishable from one another.
+ *
+ * Times are relative to the real clock because the stop handler reads `new Date()` rather than an
+ * injected one. Pinning a fixed instant here would test a board that is always hours out of its
+ * own window, which is how the first version of this test passed nothing at all.
+ */
+describe("the departure board reads the published index", () => {
+  const ATCO = "450010001";
+  const now = new Date();
+  const today = now.toISOString().slice(0, 10);
+
+  function departureRow(minutesFromNow: number, route: string): DepartureRow {
+    return {
+      s: ATCO,
+      t: Math.floor(now.getTime() / 1000) + minutesFromNow * 60,
+      r: route,
+      d: "Armley Road",
+      j: `VJ-${route}-${minutesFromNow}`,
+      p: "00000000-0000-5000-8000-000000000002",
+      k: 1,
+    };
+  }
+
+  async function storeWithDepartures(rows: DepartureRow[]): Promise<InMemoryObjectStore> {
+    const store = await publishedStore();
+    const byShard = new Map<string, DepartureRow[]>();
+    for (const row of rows) {
+      const dataset = departureShardDataset(
+        today,
+        departureBucketFor(row.s),
+        departureWindowFor(row.t, today),
+      );
+      byShard.set(dataset, [...(byShard.get(dataset) ?? []), row]);
+    }
+    for (const [dataset, shardRows] of byShard) {
+      await store.put(
+        objectKeyFor(dataset, "v1"),
+        shardRows.map((row) => JSON.stringify(row)).join("\n"),
+      );
+    }
+    return store;
+  }
+
+  it("shows the rows that are due, in order, with what a board renders", async () => {
+    const store = await storeWithDepartures([departureRow(25, "16"), departureRow(6, "72")]);
+    const env = makeEnv(store);
+    resetWorkerState();
+
+    const response = await worker.fetch(get(`/v1/stops/${ATCO}`), env, ctx);
+    const body = (await response.json()) as {
+      meta: { coverage: number; degradation: string };
+      data: { departures: Array<Record<string, unknown>> };
+    };
+
+    expect(response.status).toBe(200);
+    const board = body.data.departures;
+    expect(board).toHaveLength(2);
+    // Soonest first, and every field an arrival board renders a row from.
+    expect(board.map((row) => row.serviceRoutePublicName)).toEqual(["72", "16"]);
+    for (const row of board) {
+      expect(row.destinationName).toBe("Armley Road");
+      expect(typeof row.scheduledTime).toBe("string");
+      expect(row.liveState).toBe("scheduled_only");
+      expect(row.routePatternId).toBe("00000000-0000-5000-8000-000000000002");
+    }
+  });
+
+  it("says the timetable could not be read rather than showing an empty board", async () => {
+    const store = await storeWithDepartures([departureRow(6, "72")]);
+    const bucket = bucketFrom(store);
+    // The shard exists and cannot be read: exactly the case the old `catch` turned into silence.
+    const env = makeEnv(store, {
+      ARTIFACTS: {
+        ...bucket,
+        get: async (key: string) => {
+          if (key.includes("network/departures/")) throw new Error("R2 is unavailable");
+          return bucket.get(key);
+        },
+      } as R2BucketLike,
+    });
+
+    resetWorkerState();
+    const response = await worker.fetch(get(`/v1/stops/${ATCO}`), env, ctx);
+    const body = (await response.json()) as {
+      meta: { coverage: number; degradation: string };
+      data: { departures: unknown[] };
+    };
+
+    expect(response.status).toBe(200);
+    expect(body.data.departures).toEqual([]);
+    /*
+     * Coverage zero and a degraded response. The honest statement is that we cannot say what
+     * calls here — not that nothing does — and these two fields are the difference.
+     */
+    expect(body.meta.coverage).toBe(0);
+    expect(body.meta.degradation).not.toBe("normal");
+  });
+
+  it("treats a window with no shard as a quiet hour rather than a failure", async () => {
+    const store = await publishedStore();
+    const env = makeEnv(store);
+    resetWorkerState();
+
+    const response = await worker.fetch(get(`/v1/stops/${ATCO}`), env, ctx);
+    const body = (await response.json()) as {
+      meta: { coverage: number };
+      data: { departures: unknown[] };
+    };
+
+    expect(response.status).toBe(200);
+    expect(body.data.departures).toEqual([]);
+    // Not zero: nothing failed, there is simply nothing due.
+    expect(body.meta.coverage).toBeGreaterThan(0);
   });
 });

@@ -7,6 +7,12 @@ import { tilesForCoordinates } from "@busstops/pipeline-core";
 import type { BuiltNetwork } from "./build-network.js";
 import { buildNetworkFromGtfs, type GtfsBuildCounts } from "./gtfs-network.js";
 import { TileSpill } from "./gtfs-spill.js";
+import {
+  departureBucketFor,
+  departureShardDataset,
+  departureWindowFor,
+  type DepartureRow,
+} from "./departures-index.js";
 
 /**
  * Assembles everything the publish path needs from a GTFS archive and the NaPTAN register.
@@ -27,6 +33,8 @@ export interface AssembleOptions {
   retrievedAt: string;
   /** Where the journey spill lives. A temporary directory by default. */
   spillDirectory?: string;
+  /** Where the departure-index spill lives. A temporary directory by default. */
+  departureSpillDirectory?: string;
   sourceVersion?: string;
 }
 
@@ -35,6 +43,15 @@ export interface AssembledGtfsNetwork {
   network: BuiltNetwork;
   /** The journeys, on disk, sorted into the tiles the edge reads. */
   spill: TileSpill;
+  /**
+   * The departure index, on disk, already sorted into the shards a board reads.
+   *
+   * A second spill rather than a second pass over the first: the rows are derived from a journey
+   * at the moment it is emitted, and the journey is forgotten immediately afterwards, so deriving
+   * them later would mean reading the whole national timetable back off disk to do it.
+   */
+  departureSpill: TileSpill;
+  departureRowCount: number;
   journeyCount: number;
   gtfsCounts: GtfsBuildCounts;
   tables: Array<{ name: string; compressedBytes: number; uncompressedBytes: number }>;
@@ -51,6 +68,19 @@ export async function assembleGtfsNetwork(options: AssembleOptions): Promise<Ass
   const spill = new TileSpill(
     options.spillDirectory ?? mkdtempSync(join(tmpdir(), "busstops-journeys-")),
   );
+  const departureSpill = new TileSpill(
+    options.departureSpillDirectory ?? mkdtempSync(join(tmpdir(), "busstops-departures-")),
+  );
+
+  /*
+   * The number on the front of the bus, by pattern.
+   *
+   * Every departure row carries it, and a pattern knows only its service's id. Held here rather
+   * than looked up later because a row is written the moment its journey arrives and the journey
+   * is then forgotten: there is no later.
+   */
+  const routeNameByPattern = new Map<string, string>();
+  let departureRowCount = 0;
 
   const patterns: RoutePattern[] = [];
   const shapes = new Map<string, Coordinate[]>();
@@ -62,9 +92,10 @@ export async function assembleGtfsNetwork(options: AssembleOptions): Promise<Ass
     serviceDates: options.serviceDates,
     retrievedAt: options.retrievedAt,
     naptanByAtco,
-    onPattern: (pattern, shape) => {
+    onPattern: (pattern, shape, service) => {
       patterns.push(pattern);
       shapes.set(pattern.shapeRef, [...shape]);
+      routeNameByPattern.set(pattern.id, service.publicName);
     },
     onJourney: (journey) => {
       const coordinates = journey.stopTimes
@@ -82,10 +113,53 @@ export async function assembleGtfsNetwork(options: AssembleOptions): Promise<Ass
       // A journey spanning tiles is written to each, so a plan touching either end finds it.
       for (const tile of tilesForCoordinates(coordinates)) spill.append(tile, line);
       journeyCount += 1;
+
+      /*
+       * And one departure row per boardable call.
+       *
+       * The destination is the last stop's name, which is what the front of the bus says. A call
+       * you cannot board is not a departure and is left out entirely rather than published and
+       * filtered at the edge — the whole point of this index is that the edge reads only rows it
+       * is going to show.
+       */
+      const route = routeNameByPattern.get(journey.routePatternId);
+      const lastCall = journey.stopTimes[journey.stopTimes.length - 1];
+      const destination = lastCall ? (stopsById.get(lastCall.stopId)?.name ?? "") : "";
+
+      for (const call of journey.stopTimes) {
+        if (!call.pickupAllowed) continue;
+        // The last call is where the bus finishes; nobody boards there for anywhere.
+        if (call === lastCall) continue;
+        const stop = stopsById.get(call.stopId);
+        if (!stop || !route) continue;
+
+        const epochSeconds = Math.floor(Date.parse(call.scheduledDeparture) / 1000);
+        if (!Number.isFinite(epochSeconds)) continue;
+
+        const row: DepartureRow = {
+          s: stop.atcoCode,
+          t: epochSeconds,
+          r: route,
+          d: destination,
+          j: journey.tripId,
+          p: journey.routePatternId,
+          ...(call.isTimingPoint ? { k: 1 as const } : {}),
+        };
+        departureSpill.append(
+          departureShardDataset(
+            journey.serviceDate,
+            departureBucketFor(stop.atcoCode),
+            departureWindowFor(epochSeconds, journey.serviceDate),
+          ),
+          JSON.stringify(row),
+        );
+        departureRowCount += 1;
+      }
     },
   });
 
   spill.flush();
+  departureSpill.flush();
 
   const network: BuiltNetwork = {
     stops: naptan.stops,
@@ -114,6 +188,8 @@ export async function assembleGtfsNetwork(options: AssembleOptions): Promise<Ass
   return {
     network,
     spill,
+    departureSpill,
+    departureRowCount,
     journeyCount,
     gtfsCounts: result.counts,
     tables: result.tables,
