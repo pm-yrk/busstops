@@ -23,12 +23,33 @@ function sky(c, horizon) {
 }
 
 /** Paving slabs, a kerb with a lit top edge, and a gutter. */
-function pavement(c, { pavement: py, kerb, road }) {
+function pavement(c, { pavement: py, kerb, road }, { boardingAt = null } = {}) {
   c.rect(0, py, c.w, kerb - py, "Q");
   c.hline(0, py, c.w, "R");
   for (let x = py % 13; x < c.w; x += 13) c.vline(x, py + 1, kerb - py - 1, "P");
   c.hline(0, py + Math.floor((kerb - py) / 2), c.w, "P");
   c.speckle(0, py + 1, c.w, kerb - py - 2, "P", 0.05, 7);
+
+  /*
+   * Tactile paving where people board.
+   *
+   * The buff corduroy strip at a boarding point is not decoration: it is how a blind or partially
+   * sighted passenger finds the door, and it is on the pavement at every proper bus stop in the
+   * country. Leaving it out of a picture of a British bus stop is the kind of omission you only
+   * notice if it matters to you, which is the reason to draw it.
+   *
+   * Buff, because that is the contrast colour the standard asks for, and ribbed along the length
+   * of the kerb, which is the pattern that means "boarding point" rather than "crossing".
+   */
+  if (boardingAt) {
+    const [bx, bw] = boardingAt;
+    const ty = kerb - 4;
+    c.rect(bx, ty, bw, 4, "8");
+    c.hline(bx, ty, bw, "9");
+    for (let x = bx; x < bx + bw; x += 2) c.vline(x, ty + 1, 3, "7");
+    c.hline(bx, kerb - 1, bw, "6");
+  }
+
   // Kerb.
   c.rect(0, kerb, c.w, road - kerb, "P");
   c.hline(0, kerb, c.w, "R");
@@ -82,10 +103,34 @@ function carriageway(c, { road, h }, { markings = true } = {}) {
   c.hline(cage + 1, road + 2, cageW - 2, "s");
   // The worn dashes along the kerb side of the bay.
   for (let x = cage + 2; x < cage + cageW - 2; x += 4) c.hline(x, road + 2 + cageH - 1, 2, "Q");
-  // Gully.
-  c.rect(Math.floor(c.w * 0.72), road + 1, 7, 3, "L");
-  for (let y = road + 2; y < road + 4; y++)
-    for (let x = 0; x < 7; x += 2) c.px(Math.floor(c.w * 0.72) + x, y, "K");
+  /*
+   * Double yellow lines along the gutter.
+   *
+   * The single most recognisably British mark on a road surface, and the reason the kerb outside a
+   * bus stop is empty of parked cars in the first place. They break for the bus bay, which is what
+   * actually happens and what makes them read as markings rather than as a stripe.
+   */
+  const cageFrom = Math.floor(c.w * 0.42);
+  const cageTo = cageFrom + Math.floor(c.w * 0.34);
+  for (let x = 0; x < c.w; x++) {
+    if (x >= cageFrom - 2 && x <= cageTo + 2) continue;
+    c.px(x, road + 1, "z");
+    c.px(x, road + 3, "z");
+  }
+
+  // Gully: a real grating, sunk into the gutter rather than painted on it.
+  const gx = Math.floor(c.w * 0.72);
+  c.rect(gx, road + 1, 8, 4, "L");
+  c.hline(gx, road, 8, "N");
+  for (let x = 0; x < 8; x += 2) c.vline(gx + x, road + 2, 2, "K");
+  c.hline(gx, road + 4, 8, "M");
+
+  // A manhole further out, because a carriageway is a lid over everything under it.
+  const mx = Math.floor(c.w * 0.26);
+  const my = road + Math.floor((h - road) / 2) + 3;
+  c.rect(mx, my, 11, 5, "N");
+  c.frame(mx, my, 11, 5, "L");
+  for (let x = 1; x < 10; x += 2) c.vline(mx + x, my + 1, 3, "M");
 }
 
 export function wideScene() {
@@ -195,7 +240,7 @@ export function wideScene() {
     c.blit(shopBuilding({ ...b, seed: i, chimney: b.chimney ?? b.h > 72 }), b.x, g.pavement - b.h);
   });
 
-  pavement(c, g);
+  pavement(c, g, { boardingAt: [146, 66] });
 
   // ---- midground: the street ------------------------------------------
   // Nothing lines up on one baseline: the furniture stands at slightly different depths on the
@@ -265,7 +310,7 @@ export function tallScene() {
   for (const b of terrace)
     c.blit(shopBuilding({ ...b, chimney: b.chimney ?? b.h > 84 }), b.x, g.pavement - b.h);
 
-  pavement(c, g);
+  pavement(c, g, { boardingAt: [52, 68] });
 
   c.blit(tree({ seed: 3, spread: 1.1 }), 0, g.kerb - 47);
   c.blit(lamp({}), 32, g.kerb - 55);
