@@ -1,7 +1,8 @@
 import { writeFileSync, mkdirSync } from "node:fs";
 import { PALETTE } from "./palette.mjs";
 import { encodePng } from "./png.mjs";
-import { busSide, busMid, busFront, busMarker, stopMarker } from "./bus.mjs";
+import { busFront, busMarker, stopMarker } from "./bus.mjs";
+import { busSide2, busMid2 } from "./bus2.mjs";
 import { wideScene, tallScene, edgeStrip, GEOMETRY } from "./scene.mjs";
 import { shelter, stopFlag, tree, person, cloud, bin } from "./street.mjs";
 import { PEOPLE, ACCESSORIES, drawPerson, drawAccessory, PERSON_W, PERSON_H } from "./people.mjs";
@@ -22,23 +23,31 @@ mkdirSync(ART_DIR, { recursive: true });
 const FILES = {
   streetWide: ["street-wide", wideScene()],
   streetTall: ["street-tall", tallScene()],
-  busNear: ["bus-near", busSide({ route: "36" })],
-  busNearB: ["bus-near-b", busSide({ route: "36", wheelPhase: Math.PI / 4 })],
+  busNear: ["bus-near", busSide2({ route: "36" })],
+  busNearB: ["bus-near-b", busSide2({ route: "36", wheelPhase: Math.PI / 4 })],
   // The far carriageway runs the second livery, and runs the other way, so it is drawn facing
   // left rather than transformed: a CSS mirror reverses the route number with the bodywork.
-  busFar: ["bus-far", busMid({ route: "12", facing: "left" })],
-  busFarB: ["bus-far-b", busMid({ route: "12", wheelPhase: Math.PI / 4, facing: "left" })],
+  busFar: ["bus-far", busMid2({ route: "12", facing: "left" })],
+  busFarB: ["bus-far-b", busMid2({ route: "12", wheelPhase: Math.PI / 4, facing: "left" })],
   busMid: [
     "bus-mid",
-    busMid({ body: "t", bodyDark: "s", bodyDeep: "r", bodyLight: "u", route: "36" }),
-  ],
-  busMidB: [
-    "bus-mid-b",
-    busMid({
+    busMid2({
       body: "t",
       bodyDark: "s",
       bodyDeep: "r",
       bodyLight: "u",
+      bodyGlow: "v",
+      route: "36",
+    }),
+  ],
+  busMidB: [
+    "bus-mid-b",
+    busMid2({
+      body: "t",
+      bodyDark: "s",
+      bodyDeep: "r",
+      bodyLight: "u",
+      bodyGlow: "v",
       route: "36",
       wheelPhase: Math.PI / 4,
     }),

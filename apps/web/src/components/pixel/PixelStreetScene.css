@@ -71,14 +71,22 @@
   display: none;
 }
 
-@media (min-width: 1000px) {
+/*
+ * The steps are chosen so the composition fits the window rather than overflowing it.
+ *
+ * The wide street is 480 art pixels now. Three of those is 1440, which is a desktop exactly; four
+ * is 1920 and needs a window that wide. These thresholds were written for the 320-pixel
+ * composition and left unchanged the artwork was scaled by four into a 1440-pixel window and
+ * cropped by 240 pixels each side — the whole right-hand terrace was simply off the screen.
+ */
+@media (min-width: 1440px) {
   .street-scene {
     --px: 3;
   }
 }
 
-/* Room for a fourth step: on a large desktop the hero is mostly empty space at three. */
-@media (min-width: 1340px) and (min-height: 820px) {
+/* Room for a fourth step, on a window wide enough to hold 480 art pixels at four. */
+@media (min-width: 1920px) and (min-height: 900px) {
   .street-scene {
     --px: 4;
   }
@@ -107,7 +115,7 @@
   }
 }
 
-/* A phone at 2x, a portrait tablet at 3x: both whole numbers, neither cropped. */
+/* A phone at 2x (192 x 2 = 384), a portrait tablet at 3x (576): both whole, neither cropped. */
 @media (max-aspect-ratio: 5 / 4) and (min-width: 700px) {
   .street-scene {
     --px: 3;

@@ -1,7 +1,23 @@
 import { Canvas } from "./canvas.mjs";
-import { busSide, busMid } from "./bus.mjs";
+import { busSide2, busMid2 } from "./bus2.mjs";
 import { shopBuilding, distantBlock } from "./buildings.mjs";
-import { tree, cloud, shelter, stopFlag, person, lamp, bench, bin } from "./street.mjs";
+import { tree, cloud, shelter, stopFlag, lamp, bench, bin } from "./street.mjs";
+import { PEOPLE, drawPerson } from "./people.mjs";
+
+/**
+ * People waiting at the stop, from the weather vignette's cast.
+ *
+ * Standing on the kerb line rather than on one baseline, so the group has depth instead of
+ * reading as a row of cut-outs.
+ */
+function waitingAtStop(c, g, placements) {
+  placements.forEach(([id, x], index) => {
+    const person = PEOPLE.find((entry) => entry.id === id);
+    if (!person) return;
+    const sprite = drawPerson(person, "plain");
+    c.blit(sprite, x, g.kerb - sprite.h + (index % 2 === 0 ? 0 : 2));
+  });
+}
 
 /**
  * The hero street, composed on one canvas in three planes.
@@ -14,8 +30,36 @@ import { tree, cloud, shelter, stopFlag, person, lamp, bench, bin } from "./stre
  * The buses are not drawn into the scene: they are returned separately so the app can move them.
  */
 
-const WIDE = { w: 320, h: 144, pavement: 98, kerb: 112, road: 116 };
-const TALL = { w: 144, h: 250, pavement: 178, kerb: 196, road: 200 };
+/*
+ * Second-generation resolution.
+ *
+ * The first compositions were 320x144 and 144x250, and the detail they could carry had run out —
+ * the hero bus was 100x32, a shelter door was two pixels, a person was fourteen pixels tall. More
+ * detail was not available at that grid; the grid had to grow.
+ *
+ * The wide street is half as large again in each direction, which on a 1440-pixel desktop is a
+ * whole-number scale of three rather than four and fills the width exactly. The upright street
+ * grows by a third: 192 art pixels is the most a 390-pixel phone can show at a scale of two, and
+ * a scale of two is the floor below which the artwork stops reading as artwork.
+ *
+ * Everything standing on the pavement grew with them, so nothing is smaller on screen than it was.
+ */
+const WIDE = { w: 480, h: 200, pavement: 132, kerb: 154, road: 160 };
+const TALL = { w: 192, h: 264, pavement: 176, kerb: 196, road: 202 };
+
+/** The first generation's coordinates, scaled. Written this way so the composition stays legible. */
+const WIDE_K = 1.5;
+const TALL_K = 1.336;
+const sw = (n) => Math.round(n * WIDE_K);
+const st = (n) => Math.round(n * TALL_K);
+const scaleTerrace = (entries, k) =>
+  entries.map((b) => ({
+    ...b,
+    x: Math.round(b.x * k),
+    w: Math.round(b.w * k),
+    h: Math.round(b.h * k),
+    ...(b.shopH === undefined ? {} : { shopH: Math.round(b.shopH * k) }),
+  }));
 
 function sky(c, horizon) {
   c.rect(0, 0, c.w, horizon, "T");
@@ -236,27 +280,43 @@ export function wideScene() {
       shopH: 34,
     },
   ];
-  terrace.forEach((b, i) => {
-    c.blit(shopBuilding({ ...b, seed: i, chimney: b.chimney ?? b.h > 72 }), b.x, g.pavement - b.h);
+  scaleTerrace(terrace, WIDE_K).forEach((b, i) => {
+    c.blit(
+      shopBuilding({ ...b, seed: i, chimney: b.chimney ?? b.h > sw(72) }),
+      b.x,
+      g.pavement - b.h,
+    );
   });
 
-  pavement(c, g, { boardingAt: [146, 66] });
+  pavement(c, g, { boardingAt: [sw(146), sw(66)] });
 
   // ---- midground: the street ------------------------------------------
   // Nothing lines up on one baseline: the furniture stands at slightly different depths on the
   // pavement, so its feet sit on different rows.
-  c.blit(tree({ seed: 2, spread: 1.15 }), 6, g.kerb - 48);
-  c.blit(bench({}), 52, g.kerb - 17);
-  c.blit(lamp({}), 92, g.kerb - 55);
-  c.blit(tree({ seed: 6, spread: 0.8 }), 110, g.kerb - 44);
-  c.blit(shelter({}), 142, g.kerb - 49);
-  c.blit(stopFlag({}), 206, g.kerb - 54); // in the gap between two frontages
-  c.blit(bin(), 226, g.kerb - 19);
-  c.blit(tree({ seed: 4, spread: 1 }), 268, g.kerb - 46);
-  c.blit(person({ coat: "b", coatDark: "a", pose: 0 }), 154, g.kerb - 22);
-  c.blit(person({ coat: "s", coatDark: "q", hair: "D", skin: "B", pose: 1 }), 168, g.kerb - 21);
-  c.blit(person({ coat: "M", coatDark: "K", hair: "y", pose: 2 }), 184, g.kerb - 20);
-  c.blit(person({ coat: "3", coatDark: "1", hair: "L", skin: "C", pose: 1 }), 244, g.kerb - 22);
+  c.blit(tree({ w: 51, h: 69, seed: 2, spread: 1.15 }), sw(6), g.kerb - 69);
+  c.blit(bench({ w: 39 }), sw(52), g.kerb - 26);
+  c.blit(lamp({ h: 81 }), sw(92), g.kerb - 82);
+  c.blit(tree({ w: 42, h: 60, seed: 6, spread: 0.8 }), sw(110), g.kerb - 60);
+  c.blit(shelter({ w: 90, h: 72 }), sw(142), g.kerb - 73);
+  c.blit(stopFlag({ h: 78 }), sw(206), g.kerb - 80); // in the gap between two frontages
+  c.blit(bin(), sw(226), g.kerb - 26);
+  c.blit(tree({ w: 48, h: 66, seed: 4, spread: 1 }), sw(268), g.kerb - 66);
+
+  /*
+   * The people at the stop are the vignette cast, not the old fourteen-pixel figures.
+   *
+   * Those were drawn for a 144-pixel composition and would be lost in this one. The weather
+   * vignette already carries twelve characters at 24 x 44 — a wheelchair user, someone with a
+   * rollator, a parent with a buggy, a cyclist, a nurse, a teenager — drawn well enough to stand
+   * this close to the front of the picture. Reusing them upgrades the street and puts the range of
+   * people who actually wait at a bus stop into the hero, which is where it belongs.
+   */
+  waitingAtStop(c, g, [
+    ["commuter-red-coat", sw(154)],
+    ["parent-with-buggy", sw(170)],
+    ["wheelchair-user", sw(190)],
+    ["older-with-stick", sw(244)],
+  ]);
 
   carriageway(c, g);
   return c;
@@ -267,11 +327,11 @@ export function tallScene() {
   const c = new Canvas(g.w, g.h);
   sky(c, g.pavement);
 
-  c.blit(cloud({ seed: 5 }), 2, 6);
-  c.blit(cloud({ seed: 2 }), 80, 20);
-  c.blit(cloud({ seed: 8 }), 30, 36);
-  c.blit(distantBlock({ w: 46, h: 74, tone: "9" }), 92, 96 - 74);
-  c.blit(distantBlock({ w: 30, h: 52, tone: "8" }), 58, 96 - 52);
+  c.blit(cloud({ seed: 5 }), st(2), st(6));
+  c.blit(cloud({ seed: 2 }), st(80), st(20));
+  c.blit(cloud({ seed: 8 }), st(30), st(36));
+  c.blit(distantBlock({ w: st(46), h: st(74), tone: "9" }), st(92), st(96) - st(74));
+  c.blit(distantBlock({ w: st(30), h: st(52), tone: "8" }), st(58), st(96) - st(52));
 
   /*
    * Fewer buildings, taller, so the phone keeps the detail rather than the count.
@@ -307,18 +367,20 @@ export function tallScene() {
       chimney: false,
     },
   ];
-  for (const b of terrace)
-    c.blit(shopBuilding({ ...b, chimney: b.chimney ?? b.h > 84 }), b.x, g.pavement - b.h);
+  for (const b of scaleTerrace(terrace, TALL_K))
+    c.blit(shopBuilding({ ...b, chimney: b.chimney ?? b.h > st(84) }), b.x, g.pavement - b.h);
 
-  pavement(c, g, { boardingAt: [52, 68] });
+  pavement(c, g, { boardingAt: [st(52), st(68)] });
 
-  c.blit(tree({ seed: 3, spread: 1.1 }), 0, g.kerb - 47);
-  c.blit(lamp({}), 32, g.kerb - 55);
-  c.blit(shelter({ w: 62 }), 48, g.kerb - 49);
-  c.blit(stopFlag({}), 118, g.kerb - 54);
-  c.blit(person({ coat: "b", coatDark: "a", pose: 0 }), 58, g.kerb - 22);
-  c.blit(person({ coat: "s", coatDark: "q", hair: "D", skin: "B", pose: 1 }), 74, g.kerb - 21);
-  c.blit(person({ coat: "M", coatDark: "K", hair: "y", pose: 2 }), 92, g.kerb - 20);
+  c.blit(tree({ w: 45, h: 62, seed: 3, spread: 1.1 }), 0, g.kerb - 62);
+  c.blit(lamp({ h: 74 }), st(32), g.kerb - 75);
+  c.blit(shelter({ w: 84, h: 68 }), st(48), g.kerb - 69);
+  c.blit(stopFlag({ h: 74 }), st(118), g.kerb - 76);
+  // Fewer figures than the wide street, larger: a phone keeps the detail rather than the count.
+  waitingAtStop(c, g, [
+    ["parent-with-buggy", st(58)],
+    ["wheelchair-user", st(80)],
+  ]);
 
   carriageway(c, g);
   return c;
@@ -357,7 +419,7 @@ export function edgeStrip(g, { height = 72, wall = "brick" } = {}) {
 
 /** The vehicles, kept out of the scene so they can be driven across it. */
 export const VEHICLES = {
-  near: busSide({ route: "36" }),
-  far: busMid({ route: "12", facing: "left" }),
+  near: busSide2({ route: "36" }),
+  far: busMid2({ route: "12", facing: "left" }),
 };
 export const GEOMETRY = { WIDE, TALL };

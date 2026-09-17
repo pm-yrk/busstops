@@ -242,3 +242,118 @@ function blind(c, x, route, destination) {
   }
   c.frame(x - 1, ROOF + 1, 28, 8, "L");
 }
+
+export const MID_W = 96;
+export const MID_H = 33;
+
+/**
+ * The same vehicle for the far carriageway, at 96 x 33.
+ *
+ * A bus is taller than a lane is deep in this projection, so a hero-sized one up the street covers
+ * the whole pavement. This is the same bus with the detail that survives the reduction: the
+ * glasshouse, the door, the blind, two wheels with hubs, and the lights. The passengers and the
+ * driver go, because at two thirds the size they stop being people and become dirt on the glass.
+ */
+export function busMid2({
+  body = "c",
+  bodyDark = "b",
+  bodyDeep = "a",
+  bodyLight = "d",
+  bodyGlow = "e",
+  route = "12",
+  wheelPhase = 0,
+  facing = "right",
+} = {}) {
+  const c = new Canvas(MID_W, MID_H);
+  const roof = 2;
+  const cantrail = 6;
+  const glassTop = 8;
+  const glassBot = 18;
+  const waist = 20;
+  const skirt = 25;
+  const bottom = 29;
+  const axleY = 27;
+  const wheelR = 4;
+  const nose = 93;
+  const tail = 2;
+
+  for (let y = roof + 1; y <= bottom - 1; y++) c.hline(tail, y, nose - tail, body);
+  c.hline(tail + 4, roof, nose - tail - 7, body);
+  c.hline(tail + 1, bottom, nose - tail - 2, body);
+  for (let i = 0; i < 4; i++) c.vline(nose - 3 + i, roof + (3 - i), bottom - roof - (3 - i), body);
+
+  const band = (y0, y1, colour) => {
+    for (let y = y0; y <= y1; y++)
+      for (let x = 0; x < MID_W; x++) if (c.get(x, y) !== ".") c.px(x, y, colour);
+  };
+  band(roof, roof + 2, bodyLight);
+  band(skirt, bottom - 1, bodyDark);
+  band(bottom, bottom, bodyDeep);
+  c.hline(tail + 8, roof, nose - tail - 18, bodyGlow);
+
+  c.rect(tail + 3, glassTop, nose - tail - 10, glassBot - glassTop + 1, "g");
+  for (let k = 0; k < nose; k++) {
+    const x = tail + 3 + k;
+    const y = glassTop + 1 + Math.floor(k / 5);
+    if (c.get(x, y) === "g") c.px(x, y, "i");
+  }
+  for (const [x, w] of [
+    [18, 3],
+    [33, 3],
+    [48, 3],
+    [62, 3],
+    [74, 2],
+  ]) {
+    c.rect(x, glassTop - 1, w, glassBot - glassTop + 3, body);
+    c.vline(x, glassTop - 1, glassBot - glassTop + 3, bodyLight);
+  }
+  c.hline(tail + 2, cantrail, nose - tail - 8, "K");
+  c.hline(tail + 2, waist, nose - tail - 8, "K");
+
+  // Entrance, as a glazed panel with a step under it.
+  c.rect(45, glassTop - 1, 11, bottom - glassTop, bodyDeep);
+  c.rect(46, glassTop, 9, waist - glassTop + 4, "g");
+  c.vline(50, glassTop, waist - glassTop + 4, "L");
+  c.rect(46, bottom - 2, 9, 2, "N");
+
+  // Cab and lights.
+  c.rect(78, glassTop, 13, glassBot - glassTop - 1, "g");
+  for (let k = 0; k < 14; k++) {
+    const y = glassTop + Math.floor(k / 3);
+    if (c.get(78 + k, y) === "g") c.px(78 + k, y, "j");
+  }
+  c.frame(77, glassTop - 1, 15, glassBot - glassTop + 1, "K");
+  c.rect(nose - 4, skirt - 2, 4, 3, "R");
+  c.rect(nose - 4, skirt + 1, 4, 1, "z");
+  c.rect(tail, skirt - 3, 3, 4, "t");
+  c.rect(nose - 12, bottom - 4, 8, 3, "z");
+
+  for (const cx of [22, 78]) {
+    c.archTop(cx, axleY, wheelR + 2, bodyDeep);
+    c.disc(cx, axleY, wheelR, "K");
+    c.disc(cx, axleY, wheelR - 2, "N");
+    c.px(cx, axleY, "P");
+    for (let a = 0; a < 4; a++) {
+      const t = (a * Math.PI) / 2 + wheelPhase;
+      c.px(cx + Math.round(Math.cos(t) * 3), axleY + Math.round(Math.sin(t) * 3), "L");
+    }
+  }
+
+  c.outline("K");
+  for (const cx of [22, 78]) {
+    c.hline(cx - wheelR - 2, MID_H - 1, wheelR * 2 + 5, "=");
+    c.hline(cx - wheelR, MID_H - 1, wheelR * 2 + 1, "-");
+  }
+
+  const drawn = facing === "left" ? c.flipped() : c;
+  midBlind2(drawn, facing === "left" ? MID_W - 92 : 76, route);
+  return drawn;
+}
+
+/** The mid bus's blind, drawn after any flip so its number is never mirrored. */
+function midBlind2(c, x, route) {
+  c.rect(x, 2, 16, 5, "K");
+  text(c, x + 1, 2, route, "Z");
+  c.hline(x + 1 + route.length * 4 + 1, 4, Math.max(0, 13 - route.length * 4), "z");
+  c.frame(x - 1, 1, 18, 7, "L");
+}

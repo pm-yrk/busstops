@@ -16,43 +16,43 @@ export interface PixelImage {
 export const ART: Record<string, PixelImage> = {
   streetWide: {
     src: "/art/street-wide.png",
-    w: 320,
-    h: 144,
+    w: 480,
+    h: 200,
   },
   streetTall: {
     src: "/art/street-tall.png",
-    w: 144,
-    h: 250,
+    w: 192,
+    h: 264,
   },
   busNear: {
     src: "/art/bus-near.png",
-    w: 100,
-    h: 32,
+    w: 150,
+    h: 48,
   },
   busNearB: {
     src: "/art/bus-near-b.png",
-    w: 100,
-    h: 32,
+    w: 150,
+    h: 48,
   },
   busFar: {
     src: "/art/bus-far.png",
-    w: 64,
-    h: 22,
+    w: 96,
+    h: 33,
   },
   busFarB: {
     src: "/art/bus-far-b.png",
-    w: 64,
-    h: 22,
+    w: 96,
+    h: 33,
   },
   busMid: {
     src: "/art/bus-mid.png",
-    w: 64,
-    h: 22,
+    w: 96,
+    h: 33,
   },
   busMidB: {
     src: "/art/bus-mid-b.png",
-    w: 64,
-    h: 22,
+    w: 96,
+    h: 33,
   },
   busFront: {
     src: "/art/bus-front.png",
@@ -92,12 +92,12 @@ export const ART: Record<string, PixelImage> = {
   edgeWide: {
     src: "/art/street-wide-edge.png",
     w: 32,
-    h: 144,
+    h: 200,
   },
   edgeTall: {
     src: "/art/street-tall-edge.png",
     w: 32,
-    h: 250,
+    h: 264,
   },
   vignetteDay: {
     src: "/art/vignette-day.png",
@@ -318,18 +318,18 @@ export const MARKERS: Record<string, PixelImage> = {
 /** Where the ground and the carriageway sit in each composition, so buses can be driven along it. */
 export const SCENE_GEOMETRY = {
   WIDE: {
-    w: 320,
-    h: 144,
-    pavement: 98,
-    kerb: 112,
-    road: 116,
+    w: 480,
+    h: 200,
+    pavement: 132,
+    kerb: 154,
+    road: 160,
   },
   TALL: {
-    w: 144,
-    h: 250,
-    pavement: 178,
+    w: 192,
+    h: 264,
+    pavement: 176,
     kerb: 196,
-    road: 200,
+    road: 202,
   },
 } as const;
 
