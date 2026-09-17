@@ -52,6 +52,17 @@ function displayDestination(value: string | null | undefined): string | null {
 const MAP_ENRICHMENT_BUDGET_MS = 900;
 
 /**
+ * How much stop text one map request will open.
+ *
+ * The shared twelve-mebibyte request budget is far more than this endpoint can use: the response
+ * carries at most a few hundred stops however many were read, so the rest of what a dense
+ * viewport decodes is thrown away — after being parsed, which is the expensive part. Five
+ * mebibytes is more stop text than four hundred stops can come from, and a viewport that wants
+ * more than that says `truncated.stops` rather than spending the isolate on stops nobody sees.
+ */
+const MAP_STOP_READ_CHARS = 5 * 1024 * 1024;
+
+/**
  * The same idea for route detail, though it should never come near it.
  *
  * With the route-pattern index a route is one object and one line; the budget is here so that the
@@ -277,7 +288,13 @@ router.get("/v1/map", async (_request, { env, url }) => {
    */
   const stopsResult = network
     ? await ledger.stage("stops", () =>
-        network!.stopsInBoundingBox(bbox, MAP_QUERY_LIMITS.maxStops, Date.now(), ledger),
+        network!.stopsInBoundingBox(
+          bbox,
+          MAP_QUERY_LIMITS.maxStops,
+          Date.now(),
+          ledger,
+          MAP_STOP_READ_CHARS,
+        ),
       )
     : { stops: [], truncated: false };
   ledger.count({ stops: stopsResult.stops.length });

@@ -126,8 +126,17 @@ const MAX_PATTERN_REQUEST_CHARS = 3 * 1024 * 1024;
  */
 const MAX_SEARCH_BUCKETS_PER_QUERY = 12;
 
-/** Tiles read at once before the budget is checked again. */
+/** The most tiles read at once, once their size is known. */
 const TILE_READ_BATCH = 6;
+
+/**
+ * How many are read before anything is known about how big they are.
+ *
+ * Two rather than six, because the first round trip is the one no budget can undo. A dense city
+ * tile is four megabytes; six of those arrive together and the isolate is over its limit before
+ * the first check runs.
+ */
+const FIRST_TILE_BATCH = 2;
 
 const INDEX_TTL_MS = 5 * 60 * 1000;
 
@@ -322,15 +331,36 @@ export class NetworkReader {
 
     const records: T[] = [];
     let chars = 0;
-    for (let start = 0; start < wanted.length; start += TILE_READ_BATCH) {
-      const batch = wanted.slice(start, start + TILE_READ_BATCH);
+    let read = 0;
+    let start = 0;
+    /*
+     * The first batch is small, and the rest are sized from what tiles here actually cost.
+     *
+     * Six tiles were read at once, in parallel, before anything was checked. A budget cannot stop
+     * what has already been fetched: `stops-tile/206_-1` is 3,959,355 bytes, and a Manchester
+     * viewport spans several, so a map request decoded twenty-odd megabytes in its very first
+     * round trip and error 1102 arrived before the second. The budget was being enforced after the
+     * only moment at which it mattered.
+     *
+     * A city tile and a rural tile differ by two orders of magnitude, and nothing here knows which
+     * it is holding until it has one. So it takes two, measures them, and lets the measurement
+     * decide how many to ask for next — wide where tiles are cheap, one at a time where they are
+     * not.
+     */
+    let batchSize = FIRST_TILE_BATCH;
+
+    while (start < wanted.length) {
+      const batch = wanted.slice(start, start + batchSize);
       const results = await Promise.all(
         batch.map((tile) => this.readShardSized<T>(dataset(tile), version, now, track)),
       );
       for (const result of results) {
         records.push(...result.records);
         chars += result.chars;
+        read += 1;
       }
+      start += batch.length;
+
       /*
        * Two ways to run out, and a request can hit either first.
        *
@@ -339,10 +369,14 @@ export class NetworkReader {
        * two seconds doing so, and error 1102 does not care which resource ran out.
        */
       if (chars >= budgetChars || track?.ledger.withinBudget === false) {
-        const ranOut = start + batch.length < wanted.length;
+        const ranOut = start < wanted.length;
         if (ranOut && track && !track.ledger.withinBudget) track.ledger.stop(track.budgetReason);
         return { records, truncated: ranOut };
       }
+
+      const averageChars = Math.max(1, Math.ceil(chars / Math.max(1, read)));
+      const affordable = Math.floor((budgetChars - chars) / averageChars);
+      batchSize = Math.max(1, Math.min(TILE_READ_BATCH, affordable));
     }
     return { records, truncated: false };
   }
@@ -358,6 +392,7 @@ export class NetworkReader {
     tiles: readonly string[],
     now: number = Date.now(),
     ledger?: ReadLedger,
+    budgetChars?: number,
   ): Promise<{ stops: Stop[]; truncated: boolean }> {
     const index = await this.networkIndex(now);
     if (!index) return { stops: [], truncated: false };
@@ -367,7 +402,7 @@ export class NetworkReader {
       index.stopTiles,
       index.version,
       now,
-      this.requestChars,
+      Math.min(budgetChars ?? this.requestChars, this.requestChars),
       ledger ? { ledger, family: "stops", budgetReason: "stop_read_budget" } : undefined,
     );
     return { stops: result.records, truncated: result.truncated };
@@ -455,8 +490,9 @@ export class NetworkReader {
     limit: number,
     now: number = Date.now(),
     ledger?: ReadLedger,
+    budgetChars?: number,
   ): Promise<StopsInViewport> {
-    const read = await this.stopsInTiles(stopTilesForBoundingBox(bbox), now, ledger);
+    const read = await this.stopsInTiles(stopTilesForBoundingBox(bbox), now, ledger, budgetChars);
 
     const inside = read.stops.filter((stop) => {
       const { lat, lon } = stop.locationCoordinate;

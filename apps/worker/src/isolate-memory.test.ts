@@ -17,6 +17,7 @@ import {
   ROUTE_PATTERN_BUCKETS,
   routePatternsBucketFor,
   routePatternsDataset,
+  stopTilesForBoundingBox,
 } from "@busstops/pipeline-static-network";
 
 /**
@@ -617,5 +618,73 @@ describe("a request that watches its own clock", () => {
     expect(serialised).not.toMatch(/data\/network/);
     expect(serialised).not.toMatch(/https?:/);
     expect(serialised).not.toMatch(/\.jsonl/);
+  });
+});
+
+/*
+ * The first round trip is the one no budget can undo.
+ *
+ * Tiles were read six at a time, in parallel, and the budget was checked afterwards. A budget
+ * cannot un-fetch what has arrived: `stops-tile/206_-1` is 3,959,355 bytes in the real artifact
+ * and a Manchester viewport spans several, so a map request decoded twenty-odd megabytes before
+ * its first check ran — and Cloudflare's 1102 arrived before the second. Reading two first and
+ * sizing the rest from what they actually cost is the difference between a budget that is
+ * enforced and one that is merely declared.
+ */
+describe("a reader that finds out how big tiles are before asking for more", () => {
+  it("does not open more than a handful before the first check", async () => {
+    const ordinary = network();
+    const store = new InMemoryObjectStore();
+    await publishNetworkShards(store, ordinary, { version: "v1" });
+
+    // Every read is recorded, in order, so the shape of the first round trip is visible.
+    const asked: string[] = [];
+    const watched = {
+      get: async (key: string) => {
+        asked.push(key);
+        return store.get(key);
+      },
+      put: store.put.bind(store),
+      list: store.list.bind(store),
+      listDetailed: store.listDetailed.bind(store),
+      delete: store.delete.bind(store),
+    };
+
+    /*
+     * Tiles the publish actually wrote, taken from the index.
+     *
+     * Asking for invented tile ids proves nothing: the reader filters to what exists, so an
+     * imaginary list means zero reads and any assertion about batching passes for the wrong
+     * reason. This asks for the real ones — and there must be more of them than an opening batch,
+     * or the test cannot tell the two behaviours apart.
+     */
+    const index = await new NetworkReader(store).networkIndex();
+    const realTiles = index!.stopTiles;
+    expect(realTiles.length).toBeGreaterThan(2);
+
+    // A budget so small that nothing beyond the opening batch can be afforded.
+    const starved = new NetworkReader(watched as unknown as typeof store, 15 * 60 * 1000, 1);
+    const ledger = new ReadLedger(60_000);
+    await starved.stopsInTiles(realTiles, Date.now(), ledger);
+
+    const tileReads = asked.filter((key) => key.includes("stops-tile"));
+    expect(tileReads.length).toBeLessThanOrEqual(2);
+  });
+
+  it("still reads everything when the budget can afford it", async () => {
+    const ordinary = network();
+    const store = new InMemoryObjectStore();
+    await publishNetworkShards(store, ordinary, { version: "v1" });
+
+    const reader = new NetworkReader(store);
+    const ledger = new ReadLedger(60_000);
+    const all = await reader.stopsInTiles(
+      stopTilesForBoundingBox({ west: -2, east: 0, south: 53, north: 54 }),
+      Date.now(),
+      ledger,
+    );
+
+    expect(all.truncated).toBe(false);
+    expect(all.stops.length).toBeGreaterThan(0);
   });
 });
