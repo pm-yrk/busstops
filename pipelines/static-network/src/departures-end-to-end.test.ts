@@ -12,6 +12,7 @@ import {
   departureShardDataset,
   departureWindowFor,
   type DepartureRow,
+  type PatternTripRow,
 } from "./departures-index.js";
 
 /**
@@ -265,5 +266,36 @@ describe("a dense city, from archive to published departure shards", () => {
       }
     }
     expect(terminating).toBe(0);
+  });
+
+  /*
+   * The planner's half of the same split. A trip is its pattern plus its times, so the stops it
+   * calls at are stored once on the pattern rather than 45 times per trip — which is the whole
+   * difference between 296 bytes and 10,313.
+   */
+  it("publishes the planner's trips within the same budget", async () => {
+    const assembled = await assembleDenseCity();
+    const store = new InMemoryObjectStore();
+    const published = await publishSpilledJourneyTiles(store, assembled.patternTripSpill, {
+      version: RETRIEVED_AT,
+      datasetFor: (dataset) => dataset,
+    });
+
+    expect(assembled.patternTripCount).toBe(ROUTE_COUNT * TRIPS_PER_ROUTE);
+    expect(published.failed).toEqual([]);
+    expect(published.oversized).toEqual([]);
+    expect(published.records).toBe(assembled.patternTripCount);
+    expect(published.largest!.bytes).toBeLessThan(MAX_SHARD_BYTES);
+
+    /*
+     * And a trip carries only times. The old journey record measured 10,313 bytes for 45 calls;
+     * this fixture's trips have twelve, so the comparison that matters is bytes per call.
+     */
+    const keys = await store.list("data/network/pattern-trips/");
+    const raw = (await store.get(keys[0]!)) ?? "";
+    const firstLine = raw.split("\n")[0]!;
+    const trip = JSON.parse(firstLine) as PatternTripRow;
+    expect(trip.t).toHaveLength(CALLS_PER_TRIP);
+    expect(firstLine.length / CALLS_PER_TRIP).toBeLessThan(20);
   });
 });

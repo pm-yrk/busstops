@@ -147,14 +147,23 @@ async function main(): Promise<number> {
     serviceDates,
     retrievedAt: startedAt.toISOString(),
   });
-  spillToDispose = assembled.spill;
+  // Both spills are build intermediates; neither survives the run.
+  spillToDispose = {
+    dispose: () => {
+      assembled.departureSpill.dispose();
+      assembled.patternTripSpill.dispose();
+    },
+  };
   const network = assembled.network;
   report.counts = network.counts;
   report.warnings = network.warnings.slice(0, 50);
   report.serviceDates = serviceDates;
   report.gtfs = assembled.gtfsCounts;
   report.gtfsTables = assembled.tables;
-  report.spill = assembled.spill.stats();
+  report.spill = {
+    departures: assembled.departureSpill.stats(),
+    patternTrips: assembled.patternTripSpill.stats(),
+  };
 
   /*
    * Coverage, as a measurement rather than a claim.
@@ -196,31 +205,16 @@ async function main(): Promise<number> {
   report.published = result.published.map((m) => ({ dataset: m.dataset, records: m.recordCount }));
   report.failed = result.failed;
 
-  // Journeys are also published per spatial tile, so the edge can plan a journey without
-  // loading the national timetable. Published after the main datasets so a tile can never point
-  // at journeys the network itself does not have.
-  const tileResult = await publishSpilledJourneyTiles(store, assembled.spill, {
-    version: startedAt.toISOString(),
-  });
-  report.journeyTiles = {
-    published: tileResult.tiles.length,
-    records: tileResult.records,
-    failed: tileResult.failed.slice(0, 10),
-    oversized: tileResult.oversized.slice(0, 10),
-    largest: tileResult.largest,
-  };
-  if (tileResult.failed.length > 0) {
-    console.error(
-      `${tileResult.failed.length} journey tile(s) failed to write; those areas will have no ` +
-        `timetable at the edge.`,
-    );
-  }
-  if (tileResult.oversized.length > 0) {
-    console.error(
-      `${tileResult.oversized.length} journey tile(s) were refused for exceeding the shard byte ` +
-        `budget; their areas have no plannable timetable and the tile key is too coarse for them.`,
-    );
-  }
+  /*
+   * Journey tiles are not published any more.
+   *
+   * They were the 281 MiB objects: one half-degree tile reached 294,922,754 bytes, six refused to
+   * publish at all — three with an R2 413 and three too large for the runtime to serialise — and
+   * nothing reads them now. The board reads the departure index and the planner reads pattern
+   * trips, both of which carry the same information in a shape that fits. Continuing to write
+   * them would cost a national build several gigabytes of disk and object storage to produce
+   * something no request would ever open.
+   */
 
   /*
    * The departure index: what an arrival board actually reads.
@@ -245,6 +239,35 @@ async function main(): Promise<number> {
     `Departure index: ${departureResult.records} rows across ${departureResult.tiles.length} ` +
       `shards, largest ${departureResult.largest?.bytes ?? 0} bytes.`,
   );
+
+  /*
+   * And the planner's trips, on the pattern grid. Published from their own spill for the same
+   * reason the departures are: derived once as each journey streams past, never re-read.
+   */
+  const tripResult = await publishSpilledJourneyTiles(store, assembled.patternTripSpill, {
+    version: startedAt.toISOString(),
+    datasetFor: (dataset) => dataset,
+  });
+  report.patternTrips = {
+    published: tripResult.tiles.length,
+    trips: tripResult.records,
+    tripsEmitted: assembled.patternTripCount,
+    failed: tripResult.failed.slice(0, 10),
+    oversized: tripResult.oversized.slice(0, 10),
+    largest: tripResult.largest,
+  };
+  console.log(
+    `Pattern trips: ${tripResult.records} trips across ${tripResult.tiles.length} shards, ` +
+      `largest ${tripResult.largest?.bytes ?? 0} bytes.`,
+  );
+  if (tripResult.failed.length > 0 || tripResult.oversized.length > 0) {
+    console.error(
+      `${tripResult.failed.length} pattern-trip shard(s) failed and ` +
+        `${tripResult.oversized.length} were refused as oversized; journeys through those areas ` +
+        `will report a degraded plan rather than silently having no options.`,
+    );
+  }
+
   if (departureResult.failed.length > 0 || departureResult.oversized.length > 0) {
     console.error(
       `${departureResult.failed.length} departure shard(s) failed and ` +

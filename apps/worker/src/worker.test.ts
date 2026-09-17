@@ -14,7 +14,12 @@ import {
   RouteDetailResponseSchema,
   SearchResponseSchema,
 } from "@busstops/contracts";
-import { ArtifactStore, InMemoryObjectStore, objectKeyFor } from "@busstops/pipeline-core";
+import {
+  ArtifactStore,
+  InMemoryObjectStore,
+  objectKeyFor,
+  tileIdFor,
+} from "@busstops/pipeline-core";
 import {
   buildNetwork,
   publishJourneyTiles,
@@ -24,10 +29,13 @@ import {
 import worker, { initialiseWorker, resetWorkerState } from "./index.js";
 import { R2BindingStore, readFeatureFlags, type R2BucketLike, type WorkerEnv } from "./env.js";
 import {
+  PATTERN_TILE_DEGREES,
   departureBucketFor,
   departureShardDataset,
   departureWindowFor,
+  patternTripsDataset,
   type DepartureRow,
+  type PatternTripRow,
 } from "@busstops/pipeline-static-network";
 import {
   RateLimiter,
@@ -101,6 +109,37 @@ function completeNetwork() {
     retrievedAt: "2026-09-02T06:00:00.000Z",
     serviceDate: "2026-09-02",
   });
+}
+
+/**
+ * Publishes the planner's trips in the shape the pipeline now emits: the pattern, the trip, and
+ * its times. The stops come from the pattern, which is the whole point of the format.
+ */
+async function publishPatternTrips(
+  store: InMemoryObjectStore,
+  network: ReturnType<typeof completeNetwork>,
+): Promise<void> {
+  const byShard = new Map<string, string[]>();
+  for (const journey of network.journeys) {
+    const departures = journey.stopTimes.map((call) =>
+      Math.floor(Date.parse(call.scheduledDeparture) / 1000),
+    );
+    if (!departures.every((seconds) => Number.isFinite(seconds))) continue;
+    const pattern = network.patterns.find((candidate) => candidate.id === journey.routePatternId);
+    const firstStop = network.stops.find((stop) => stop.id === pattern?.stopSequence[0]);
+    if (!firstStop) continue;
+
+    const row: PatternTripRow = { p: journey.routePatternId, j: journey.tripId, t: departures };
+    const dataset = patternTripsDataset(
+      journey.serviceDate,
+      tileIdFor(firstStop.locationCoordinate, PATTERN_TILE_DEGREES),
+      departureWindowFor(departures[0]!, journey.serviceDate),
+    );
+    byShard.set(dataset, [...(byShard.get(dataset) ?? []), JSON.stringify(row)]);
+  }
+  for (const [dataset, lines] of byShard) {
+    await store.put(objectKeyFor(dataset, "v1"), lines.join("\n"));
+  }
 }
 
 function makeEnv(store: InMemoryObjectStore, overrides: Partial<WorkerEnv> = {}): WorkerEnv {
@@ -817,10 +856,10 @@ describe("GET /v1/journeys", () => {
     expect(parsed.data!.data.unavailableReason).not.toBeNull();
   });
 
-  it("plans a journey once the journey tiles are published", async () => {
+  it("plans a journey once the pattern trips are published", async () => {
     const store = await publishedStore();
     const network = completeNetwork();
-    await publishJourneyTiles(store, network, { version: "v1" });
+    await publishPatternTrips(store, network);
 
     // Plan between the ends of a real published pattern, so there is a journey to find.
     const pattern = network.patterns[0]!;

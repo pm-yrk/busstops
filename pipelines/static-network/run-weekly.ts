@@ -67,8 +67,9 @@ async function main(): Promise<number> {
   });
   const network = assembled.network;
   // The rebuild's journeys are not compared — reconciliation is about the shape of the network,
-  // not about today's timetable — so the spill and the archive go now rather than at the end.
-  assembled.spill.dispose();
+  // not about today's timetable — so the spills and the archive go now rather than at the end.
+  assembled.departureSpill.dispose();
+  assembled.patternTripSpill.dispose();
   await discardGtfsArchive(archive.download.path);
 
   const [stops, operators, services, patterns] = await Promise.all([

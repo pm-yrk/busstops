@@ -84,7 +84,14 @@ export interface DepartureRow {
   k?: 1;
 }
 
-/** One trip as the planner needs it: which pattern, and when it calls. */
+/**
+ * One trip as the planner needs it: which pattern, and when it calls.
+ *
+ * The pattern already holds the ordered stop sequence, so a trip is only its times. That is the
+ * whole saving: 296 bytes for 45 calls against the 10,313 of a journey carrying a UUID and two
+ * timestamps per call. `t[i]` is the departure from `pattern.stopSequence[i]`, which is the
+ * contract between this row and the pattern it names.
+ */
 export interface PatternTripRow {
   /** Route pattern id. The pattern holds the stop sequence; this holds only the times. */
   p: string;
@@ -92,6 +99,33 @@ export interface PatternTripRow {
   j: string;
   /** Departure epoch seconds, one per call, in the pattern's own stop order. */
   t: number[];
+  /**
+   * Arrivals, only when at least one differs from its departure.
+   *
+   * Buses mostly arrive and leave at the same published minute, so carrying a second array for
+   * every trip would double the size to say nothing. Where a trip genuinely waits — a layover at
+   * an interchange — the difference decides whether a transfer is makeable, so it is kept.
+   */
+  a?: number[];
+}
+
+/**
+ * The windows a plan must read, given when it is searching.
+ *
+ * A trip is filed under the window its first call falls in, so a search at half past nine has to
+ * read the window before it as well: a bus that left at seven is still running. One window of
+ * lookback is four hours, which is longer than any bus trip in England.
+ */
+export function patternTripWindowsFor(
+  fromEpochSeconds: number,
+  toEpochSeconds: number,
+  serviceDate: string,
+): number[] {
+  const first = Math.max(0, departureWindowFor(fromEpochSeconds, serviceDate) - 1);
+  const last = departureWindowFor(toEpochSeconds, serviceDate);
+  const windows: number[] = [];
+  for (let window = first; window <= last; window += 1) windows.push(window);
+  return windows;
 }
 
 /**

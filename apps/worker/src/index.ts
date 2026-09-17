@@ -690,11 +690,21 @@ router.get("/v1/journeys", async (_request, { env, url }) => {
   const slice = await network.sliceForBoundingBox(
     corridorBoundingBox(origin, destination, JOURNEY_LIMITS.maxAccessWalkMetres),
   );
+  const journeyIndex = await network.networkIndex();
+  if (!journeyIndex) {
+    return errorResponse(
+      "upstream_unavailable",
+      "The network dataset is not available yet, so a journey cannot be planned.",
+      503,
+      60,
+    );
+  }
   const outcome = await journeyService.planJourney(slice, {
     origin,
     destination,
     departAtSeconds,
     serviceDate,
+    version: journeyIndex.version,
   });
 
   const meta = buildMeta({
