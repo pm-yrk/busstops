@@ -434,6 +434,15 @@ jobs:
           cat prune-report.json 2>/dev/null || echo "no prune-report.json was written"
           echo "--- end retention report ---"
 
+      # Same reason as the retention reprint above: the weather collector runs before a browser
+      # install whose output buries it, and its artifact host is refused by the egress proxy.
+      - name: Weather report, where the log can reach it
+        if: ${{ always() && inputs.run_weather }}
+        run: |
+          echo "--- weather report (repeated at end of job) ---"
+          cat weather-report.json 2>/dev/null || echo "no weather-report.json was written"
+          echo "--- end weather report ---"
+
       - name: Summary
         if: always()
         run: |
