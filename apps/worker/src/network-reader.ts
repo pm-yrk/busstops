@@ -94,6 +94,24 @@ const MAX_CACHED_SHARD_CHARS = 12 * 1024 * 1024;
 const MAX_REQUEST_SHARD_CHARS = 12 * 1024 * 1024;
 
 /**
+ * A tighter budget for pattern geometry, which is the heaviest thing a request can read.
+ *
+ * Isolated from two deployments rather than reasoned about: `/v1/map` and `/v1/routes/:id` both
+ * answered Cloudflare's own HTML 503 — in run 35 on desktop, in run 36 on tablet, the same pair of
+ * endpoints both times. Every endpoint that kept working reads stops, departures or the search
+ * index; the two that failed are the only ones that read pattern tiles in bulk. A published
+ * pattern tile reaches 3,935,975 bytes and a city viewport spans several, so at the shared budget
+ * a single map request could parse twelve mebibytes of JSON. A Worker past its limit is answered
+ * by the platform, and the platform's error page carries no CORS header — which is why the browser
+ * reported it as "No 'Access-Control-Allow-Origin' header" rather than as a server error.
+ *
+ * Three mebibytes covers an ordinary viewport's patterns. Beyond that the read is truncated and
+ * says so, which costs some route names on a very dense screen and is a far better answer than a
+ * page that fails to load at all.
+ */
+const MAX_PATTERN_REQUEST_CHARS = 3 * 1024 * 1024;
+
+/**
  * How many search buckets one query may open. A hundred and twenty characters of query is a lot
  * of words, and each word is at least one object; the bound is on the reading, not on the typing.
  */
@@ -307,6 +325,7 @@ export class NetworkReader {
       index.patternTiles,
       index.version,
       now,
+      MAX_PATTERN_REQUEST_CHARS,
     );
     return toGeometries(assemblePatternTile(lines.records));
   }
@@ -439,6 +458,7 @@ export class NetworkReader {
       index.patternTiles,
       index.version,
       now,
+      MAX_PATTERN_REQUEST_CHARS,
     );
     const records = assemblePatternTile(lines.records);
     return toGeometries(records.filter((r) => r.pattern.serviceRouteId === serviceId));

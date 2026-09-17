@@ -7,9 +7,12 @@ import {
 } from "@busstops/pipeline-core";
 import { buildGraph, plan, type JourneyGraph, type PlanResult, type Trip } from "@busstops/journey";
 import {
+  checkArtifactLayout,
+  describeLayoutCheck,
   patternTripsDataset,
   tripTilesForBoundingBox,
   tripWindowsFor,
+  type ArtifactLayout,
   type PatternTripRow,
 } from "@busstops/pipeline-static-network";
 import type { NetworkSlice } from "./network-reader.js";
@@ -52,6 +55,8 @@ export interface JourneyPlanRequest {
   destination: Coordinate;
   departAtSeconds: number;
   serviceDate: string;
+  /** The layout the artifact declares, from the network index. Absent on older publishes. */
+  layout?: ArtifactLayout | null;
   /** The publish these shards belong to, from the network index, as every other reader takes it. */
   version: string;
 }
@@ -73,7 +78,21 @@ export interface JourneyPlanRequest {
  */
 export interface JourneyDiagnostics {
   /** Machine-readable outcome, including the two ways of having no options. */
-  code: "planned" | "no_options" | "too_far" | "no_data" | "unreadable" | "too_large";
+  code:
+    | "planned"
+    | "no_options"
+    | "too_far"
+    | "no_data"
+    | "unreadable"
+    | "too_large"
+    | "artifact_format_mismatch";
+  /**
+   * Whether the artifact said how it was stored, and whether this reader agrees.
+   *
+   * `undeclared` is not `compatible`: an artifact published before layouts were recorded cannot
+   * be checked, and saying so is what separates a verified deployment from an assumed one.
+   */
+  layout: "compatible" | "undeclared" | "mismatch";
   corridorTiles: number;
   windows: number[];
   shardsRead: number;
@@ -122,7 +141,7 @@ export type JourneyPlanOutcome =
   | {
       ok: false;
       reason: string;
-      code: "too_far" | "no_data" | "too_large" | "unreadable";
+      code: "too_far" | "no_data" | "too_large" | "unreadable" | "artifact_format_mismatch";
       diagnostics: JourneyDiagnostics;
     };
 
@@ -149,9 +168,12 @@ export class JourneyService {
     );
     const tiles = tripTilesForBoundingBox(corridor);
 
+    const layoutCheck = checkArtifactLayout(request.layout ?? null);
+
     // Filled in as the plan proceeds, so whatever it returns says how far it got.
     const diagnostics: JourneyDiagnostics = {
       code: "no_data",
+      layout: layoutCheck.state === "mismatch" ? "mismatch" : layoutCheck.state,
       corridorTiles: tiles.length,
       windows: [],
       shardsRead: 0,
@@ -170,6 +192,23 @@ export class JourneyService {
       stopsInSlice: slice.stopsById.size,
       failures: [],
     };
+
+    /*
+     * Refused before a single shard is requested. A reader that does not know how the artifact was
+     * filed will ask for keys that cannot exist and then describe the country as having no buses —
+     * which is exactly what happened, and is worse than an error because it reads as an answer.
+     */
+    if (layoutCheck.state === "mismatch") {
+      return {
+        ok: false,
+        code: "artifact_format_mismatch",
+        reason:
+          "The published timetable was stored in a layout this server cannot read, so no journey " +
+          "can be planned until the two are brought back into step. This is a fault on our side, " +
+          `not an absence of buses. (${describeLayoutCheck(layoutCheck)})`,
+        diagnostics: { ...diagnostics, code: "artifact_format_mismatch" },
+      };
+    }
 
     if (tiles.length > JOURNEY_LIMITS.maxTiles) {
       return {

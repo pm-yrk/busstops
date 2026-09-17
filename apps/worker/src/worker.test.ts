@@ -29,13 +29,16 @@ import {
 import worker, { initialiseWorker, resetWorkerState } from "./index.js";
 import { R2BindingStore, readFeatureFlags, type R2BucketLike, type WorkerEnv } from "./env.js";
 import {
+  SHARDED,
   TRIP_TILE_DEGREES,
+  currentArtifactLayout,
   departureBucketFor,
   departureShardDataset,
   encodeDepartureShard,
   tripWindowFor,
   patternTripsDataset,
   type DepartureRow,
+  type NetworkIndexRecord,
   type PatternTripRow,
 } from "@busstops/pipeline-static-network";
 import {
@@ -892,6 +895,57 @@ describe("GET /v1/journeys", () => {
     const parsed = JourneyPlanResponseSchema.safeParse(await response.json());
     expect(parsed.success).toBe(true);
     expect(parsed.data!.data.unavailableReason).not.toBeNull();
+  });
+
+  /*
+   * The failure this guard exists for, reconstructed.
+   *
+   * The trip grid moved from half a degree to a quarter. The Worker asked for Leeds at `215_-7`,
+   * the artifact held it at `107_-4`, three shards came back absent, and the planner reported
+   * "No timetable data is published for this area yet" — of a complete national timetable, a
+   * quarter of a mile from where it was looking. An unreadable artifact must not be describable
+   * as an empty country.
+   */
+  it("refuses an artifact stored in a layout it cannot read, rather than calling the area empty", async () => {
+    const store = await publishedStore();
+    const network = completeNetwork();
+    await publishPatternTrips(store, network);
+
+    // Republish the index declaring the grid this reader no longer uses. Written through the
+    // artifact store rather than over the object, so the manifest's own content hash stays honest
+    // and the Worker reads it exactly as it would read a real publish.
+    const artifacts = new ArtifactStore(store);
+    const current = await artifacts.readCurrent<NetworkIndexRecord>(SHARDED.index);
+    const record = current.records[0]!;
+    await artifacts.publish<NetworkIndexRecord>({
+      dataset: SHARDED.index,
+      version: `${record.version}-halfdegree`,
+      records: [{ ...record, layout: { ...currentArtifactLayout(), tripTileDegrees: 0.5 } }],
+      schemaVersion: current.manifest!.schemaVersion,
+      minimumRecordCount: 1,
+    });
+
+    resetWorkerState();
+    const response = await worker.fetch(
+      get("/v1/journeys?fromLat=53.795&fromLon=-1.545&toLat=53.80&toLon=-1.56"),
+      makeEnv(store),
+      ctx,
+    );
+    const body = (await response.json()) as {
+      data: {
+        options: unknown[];
+        unavailableReason: string | null;
+        diagnostics?: { code: string; layout: string; shardsMissing: number };
+      };
+    };
+
+    expect(body.data.options).toEqual([]);
+    expect(body.data.diagnostics?.code).toBe("artifact_format_mismatch");
+    expect(body.data.diagnostics?.layout).toBe("mismatch");
+    // Refused before a single shard was asked for: it never went looking in the wrong place.
+    expect(body.data.diagnostics?.shardsMissing).toBe(0);
+    expect(body.data.unavailableReason).toContain("layout this server cannot read");
+    expect(body.data.unavailableReason).not.toContain("No timetable data is published");
   });
 
   it("plans a journey once the pattern trips are published", async () => {

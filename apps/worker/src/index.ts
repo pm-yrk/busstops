@@ -737,6 +737,9 @@ router.get("/v1/journeys", async (_request, { env, url }) => {
     departAtSeconds,
     serviceDate,
     version: journeyIndex.version,
+    // What the artifact says about its own storage. Absent on publishes written before layouts
+    // were recorded, which the planner reports as unchecked rather than treating as agreement.
+    layout: journeyIndex.layout ?? null,
   });
 
   const meta = buildMeta({

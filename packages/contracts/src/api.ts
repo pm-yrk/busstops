@@ -345,7 +345,17 @@ export const JourneyPlanOptionSchema = z.object({
 export type JourneyPlanOption = z.infer<typeof JourneyPlanOptionSchema>;
 
 export const JourneyDiagnosticsSchema = z.object({
-  code: z.enum(["planned", "no_options", "too_far", "no_data", "unreadable", "too_large"]),
+  code: z.enum([
+    "planned",
+    "no_options",
+    "too_far",
+    "no_data",
+    "unreadable",
+    "too_large",
+    "artifact_format_mismatch",
+  ]),
+  /** Whether the artifact declared its storage layout, and whether the reader agreed with it. */
+  layout: z.enum(["compatible", "undeclared", "mismatch"]),
   corridorTiles: z.number().int().nonnegative(),
   windows: z.array(z.number().int().nonnegative()),
   shardsRead: z.number().int().nonnegative(),

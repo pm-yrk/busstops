@@ -2,6 +2,7 @@ import type { Coordinate, RoutePattern, Stop } from "@busstops/contracts";
 import type { BoundingBox } from "@busstops/contracts";
 import { tileIdFor, tilesForBoundingBox, tilesForCoordinates } from "@busstops/pipeline-core";
 import type { SearchIndexEntry } from "./search-index.js";
+import { DEPARTURE_BUCKETS, TRIP_WINDOW_HOURS, TRIP_WINDOWS } from "./departures-index.js";
 
 /**
  * Shard addressing for the published network.
@@ -63,6 +64,36 @@ export const SEARCH_PREFIX_LENGTH = 2;
  * splitting happens before truncation would.
  */
 export const SEARCH_BUCKET_SPLIT_AT = 6_000;
+
+/**
+ * How a bucket that prefix-deepening cannot split is split anyway.
+ *
+ * Deepening works by taking more characters of the word, which assumes the words in a bucket
+ * differ somewhere further along. "Northbound", "Southbound" and the rest tokenise to a word that
+ * normalises to `bound`, padded to the six-character maximum as `bound_` — so every entry
+ * produces the identical deeper key however far the split goes, the loop gives up, and the
+ * publisher truncates to fit the byte budget. Measured on England's real archive: 65,573 entries
+ * in that one bucket, 31,385 kept, **34,188 dropped** and reported as a statistic.
+ *
+ * So a bucket the prefix cannot divide is divided by something else: a hash of the entry's own
+ * id, into as many parts as it takes to fit. The parts are named `bound_~0`, `bound_~1` and so
+ * on, the index lists them like any other key, and a reader that wants the word reads its parts.
+ *
+ * `~` because it sorts after alphanumerics and cannot occur in a normalised prefix, so a part key
+ * can never collide with a real deeper prefix.
+ */
+export const SEARCH_PART_SEPARATOR = "~";
+
+/** The part keys a bucket becomes when it is split by hash rather than by prefix. */
+export function searchPartKey(prefix: string, part: number): string {
+  return `${prefix}${SEARCH_PART_SEPARATOR}${String(part)}`;
+}
+
+/** Whether a published key is one part of a hash-split bucket, and which prefix it belongs to. */
+export function searchPartPrefixOf(key: string): string | null {
+  const at = key.indexOf(SEARCH_PART_SEPARATOR);
+  return at > 0 ? key.slice(0, at) : null;
+}
 
 /**
  * How deep a split may go.
@@ -189,6 +220,22 @@ export function searchPrefixFor(token: string, length = SEARCH_PREFIX_LENGTH): s
  */
 export const MAX_SEARCH_BUCKETS_PER_WORD = 8;
 
+/**
+ * Every published part of a hash-split bucket, in order.
+ *
+ * A word whose bucket was split this way has no single object, and the reader has to ask for all
+ * of them — which is why the parts are named from the prefix rather than hashed into opaque keys.
+ */
+export function searchPartsOf(prefix: string, published: ReadonlySet<string>): string[] {
+  const parts: string[] = [];
+  for (let part = 0; ; part += 1) {
+    const key = searchPartKey(prefix, part);
+    if (!published.has(key)) break;
+    parts.push(key);
+  }
+  return parts;
+}
+
 export function searchPrefixesForWord(word: string, published: ReadonlySet<string>): string[] {
   /*
    * Longest first. A bucket is split as many times as it takes to fit, so the depth varies by
@@ -196,10 +243,22 @@ export function searchPrefixesForWord(word: string, published: ReadonlySet<strin
    * hundred that "49" became. Asking for the longest key the word can name and walking down finds
    * whichever depth this publish settled on.
    */
-  const longest = Math.min(word.length, SEARCH_MAX_PREFIX_LENGTH);
+  /*
+   * Up to the maximum, not up to the word's own length.
+   *
+   * Short words are padded, not given a scheme of their own: "bound" is filed as `bound_`, six
+   * characters. Starting at `word.length` meant a five-letter word never asked for its own
+   * six-character key and fell through to the shallow scan — which mostly worked, and stopped
+   * working the moment that bucket had to be split into parts.
+   */
+  const longest = SEARCH_MAX_PREFIX_LENGTH;
   for (let length = longest; length >= SEARCH_PREFIX_LENGTH; length--) {
     const candidate = searchPrefixFor(word, length);
     if (published.has(candidate)) return [candidate];
+    // A bucket the prefix could not divide was divided by hash instead, and is published as
+    // parts. There is no single object to find, so every part is read.
+    const parts = searchPartsOf(candidate, published);
+    if (parts.length > 0) return parts.slice(0, MAX_SEARCH_BUCKETS_PER_WORD);
   }
 
   // The letter was split below what this word can name, so read the parts it could be in.
@@ -297,6 +356,11 @@ export interface RouteTileRecord {
  */
 export interface NetworkIndexRecord {
   version: string;
+  /**
+   * How this publish was stored, so a reader can check rather than assume. Optional because
+   * artifacts written before this existed do not have it, and a reader must be able to say so.
+   */
+  layout?: ArtifactLayout;
   publishedAt: string;
   partialCoverage: boolean;
   /** Tiles that actually have stops, so the edge never requests an object that cannot exist. */
@@ -362,4 +426,96 @@ export function tilesForPattern(shape: readonly Coordinate[]): string[] {
 /** Entries with a location are also placed spatially, which is what "stops near me" reads. */
 export function tileForSearchEntry(entry: SearchIndexEntry): string | null {
   return entry.coordinate ? tileIdFor(entry.coordinate, STOP_TILE_DEGREES) : null;
+}
+
+/**
+ * The storage layout an artifact was written with.
+ *
+ * A Worker and a pipeline built from the same commit agree about grid sizes because they import
+ * the same constants. They are deployed independently, so that agreement is an assumption rather
+ * than a fact — and when it broke it broke silently.
+ *
+ * Measured: the trip grid moved from half a degree to a quarter. The Worker then asked for Leeds
+ * at `215_-7` while the published artifact held it at `107_-4`, three shards came back absent,
+ * and the planner reported "No timetable data is published for this area yet". Every word of that
+ * is wrong. The data was published, it was complete, and it was a quarter of a mile from where
+ * the reader was looking.
+ *
+ * So an artifact now says how it was written, and a reader that cannot interpret one says *that*
+ * rather than describing the country as empty.
+ */
+export interface ArtifactLayout {
+  /** Bumped when the shape of a shard changes, as opposed to the grid it is filed on. */
+  formatVersion: number;
+  stopTileDegrees: number;
+  patternTileDegrees: number;
+  tripTileDegrees: number;
+  tripWindowHours: number;
+  tripWindows: number;
+  departureBuckets: number;
+  searchPrefixLength: number;
+  locatorBuckets: number;
+}
+
+/**
+ * Two, not one. Version one is every artifact published before the layout was recorded at all —
+ * there is no such declaration in the bucket, so a reader meeting one knows only that it cannot
+ * check, which is a different and lesser statement than knowing the layout matches.
+ */
+export const ARTIFACT_FORMAT_VERSION = 2;
+
+export function currentArtifactLayout(): ArtifactLayout {
+  return {
+    formatVersion: ARTIFACT_FORMAT_VERSION,
+    stopTileDegrees: STOP_TILE_DEGREES,
+    patternTileDegrees: PATTERN_TILE_DEGREES,
+    tripTileDegrees: TRIP_TILE_DEGREES,
+    tripWindowHours: TRIP_WINDOW_HOURS,
+    tripWindows: TRIP_WINDOWS,
+    departureBuckets: DEPARTURE_BUCKETS,
+    searchPrefixLength: SEARCH_PREFIX_LENGTH,
+    locatorBuckets: LOCATOR_BUCKETS,
+  };
+}
+
+export type LayoutCheck =
+  | { state: "compatible" }
+  /** The artifact predates layout declarations. Serving continues; the gap is reported. */
+  | { state: "undeclared" }
+  | {
+      state: "mismatch";
+      differences: Array<{ field: string; artifact: unknown; reader: unknown }>;
+    };
+
+/**
+ * Whether this reader can interpret that artifact.
+ *
+ * An undeclared layout is not called compatible. It is the honest third answer: nothing in the
+ * bucket says how it was written, so nothing here can promise it matches — and saying so is what
+ * lets a deployment tell "verified" apart from "assumed", which is the whole point.
+ */
+export function checkArtifactLayout(
+  artifact: ArtifactLayout | null | undefined,
+  reader: ArtifactLayout = currentArtifactLayout(),
+): LayoutCheck {
+  if (!artifact) return { state: "undeclared" };
+
+  const differences: Array<{ field: string; artifact: unknown; reader: unknown }> = [];
+  for (const field of Object.keys(reader) as Array<keyof ArtifactLayout>) {
+    if (artifact[field] !== reader[field]) {
+      differences.push({ field, artifact: artifact[field], reader: reader[field] });
+    }
+  }
+  return differences.length === 0 ? { state: "compatible" } : { state: "mismatch", differences };
+}
+
+/** One line a human can act on, for a report or an error body. */
+export function describeLayoutCheck(check: LayoutCheck): string {
+  if (check.state === "compatible") return "artifact layout matches this reader";
+  if (check.state === "undeclared") {
+    return "artifact declares no storage layout, so it cannot be checked against this reader";
+  }
+  return check.differences
+    .map((d) => `${d.field}: artifact ${String(d.artifact)}, reader ${String(d.reader)}`)
+    .join("; ");
 }

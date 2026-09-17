@@ -23,6 +23,8 @@ import {
   locatorBucketFor,
   patternTileDataset,
   searchPrefixDataset,
+  currentArtifactLayout,
+  searchPartKey,
   searchPrefixFor,
   searchTileDataset,
   stopLocatorDataset,
@@ -230,6 +232,11 @@ export async function publishNetworkShards(
 
   const index: NetworkIndexRecord = {
     version: options.version,
+    // What this publish was stored with, so a reader checks rather than assumes. The grids are
+    // compiled-in constants on both sides and they were trusted to agree because they came from
+    // one codebase; the two are deployed independently, and when the trip grid halved the planner
+    // reported England as having no timetable rather than reporting that it could not read one.
+    layout: currentArtifactLayout(),
     publishedAt: now().toISOString(),
     partialCoverage: network.counts.danglingStopReferences > 0 || network.counts.parseErrors > 0,
     stopTiles,
@@ -468,10 +475,39 @@ function groupSearchByPrefix(
     if (!anyOversized) break;
   }
 
+  /*
+   * A bucket the prefix could not divide is divided by hash instead.
+   *
+   * Deepening takes more characters of the word, which assumes the words differ somewhere further
+   * along. They do not always: "Northbound", "Southbound" and their kind tokenise to a word that
+   * normalises to `bound`, padded to the six-character maximum as `bound_`, so every entry
+   * produces the identical deeper key however far the loop goes. The loop then gave up and the
+   * publisher truncated to fit the byte budget — 65,573 entries in that one bucket, 31,385 kept,
+   * 34,188 dropped, and the drop reported as a statistic rather than as a fault.
+   *
+   * Splitting by a hash of the entry's own id has none of the prefix's assumptions: it divides
+   * any bucket, into as many parts as it takes, deterministically, and a reader finds the parts
+   * because they are named from the prefix they came from.
+   */
+  const partitioned = new Map<string, SearchIndexEntry[]>();
+  for (const [key, bucket] of split) {
+    if (bucket.length <= SEARCH_BUCKET_SPLIT_AT) {
+      partitioned.set(key, bucket);
+      continue;
+    }
+    const parts = Math.ceil(bucket.length / SEARCH_BUCKET_SPLIT_AT);
+    for (const entry of bucket) {
+      const partKey = searchPartKey(key, locatorBucketFor(entry.id, parts));
+      const existing = partitioned.get(partKey);
+      if (existing) existing.push(entry);
+      else partitioned.set(partKey, [entry]);
+    }
+  }
+
   // Sorted rather than truncated arbitrarily: what survives a full bucket should be what people
   // mean by the word they typed.
-  for (const bucket of split.values()) bucket.sort((a, b) => b.prominence - a.prominence);
-  return split;
+  for (const bucket of partitioned.values()) bucket.sort((a, b) => b.prominence - a.prominence);
+  return partitioned;
 }
 
 /**
