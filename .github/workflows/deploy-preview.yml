@@ -235,6 +235,13 @@ jobs:
         # bounded by the account's write rate rather than by anything this repository controls, so
         # the step is allowed to run out of time and report what it did; the run carries on and the
         # next retention pass resumes from the oldest version left.
+        #
+        # And it never fails the run. Run 39 proved why: this step hit its limit, failed, and
+        # GitHub skipped every step after it — the weather collection, the browser, the smoke test
+        # and, worst of all, the verification that the run had been dispatched to read. Tidying the
+        # bucket is housekeeping. Whether the deployment serves real data is the question, and an
+        # unrelated housekeeping task must not be able to stop it being asked.
+        continue-on-error: true
         timeout-minutes: 45
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -260,7 +267,7 @@ jobs:
       # schedule has never fired and it cannot be dispatched. Run from here, once, when the stop
       # weather artifacts need to exist in the preview bucket.
       - name: Collect stop weather
-        if: ${{ inputs.run_weather }}
+        if: ${{ !cancelled() && inputs.run_weather }}
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -288,7 +295,7 @@ jobs:
       # one output a person actually looks at. Two minutes of apt in front of the long step costs
       # nothing and cannot be starved by it.
       - name: Install a browser for the visual pass
-        if: ${{ steps.pages.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.pages.outcome == 'success' }}
         run: npx playwright install --with-deps chromium
 
       # ------------------------------------------------------ data bootstrap
@@ -296,7 +303,7 @@ jobs:
       # the step that decides how much of England has a departure board.
       - name: Bootstrap the national network artifact
         id: bootstrap
-        if: ${{ inputs.bootstrap_data }}
+        if: ${{ !cancelled() && inputs.bootstrap_data }}
         # Deliberately below the job's own limit. A step that times out fails the step and leaves
         # the run to carry on with what it has; a job that times out cancels the verification and
         # the screenshots too, and then nobody can see how far the build got.
@@ -359,7 +366,7 @@ jobs:
       # extra fifteen-minute cycle each time. The deployment evidence is worth less than knowing
       # why the data did not publish, and a passing smoke test is available from any green run.
       - name: Wait for the Pages deployment to serve
-        if: ${{ steps.bootstrap.outcome != 'failure' && steps.pages.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.bootstrap.outcome != 'failure' && steps.pages.outcome == 'success' }}
         run: |
           for attempt in 1 2 3 4 5 6 7 8 9 10; do
             CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 \
@@ -375,7 +382,7 @@ jobs:
           exit 1
 
       - name: Smoke test the real deployment
-        if: ${{ steps.bootstrap.outcome != 'failure' && steps.pages.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.bootstrap.outcome != 'failure' && steps.pages.outcome == 'success' }}
         run: node scripts/smoke-test.mjs "${{ steps.pages.outputs.url }}" "${{ steps.worker.outputs.url }}"
 
       # Separate from the smoke test on purpose. The smoke test asserts the deployment is sound
@@ -388,7 +395,7 @@ jobs:
       # changed the frontend was the one run with no evidence behind it.
       - name: Verify real data through the deployed API
         id: verify
-        if: ${{ steps.bootstrap.outcome != 'failure' && steps.pages.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.bootstrap.outcome != 'failure' && steps.pages.outcome == 'success' }}
         run: |
           set -o pipefail
           node scripts/verify-deployment.mjs \
