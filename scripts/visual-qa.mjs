@@ -292,10 +292,49 @@ for (const size of WIDTHS) {
         const map = await page.evaluate(() => {
           const canvas = document.querySelector("canvas.maplibregl-canvas");
           const unavailable = document.querySelector(".map-view--unavailable");
+          const box = document.querySelector(".map-view__canvas")?.getBoundingClientRect();
+
+          /*
+           * Counting markers is not enough, and this is the check that was missing.
+           *
+           * Our own `.map-marker` rule set `position: relative`, which beat MapLibre's
+           * `position: absolute` because it is bundled later at equal specificity. Every marker
+           * dropped into normal flow, stacked down a map whose scrollHeight reached 26,682px, and
+           * was clipped by the map's own `overflow: hidden`. The DOM had 197 buses in it and the
+           * screen had none — so `markers > 0` passed while the page was visibly empty.
+           *
+           * What a person sees is whether the marker's rectangle is inside the map's rectangle.
+           */
+          const inside = (el) => {
+            if (!box) return false;
+            const r = el.getBoundingClientRect();
+            return (
+              r.width > 0 &&
+              r.height > 0 &&
+              r.right > box.left &&
+              r.left < box.right &&
+              r.bottom > box.top &&
+              r.top < box.bottom
+            );
+          };
+          const vehicles = [...document.querySelectorAll(".map-marker--vehicle")];
+          const stops = [...document.querySelectorAll(".map-marker--stop")];
+
           return {
             hasCanvas: !!canvas,
             unavailable: !!unavailable,
             markers: document.querySelectorAll(".map-marker").length,
+            vehiclesInDom: vehicles.length,
+            vehiclesOnScreen: vehicles.filter(inside).length,
+            stopsInDom: stops.length,
+            stopsOnScreen: stops.filter(inside).length,
+            // A map taller than its own box means the markers are in flow, whether or not any of
+            // them happens to land in frame.
+            mapScrollHeight: document.querySelector(".maplibregl-map")?.scrollHeight ?? 0,
+            // What the list says, which is what the API returned for this viewport.
+            listedBuses: Number(
+              document.querySelector("#vehicles-heading .lozenge")?.textContent?.trim() ?? "0",
+            ),
             attribution:
               document.querySelector(".maplibregl-ctrl-attrib")?.textContent?.trim() ?? "",
           };
@@ -336,6 +375,34 @@ for (const size of WIDTHS) {
           `${size.name}/live basemap actually paints`,
           paintedBytes > BLANK_CANVAS_BYTES,
           `${paintedBytes} bytes of rendered map (a blank one is a few hundred)`,
+        );
+
+        /*
+         * The check this whole script exists for: when the API returned buses, buses must be on
+         * the screen. Reported when the viewport genuinely has none, failed when it has some and
+         * none of them made it into the map's rectangle.
+         */
+        if (map.vehiclesInDom === 0) {
+          record(
+            `${size.name}/live shows the buses the API returned`,
+            true,
+            "no buses in this viewport at this moment, so there is nothing to draw",
+          );
+        } else {
+          record(
+            `${size.name}/live shows the buses the API returned`,
+            map.vehiclesOnScreen > 0,
+            `${map.vehiclesOnScreen} of ${map.vehiclesInDom} bus markers are inside the map` +
+              (map.vehiclesOnScreen === 0
+                ? ` — the list says ${map.listedBuses} buses are in view`
+                : ""),
+          );
+        }
+        record(
+          `${size.name}/live keeps its markers out of normal flow`,
+          map.mapScrollHeight > 0 && map.mapScrollHeight < 2000,
+          `the map's scrollHeight is ${map.mapScrollHeight}px` +
+            (map.mapScrollHeight >= 2000 ? " — markers are stacking in flow" : ""),
         );
         record(
           `${size.name}/live loads tiles from the configured host`,

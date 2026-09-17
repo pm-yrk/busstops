@@ -29,6 +29,33 @@ let failures = 0;
 /** Facts carried between checks: a stop found by one check is the input to the next. */
 const observed = {};
 
+/**
+ * Whether a passenger standing at a stop right now should expect a bus.
+ *
+ * Several checks below used to accept zero on the grounds that "an empty board is legitimate at
+ * night". That is true at night and false at nine in the morning, and while the timetable was
+ * genuinely missing the excuse covered it permanently: run 28 reported
+ * "Piccadilly: 0 departures, 0 routes" as a pass. Making the tolerance conditional on the clock
+ * keeps the honest case honest without letting it hide the broken one.
+ *
+ * Europe/London rather than UTC, because that is when the buses run.
+ */
+function inServiceHours(now = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Europe/London",
+    hour: "numeric",
+    hour12: false,
+    weekday: "short",
+  }).formatToParts(now);
+  const hour = Number(parts.find((part) => part.type === "hour")?.value ?? "0");
+  const weekday = parts.find((part) => part.type === "weekday")?.value ?? "";
+  // 07:00-19:00 is well inside the span when every English town has a bus due somewhere.
+  const daytime = hour >= 7 && hour < 19;
+  return { daytime, weekday, hour, sunday: weekday === "Sun" };
+}
+
+const SERVICE_HOURS = inServiceHours();
+
 async function check(name, run) {
   try {
     const detail = await run();
@@ -130,7 +157,34 @@ await check("a stop can be selected and returns a departure board", async () => 
   assert(body?.meta?.generatedAt, "the stop response does not state its freshness");
   // Carried to the route check: this is the only response that names the services calling here.
   observed.routes = body?.data?.routes ?? [];
-  return `${stop.name}: ${departures.length} departures, ${observed.routes.length} routes, ${body.meta.degradation}`;
+
+  /*
+   * A stop the published timetable knows nothing about is a coverage failure at any hour. This
+   * check deliberately ran against `stopWithRoutes` where one exists, so zero routes here means
+   * no stop in the whole viewport had a service.
+   */
+  assert(
+    observed.routes.length > 0,
+    `the published timetable names no route calling at ${stop.name}`,
+  );
+
+  /*
+   * And a stop with routes, in service hours, must have something due. This is the check that
+   * separates "the timetable is published" from "a passenger can use it".
+   */
+  if (SERVICE_HOURS.daytime) {
+    assert(
+      departures.length > 0,
+      `${stop.name} has ${observed.routes.length} routes but nothing due at ` +
+        `${SERVICE_HOURS.hour}:00 ${SERVICE_HOURS.weekday} London time`,
+    );
+  }
+
+  return (
+    `${stop.name}: ${departures.length} departures, ${observed.routes.length} routes, ` +
+    `${body.meta.degradation}` +
+    (SERVICE_HOURS.daytime ? "" : " (outside service hours: departures not required)")
+  );
 });
 
 await check("search finds a real stop by name", async () => {
@@ -183,13 +237,18 @@ await check("nearby stops come back for a real point", async () => {
 
 await check("the viewport's stops carry the services that call at them", async () => {
   /*
-   * Reported rather than asserted at a threshold, because it is a property of how many timetable
-   * datasets the build took, not of the deployment. A zero here is the honest signal that this
-   * area has stops and no timetable — which is what a passenger would see as an empty board.
+   * This used to be reported rather than asserted, on the grounds that it measured how much
+   * timetable the build took rather than whether the deployment worked. That distinction stopped
+   * being true once the whole national archive was ingested: a viewport in a English city with
+   * no stop carrying a service now means the timetable did not reach the edge, and reporting it
+   * as a pass is how run 28 called an empty product verified.
    */
   assert(observed.stopsWithRoutes !== undefined, "the map check did not run");
-  const total = observed.stop ? "the viewport" : "no viewport";
-  return `${observed.stopsWithRoutes} of the returned stops have a service, in ${total}`;
+  assert(
+    observed.stopsWithRoutes > 0,
+    "not one stop in the viewport carries a service, so no board in this area can have a row",
+  );
+  return `${observed.stopsWithRoutes} of the returned stops have a service`;
 });
 
 await check("route detail answers without the Worker falling over", async () => {
@@ -226,24 +285,35 @@ await check("route detail answers without the Worker falling over", async () => 
 
 await check("a journey can be planned across real timetable data", async () => {
   /*
-   * Two points a kilometre apart in the same city, taken from stops the API returned, so the
-   * corridor is inside the planner's tile cap. "No route today" is a legitimate answer at 3am;
-   * a 500, or a refusal to accept the request at all, is not.
+   * A journey a person would actually make, not two points a diagonal kilometre apart.
+   *
+   * The old version took whichever stop the viewport happened to return and added 0.012 degrees
+   * to both coordinates, which lands in a field as often as not — so "0 options" told you
+   * nothing and was accepted as a pass. Leeds city centre to Leeds Bradford Airport is a route
+   * the network genuinely serves, all day, every day, by several operators. If that cannot be
+   * planned, the planner does not work.
    */
-  assert(observed.stop, "no stop was found by the earlier check");
-  const from = observed.stop.coordinate;
-  const to = { lat: from.lat + 0.012, lon: from.lon + 0.012 };
+  const from = { lat: 53.7965, lon: -1.5479 };
+  const to = { lat: 53.8659, lon: -1.6606 };
   const { response, body, text } = await getJson(
     `/v1/journeys?fromLat=${from.lat}&fromLon=${from.lon}&toLat=${to.lat}&toLon=${to.lon}`,
   );
   assert(response.status !== 500, `the Worker failed: ${describe(response, body, text)}`);
-  assert(
-    response.ok || response.status === 422 || response.status === 404,
-    `expected an answer or a stated reason, got ${describe(response, body, text)}`,
-  );
+  assert(response.ok, `expected an answer, got ${describe(response, body, text)}`);
   const options = body?.data?.options ?? [];
   const reason = body?.data?.reason ?? body?.error?.code ?? "none";
-  return response.ok ? `${options.length} option(s), reason ${reason}` : `stated: ${reason}`;
+
+  if (SERVICE_HOURS.daytime) {
+    assert(
+      options.length > 0,
+      `Leeds to Leeds Bradford Airport gave no option at ${SERVICE_HOURS.hour}:00 ` +
+        `${SERVICE_HOURS.weekday} London time (reason: ${reason})`,
+    );
+  }
+  return (
+    `Leeds → Leeds Bradford Airport: ${options.length} option(s), reason ${reason}` +
+    (SERVICE_HOURS.daytime ? "" : " (outside service hours: options not required)")
+  );
 });
 
 await check("the source health endpoint reports on real sources", async () => {

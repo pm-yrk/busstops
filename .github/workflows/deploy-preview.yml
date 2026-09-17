@@ -12,9 +12,14 @@ on:
   workflow_dispatch:
     inputs:
       bootstrap_data:
-        description: "Also publish the national network artifact to the preview bucket"
+        description: "Also rebuild and publish the national network artifact (~45 min)"
         type: boolean
-        default: true
+        # Off by default. The national GTFS build takes 43 minutes of a 45-minute job, which made
+        # every CSS fix cost a full ingest and starved the visual pass of the time it needed to
+        # run at all. The published artifact survives between deploys, so a normal deploy reuses
+        # the one already in the bucket; rebuilding it is a deliberate data task, asked for by
+        # turning this on.
+        default: false
 
 permissions:
   contents: read
@@ -45,7 +50,9 @@ jobs:
   preview:
     name: Build, provision and deploy the preview
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # Enough for a bootstrap run to finish and still leave the visual pass its time. A normal
+    # deploy without the bootstrap finishes in about five minutes and never approaches this.
+    timeout-minutes: 70
     outputs:
       worker_url: ${{ steps.worker.outputs.url }}
       pages_url: ${{ steps.pages.outputs.url }}
@@ -190,6 +197,16 @@ jobs:
           echo "url=$ALIAS" >> "$GITHUB_OUTPUT"
           echo "Pages deployed at $ALIAS"
 
+      # Installed before the data bootstrap, not after it.
+      #
+      # Run 28 spent 43 of its 45 minutes ingesting GTFS and was cancelled partway through apt-get
+      # — so the deploy produced no screenshots of the thing it had just deployed, which is the
+      # one output a person actually looks at. Two minutes of apt in front of the long step costs
+      # nothing and cannot be starved by it.
+      - name: Install a browser for the visual pass
+        if: ${{ steps.pages.outcome == 'success' }}
+        run: npx playwright install --with-deps chromium
+
       # ------------------------------------------------------ data bootstrap
       # Reads the whole BODS GTFS archive, not a capped slice of the dataset catalogue: this is
       # the step that decides how much of England has a departure board.
@@ -295,10 +312,6 @@ jobs:
       # And run it last. A step with an `if` is skipped once an earlier one has failed, so with
       # the visual pass first a slow tile host would have taken the data verification down with
       # it — hiding the more important answer behind the less important one.
-      - name: Install a browser for the visual pass
-        if: ${{ steps.bootstrap.outcome != 'failure' && steps.pages.outcome == 'success' }}
-        run: npx playwright install --with-deps chromium
-
       - name: Look at the deployed preview
         id: visual
         if: ${{ steps.bootstrap.outcome != 'failure' && steps.pages.outcome == 'success' }}

@@ -40,7 +40,24 @@
   cursor: pointer;
   display: grid;
   place-items: center;
-  position: relative;
+  /*
+   * No `position` here. MapLibre sets `position: absolute` on every marker it owns and then moves
+   * it with a transform; this rule used to say `relative`, which has the same specificity as
+   * MapLibre's and comes later in the bundle, so ours won and every marker dropped back into
+   * normal flow. They then stacked vertically inside the map — scrollHeight 26,682px for one
+   * Leeds viewport — and the transform offset each from its flow position instead of from the
+   * map's origin.
+   *
+   * The visible effect was specific and misleading: stops are added before vehicles, so the
+   * handful of markers that happened to land inside the 648px window were all stop flags, and
+   * every one of the 197 buses sat somewhere around y=18,000, clipped by the map's own
+   * `overflow: hidden`. The list said "Buses in view 197" beside a map with no buses on it.
+   *
+   * It survived the art bench because six markers all flow within the first 264px. It needs
+   * more than about fifteen markers to appear at all, which is every real viewport and no test
+   * fixture. `position: absolute` still establishes the containing block the route chip and the
+   * heading pip need, so nothing below has to change.
+   */
 }
 
 .map-marker__art {
