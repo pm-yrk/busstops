@@ -4,6 +4,77 @@ Last updated: 2026-09-17 (live buses proved in the deployment; the national time
 
 ## Current status
 
+### Error 1102 named, five cities green, the bucket back inside the free tier (2026-09-17)
+
+**The 503 has a name at last.** Runs 35 to 39 reported it as three hundred characters of
+Internet Explorer conditional comments, because that is what the first three hundred characters of
+a Cloudflare error page are. Run 40, with the error page actually parsed:
+
+```
+Cloudflare error 1102 — Worker exceeded resource limits
+  /v1/map          cf-ray a3c9fa1558b9d46b-IAD
+  /v1/routes/:id   cf-ray a3c9fa1cfe67d46b-IAD
+  /v1/journeys     cf-ray a3c9fa67af35d6af-IAD
+```
+
+1102 is the platform killing the isolate. It does not say whether the limit was CPU or memory, and
+nothing measured so far settles that, so it is not claimed either way. What is known:
+
+- The _same URL_ — `/v1/map?bbox=-2.26,53.46,-2.21,53.50&zoom=15` — passes at check 1 (400 stops),
+  fails at check 5, and then succeeds fifteen times out of fifteen at check 9 across five cities.
+  Identical input, three different outcomes in one run. That rules out per-request input size and
+  points at state accumulating in a reused isolate, or at a per-request ceiling this work sits
+  right on the edge of.
+- Measured parsed-to-source expansion, since every reader budget is denominated in characters of
+  source text: stops tile 1.21x, pattern tile 1.37x, pattern-trips 1.57x, departure shard 4.66x.
+  A budget in characters is not a budget in memory and is wrong by between one and five times
+  depending on which shard it is spent on. Recorded, not yet acted on.
+- `journeysServingStop` — unbounded, never expiring, never invalidated on a version change, and
+  dead — has been removed.
+
+Next: a wall-clock budget the Worker owns, so pattern enrichment stops and reports itself degraded
+rather than being killed, plus request timing in `meta` so a _successful_ request says how close to
+the edge it ran. That is what will separate CPU from memory.
+
+**Five cities pass.** Every sampled stop returns real routes and real destinations:
+
+| City       | Stop              | Routes | Due | Next                                    |
+| ---------- | ----------------- | ------ | --- | --------------------------------------- |
+| Leeds      | Hunslet Hall Road | 9      | 16  | 2 to Roundhay Park                      |
+| Manchester | Piccadilly        | 2      | 8   | 1 to Manchester Piccadilly Rail Station |
+| Birmingham | Bromsgrove Street | 3      | 13  | 45 to Longbridge Island                 |
+| Bristol    | Temple Meads Stn  | 20     | 20  | 8 to Temple Quarter Campus              |
+| York       | NRM               | 3      | 3   | 59 to Poppleton Bar Park & Ride         |
+
+York used to offer a bus called `Golden_Tours_Hop_On_Hop_Off`. The feed puts its key in
+`route_short_name`, which the first fix trusted; every candidate is cleaned now, and the Worker
+cleans again on read so a board is right without waiting sixty-six minutes for a rebuild.
+
+**Retention.** The bucket was 38,628,675,295 bytes across 54,415 objects against a 10 GiB free
+allowance — over the free tier, and therefore costing money, which is why it was pruned rather
+than left alone. Two passes so far:
+
+|                     | run 39                    | run 40              |
+| ------------------- | ------------------------- | ------------------- |
+| Deleted             | unknown (killed mid-loop) | 9,430               |
+| Rate                | not recorded              | 4.03 objects/second |
+| Stopped because     | step timeout              | time budget spent   |
+| Bytes before        | 38,628,675,295            | 23,985,716,811      |
+| Removable remaining | —                         | 15,045              |
+| Deletion failures   | —                         | 0                   |
+
+4.03 deletes a second against a sixteen-way pool confirms the ceiling is the account's, not the
+code's — the same ~4.35/s a national publish measured. Two or three more passes will finish it;
+projected end state is 8,124,438,709 bytes across 18,578 objects, inside the allowance.
+
+Run 39 also proved a workflow fault worth recording: the retention step failed on its timeout and
+GitHub skipped every step after it, including the verification the run existed to read. Housekeeping
+is `continue-on-error` now and the steps that state their own preconditions carry `!cancelled()`.
+
+**Weather** ran against the preview bucket for the first time: 870 cells requested, 600 answered,
+270 lost to `open_meteo rate limited` in the last three batches of nine, published across 9 tiles,
+432 requests a day against an allowance of 10,000.
+
 ### Real departures are on the deployed site; routes and journeys are not (2026-09-17)
 
 `Deploy Preview` run 33 (`35211138685`, a55694d) **published the national artifact** — 63.5
