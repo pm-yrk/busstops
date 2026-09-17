@@ -4,6 +4,97 @@ Last updated: 2026-09-17 (live buses proved in the deployment; the national time
 
 ## Current status
 
+### Run 43 named the cause, and it was the same cause twice (2026-09-17)
+
+**What run 43 proved.** `/v1/map` no longer hits error 1102 — twenty-five dense requests across
+five cities, zero platform error pages, diagnostics verbatim: `901ms of a 1800ms budget; 0
+object(s) read, 5 cached, 0 missing, 0 failed; 11.16 MiB decoded; 13633 record(s)`. Retention
+brought the bucket from 44,367 objects / 18.73 GB to **20,976 objects / 8.35 GB**, inside the
+10 GiB allowance, 9,511 deleted at 4.08/s with zero failures. Route detail survived four of five
+attempts where it used to die on the first, which is the locator fan-out having genuinely been the
+cost.
+
+**What it did not fix, and why.** Two failures, one cause. The map reported
+`enrichment was skipped (pattern_enrichment_budget), so 0 of the returned stops carry a service`
+on every dense viewport, and Leeds → Leeds Bradford Airport came back `incomplete_read`. Both were
+reading **pattern tiles** — which carry route geometry and reach 3,935,975 bytes each — against a
+three-mebibyte cap, to answer questions that are not about geometry. The map asks "what routes call
+at this stop". The planner asks "what stops does this pattern call at". Neither needs a polyline,
+and capping the bytes had turned an expensive read into permanent degradation, which is worse than
+either the cost or the error it was avoiding.
+
+So two new artifact families, both additive — a reader meeting an older publish sees neither field
+and takes the old path:
+
+- **`network/stop-routes`** — one row per stop, its route names, on the stops' own grid. A name is
+  tens of bytes where a polyline is megabytes, so the map reads the tiles it was already reading
+  and opens no pattern tile at all. Geometry is now read only when there is a live vehicle to
+  match, so a quiet viewport skips it entirely — and that is no longer reported as degraded,
+  because nothing was missed.
+- **`network/pattern-index`** — every pattern by its id, without its shape. The journey's read
+  order reverses to use it: trips first, then exactly the patterns those trips named.
+  `buildGraphFor` reads `stopSequence` and never touches a shape.
+
+**Two smaller findings from the same run.** The map's stop read and its live vehicle fetch were
+sequential, and BODS took 828ms of an 1800ms budget with the stop read queued behind it, so
+enrichment was declined before it started; they are different resources and run together now. And
+the repeated verification loop threw away every route diagnostic it had collected when it failed —
+`assert` throws before the summary is built — so the four requests that answered before attempt
+five reported nothing. The request that gets killed can never report anything, so the ones that
+live are the only evidence there is.
+
+### Bus Stops Pro has never had an input (2026-09-17)
+
+`run-batch.ts` names `network/segments`, reads it, finds nothing and stops. Nothing in the
+repository published that dataset — one constant naming a producer that did not exist — so every
+scheduled intelligence run since the first has ended on "No road segments published", and Pro has
+only ever been able to serve its dated demonstration snapshot. The red runs looked like an
+analytics problem and were a missing input.
+
+`pipelines/road-network` is the producer: bus-routable roads from OpenStreetMap, keeping the
+geometry the adapter's `normalizeOverpass` discards, cut at existing nodes rather than
+interpolated points, with ids derived from the way and the piece so re-extraction does not orphan
+the interval buckets aggregated against them. Coverage is six urban areas, stated in the artifact,
+because Overpass is a shared volunteer service whose policy asks for targeted queries and a
+national extract needs Geofabrik's PBF and a parser for it. A bounded coverage left unsaid is a
+claim that the quiet roads are clear.
+
+`pipelines/places` is the other half of the same shape: "York Minster" matched nothing because
+search knew about stops, routes and operators, and the answer to that is a gazetteer rather than a
+special case. A place is deliberately not a stop — no ATCO code, no departures, no live coverage —
+and a place result opens the planner with the destination filled in.
+
+### Passenger interactions that were drawn but not wired (2026-09-17)
+
+The buses on the map were painted and inert. Clicking one now opens a panel with route,
+destination, punctuality, movement, when it was last seen and the next stops, at street zoom and
+at neighbourhood zoom both.
+
+Four things were the same mistake — the number on the front of a bus being used as an identifier.
+`routePublicName` is "36"; several operators run one. The vehicle page linked to `/routes/36`,
+which the route endpoint looks up by service id, so every one of those links was a guaranteed 404.
+Map vehicles and vehicle detail carry `routeId` and `routePatternId` now, resolved where the
+viewport's own patterns make it unambiguous and null where they do not — and null means no link,
+because a link to somebody else's route is worse than none.
+
+`/vehicles/:ref` needs a viewport because the live feeds are area-scoped; requiring the _caller_ to
+have a map viewport was a choice, and it sent every "buses running now" link on every route page to
+"This link needs a map area". A position is enough to build the box from.
+
+`/live/stops/:stopId` was a route nothing read. The camera-focus effect it needed did not exist
+either, which is also why "Use my location" refetched data for a box the map was not looking at.
+
+The stop panel is three intentional shapes instead of 380px at every size, with the stop's real
+weather under NEXT BUS from the response the board already fetches. Feed names like
+`White_Rose_Shopping_Centre` are cleaned once at the read boundary, identifiers untouched. And the
+search loop was two bugs meeting: a route result linked to `/search?q=<its own title>`, and the
+page never read `?q=` anyway.
+
+**Gates.** 1,126 node tests, 155 web, 160 e2e; prettier, eslint `--max-warnings=0`, typecheck,
+preflight at `ci` and `deploy`, secret scan clean across 506 tracked files. Run 44 is the single
+expensive run carrying all of it: the national rebuild the two new families require, the road
+segments, the places gazetteer, the live collection and the analytics batch.
+
 ### The two remaining 1102 paths, bounded at the stage that was actually costing (2026-09-17)
 
 **What was still failing.** Run 42 eliminated error 1102 on `/v1/map` and left two endpoints
