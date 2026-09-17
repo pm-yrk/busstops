@@ -258,6 +258,15 @@ jobs:
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          # Shorter when this run also rebuilds the network.
+          #
+          # The two together are past the job's own limit: run 43 spent forty-five minutes here
+          # deleting at the account's write ceiling, which is a rate this repository does not
+          # control, and a bootstrap wants up to a hundred and ten. Retention resumes from the
+          # oldest version left on the next pass, so cutting its budget costs a later start
+          # rather than a lost prune — whereas a job that runs out of time cancels the
+          # verification, which is the thing the run exists to produce.
+          PRUNE_TIME_BUDGET_MS: ${{ inputs.bootstrap_data && '1080000' || '2100000' }}
         run: |
           if [ "${{ inputs.prune_artifacts }}" = "apply" ]; then
             npx tsx pipelines/static-network/run-prune.ts --apply
