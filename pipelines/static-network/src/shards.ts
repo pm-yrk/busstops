@@ -116,14 +116,23 @@ export const MAX_SHARD_BYTES = 8 * 1024 * 1024;
  * is written to every tile it crosses, so a finer grid costs copies; a trip is written once, to
  * the tile its first call is in, so a finer grid costs only objects. The first national run made
  * that the expensive currency — the REST API the pipeline publishes through answers about four
- * writes a second, so an eighth-degree grid across seven windows and two dates would have been
- * two and a half thousand objects and ten minutes of a build's time limit before a single trip
- * was read back. A half degree with eight-hour windows is a few hundred, and a corridor still
- * reads only the tiles it crosses.
+ * writes a second — so the grid opened out to half a degree with eight-hour windows, a few
+ * hundred objects rather than a few thousand.
+ *
+ * Half a degree was too far, and London said so. The run published 832 trip shards and refused
+ * four: `102_-1` and `103_-1`, which is 51.0-51.5N by 0.5W-0.0E, at 11.1 to 12.5 MB against an
+ * 8 MiB budget — 86,229 of 773,393 trips, the whole capital's morning, dropped from the planner.
+ * The largest shard that did publish was another London tile at 8,351,605 bytes, which is to say
+ * it fitted by 37 kilobytes.
+ *
+ * A quarter degree puts the worst of those at about three megabytes and roughly doubles the
+ * object count to something still measured in hundreds. Density is why: the same grid that holds
+ * a county's trips holds London's, and the answer is a grid fine enough for the densest place
+ * rather than one chosen for the average.
  */
 export const STOP_TILE_DEGREES = 0.25;
 export const PATTERN_TILE_DEGREES = 0.125;
-export const TRIP_TILE_DEGREES = 0.5;
+export const TRIP_TILE_DEGREES = 0.25;
 
 export function stopTileDataset(tile: string): string {
   return `${SHARDED.stopTile}/${tile}`;

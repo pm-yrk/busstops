@@ -198,6 +198,9 @@ await check("a stop can be selected and returns a departure board", async () => 
  *
  * All five are outside London, so these are BODS and NaPTAN rather than TfL.
  */
+/** How many stops per city are asked for a board before concluding the city has none. */
+const SAMPLED_STOPS_PER_CITY = 5;
+
 const CITIES = [
   { name: "Leeds", bbox: "-1.57,53.78,-1.52,53.81" },
   { name: "Manchester", bbox: "-2.26,53.46,-2.21,53.50" },
@@ -258,61 +261,81 @@ await check("five cities across England return their real routes and departures"
     const stops = map.body?.data?.stops ?? [];
     assert(stops.length > 0, `${city.name}: the map returned no stops at all`);
 
-    const withRoutes = stops.filter((stop) => (stop.routePublicNames ?? []).length > 0);
+    /*
+     * Which stops to try, and why not the ones the map says carry a service.
+     *
+     * `routePublicNames` on a map stop is a hard-coded empty array in the Worker — the field is
+     * declared in the contract and never filled. Selecting by it, or asserting on it, tests
+     * nothing but the stub: the first version of this check did exactly that, and would have
+     * failed in all five cities whether or not a single board worked.
+     *
+     * So the map is used only to find real stops, and the board endpoint is asked directly. A few
+     * are tried rather than one, because an individual stop can legitimately be out of use, on a
+     * diversion, or served in one direction only. What cannot be true is that none of several
+     * stops in a city centre has a service.
+     */
+    const candidates = stops.slice(0, SAMPLED_STOPS_PER_CITY);
+    const boards = [];
+    for (const candidate of candidates) {
+      const board = await getJson(`/v1/stops/${encodeURIComponent(candidate.id)}`);
+      assert(
+        board.response.ok,
+        `${city.name}: ${candidate.name} gave ${describe(board.response, board.body, board.text)}`,
+      );
+      boards.push({
+        // The board's own name for the stop, not the map's. They are the same stop and must
+        // agree, and the "signed for where it already is" check below compares against this one.
+        name: board.body?.data?.stop?.name ?? candidate.name,
+        mapName: candidate.name,
+        routes: board.body?.data?.routes ?? [],
+        departures: board.body?.data?.departures ?? [],
+        degradation: board.body?.meta?.degradation ?? "unknown",
+      });
+    }
+
+    for (const board of boards) {
+      assert(
+        board.name === board.mapName,
+        `${city.name}: the map calls it ${board.mapName}, the board calls it ${board.name}`,
+      );
+    }
+
+    const served = boards.filter((board) => board.routes.length > 0);
     assert(
-      withRoutes.length > 0,
-      `${city.name}: not one of ${stops.length} stops in the city centre has a service in the ` +
-        `published timetable`,
+      served.length > 0,
+      `${city.name}: the published timetable names no route calling at any of ` +
+        `${boards.length} city-centre stops (${boards.map((b) => b.name).join(", ")})`,
     );
 
-    // The busiest stop in the viewport, which is the one a passenger is most likely to be at and
-    // the one least excusable to have nothing at.
-    const target = withRoutes.sort(
-      (a, b) => (b.routePublicNames?.length ?? 0) - (a.routePublicNames?.length ?? 0),
-    )[0];
-
-    const board = await getJson(`/v1/stops/${encodeURIComponent(target.id)}`);
-    assert(
-      board.response.ok,
-      `${city.name}: ${target.name} gave ${describe(board.response, board.body, board.text)}`,
-    );
-    const routes = board.body?.data?.routes ?? [];
-    const departures = board.body?.data?.departures ?? [];
-    const degradation = board.body?.meta?.degradation ?? "unknown";
-    // The board's own name for the stop, not the map's. They are the same stop and should agree,
-    // but the "signed for where it already is" check compares against this one, and comparing
-    // against the map's copy made that check silently unable to fire.
-    const stopName = board.body?.data?.stop?.name ?? target.name;
-    assert(
-      stopName === target.name,
-      `${city.name}: the map calls it ${target.name}, the board calls it ${stopName}`,
-    );
-
-    assert(
-      routes.length > 0,
-      `${city.name}: the published timetable names no route calling at ${stopName}`,
-    );
     /*
      * A board that could not read its shard must not look like a quiet one. The reader reports a
      * failed shard and the Worker degrades on it, so "normal" with nothing due is a claim that
-     * there is genuinely nothing due — and in service hours at the busiest stop in a city centre
-     * that claim is false.
+     * there is genuinely nothing due — and in service hours, at none of several stops in a city
+     * centre, that claim is false.
      */
+    const due = served.filter((board) => board.departures.length > 0);
     if (SERVICE_HOURS.daytime) {
       assert(
-        departures.length > 0,
-        `${city.name}: ${stopName} has ${routes.length} routes but nothing due at ` +
-          `${SERVICE_HOURS.hour}:00 ${SERVICE_HOURS.weekday} London time (degradation: ${degradation})`,
+        due.length > 0,
+        `${city.name}: ${served.length} stop(s) carry routes but none has anything due at ` +
+          `${SERVICE_HOURS.hour}:00 ${SERVICE_HOURS.weekday} London time ` +
+          `(${served.map((b) => `${b.name}: ${b.routes.length} routes, ${b.degradation}`).join("; ")})`,
       );
     }
-    for (const departure of departures)
-      assertDepartureIsPlausible(departure, target.name, city.name);
 
+    for (const board of boards) {
+      for (const departure of board.departures) {
+        assertDepartureIsPlausible(departure, board.name, city.name);
+      }
+    }
+
+    const best = due[0] ?? served[0];
     lines.push(
-      `${city.name}: ${stopName} — ${routes.length} routes, ${departures.length} due` +
-        (departures[0]
-          ? `, next ${departures[0].serviceRoutePublicName} to ${departures[0].destinationName}`
-          : ""),
+      `${city.name}: ${best.name} — ${best.routes.length} routes, ${best.departures.length} due` +
+        (best.departures[0]
+          ? `, next ${best.departures[0].serviceRoutePublicName} to ${best.departures[0].destinationName}`
+          : "") +
+        ` (${served.length}/${boards.length} stops served)`,
     );
   }
   return lines.join("; ");

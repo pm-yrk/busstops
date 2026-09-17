@@ -4,6 +4,7 @@ import {
   type GovernorState,
   type MapResponseData,
   type SearchResult,
+  type ServiceRoute,
 } from "@busstops/contracts";
 import { safeModeActive } from "@busstops/governor";
 import { DisruptionReader, noticesFor } from "./disruption-reader.js";
@@ -234,6 +235,38 @@ router.get("/v1/map", async (_request, { env, url }) => {
     ? await network.stopsInBoundingBox(bbox, MAP_QUERY_LIMITS.maxStops)
     : { stops: [], truncated: false };
 
+  /*
+   * The patterns crossing this viewport, read once.
+   *
+   * They were loaded inside the live-vehicle block, for matching an observation to a route. They
+   * are needed whether or not live vehicles are being drawn, because a stop's own services come
+   * from the same place — and while they did not, every stop on the map said it had none.
+   */
+  const geometries = network ? await network.patternsInBoundingBox(bbox) : [];
+  const services = network ? await network.services() : new Map<string, ServiceRoute>();
+
+  /*
+   * Which services call at each stop on screen.
+   *
+   * `routePublicNames` was a literal `[]` in this projection. The contract declares it, the map
+   * marker reads it, and the deployed check that asks whether a viewport's stops carry their
+   * services could only ever fail — which it did, reporting "not one stop in the viewport carries
+   * a service" and blaming the national timetable for a hard-coded empty array.
+   *
+   * Built by walking the patterns once rather than per stop: a viewport holds a few hundred
+   * patterns and a few hundred stops, and the per-stop version is the product of the two.
+   */
+  const routeNamesByStopId = new Map<string, Set<string>>();
+  for (const geometry of geometries) {
+    const service = services.get(geometry.pattern.serviceRouteId);
+    if (!service) continue;
+    for (const stopId of geometry.pattern.stopSequence) {
+      const names = routeNamesByStopId.get(stopId);
+      if (names) names.add(service.publicName);
+      else routeNamesByStopId.set(stopId, new Set([service.publicName]));
+    }
+  }
+
   let vehicles: MapResponseData["vehicles"] = [];
   let vehiclesTruncated = false;
   let sources: Awaited<ReturnType<LiveService["vehiclesInBoundingBox"]>>["health"] = [];
@@ -247,15 +280,12 @@ router.get("/v1/map", async (_request, { env, url }) => {
     failedSources = live.failedSources;
     observedAt = oldestObservedAt(live.observations);
 
-    // Matching only needs the routes that run through the viewport being drawn.
-    const geometries = network ? await network.patternsInBoundingBox(bbox) : [];
     const capped = live.observations.slice(0, MAP_QUERY_LIMITS.maxVehicles);
     vehiclesTruncated = live.observations.length > capped.length;
 
     const patternsById = new Map(
       geometries.map((geometry) => [geometry.pattern.id, geometry.pattern]),
     );
-    const services = network ? await network.services() : new Map();
 
     vehicles = capped.map((observation) => {
       const context = live.journeyContext.get(observation.vehicleRef);
@@ -305,7 +335,9 @@ router.get("/v1/map", async (_request, { env, url }) => {
       name: stop.name,
       ...(stop.indicator === undefined ? {} : { indicator: stop.indicator }),
       coordinate: stop.locationCoordinate,
-      routePublicNames: [],
+      // Sorted so the same stop lists its services in the same order between requests, which a
+      // marker label needs in order not to reshuffle as the map refreshes.
+      routePublicNames: [...(routeNamesByStopId.get(stop.id) ?? [])].sort(),
       hasLiveCoverage: liveAllowed,
     })),
     vehicles,

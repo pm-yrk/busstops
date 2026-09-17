@@ -302,6 +302,43 @@ describe("GET /v1/map", () => {
     expect(parsed.data!.meta.generatedAt).toBeDefined();
   });
 
+  /*
+   * `routePublicNames` was a literal `[]` in the map projection: declared in the contract, read by
+   * the marker, and never filled. Nothing asserted it, so the stub survived a deployed check whose
+   * whole purpose was to ask this question — it reported "not one stop in the viewport carries a
+   * service" and blamed the national timetable for a hard-coded empty array.
+   */
+  it("tells each stop which services call at it", async () => {
+    const store = await publishedStore();
+    const response = await worker.fetch(
+      get("/v1/map?bbox=-1.6,53.7,-1.5,53.85&zoom=14"),
+      makeEnv(store),
+      ctx,
+    );
+    const body = (await response.json()) as {
+      data: { stops: Array<{ id: string; name: string; routePublicNames: string[] }> };
+    };
+
+    const network = completeNetwork();
+    // What the published network says is true, computed independently of the Worker.
+    const expected = new Map<string, Set<string>>();
+    for (const pattern of network.patterns) {
+      const service = network.services.find((candidate) => candidate.id === pattern.serviceRouteId);
+      if (!service) continue;
+      for (const stopId of pattern.stopSequence) {
+        const names = expected.get(stopId) ?? new Set<string>();
+        names.add(service.publicName);
+        expected.set(stopId, names);
+      }
+    }
+
+    const served = body.data.stops.filter((stop) => stop.routePublicNames.length > 0);
+    expect(served.length).toBeGreaterThan(0);
+    for (const stop of body.data.stops) {
+      expect(stop.routePublicNames).toEqual([...(expected.get(stop.id) ?? [])].sort());
+    }
+  });
+
   it("includes live vehicles from the viewport feed", async () => {
     const store = await publishedStore();
     const env = makeEnv(store);

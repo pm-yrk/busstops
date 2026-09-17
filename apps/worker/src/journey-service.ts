@@ -31,12 +31,17 @@ export const JOURNEY_LIMITS = {
   /**
    * More tiles than this means a journey longer than this planner is built for.
    *
-   * Counted on the trip grid, which is half a degree — the grid the trips are published on. A
-   * corridor across a city is one or two of these and a long local journey four; eight leaves
+   * Counted on the trip grid, which is a quarter degree — the grid the trips are published on,
+   * halved from a half degree after London's trip shards went over the byte budget at that size.
+   * A corridor across a city is one or two of these and a long local journey four; sixteen leaves
    * room for a diagonal one without admitting a cross-country query this planner is not built to
    * answer.
+   *
+   * This constant has to move whenever the grid does. It was six for half-degree journey tiles,
+   * and left at six it silently refused every journey longer than a mile as "too far" — a grid
+   * change arriving as a product limitation rather than as a failure.
    */
-  maxTiles: 8,
+  maxTiles: 16,
   /** Upper bound on graph size, so one request cannot exhaust the isolate. */
   maxTrips: 6000,
   maxStops: 4000,

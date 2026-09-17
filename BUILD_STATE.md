@@ -4,6 +4,58 @@ Last updated: 2026-09-17 (live buses proved in the deployment; the national time
 
 ## Current status
 
+### Real departures are on the deployed site; routes and journeys are not (2026-09-17)
+
+`Deploy Preview` run 33 (`35211138685`, a55694d) **published the national artifact** — 63.5
+minutes, `outcome: published`, 349,589 stops, 13,579 services, 773,393 journeys — and the
+passenger-facing result is that a person clicking a real stop on the deployed map now sees real
+upcoming buses. Visual QA: **84 of 84**.
+
+| Width   | City  | Buses inside the map | Stop clicked   | Board      |
+| ------- | ----- | -------------------- | -------------- | ---------- |
+| desktop | Leeds | 167 of 167           | Merrion D      | **4 rows** |
+| desktop | York  | 73 of 73             | Eboracum Way   | **3 rows** |
+| tablet  | Leeds | 166 of 166           | Merrion E      | **4 rows** |
+| tablet  | York  | 72 of 72             | Willerby House | 0 rows     |
+| phone   | Leeds | 169 of 169           | LGI A&E        | **4 rows** |
+| phone   | York  | 73 of 73             | Langley House  | **2 rows** |
+
+**The departure index is settled.** Every row emitted was published, and the sizing held:
+
+```
+"departures": { "published": 1024, "rows": 29358096, "rowsEmitted": 29358096,
+                "failed": [], "oversized": [],
+                "largest": { "network/departures/2026-09-17/125", 35905 records, 2518894 bytes } }
+```
+
+1,024 objects against 7,168, every row published, largest shard 2.5 MB against an 8 MiB budget.
+The bucket spread is not perfectly even — the largest shard holds 35,905 calls against a mean of
+28,670 — which is what a hash gives and is well inside the margin.
+
+**Three checks failed, and they are three different things.**
+
+1. **The planner's trips lost London.** 687,164 of 773,393 published; four shards refused as
+   oversized, all of them `102_-1` and `103_-1` — 51.0-51.5N by 0.5W-0.0E — at 11.1 to 12.5 MB.
+   That is a regression introduced by opening the trip grid to half a degree, and the largest
+   shard that _did_ publish was another London tile at 8,351,605 bytes, fitting by 37 kilobytes.
+   The grid is now a quarter degree and `maxTiles` 16 to match.
+
+2. **`routePublicNames` was a hard-coded `[]` in the Worker's map projection.** The contract
+   declares it, the marker reads it, nothing filled it. So the check "the viewport's stops carry
+   the services that call at them" could only ever fail, and its message blamed the national
+   timetable for a stub. It is populated now, from the patterns already read for the viewport,
+   and a test fails against the stub.
+
+3. **Leeds -> Leeds Bradford Airport still plans nothing, and Manchester Piccadilly still reports
+   no route calling at it.** Not yet root-caused, and not guessed at here. The pattern shards
+   published without failure or truncation (`truncated` names only `search-prefix/bound_`), the
+   ids on both sides of the join are `deterministicUuid("stop", atcoCode)`, and the tile reader
+   drops whole tiles rather than parts of them — so the obvious explanations are all ruled out
+   and the next step is to reproduce the join against real pattern data rather than fixtures.
+
+Not claimed: that any of the three fixes above works against real data. Run 33's artifact is in
+the bucket, so a deploy without a bootstrap can test (2) and (3) in minutes; (1) needs a rebuild.
+
 ### The timetable publishes; the write budget is what it ran out of (2026-09-17)
 
 **Live buses are done and deployed.** `Deploy Preview` run 30 proved the CSS positioning fix — at
