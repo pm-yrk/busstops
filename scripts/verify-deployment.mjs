@@ -580,6 +580,12 @@ await check("the pattern-heavy endpoints survive dense cities, repeatedly", asyn
   let peakChars = 0;
   let peakObjects = 0;
   let peakMs = 0;
+  let routeRequests = 0;
+  let routePeakChars = 0;
+  let routePeakObjects = 0;
+  let routePeakMs = 0;
+  let routeWorstMs = -1;
+  let routeWorst = "no route detail was sampled";
 
   for (const city of CITIES) {
     let mapOk = 0;
@@ -647,42 +653,100 @@ await check("the pattern-heavy endpoints survive dense cities, repeatedly", asyn
       peakObjects = Math.max(peakObjects, diagnostics.objectsRequested ?? 0);
       peakMs = Math.max(peakMs, diagnostics.elapsedMs ?? 0);
 
-      // A route that genuinely calls in this city, taken from a stop the map just returned.
+      // Routes that genuinely call in this city, taken from a stop the map just returned.
       const stop = (map.body?.data?.stops ?? [])[0];
       if (!stop) continue;
       const board = await getJson(`/v1/stops/${encodeURIComponent(stop.id)}`);
-      const route = (board.body?.data?.routes ?? [])[0];
-      if (!route?.id) continue;
-      sampledRoute = route.publicName ?? route.id;
-
-      const detail = await getJson(`/v1/routes/${encodeURIComponent(route.id)}`);
-      const detailHtml = detail.text.trimStart().toLowerCase().startsWith("<!doctype");
-      if (detailHtml || detail.response.status === 503) platformErrors += 1;
-      assert(
-        !detailHtml,
-        `${city.name}: /v1/routes/${route.id} answered the platform's error page, not the ` +
-          `Worker (${detail.response.status}) on attempt ${String(attempt + 1)}`,
-      );
-      assert(
-        detail.response.ok,
-        `${city.name}: route detail gave ${describe(detail.response, detail.body, detail.text)}`,
-      );
-      routeOk += 1;
-
       /*
-       * Completeness is a fact about the answer, not a confidence score. A capped read must say
-       * so; what must never happen is a truncated variant list presented as the route's extent.
+       * More than one route per attempt, and different ones.
+       *
+       * The loop used to take the first route of the first stop every time, so five attempts in
+       * Leeds were five requests for the same route and the fifth was answered from a warm cache.
+       * The failure being hunted is what a *sequence of different* route pages leaves in an
+       * isolate, so the sample has to move.
        */
-      const complete = detail.body?.data?.complete;
-      const coverage = detail.body?.meta?.coverage;
-      if (complete === false) {
-        routeIncomplete += 1;
+      const routes = (board.body?.data?.routes ?? []).filter((candidate) => candidate?.id);
+      if (routes.length === 0) continue;
+      const chosen = [routes[attempt % routes.length], routes[(attempt + 1) % routes.length]]
+        .filter(Boolean)
+        .filter((candidate, at, all) => all.findIndex((r) => r.id === candidate.id) === at);
+
+      for (const route of chosen) {
+        sampledRoute = route.publicName ?? route.id;
+
+        const detail = await getJson(`/v1/routes/${encodeURIComponent(route.id)}`);
+        routeRequests += 1;
+        const detailHtml = detail.text.trimStart().toLowerCase().startsWith("<!doctype");
+        if (detailHtml || detail.response.status === 503) platformErrors += 1;
         assert(
-          coverage === 0,
-          `${city.name}: route detail says it is incomplete but reports coverage ${String(coverage)}`,
+          !detailHtml,
+          `${city.name}: /v1/routes/${route.id} answered the platform's error page, not the ` +
+            `Worker (${detail.response.status}${describePlatformPage(detail.response, detail.text)}) ` +
+            `on attempt ` +
+            `${String(attempt + 1)}`,
         );
-      } else if (complete === true) {
-        routeComplete += 1;
+        assert(
+          detail.response.ok,
+          `${city.name}: route detail gave ${describe(detail.response, detail.body, detail.text)}`,
+        );
+        routeOk += 1;
+
+        /*
+         * What the route page actually cost, by stage.
+         *
+         * Run 42 had the pattern read measured and route detail still died, so the rest of the
+         * handler is on the ledger now: the index, services, operators, stop resolution, the live
+         * feed. This is the line that says which of them is expensive, rather than leaving it to
+         * be guessed at from the outside.
+         */
+        const routeDiagnostics = detail.body?.meta?.diagnostics;
+        assert(routeDiagnostics, `${city.name}: route detail carries no diagnostics`);
+        routePeakMs = Math.max(routePeakMs, routeDiagnostics.elapsedMs ?? 0);
+        routePeakChars = Math.max(routePeakChars, routeDiagnostics.chars ?? 0);
+        routePeakObjects = Math.max(routePeakObjects, routeDiagnostics.objectsRequested ?? 0);
+        if ((routeDiagnostics.elapsedMs ?? 0) >= routeWorstMs) {
+          routeWorstMs = routeDiagnostics.elapsedMs ?? 0;
+          routeWorst =
+            `${city.name} ${sampledRoute}: ` +
+            Object.entries(routeDiagnostics.stages ?? {})
+              .map(([stage, ms]) => `${stage}=${ms}ms`)
+              .join(" ") +
+            `; ${String(routeDiagnostics.objectsRequested ?? 0)} object(s), ` +
+            `${((routeDiagnostics.chars ?? 0) / 1048576).toFixed(2)} MiB, ` +
+            `${String(routeDiagnostics.stopTilesRequested ?? 0)} stop tile(s), ` +
+            `${String(routeDiagnostics.stopsResolved ?? 0)}/${String(routeDiagnostics.stopsRequested ?? 0)} stop(s)` +
+            (routeDiagnostics.liveLookupSkipped ? ", live skipped" : "") +
+            (routeDiagnostics.liveBoxCapped ? ", live area capped" : "");
+        }
+
+        /*
+         * Completeness is a fact about the answer, not a confidence score. A capped read must say
+         * so; what must never happen is a truncated variant list presented as the route's extent.
+         */
+        const complete = detail.body?.data?.complete;
+        const coverage = detail.body?.meta?.coverage;
+        if (complete === false) {
+          routeIncomplete += 1;
+          assert(
+            coverage === 0,
+            `${city.name}: route detail says it is incomplete but reports coverage ${String(coverage)}`,
+          );
+        } else if (complete === true) {
+          routeComplete += 1;
+          /*
+           * And a complete route has to be a route. `complete: true` with no stops on it would be
+           * the same wrong answer the flag exists to prevent, arrived at from the other side.
+           */
+          const variants = detail.body?.data?.variants ?? [];
+          const stops = variants.reduce(
+            (total, variant) => total + (variant.stops?.length ?? 0),
+            0,
+          );
+          assert(
+            stops > 0,
+            `${city.name}: route ${sampledRoute} calls itself complete and lists no stops`,
+          );
+        }
       }
     }
 
@@ -698,10 +762,17 @@ await check("the pattern-heavy endpoints survive dense cities, repeatedly", asyn
     mapRequests >= 20,
     `only ${String(mapRequests)} dense map requests were made; twenty is the bar`,
   );
+  assert(
+    routeRequests >= 20,
+    `only ${String(routeRequests)} route-detail requests were made; twenty is the bar`,
+  );
   return (
-    `${String(mapRequests)} dense map requests, no platform error pages; ` +
-    `${String(degradedResponses)} answered degraded; peak ${String(peakObjects)} object(s), ` +
-    `${(peakChars / 1048576).toFixed(2)} MiB decoded, ${String(peakMs)}ms. ` +
+    `${String(mapRequests)} dense map requests and ${String(routeRequests)} route-detail ` +
+    `requests, no platform error pages; ${String(degradedResponses)} maps answered degraded; ` +
+    `map peak ${String(peakObjects)} object(s), ${(peakChars / 1048576).toFixed(2)} MiB decoded, ` +
+    `${String(peakMs)}ms; route peak ${String(routePeakObjects)} object(s), ` +
+    `${(routePeakChars / 1048576).toFixed(2)} MiB decoded, ${String(routePeakMs)}ms. ` +
+    `Slowest route page — ${routeWorst}. ` +
     lines.join("; ")
   );
 });
@@ -721,6 +792,20 @@ await check("a journey can be planned across real timetable data", async () => {
   const { response, body, text } = await getJson(
     `/v1/journeys?fromLat=${from.lat}&fromLon=${from.lon}&toLat=${to.lat}&toLon=${to.lon}`,
   );
+  /*
+   * The platform's error page first, by name.
+   *
+   * A journey that ends in error 1102 is the Worker being killed, and it arrives as HTML with no
+   * CORS header on it — which a browser reports as a CORS failure and a check that only looked at
+   * the status reported as "expected an answer, got 503". Saying which is which is the difference
+   * between a lead and a shrug.
+   */
+  const isHtml = text.trimStart().toLowerCase().startsWith("<!doctype") || /<html/i.test(text);
+  assert(
+    !isHtml,
+    `the platform answered instead of the Worker: ${response.status}` +
+      describePlatformPage(response, text),
+  );
   assert(response.status !== 500, `the Worker failed: ${describe(response, body, text)}`);
   assert(response.ok, `expected an answer, got ${describe(response, body, text)}`);
   const options = body?.data?.options ?? [];
@@ -736,8 +821,11 @@ await check("a journey can be planned across real timetable data", async () => {
   const diagnostics = body?.data?.diagnostics ?? null;
   const explained = diagnostics
     ? `${diagnostics.code}: ${diagnostics.corridorTiles} corridor tile(s), ` +
-      `windows [${diagnostics.windows.join(",")}], ${diagnostics.shardsRead} shard(s) read and ` +
-      `${diagnostics.shardsMissing} missing, ${diagnostics.tripsLoaded} trip(s) loaded ` +
+      `windows [${diagnostics.windows.join(",")}], ` +
+      `${diagnostics.shardsRead} of ${diagnostics.shardsRequested ?? "?"} shard(s) read, ` +
+      `${diagnostics.shardsMissing} missing, ${diagnostics.shardsSkipped ?? 0} left unopened, ` +
+      `${diagnostics.tripsFiltered ?? 0} row(s) dropped while parsing, ` +
+      `${diagnostics.tripsLoaded} trip(s) loaded ` +
       `(${diagnostics.tripsWithPattern} matched a pattern, ${diagnostics.tripsWithoutPattern} did not), ` +
       `${diagnostics.tripsInGraph} in the graph over ${diagnostics.stopsInGraph} stop(s) ` +
       `and ${diagnostics.transferEdges} transfer edge(s); ` +
@@ -751,13 +839,28 @@ await check("a journey can be planned across real timetable data", async () => {
             .map(([stage, ms]) => `${stage}=${ms}ms`)
             .join(" ")}` +
           (typeof diagnostics.tripChars === "number"
-            ? `; ${(diagnostics.tripChars / 1048576).toFixed(2)} MiB of trip text decoded`
+            ? `; ${(diagnostics.tripChars / 1048576).toFixed(2)} MiB of trip text decoded` +
+              (typeof diagnostics.tripCharBudget === "number"
+                ? ` of a ${(diagnostics.tripCharBudget / 1048576).toFixed(0)} MiB budget`
+                : "")
             : "")
         : "") +
       (diagnostics.failures.length > 0
         ? `; failures: ${diagnostics.failures.map((f) => `${f.dataset} (${f.reason})`).join(", ")}`
         : "")
     : "no diagnostics in the response";
+
+  /*
+   * A corridor read short is a distinct failure with a distinct fix, and it is named.
+   *
+   * The planner refuses rather than offering a plan built on part of the timetable, which is the
+   * right behaviour — but it is not a passing run. Reporting it as "gave no option" would send
+   * the next person looking at the search when the answer is in the read budget.
+   */
+  assert(
+    !diagnostics || diagnostics.code !== "incomplete_read",
+    `the corridor was not read in full, so the planner refused: ${explained}`,
+  );
 
   if (SERVICE_HOURS.daytime) {
     assert(
@@ -811,7 +914,8 @@ await check("a journey can be planned across real timetable data", async () => {
         assert(minutes <= 60, `${at} is a ${Math.round(minutes)}-minute walk`);
       } else {
         // A bus leg is a real vehicle on a real pattern, not an abstract hop between points.
-        assert(leg.routePatternId, `${at} is a ${leg.mode} leg on no route`);
+        assert(leg.routeId, `${at} is a ${leg.mode} leg with no service identity`);
+        assert(leg.routeName, `${at} is a ${leg.mode} leg with no route number on it`);
         assert(leg.fromStopId && leg.toStopId, `${at} is a ${leg.mode} leg not between two stops`);
         assert(minutes <= 240, `${at} is a ${Math.round(minutes)}-minute bus ride`);
       }
@@ -820,6 +924,12 @@ await check("a journey can be planned across real timetable data", async () => {
       assert(
         previousArrival === null || departs >= previousArrival,
         `${at} departs before the previous leg arrives — the legs do not join up`,
+      );
+      // And you cannot board it somewhere you were never taken to.
+      const previousTo = index > 0 ? legs[index - 1].toStopId : null;
+      assert(
+        !previousTo || !leg.fromStopId || previousTo === leg.fromStopId,
+        `${at} does not start where the previous leg ended`,
       );
       previousArrival = arrives;
     }

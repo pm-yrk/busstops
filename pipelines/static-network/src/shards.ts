@@ -511,6 +511,32 @@ export function patternTilesForBoundingBox(bbox: BoundingBox): string[] {
 /** Search entries are placed on the stop grid, because they are mostly stops. */
 export const searchTilesForBoundingBox = stopTilesForBoundingBox;
 
+/**
+ * The stop tiles a route's own shape runs through.
+ *
+ * A route page needs the stops of one route, and the locator index answers that badly: stop keys
+ * are hashed across 256 buckets, so a route with a few hundred stops asks for almost every bucket
+ * at once — hundreds of parallel objects read to learn a handful of tile names. Where a route goes
+ * is already known from its shape, and a stop on the route is on the shape, so the tiles can be
+ * derived instead of looked up.
+ *
+ * The margin is what keeps that safe. A stop sits a few metres off the line, and a line running
+ * along a tile edge would otherwise leave its stops in the neighbouring tile unread, so each point
+ * claims the tiles of its four corners about a kilometre out. That adds a tile only where the
+ * route actually runs near a boundary.
+ */
+export function stopTilesForShape(shape: readonly Coordinate[], marginDegrees = 0.01): string[] {
+  const tiles = new Set<string>();
+  for (const point of shape) {
+    for (const lat of [point.lat - marginDegrees, point.lat + marginDegrees]) {
+      for (const lon of [point.lon - marginDegrees, point.lon + marginDegrees]) {
+        tiles.add(tileIdFor({ lat, lon }, STOP_TILE_DEGREES));
+      }
+    }
+  }
+  return [...tiles].sort();
+}
+
 /** Every tile a pattern passes through, so a viewport finds it from any point along the route. */
 export function tilesForPattern(shape: readonly Coordinate[]): string[] {
   return tilesForCoordinates(shape, PATTERN_TILE_DEGREES);

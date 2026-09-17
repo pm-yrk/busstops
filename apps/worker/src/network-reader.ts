@@ -35,6 +35,7 @@ import {
   stopLocatorDataset,
   stopTileDataset,
   stopTilesForBoundingBox,
+  stopTilesForShape,
   tokenize,
   decodeRoutePatternsForService,
   routePatternsBucketFor,
@@ -470,18 +471,38 @@ export class NetworkReader {
   async sliceForBoundingBox(
     bbox: { west: number; south: number; east: number; north: number },
     now: number = Date.now(),
-  ): Promise<NetworkSlice> {
-    // Stops and patterns are on different grids — a pattern is written to every tile it crosses,
-    // so its grid is finer — and asking each for its own is what keeps the two from drifting.
-    const [stops, patterns, services] = await Promise.all([
-      this.stopsInTiles(stopTilesForBoundingBox(bbox), now),
-      this.patternsInTiles(patternTilesForBoundingBox(bbox), now),
-      this.services(now),
-    ]);
+    ledger?: ReadLedger,
+    stopBudgetChars?: number,
+  ): Promise<NetworkSlice & { complete: boolean }> {
+    /*
+     * Stops and patterns are on different grids — a pattern is written to every tile it crosses,
+     * so its grid is finer — and asking each for its own is what keeps the two from drifting.
+     *
+     * Read one after the other rather than together. They were in a `Promise.all`, so a corridor
+     * opened its stop tiles and its pattern tiles in the same round trip and the two budgets were
+     * spent simultaneously: the journey planner's slice could be fifteen mebibytes of text before
+     * anything had looked at it, and the trip shards were still to come. Sequential, the pattern
+     * read can see what the stop read has already cost and decline to start.
+     */
+    const stops = await this.stopsInTiles(
+      stopTilesForBoundingBox(bbox),
+      now,
+      ledger,
+      stopBudgetChars,
+    );
+    const patterns = await this.patternsInTilesDetailed(
+      patternTilesForBoundingBox(bbox),
+      now,
+      ledger,
+    );
+    const services = await this.services(now);
     return {
       stopsById: new Map(stops.stops.map((stop) => [stop.id, stop])),
-      patternsById: new Map(patterns.map((geometry) => [geometry.pattern.id, geometry.pattern])),
+      patternsById: new Map(
+        patterns.geometries.map((geometry) => [geometry.pattern.id, geometry.pattern]),
+      ),
       services,
+      complete: !stops.truncated && patterns.complete,
     };
   }
 
@@ -563,6 +584,98 @@ export class NetworkReader {
       if (stop) resolved.set(key, stop);
     }
     return resolved;
+  }
+
+  /**
+   * The stops of one route, read from where the route goes rather than from the hash index.
+   *
+   * This is the stage that was taking `/v1/routes/:id` over the isolate's limit, and it was not
+   * the obvious one. `stopsByKeys` resolves a key by reading its locator bucket, which is right
+   * for a departure board asking about one stop. A route asks about every stop on it: the keys
+   * are hashed across `LOCATOR_BUCKETS` buckets, so a route with a few hundred stops asks for
+   * very nearly all of them, and they were read in a single `Promise.all` — hundreds of objects
+   * in one round trip, before any budget could see a byte of it, purely to learn the names of
+   * about three tiles.
+   *
+   * The route's shape already says which tiles those are. So this reads the tiles directly, in
+   * the same measured batches the map uses, and the locator is not touched at all. The saving is
+   * not a smaller limit but a smaller question.
+   *
+   * `truncated` is load-bearing: a route's stops are a statement of fact about where it goes, and
+   * a caller must be able to refuse to publish a partial one as the whole route.
+   */
+  async stopsForGeometries(
+    geometries: readonly PatternGeometry[],
+    now: number = Date.now(),
+    ledger?: ReadLedger,
+    budgetChars?: number,
+  ): Promise<{
+    stopsById: Map<string, Stop>;
+    truncated: boolean;
+    tilesRequested: number;
+    requested: number;
+    resolved: number;
+  }> {
+    const keys = [...new Set(geometries.flatMap((geometry) => geometry.pattern.stopSequence))];
+    const empty = {
+      stopsById: new Map<string, Stop>(),
+      truncated: false,
+      tilesRequested: 0,
+      requested: keys.length,
+      resolved: 0,
+    };
+
+    const index = await this.networkIndex(now);
+    if (!index || keys.length === 0) return empty;
+
+    const tiles = stopTilesForShape(geometries.flatMap((geometry) => geometry.shape));
+    /*
+     * A pattern published without a shape cannot say where its stops are, so the locator path
+     * still answers for it. That is the slow question, and it is asked only when the cheap one
+     * has no answer at all rather than as a routine fallback.
+     */
+    if (tiles.length === 0) {
+      const resolved = await this.stopsByKeys(keys, now);
+      return {
+        stopsById: resolved,
+        truncated: false,
+        tilesRequested: 0,
+        requested: keys.length,
+        resolved: resolved.size,
+      };
+    }
+
+    const result = await this.readTiles<Stop>(
+      stopTileDataset,
+      tiles,
+      index.stopTiles,
+      index.version,
+      now,
+      budgetChars ?? this.requestChars,
+      ledger ? { ledger, family: "stops", budgetReason: "route_stop_read_budget" } : undefined,
+    );
+
+    const byId = new Map<string, Stop>();
+    const byAtco = new Map<string, Stop>();
+    for (const stop of result.records) {
+      byId.set(stop.id, stop);
+      byAtco.set(stop.atcoCode, stop);
+    }
+
+    const stopsById = new Map<string, Stop>();
+    for (const key of keys) {
+      const stop = byId.get(key) ?? byAtco.get(key);
+      if (stop) stopsById.set(key, stop);
+    }
+    ledger?.count({ stops: stopsById.size });
+
+    return {
+      stopsById,
+      truncated: result.truncated,
+      tilesRequested: tiles.length,
+      requested: keys.length,
+      resolved: stopsById.size,
+    };
   }
 
   /** Pattern geometries covering a viewport, for matching live vehicles to routes. */

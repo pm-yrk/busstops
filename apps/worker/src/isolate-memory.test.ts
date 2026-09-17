@@ -688,3 +688,117 @@ describe("a reader that finds out how big tiles are before asking for more", () 
     expect(all.stops.length).toBeGreaterThan(0);
   });
 });
+
+/**
+ * The stage that was actually taking `/v1/routes/:id` past the isolate's limit.
+ *
+ * The route-pattern index made the pattern read one object, it was measured, and route detail
+ * still answered Cloudflare error 1102 in run 42's repeated verification loop. The unmeasured
+ * stage was stop resolution: `stopsByKeys` reads a locator bucket per key, the keys are hashed
+ * across 256 buckets, and a route with a few hundred stops therefore asked for almost all of them
+ * in a single `Promise.all` — hundreds of objects in one round trip, to learn the names of about
+ * three tiles the route's own shape already knew.
+ */
+describe("a route's stops", () => {
+  async function publishedSprawl(spread: "local" | "national" = "local") {
+    const at = (i: number) =>
+      spread === "local"
+        ? { lat: 53.7 + (i % 40) / 400, lon: -1.6 + (i % 40) / 400 }
+        : { lat: 51 + (i % 50) / 20, lon: -4 + (i % 40) / 10 };
+    const sprawling = network();
+    const seed = sprawling.stops[0]!;
+    const pattern = sprawling.patterns[0]!;
+    const stopIds = [...pattern.stopSequence];
+
+    for (let i = 0; i < 400; i++) {
+      const id = `sprawl-${i}`;
+      sprawling.stops.push({
+        ...seed,
+        id,
+        atcoCode: `SPR${String(i).padStart(5, "0")}`,
+        name: `Sprawl ${i}`,
+        locationCoordinate: at(i),
+      });
+      stopIds.push(id);
+    }
+    sprawling.patterns[0] = { ...pattern, stopSequence: stopIds };
+    sprawling.shapes.set(
+      pattern.shapeRef,
+      Array.from({ length: 400 }, (_, i) => at(i)),
+    );
+
+    const recording = recordingStore();
+    await publishNetworkShards(recording.store, sprawling, { version: "v1" });
+    return {
+      reader: new NetworkReader(recording.store),
+      reads: recording.reads,
+      serviceId: pattern.serviceRouteId,
+    };
+  }
+
+  it("are read from the tiles the route runs through, never from the locator index", async () => {
+    const { reader, reads, serviceId } = await publishedSprawl();
+    const patterns = await reader.patternsForService(serviceId);
+    expect(patterns.geometries.length).toBeGreaterThan(0);
+
+    reads.length = 0;
+    const resolved = await reader.stopsForGeometries(patterns.geometries);
+
+    expect(resolved.resolved).toBeGreaterThan(400);
+    expect(resolved.truncated).toBe(false);
+    // The point of the change: not one locator bucket was opened.
+    expect(reads.filter((key) => key.includes(SHARDED.stopLocator))).toEqual([]);
+    // And the tiles it did open are the handful the route runs through, not the country's.
+    expect(reads.filter((key) => key.includes(SHARDED.stopTile)).length).toBeLessThan(6);
+  });
+
+  it("costs far fewer objects than resolving the same stops by key", async () => {
+    const { reader, reads, serviceId } = await publishedSprawl();
+    const patterns = await reader.patternsForService(serviceId);
+    const keys = [...new Set(patterns.geometries.flatMap((g) => g.pattern.stopSequence))];
+
+    reads.length = 0;
+    await reader.stopsByKeys(keys);
+    const byKey = reads.length;
+
+    const fresh = await publishedSprawl();
+    const freshPatterns = await fresh.reader.patternsForService(fresh.serviceId);
+    fresh.reads.length = 0;
+    await fresh.reader.stopsForGeometries(freshPatterns.geometries);
+    const byShape = fresh.reads.length;
+
+    expect(byShape).toBeLessThan(byKey);
+    // Not a marginal saving: the locator path is an object per bucket the keys hash into.
+    expect(byKey).toBeGreaterThan(byShape * 5);
+  });
+
+  it("books what it read on the caller's ledger, and reports a capped read as incomplete", async () => {
+    const { reader, serviceId } = await publishedSprawl("national");
+    const patterns = await reader.patternsForService(serviceId);
+
+    const whole = await reader.stopsForGeometries(patterns.geometries);
+    expect(whole.truncated).toBe(false);
+    expect(whole.tilesRequested).toBeGreaterThan(4);
+
+    /*
+     * The same route through a reader that cannot afford it. A budget that stops the read must
+     * surface as `truncated`, because the route page turns that into "this is not all of it" —
+     * a route drawn with its far half missing and presented as the route is the wrong answer
+     * this flag exists to prevent.
+     */
+    const ledger = new ReadLedger(60_000);
+    const fresh = await publishedSprawl("national");
+    const freshPatterns = await fresh.reader.patternsForService(fresh.serviceId);
+    const capped = await fresh.reader.stopsForGeometries(
+      freshPatterns.geometries,
+      Date.now(),
+      ledger,
+      100,
+    );
+
+    expect(capped.truncated).toBe(true);
+    expect(capped.resolved).toBeLessThan(whole.resolved);
+    expect(ledger.toJSON().families.stops?.read).toBeGreaterThan(0);
+    expect(ledger.reason).toBeNull();
+  });
+});

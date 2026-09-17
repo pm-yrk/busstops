@@ -46,6 +46,7 @@ function trip(
   return {
     id,
     routeId: `route-${routeName}`,
+    patternId: `pattern-${routeName}`,
     routeName,
     headsign: "Test",
     stopTimes: entries.map(([stopId, seconds]) => ({

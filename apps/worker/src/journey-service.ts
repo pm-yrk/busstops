@@ -9,7 +9,9 @@ import { buildGraph, plan, type JourneyGraph, type PlanResult, type Trip } from 
 import {
   checkArtifactLayout,
   describeLayoutCheck,
+  passengerName,
   patternTripsDataset,
+  routeBadgeName,
   tripTilesForBoundingBox,
   tripWindowsFor,
   type ArtifactLayout,
@@ -85,7 +87,15 @@ export interface JourneyDiagnostics {
     | "no_data"
     | "unreadable"
     | "too_large"
-    | "artifact_format_mismatch";
+    | "artifact_format_mismatch"
+    /*
+     * The corridor's trip shards could not all be opened inside the request's budget.
+     *
+     * Distinct from `too_large`, which is a graph the planner refuses to build, and from
+     * `no_data`, which is a corridor with nothing published. The timetable is there and part of
+     * it was not read, so an itinerary built on it would be a guess with departure times on it.
+     */
+    | "incomplete_read";
   /**
    * Whether the artifact said how it was stored, and whether this reader agrees.
    *
@@ -95,8 +105,14 @@ export interface JourneyDiagnostics {
   layout: "compatible" | "undeclared" | "mismatch";
   corridorTiles: number;
   windows: number[];
+  /** Shards the corridor needed, before any budget was applied. */
+  shardsRequested?: number;
   shardsRead: number;
   shardsMissing: number;
+  /** Shards the budget left unopened. Non-zero is what makes the outcome `incomplete_read`. */
+  shardsSkipped?: number;
+  /** Rows parsed and immediately discarded as outside the plan's window or corridor patterns. */
+  tripsFiltered?: number;
   /** Trip rows read out of the shards. */
   tripsLoaded: number;
   /** Rows whose pattern was present in the slice, and rows whose pattern was not. */
@@ -118,6 +134,8 @@ export interface JourneyDiagnostics {
   stageMs: Record<string, number>;
   /** Characters of trip shard text this plan decoded. */
   tripChars: number;
+  /** The budget it was decoded against, so a truncation can be read against its cause. */
+  tripCharBudget?: number;
   /**
    * Stops within walking distance of each end, and how the search fared.
    *
@@ -152,7 +170,13 @@ export type JourneyPlanOutcome =
   | {
       ok: false;
       reason: string;
-      code: "too_far" | "no_data" | "too_large" | "unreadable" | "artifact_format_mismatch";
+      code:
+        | "too_far"
+        | "no_data"
+        | "too_large"
+        | "unreadable"
+        | "artifact_format_mismatch"
+        | "incomplete_read";
       diagnostics: JourneyDiagnostics;
     };
 
@@ -166,10 +190,56 @@ export type JourneyPlanOutcome =
 const MAX_CACHED_TRIP_SHARDS = 16;
 const MAX_CACHED_TRIP_CHARS = 8 * 1024 * 1024;
 
+/**
+ * How much trip shard text one plan will open.
+ *
+ * This is the stage that answered Cloudflare error 1102 on Leeds to Leeds Bradford Airport. The
+ * read was a plain nested loop over sixteen corridor tiles and up to six windows, with nothing
+ * counting what it opened; the largest published pattern-trips shard is 8,109,406 bytes, so a
+ * corridor could ask for ninety-six of those and the isolate was gone long before the search ran.
+ *
+ * Twelve mebibytes is what a city corridor's shards actually cost, measured against real ones. A
+ * plan that wants more is refused with `incomplete_read` rather than served: a journey built on
+ * part of the corridor's timetable is a plausible-looking guess, and offering one as an itinerary
+ * is worse than saying it could not be planned.
+ */
+const JOURNEY_TRIP_READ_CHARS = 12 * 1024 * 1024;
+
+/**
+ * And how long it may spend doing it.
+ *
+ * Bytes are not the only way to run out. A reader that only counts bytes will happily spend four
+ * seconds counting them, and the platform does not care which resource ended the request — so the
+ * clock is a second budget, and the plan owns it rather than leaving Cloudflare to end the request
+ * first.
+ */
+const JOURNEY_TRIP_READ_BUDGET_MS = 3_000;
+
+/**
+ * Shards read before anything is known about how big they are, and the most read at once after.
+ *
+ * One, not four. A trip shard is an order of magnitude larger than a stop tile, and the first
+ * round trip is the one no budget can undo: four of the largest arriving together is thirty-two
+ * megabytes of text decoded before a single check runs. After the first, the measured average
+ * decides — wide where a rural corridor's shards are small, one at a time in London.
+ */
+const FIRST_TRIP_SHARD_BATCH = 1;
+const TRIP_SHARD_BATCH = 3;
+
 export class JourneyService {
   private readonly cache = new Map<string, { rows: PatternTripRow[]; chars: number }>();
 
-  constructor(private readonly store: ObjectStore) {}
+  constructor(
+    private readonly store: ObjectStore,
+    /**
+     * Overridable so a test can make the budget bite on a fixture far too small to reach it.
+     *
+     * Without this the only way to prove the refusal is a twelve-mebibyte fixture, which is not a
+     * test anybody runs. The production value is the default and nothing but a test passes
+     * anything else.
+     */
+    private readonly tripCharBudget = JOURNEY_TRIP_READ_CHARS,
+  ) {}
 
   async planJourney(slice: NetworkSlice, request: JourneyPlanRequest): Promise<JourneyPlanOutcome> {
     const corridor = corridorBoundingBox(
@@ -234,15 +304,42 @@ export class JourneyService {
     }
 
     const readBegan = Date.now();
-    const loaded = await this.loadTrips(tiles, request);
+    const loaded = await this.loadTrips(tiles, request, new Set(slice.patternsById.keys()));
     diagnostics.stageMs.loadTrips = Date.now() - readBegan;
+    diagnostics.stageMs.readTrips = loaded.readMs;
     diagnostics.stageMs.parseTrips = loaded.parseMs;
     diagnostics.tripChars = loaded.chars;
+    diagnostics.tripCharBudget = this.tripCharBudget;
     diagnostics.windows = loaded.windows;
+    diagnostics.shardsRequested = loaded.shardsRequested;
     diagnostics.shardsRead = loaded.shardsRead;
     diagnostics.shardsMissing = loaded.shardsMissing;
+    diagnostics.shardsSkipped = loaded.shardsSkipped;
+    diagnostics.tripsFiltered = loaded.tripsFiltered;
     diagnostics.tripsLoaded = loaded.rows.length;
     diagnostics.failures = loaded.failures;
+
+    /*
+     * A corridor that was not read in full does not get an itinerary.
+     *
+     * This is the one place the map's rule and the planner's rule differ. A map that ran out of
+     * budget can draw the stops it has and say so, because a partly-drawn map is still a map. A
+     * journey cannot: the shard that was not opened is where the fast direct bus was, and a plan
+     * built without it is not a worse plan, it is a wrong one — offered with departure times, a
+     * platform and a walk, all of it confident. So the budget produces a refusal with a reason,
+     * never a shorter list of options.
+     */
+    if (loaded.truncated) {
+      return {
+        ok: false,
+        code: "incomplete_read",
+        reason:
+          "We could not read the whole timetable for this corridor inside one request, so any " +
+          "journey we showed you might be missing the bus you actually want. Try a shorter " +
+          "journey, or try again shortly.",
+        diagnostics: { ...diagnostics, code: "incomplete_read" },
+      };
+    }
 
     if (loaded.rows.length === 0) {
       /*
@@ -335,74 +432,177 @@ export class JourneyService {
   private async loadTrips(
     tiles: readonly string[],
     request: JourneyPlanRequest,
+    patternIds: ReadonlySet<string>,
   ): Promise<{
     rows: PatternTripRow[];
     failures: Array<{ dataset: string; reason: string }>;
     windows: number[];
+    shardsRequested: number;
     shardsRead: number;
     shardsMissing: number;
+    shardsSkipped: number;
+    tripsFiltered: number;
     chars: number;
+    readMs: number;
     parseMs: number;
+    truncated: boolean;
+    stoppedBy: "chars" | "clock" | null;
   }> {
     const rows: PatternTripRow[] = [];
     const failures: Array<{ dataset: string; reason: string }> = [];
     let shardsRead = 0;
     let shardsMissing = 0;
+    let tripsFiltered = 0;
     let chars = 0;
+    let readMs = 0;
     let parseMs = 0;
+    let stoppedBy: "chars" | "clock" | null = null;
 
+    const began = Date.now();
     const midnight = Date.parse(`${request.serviceDate}T00:00:00Z`) / 1000;
     const from = midnight + request.departAtSeconds;
     // A plan looks a few hours ahead; beyond that the answer is a different day's timetable.
     const to = from + 4 * 60 * 60;
     const windows = tripWindowsFor(from, to, request.serviceDate);
 
+    /*
+     * Tile-major, and the tiles arrive centre-out from the corridor, so what a budget cannot
+     * reach is the far end of the corridor rather than an arbitrary set of shards. It does not
+     * change what is served — a truncated read is refused, not returned — but it decides which
+     * corridors fit at all.
+     */
+    const datasets: string[] = [];
     for (const tile of tiles) {
       for (const window of windows) {
-        const dataset = patternTripsDataset(request.serviceDate, tile, window);
-        const cacheKey = `${request.version}:${dataset}`;
-        const cached = this.cache.get(cacheKey);
-        if (cached) {
-          // A cached empty shard is one that was absent when first asked for, not one that was
-          // read and found empty; counting it as read would overstate the coverage of the plan.
-          if (cached.chars === 0) shardsMissing += 1;
-          else shardsRead += 1;
-          chars += cached.chars;
-          rows.push(...cached.rows);
-          continue;
-        }
-
-        try {
-          const raw = await this.store.get(objectKeyFor(dataset, request.version));
-          if (raw === null) {
-            this.cache.set(cacheKey, { rows: [], chars: 0 });
-            shardsMissing += 1;
-            continue;
-          }
-          shardsRead += 1;
-          chars += raw.length;
-          // Timed apart from the read, because "the network was slow" and "parsing eight
-          // megabytes of JSON was slow" are different problems with different fixes.
-          const parseBegan = Date.now();
-          const parsed: PatternTripRow[] = [];
-          for (const line of raw.split("\n")) {
-            if (line.length === 0) continue;
-            parsed.push(JSON.parse(line) as PatternTripRow);
-          }
-          parseMs += Date.now() - parseBegan;
-          this.cache.set(cacheKey, { rows: parsed, chars: raw.length });
-          this.evict();
-          rows.push(...parsed);
-        } catch (error) {
-          failures.push({
-            dataset,
-            reason: error instanceof Error ? `${error.name}: ${error.message}` : "unreadable",
-          });
-        }
+        datasets.push(patternTripsDataset(request.serviceDate, tile, window));
       }
     }
 
-    return { rows, failures, windows, shardsRead, shardsMissing, chars, parseMs };
+    /*
+     * A trip that cannot appear in this plan is dropped as it is parsed, not after.
+     *
+     * A window is eight hours and a plan spans four, and a corridor tile holds every pattern that
+     * crosses it rather than only the ones the search can use. Keeping all of that and letting
+     * the graph builder discard it means the isolate holds the whole shard as objects — which is
+     * several times the text it came from — for the sake of a fraction of it. The two tests are
+     * exactly the ones the graph would apply later: a trip still running inside the plan's window,
+     * on a pattern the corridor slice actually has.
+     */
+    const keep = (row: PatternTripRow): boolean => {
+      if (!patternIds.has(row.p)) return false;
+      const times = row.t;
+      if (times.length === 0) return false;
+      return times[times.length - 1]! >= from && times[0]! <= to;
+    };
+
+    let start = 0;
+    let batchSize = FIRST_TRIP_SHARD_BATCH;
+    let opened = 0;
+
+    while (start < datasets.length) {
+      const batch = datasets.slice(start, start + batchSize);
+      const readBegan = Date.now();
+      const results = await Promise.all(
+        batch.map(async (dataset) => {
+          const cacheKey = `${request.version}:${dataset}:${from}:${to}`;
+          const cached = this.cache.get(cacheKey);
+          if (cached) return { kind: "cached", dataset, cached } as const;
+          try {
+            const raw = await this.store.get(objectKeyFor(dataset, request.version));
+            return { kind: "body", dataset, raw } as const;
+          } catch (error) {
+            return { kind: "error", dataset, error } as const;
+          }
+        }),
+      );
+      readMs += Date.now() - readBegan;
+      start += batch.length;
+
+      for (const result of results) {
+        if (result.kind === "cached") {
+          // A cached empty shard is one that was absent when first asked for, not one that was
+          // read and found empty; counting it as read would overstate the coverage of the plan.
+          if (result.cached.chars === 0) shardsMissing += 1;
+          else {
+            shardsRead += 1;
+            opened += 1;
+          }
+          chars += result.cached.chars;
+          for (const row of result.cached.rows) rows.push(row);
+          continue;
+        }
+        if (result.kind === "error") {
+          failures.push({
+            dataset: result.dataset,
+            reason:
+              result.error instanceof Error
+                ? `${result.error.name}: ${result.error.message}`
+                : "unreadable",
+          });
+          continue;
+        }
+        if (result.raw === null) {
+          this.cache.set(`${request.version}:${result.dataset}:${from}:${to}`, {
+            rows: [],
+            chars: 0,
+          });
+          shardsMissing += 1;
+          continue;
+        }
+
+        shardsRead += 1;
+        opened += 1;
+        chars += result.raw.length;
+        // Timed apart from the read, because "the network was slow" and "parsing eight
+        // megabytes of JSON was slow" are different problems with different fixes.
+        const parseBegan = Date.now();
+        const parsed: PatternTripRow[] = [];
+        for (const line of result.raw.split("\n")) {
+          if (line.length === 0) continue;
+          const row = JSON.parse(line) as PatternTripRow;
+          if (keep(row)) parsed.push(row);
+          else tripsFiltered += 1;
+        }
+        parseMs += Date.now() - parseBegan;
+        this.cache.set(`${request.version}:${result.dataset}:${from}:${to}`, {
+          rows: parsed,
+          chars: result.raw.length,
+        });
+        this.evict();
+        for (const row of parsed) rows.push(row);
+      }
+
+      /*
+       * Two ways to run out, and a corridor can hit either first. Checked after every batch, and
+       * the batch is sized so that what has already arrived cannot have overshot by more than one
+       * shard's worth.
+       */
+      if (chars >= this.tripCharBudget) stoppedBy = "chars";
+      else if (Date.now() - began >= JOURNEY_TRIP_READ_BUDGET_MS) stoppedBy = "clock";
+      if (stoppedBy) break;
+
+      const averageChars = Math.max(1, Math.ceil(chars / Math.max(1, opened)));
+      const affordable = Math.floor((this.tripCharBudget - chars) / averageChars);
+      batchSize = Math.max(1, Math.min(TRIP_SHARD_BATCH, affordable));
+    }
+
+    const truncated = start < datasets.length;
+
+    return {
+      rows,
+      failures,
+      windows,
+      shardsRequested: datasets.length,
+      shardsRead,
+      shardsMissing,
+      shardsSkipped: datasets.length - start,
+      tripsFiltered,
+      chars,
+      readMs,
+      parseMs,
+      truncated,
+      stoppedBy: truncated ? stoppedBy : null,
+    };
   }
 
   private evict(): void {
@@ -496,7 +696,10 @@ export function buildGraphFor(
     trips.push({
       id: `${row.p}:${row.j}`,
       routeId: pattern.serviceRouteId,
-      routeName: service?.publicName ?? "Unknown route",
+      patternId: pattern.id,
+      // Cleaned on the way out, like every other passenger-facing name: a feed that publishes
+      // `X84_Leeds_Otley` should read as a route number on an itinerary, not as a database key.
+      routeName: service ? routeBadgeName(service.publicName) : "Bus",
       headsign: headsignFor(slice, stopTimes[stopTimes.length - 1]!.stopId),
       stopTimes,
     });
@@ -530,7 +733,8 @@ export function buildGraphFor(
 }
 
 function headsignFor(slice: NetworkSlice, lastStopId: string): string {
-  return slice.stopsById.get(lastStopId)?.name ?? "Destination not published";
+  const name = slice.stopsById.get(lastStopId)?.name;
+  return name ? passengerName(name) : "Destination not published";
 }
 
 /**

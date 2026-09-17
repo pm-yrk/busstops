@@ -4,6 +4,82 @@ Last updated: 2026-09-17 (live buses proved in the deployment; the national time
 
 ## Current status
 
+### The two remaining 1102 paths, bounded at the stage that was actually costing (2026-09-17)
+
+**What was still failing.** Run 42 eliminated error 1102 on `/v1/map` and left two endpoints
+answering Cloudflare's error page: `/v1/routes/:id` inside the repeated verification loop, and
+`/v1/journeys` for Leeds → Leeds Bradford Airport. Both had been partly instrumented, and in both
+cases the stage that was killing the isolate was one of the stages nobody was counting.
+
+**Route detail — the cost was stop resolution, not patterns.** The route-pattern index made the
+pattern read one object and one `JSON.parse` of one line, and it was measured, and route detail
+died anyway. The unmeasured stage was `stopsByKeys`: it resolves a stop by reading the locator
+bucket its key hashes into, which is right for a departure board asking about one stop and wrong
+for a route asking about every stop on it. Keys are spread across 256 buckets, so a route with a
+few hundred stops asked for very nearly all of them — in a single `Promise.all`, hundreds of
+objects in one round trip, before any budget could see a byte of it — to learn the names of about
+three tiles.
+
+The fix is a smaller question rather than a larger budget. A route's shape already says which
+tiles its stops are in, so `NetworkReader.stopsForGeometries` derives them
+(`stopTilesForShape`, with a kilometre of margin so a stop just over a tile edge is not lost) and
+reads those tiles through the same measured batching the map uses. The locator is not touched.
+Two tests hold it: one asserts no key containing `network/stop-locator` is read, and one asserts
+the locator path costs more than five times as many objects for the same stops.
+
+Everything else in the handler is now on the ledger too — index, services, operators, patterns,
+stops, variants, vehicles, incidents, reliability — and the response carries `meta.diagnostics` and
+a `Server-Timing` header. Incidents and reliability report zero because they are stubs on this
+endpoint; that is a finding, recorded rather than assumed.
+
+The live lookup was the other unbounded thing on the page. It fetches a SIRI-VM feed for a
+bounding box and coalesces per URL, and the box was the route's own extent, so no two route pages
+ever shared a fetch and a long route asked for more ground than a map viewport is allowed. It is
+now snapped outward to the quarter-degree grid, so neighbouring routes share one feed, and capped
+at `MAP_QUERY_LIMITS.maxBboxAreaSquareDegrees` — the same limit the map has. A capped box is
+reported as `route_live_area_capped`; a lookup skipped because the reads already spent the clock
+is reported as a failed source, never as "no buses on this route".
+
+**Journeys — two unbounded reads, one of them in the half nobody suspected.** `loadTrips` was a
+plain nested loop over up to sixteen corridor tiles crossed with up to six windows, each
+`await store.get(...)` followed by a whole-shard parse, with nothing counting what it had opened;
+the largest published pattern-trips shard is 8,109,406 bytes. It now reads in measured batches
+(one shard first, then sized from the measured average, at most three), owns a 12 MiB character
+budget and a 3-second clock, and drops rows as it parses them — a row on a pattern the corridor
+slice does not have, or outside the plan's four-hour window, is discarded before it becomes an
+object rather than after the graph builder has looked at it.
+
+The other one was `sliceForBoundingBox`, which the endpoint calls before the planner is reached at
+all. It opened the corridor's stop tiles and its pattern tiles in a single `Promise.all` against
+the shared twelve-mebibyte budget, so a journey could decode fifteen mebibytes before asking for a
+single trip. It is sequential now, on the request's ledger, with the map's five-mebibyte stop cap.
+
+**A journey is refused rather than shortened.** This is where the planner and the map deliberately
+differ. A map that ran out of budget draws the stops it has and says so, because a partly-drawn map
+is still a map. A plan cannot: the shard that was not opened is where the fast direct bus was, and
+the itinerary that comes back without it is not a worse plan but a wrong one, offered with
+departure times on it. So a truncated corridor read — of the slice or of the trips — returns
+`code: "incomplete_read"` with a sentence a passenger can act on, and never an option list. A test
+proves the refusal by removing it: two of the four journey-budget tests fail without it.
+
+**The three-leg assembly bug.** Run 41's itinerary failed on "leg 1 of 3 does not say where it
+goes", and the reason was that a leg carried a mode, two names and two offsets into the service day
+and nothing else. It now carries `fromCoordinate`/`toCoordinate`, `departAtExpected`/
+`arriveAtExpected` as instants, and on a bus leg `routeId` (the published service identifier, not
+the number on the front — several operators run a 36) and `routePatternId`, alongside the route
+number and headsign, both cleaned through `routeBadgeName`/`passengerName`. The planner refuses to
+assemble an option containing a leg between stops the graph cannot place or a ride with no trip
+behind it, and `apps/worker/src/itinerary-check.ts` checks every option at the edge of the API
+before it is sent: both ends named and placed, times that run forwards, bus legs identified,
+consecutive legs joining in time _and in place_, and a change count that matches the rides. An
+option that fails is dropped whole — half a journey presented as a journey is the thing being
+guarded against.
+
+**Gates.** 1,090 node tests, 147 web, 148 e2e; prettier, eslint `--max-warnings=0`, typecheck,
+preflight at `ci`, secret scan clean across 487 tracked files. Deployed evidence for these two
+endpoints is the next cheap preview run; until that run reports, this entry records a fix that is
+proven locally and not yet proven in the isolate.
+
 ### Error 1102 named, five cities green, the bucket back inside the free tier (2026-09-17)
 
 **The 503 has a name at last.** Runs 35 to 39 reported it as three hundred characters of

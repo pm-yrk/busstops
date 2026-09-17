@@ -351,16 +351,41 @@ export const AreaDetailResponseSchema = apiEnvelope(
 );
 export type AreaDetailResponse = z.infer<typeof AreaDetailResponseSchema>;
 
+/**
+ * One leg of an itinerary, carrying everything a passenger reads off it.
+ *
+ * A leg used to be a mode, two names and two offsets into the service day. That satisfies a
+ * schema and fails a reader: "leg 1 of 3" could not say where on the map it went, what time it
+ * was in any timezone a person uses, or — on a bus leg — which bus. A returned itinerary whose
+ * first leg cannot be drawn, timed or identified is not a journey, so the fields that make it one
+ * are required here rather than hoped for downstream.
+ */
 export const JourneyPlanLegSchema = z.object({
   mode: z.enum(["walk", "bus"]),
   fromStopId: z.string().nullable(),
   toStopId: z.string().nullable(),
-  fromName: z.string(),
-  toName: z.string(),
+  fromName: z.string().min(1),
+  toName: z.string().min(1),
+  /** Where the leg begins and ends. The ends of the journey are the points that were asked for. */
+  fromCoordinate: CoordinateSchema,
+  toCoordinate: CoordinateSchema,
+  /**
+   * The service and pattern a bus leg is on.
+   *
+   * `routeId` is the published service identifier, not the number on the front: several operators
+   * run a "36", and a link built from the public name opens somebody else's route. `routeName` is
+   * what a passenger reads. Absent on a walking leg, and required on a bus leg by the refinement
+   * below rather than by being non-optional here.
+   */
+  routeId: z.string().optional(),
+  routePatternId: z.string().optional(),
   routeName: z.string().optional(),
   headsign: z.string().optional(),
   departureSeconds: z.number(),
   arrivalSeconds: z.number(),
+  /** The same two times as instants, so a reader never has to know what a service day is. */
+  departAtExpected: z.string().datetime(),
+  arriveAtExpected: z.string().datetime(),
 });
 export type JourneyPlanLeg = z.infer<typeof JourneyPlanLegSchema>;
 
@@ -389,13 +414,28 @@ export const JourneyDiagnosticsSchema = z.object({
     "unreadable",
     "too_large",
     "artifact_format_mismatch",
+    /*
+     * The corridor's trip shards could not all be opened inside the request's budget.
+     *
+     * Distinct from `too_large`, which is a graph the planner refuses to build, and from
+     * `no_data`, which is a corridor with nothing published. This one means the timetable is
+     * there and part of it was not read — so any itinerary built on it would be a plausible
+     * guess rather than a plan, and the planner refuses to offer one.
+     */
+    "incomplete_read",
   ]),
   /** Whether the artifact declared its storage layout, and whether the reader agreed with it. */
   layout: z.enum(["compatible", "undeclared", "mismatch"]),
   corridorTiles: z.number().int().nonnegative(),
   windows: z.array(z.number().int().nonnegative()),
+  /** Shards the corridor needed, before any budget was applied. */
+  shardsRequested: z.number().int().nonnegative().optional(),
   shardsRead: z.number().int().nonnegative(),
   shardsMissing: z.number().int().nonnegative(),
+  /** Shards the corridor needed and the budget left unopened. Non-zero means `incomplete_read`. */
+  shardsSkipped: z.number().int().nonnegative().optional(),
+  /** Trips read and immediately discarded as outside the plan's window or corridor patterns. */
+  tripsFiltered: z.number().int().nonnegative().optional(),
   tripsLoaded: z.number().int().nonnegative(),
   tripsWithPattern: z.number().int().nonnegative(),
   tripsWithoutPattern: z.number().int().nonnegative(),
@@ -412,6 +452,8 @@ export const JourneyDiagnosticsSchema = z.object({
    */
   stageMs: z.record(z.string(), z.number()).optional(),
   tripChars: z.number().int().nonnegative().optional(),
+  /** The character budget the trip read was given, so a truncation can be read against it. */
+  tripCharBudget: z.number().int().nonnegative().optional(),
   originCandidates: z.number().int().nonnegative(),
   destinationCandidates: z.number().int().nonnegative(),
   rounds: z.number().int().nonnegative(),
