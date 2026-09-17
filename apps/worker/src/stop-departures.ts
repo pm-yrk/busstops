@@ -7,7 +7,7 @@ import type {
 } from "@busstops/contracts";
 import type { PatternGeometry } from "@busstops/matching";
 import { deterministicUuid } from "@busstops/adapters";
-import { routeBadgeName } from "@busstops/pipeline-static-network";
+import { passengerName, routeBadgeName } from "@busstops/pipeline-static-network";
 import type { DepartureRow } from "@busstops/pipeline-static-network";
 
 /**
@@ -136,7 +136,7 @@ export function scheduledDeparturesForStop(input: ScheduledDepartureInput): Depa
       scheduledJourneyId: journey.id,
       routePatternId: journey.routePatternId,
       serviceRoutePublicName: service ? routeBadgeName(service.publicName) : "Bus",
-      destinationName: destinationFor(journey, pattern, service, stopNamesById),
+      destinationName: passengerName(destinationFor(journey, pattern, service, stopNamesById)),
       scheduledTime: new Date(departure).toISOString(),
       expectedTime: cancelled ? null : new Date(departure).toISOString(),
       liveState: cancelled ? "cancelled" : "scheduled_only",
@@ -247,7 +247,7 @@ export function departuresFromRows(input: {
       scheduledJourneyId: null,
       routePatternId: row.p,
       serviceRoutePublicName: routeBadgeName(row.r),
-      destinationName: row.d.length > 0 ? row.d : "Unknown destination",
+      destinationName: row.d.length > 0 ? passengerName(row.d) : "Unknown destination",
       scheduledTime: new Date(departure).toISOString(),
       expectedTime: new Date(departure).toISOString(),
       liveState: "scheduled_only",

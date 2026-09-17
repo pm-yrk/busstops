@@ -8,6 +8,7 @@
  */
 
 .street-scene {
+  position: relative;
   --px: 2;
   --edge: var(--edge-wide);
   --edge-h: var(--wide-h, 144);
@@ -59,6 +60,17 @@
   display: none;
 }
 
+/*
+ * The traffic layer swaps with the composition it belongs to.
+ *
+ * This default has to sit here, above the media queries, not below them. It was written after
+ * them once and, at equal specificity, the later declaration won: the upright traffic layer was
+ * hidden at every width, so a phone had a street with no buses on it at all.
+ */
+.street-scene__traffic--tall {
+  display: none;
+}
+
 @media (min-width: 1000px) {
   .street-scene {
     --px: 3;
@@ -85,6 +97,14 @@
   .street-scene__street--tall {
     display: block;
   }
+
+  .street-scene__traffic--wide {
+    display: none;
+  }
+
+  .street-scene__traffic--tall {
+    display: block;
+  }
 }
 
 /* A phone at 2x, a portrait tablet at 3x: both whole numbers, neither cropped. */
@@ -101,6 +121,23 @@
 }
 
 /* ---------------------------------------------------------------- vehicles */
+
+/*
+ * Traffic spans the visible street, not the artwork.
+ *
+ * The lanes used to sit inside `.street-scene__street`, which is exactly as wide as the
+ * composition and clips what leaves it. The composition is 320 art pixels and a desktop window is
+ * wider than that at any whole-number scale — the rest of the street is a repeating edge tile — so
+ * a bus drove two thirds of the way across the page and vanished at a boundary with nothing
+ * visible at it. This layer is a sibling of the compositions and as wide as the scene.
+ */
+.street-scene__traffic {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  /* Decorative: it must never take a click meant for the page underneath. */
+  pointer-events: none;
+}
 
 .street-scene__lane {
   position: absolute;
@@ -174,10 +211,10 @@
 
 @keyframes street-scene-drive-right {
   from {
-    transform: translateX(calc(-110 * var(--px) * 1px));
+    transform: translateX(calc(-1 * var(--bus-w) * var(--px) * 1px));
   }
   to {
-    transform: translateX(calc(var(--art-w) * var(--px) * 1px));
+    transform: translateX(100vw);
   }
 }
 
@@ -191,10 +228,10 @@
  */
 @keyframes street-scene-drive-left {
   from {
-    transform: translateX(calc(var(--art-w) * var(--px) * 1px));
+    transform: translateX(100vw);
   }
   to {
-    transform: translateX(calc(-70 * var(--px) * 1px));
+    transform: translateX(calc(-1 * var(--bus-w) * var(--px) * 1px));
   }
 }
 
@@ -250,18 +287,18 @@
   }
 
   .street-scene__lane--near .street-scene__vehicle {
-    transform: translateX(calc(24 * var(--px) * 1px));
+    transform: translateX(18vw);
   }
 
   .street-scene__lane--far .street-scene__vehicle {
-    transform: translateX(calc(148 * var(--px) * 1px));
+    transform: translateX(62vw);
   }
 }
 
 @media (max-aspect-ratio: 5 / 4) {
   @media (prefers-reduced-motion: reduce) {
     .street-scene__lane--far .street-scene__vehicle {
-      transform: translateX(calc(84 * var(--px) * 1px));
+      transform: translateX(52vw);
     }
   }
 }

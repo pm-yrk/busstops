@@ -45,8 +45,6 @@ interface LaneProps {
 function Street({ variant }: LaneProps) {
   const geometry = variant === "wide" ? WIDE : TALL;
   const ground = variant === "wide" ? ART.streetWide! : ART.streetTall!;
-  const near = ART.busNear!;
-  const far = ART.busFar!;
   return (
     <div
       className={`street-scene__street street-scene__street--${variant}`}
@@ -67,11 +65,39 @@ function Street({ variant }: LaneProps) {
         aria-hidden="true"
         style={{ "--art-x": variant === "wide" ? 60 : 20, "--art-y": 6 } as CSSProperties}
       />
+    </div>
+  );
+}
 
+/**
+ * The traffic, over the whole visible street rather than over the composition.
+ *
+ * The lanes used to live inside `.street-scene__street`, which is exactly as wide as the artwork
+ * and clips what overflows it. The artwork is 320 art pixels; a desktop window is wider than that
+ * at any whole-number scale, and the rest of the street is painted by a repeating edge tile. So a
+ * bus drove about two thirds of the way across the page and then vanished into thin air at a
+ * boundary with nothing visible at it — which is exactly what it looked like.
+ *
+ * The traffic is a sibling of the compositions now, spanning the full width of the scene, and the
+ * drive keyframes are expressed in viewport width rather than in art pixels. A bus enters from
+ * beyond one edge of the window and leaves beyond the other. The lane's height still comes from
+ * the active composition, because that is what decides where the road is.
+ */
+function Traffic({ variant }: LaneProps) {
+  const geometry = variant === "wide" ? WIDE : TALL;
+  const near = ART.busNear!;
+  const far = ART.busFar!;
+  return (
+    <div className={`street-scene__traffic street-scene__traffic--${variant}`}>
       {/* Far carriageway: a smaller bus, because a hero-sized one up the street covers the pavement. */}
       <div
         className="street-scene__lane street-scene__lane--far"
-        style={{ "--art-y": geometry.h - 12 - far.h } as CSSProperties}
+        style={
+          {
+            "--art-y": geometry.h - 12 - far.h,
+            "--bus-w": far.w,
+          } as CSSProperties
+        }
       >
         <div className="street-scene__vehicle">
           <img
@@ -89,10 +115,14 @@ function Street({ variant }: LaneProps) {
         </div>
       </div>
 
-      {/* Near carriageway. */}
       <div
         className="street-scene__lane street-scene__lane--near"
-        style={{ "--art-y": geometry.h - near.h - NEAR_LANE_INSET[variant] } as CSSProperties}
+        style={
+          {
+            "--art-y": geometry.h - near.h - NEAR_LANE_INSET[variant],
+            "--bus-w": near.w,
+          } as CSSProperties
+        }
       >
         <div className="street-scene__vehicle">
           <img
@@ -130,6 +160,8 @@ export function PixelStreetScene({ className = "" }: { className?: string }) {
     >
       <Street variant="wide" />
       <Street variant="tall" />
+      <Traffic variant="wide" />
+      <Traffic variant="tall" />
     </div>
   );
 }

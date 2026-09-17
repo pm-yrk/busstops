@@ -9,6 +9,7 @@ import type {
   VehicleObservation,
 } from "@busstops/contracts";
 import { MAP_QUERY_LIMITS, attributionsFor, getSourceRegistryEntry } from "@busstops/contracts";
+import { passengerName } from "@busstops/pipeline-static-network";
 import { SourceClient, ageSeconds } from "@busstops/pipeline-core";
 import {
   bodsDatafeedUrl,
@@ -395,7 +396,7 @@ export function toMapVehicle(
     coordinate: observation.coordinate,
     bearingDegrees: observation.bearingDegrees ?? null,
     routePublicName: context?.publishedLineName ?? null,
-    destinationName: context?.destinationName ?? null,
+    destinationName: context?.destinationName ? passengerName(context.destinationName) : null,
     delaySeconds,
     freshnessSeconds: ageSeconds(observation.observedAt, now),
     motionState,

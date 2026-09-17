@@ -677,6 +677,27 @@ export function servicePublicName(
 }
 
 /**
+ * Any passenger-facing name from a feed, made readable.
+ *
+ * Distinct from `routeBadgeName`, and deliberately gentler. A badge goes in a box sized for three
+ * characters, so it is cut to fit; a destination is a sentence a passenger reads on the front of a
+ * bus and must not be truncated — "Leeds City Bus Station" is the whole point of the row.
+ *
+ * What is fixed here is one thing only: feeds that use underscores where a space belongs. The live
+ * map was showing `White_Rose_Shopping_Centre`, `Gledhow_Lidgett_Lane`, `Whinmoor_Shopping_Centre`
+ * and `Easterly_Road_Hollin_Park_Mount` in "Buses in view" — an internal key rendered as though it
+ * were a place. Underscores and colons become spaces, runs of whitespace collapse, and everything
+ * else is left exactly as published: apostrophes in "King's Cross", hyphens in "Stratford-upon-
+ * Avon", ampersands, full stops, and the source's own capitalisation.
+ *
+ * Nothing here touches an identifier. This is applied where a name is read for display, never
+ * where one is stored or matched.
+ */
+export function passengerName(value: string): string {
+  return value.replace(/[_:]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+/**
  * A name a feed published, made fit for the badge.
  *
  * Only the two characters that a route number never contains are treated as separators, so a real

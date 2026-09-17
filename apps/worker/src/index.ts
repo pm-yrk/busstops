@@ -30,7 +30,16 @@ import {
 } from "./live-service.js";
 import { NetworkReader } from "./network-reader.js";
 import { ReadLedger } from "./read-ledger.js";
-import { patternTilesForBoundingBox, routeBadgeName } from "@busstops/pipeline-static-network";
+import {
+  passengerName,
+  patternTilesForBoundingBox,
+  routeBadgeName,
+} from "@busstops/pipeline-static-network";
+
+/** A destination as a passenger should read it, or nothing when the feed published nothing. */
+function displayDestination(value: string | null | undefined): string | null {
+  return value ? passengerName(value) : null;
+}
 
 /**
  * How long a map request will spend on optional enrichment before it stops and says so.
@@ -981,7 +990,7 @@ router.get("/v1/vehicles/:ref", async (_request, { env, params, url }) => {
       data: {
         vehicle,
         routePublicName: service?.publicName ?? context?.publishedLineName ?? null,
-        destinationName: context?.destinationName ?? null,
+        destinationName: context?.destinationName ? passengerName(context.destinationName) : null,
         nextStops,
         recentTrace: [],
         // The shape travels with the pattern in its tile, so drawing the route needs no extra read.
@@ -1089,7 +1098,9 @@ router.get("/v1/routes/:id", async (_request, { env, params }) => {
       .slice(0, 60)
       .map((observation) => ({
         vehicleRef: observation.vehicleRef,
-        destinationName: live.journeyContext.get(observation.vehicleRef)?.destinationName ?? null,
+        destinationName: displayDestination(
+          live.journeyContext.get(observation.vehicleRef)?.destinationName,
+        ),
         delaySeconds: null,
         observedAt: observation.observedAt,
         coordinate: observation.coordinate,
