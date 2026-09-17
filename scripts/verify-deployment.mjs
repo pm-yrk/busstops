@@ -182,7 +182,12 @@ await check("the live map returns real stops for a real viewport", async () => {
   observed.stopsWithRoutes = stops.filter(
     (stop) => (stop.routePublicNames ?? []).length > 0,
   ).length;
-  return `${stops.length} stops, first: ${stops[0].name}`;
+  observed.mapDegraded = body?.data?.degraded === true;
+  observed.mapDegradationReason = body?.data?.degradationReason ?? null;
+  return (
+    `${stops.length} stops, first: ${stops[0].name}` +
+    (observed.mapDegraded ? ` (degraded: ${observed.mapDegradationReason})` : "")
+  );
 });
 
 await check("a stop can be selected and returns a departure board", async () => {
@@ -490,9 +495,25 @@ await check("the viewport's stops carry the services that call at them", async (
    * as a pass is how run 28 called an empty product verified.
    */
   assert(observed.stopsWithRoutes !== undefined, "the map check did not run");
+
+  /*
+   * A degraded map is allowed unlabelled stops; a confident one is not.
+   *
+   * Route names come from pattern tiles, the most expensive thing this endpoint reads, so they
+   * are the half dropped when a request runs out of budget. That is a legitimate answer as long
+   * as it is declared. What must never happen is a response claiming to be complete while
+   * quietly reporting that every stop has no services — which is a claim about the timetable
+   * rather than about this request.
+   */
+  if (observed.mapDegraded) {
+    return (
+      `enrichment was skipped (${observed.mapDegradationReason}), so ` +
+      `${observed.stopsWithRoutes} of the returned stops carry a service`
+    );
+  }
   assert(
     observed.stopsWithRoutes > 0,
-    "not one stop in the viewport carries a service, so no board in this area can have a row",
+    "not one stop in the viewport carries a service, and the map did not say it was degraded",
   );
   return `${observed.stopsWithRoutes} of the returned stops have a service`;
 });
@@ -543,9 +564,22 @@ await check("route detail answers without the Worker falling over", async () => 
  * That is what the HTML check below is looking for.
  */
 await check("the pattern-heavy endpoints survive dense cities, repeatedly", async () => {
-  const ATTEMPTS_PER_CITY = 3;
+  /*
+   * Five cities, five times each: twenty-five dense map requests in one run.
+   *
+   * One request proves nothing here. The failure was never deterministic — the same URL returned
+   * 400 stops at one check and Cloudflare's error page at the next, because what killed the
+   * isolate was what the *previous* requests had left in it. A count this size is what makes
+   * "survives" a claim rather than a hope.
+   */
+  const ATTEMPTS_PER_CITY = 5;
   const lines = [];
   let platformErrors = 0;
+  let mapRequests = 0;
+  let degradedResponses = 0;
+  let peakChars = 0;
+  let peakObjects = 0;
+  let peakMs = 0;
 
   for (const city of CITIES) {
     let mapOk = 0;
@@ -566,6 +600,52 @@ await check("the pattern-heavy endpoints survive dense cities, repeatedly", asyn
       );
       assert(map.response.ok, `${city.name}: /v1/map gave ${map.response.status}`);
       mapOk += 1;
+      mapRequests += 1;
+
+      /*
+       * The core of the map is not optional, whatever happened to the enrichment.
+       *
+       * Stops and live vehicles are read first and are never skipped; route names run on what
+       * time is left. So a degraded answer must still be a real map — and it must say it is
+       * degraded rather than implying those stops have no services.
+       */
+      const data = map.body?.data;
+      assert(
+        Array.isArray(data?.stops) && data.stops.length > 0,
+        `${city.name}: /v1/map returned no stops on attempt ${String(attempt + 1)}`,
+      );
+      assert(
+        Array.isArray(data?.vehicles),
+        `${city.name}: /v1/map returned no vehicles array on attempt ${String(attempt + 1)}`,
+      );
+      assert(
+        typeof data?.degraded === "boolean",
+        `${city.name}: /v1/map does not say whether it is degraded`,
+      );
+      if (data.degraded) {
+        degradedResponses += 1;
+        assert(
+          typeof data.degradationReason === "string" && data.degradationReason.length > 0,
+          `${city.name}: /v1/map says it is degraded and will not say why`,
+        );
+      } else {
+        // Not degraded means the enrichment finished, so the stops must actually carry it.
+        const named = data.stops.filter((stop) => (stop.routePublicNames ?? []).length > 0);
+        assert(
+          named.length > 0,
+          `${city.name}: /v1/map claims it is not degraded and yet no stop carries a service`,
+        );
+      }
+
+      const diagnostics = map.body?.meta?.diagnostics;
+      assert(diagnostics, `${city.name}: /v1/map carries no diagnostics`);
+      assert(
+        diagnostics.objectsRequested > 0,
+        `${city.name}: /v1/map says it requested no objects, which cannot be true`,
+      );
+      peakChars = Math.max(peakChars, diagnostics.chars ?? 0);
+      peakObjects = Math.max(peakObjects, diagnostics.objectsRequested ?? 0);
+      peakMs = Math.max(peakMs, diagnostics.elapsedMs ?? 0);
 
       // A route that genuinely calls in this city, taken from a stop the map just returned.
       const stop = (map.body?.data?.stops ?? [])[0];
@@ -614,7 +694,16 @@ await check("the pattern-heavy endpoints survive dense cities, repeatedly", asyn
   }
 
   assert(platformErrors === 0, `${String(platformErrors)} platform error page(s) were returned`);
-  return lines.join("; ");
+  assert(
+    mapRequests >= 20,
+    `only ${String(mapRequests)} dense map requests were made; twenty is the bar`,
+  );
+  return (
+    `${String(mapRequests)} dense map requests, no platform error pages; ` +
+    `${String(degradedResponses)} answered degraded; peak ${String(peakObjects)} object(s), ` +
+    `${(peakChars / 1048576).toFixed(2)} MiB decoded, ${String(peakMs)}ms. ` +
+    lines.join("; ")
+  );
 });
 
 await check("a journey can be planned across real timetable data", async () => {

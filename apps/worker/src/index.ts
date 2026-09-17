@@ -48,8 +48,15 @@ function displayDestination(value: string | null | undefined): string | null {
  * memory here, and the error page does not say. It is a figure this handler can keep to: stops
  * and vehicles are read first and are never skipped, so whatever is left is spent on route names,
  * and a screen that has not got them in this long is better served a labelled map than a 503.
+ *
+ * Raised from nine hundred once the byte caps were doing the real work. What bounds memory is
+ * five mebibytes of stop text and three of pattern text, read two objects at a time; the clock is
+ * a backstop against a slow upstream rather than the thing keeping the isolate alive. At nine
+ * hundred milliseconds the essential half spent the whole budget and enrichment never ran at all,
+ * so every dense viewport came back truthfully degraded and permanently unlabelled — honest, and
+ * not the product.
  */
-const MAP_ENRICHMENT_BUDGET_MS = 900;
+const MAP_ENRICHMENT_BUDGET_MS = 1_800;
 
 /**
  * How much stop text one map request will open.
