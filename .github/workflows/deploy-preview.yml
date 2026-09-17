@@ -231,6 +231,11 @@ jobs:
       # record, an incomplete listing, or a live version with no objects under it.
       - name: Network artifact retention
         if: ${{ inputs.prune_artifacts != 'skip' }}
+        # Its own limit, below the job's. A prune with tens of thousands of objects to remove is
+        # bounded by the account's write rate rather than by anything this repository controls, so
+        # the step is allowed to run out of time and report what it did; the run carries on and the
+        # next retention pass resumes from the oldest version left.
+        timeout-minutes: 45
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

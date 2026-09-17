@@ -2,6 +2,7 @@ import { writeFileSync } from "node:fs";
 import {
   ArtifactStore,
   manifestKey,
+  mapWithConcurrency,
   r2StoreFromEnv,
   type StoredObject,
 } from "@busstops/pipeline-core";
@@ -34,6 +35,22 @@ const KEEP_VERSIONS = Number(process.env.KEEP_NETWORK_VERSIONS ?? "2");
 
 /** R2's free storage allowance, which is the number this exists to stay under. */
 const FREE_STORAGE_BYTES = 10 * 1024 * 1024 * 1024;
+
+/**
+ * Deletes in flight at once, and how many one run will do.
+ *
+ * The first dry-run found 35,837 removable objects. Deleted one at a time, awaited in turn, that
+ * is one HTTP round trip each — hours of wall clock inside a job capped at 150 minutes, which
+ * would have hung the run rather than pruning anything. A pool fixes the round trips.
+ *
+ * The cap is the other half, and it is there because the account's write ceiling is not a number
+ * this code gets to choose: a national publish measured about 4.35 objects a second whatever
+ * concurrency it used. If that also bounds deletes then no amount of pooling finishes 35,837 in
+ * one job, so a run does what it can, says what is left, and the next run continues. Deleting
+ * oldest version first is what makes that safe to interrupt.
+ */
+const DELETE_CONCURRENCY = Number(process.env.PRUNE_DELETE_CONCURRENCY ?? "16");
+const MAX_DELETES_PER_RUN = Number(process.env.PRUNE_MAX_DELETES ?? "20000");
 
 function report(body: Record<string, unknown>): void {
   body.finishedAt = new Date().toISOString();
@@ -155,6 +172,10 @@ async function main(): Promise<number> {
     withinFreeStorageAfter: plan.bytesAfter <= FREE_STORAGE_BYTES,
     deleted: 0,
     deletionFailures: [] as string[],
+    removableObjects: 0,
+    remainingAfterRun: 0,
+    deletesPerSecond: 0,
+    complete: true,
   };
 
   console.log(
@@ -170,20 +191,38 @@ async function main(): Promise<number> {
     return 0;
   }
 
-  let deleted = 0;
+  const batch = doomed.slice(0, MAX_DELETES_PER_RUN);
   const failures: string[] = [];
-  for (const key of doomed) {
+  let deleted = 0;
+  const startedAt = Date.now();
+
+  await mapWithConcurrency(batch, DELETE_CONCURRENCY, async (key) => {
     try {
       await store.delete(key);
       deleted += 1;
     } catch (error) {
       failures.push(`${key}: ${error instanceof Error ? error.message : String(error)}`);
     }
-  }
+  });
+
+  const seconds = Math.max(0.001, (Date.now() - startedAt) / 1000);
   summary.deleted = deleted;
   summary.deletionFailures = failures.slice(0, 10);
+  summary.removableObjects = doomed.length;
+  summary.remainingAfterRun = doomed.length - deleted;
+  summary.deletesPerSecond = Number((deleted / seconds).toFixed(2));
+  summary.complete = summary.remainingAfterRun === 0;
 
-  console.log(`Deleted ${deleted} of ${doomed.length} object(s); ${failures.length} failed.`);
+  console.log(
+    `Deleted ${deleted} of ${batch.length} attempted (${doomed.length} removable); ` +
+      `${failures.length} failed; ${summary.deletesPerSecond}/s over ${seconds.toFixed(0)}s.`,
+  );
+  if (!summary.complete) {
+    console.log(
+      `${summary.remainingAfterRun} object(s) still removable. Run the retention job again to ` +
+        `continue; it resumes from the oldest version that is left.`,
+    );
+  }
   report(summary);
   return failures.length > 0 ? 1 : 0;
 }

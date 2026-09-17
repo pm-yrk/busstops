@@ -152,11 +152,25 @@ export function planNetworkPrune(
 
 /** The keys a plan would delete, in the order they would go. */
 export function keysToRemove(inventory: readonly StoredObject[], plan: PrunePlan): string[] {
-  const doomed = new Set(plan.remove.map((entry) => entry.version));
-  return inventory
-    .filter((object) => {
-      const version = versionOfObjectKey(object.key);
-      return version !== null && doomed.has(version);
-    })
-    .map((object) => object.key);
+  const order = new Map(plan.remove.map((entry, index) => [entry.version, index]));
+
+  const matching: Array<{ key: string; rank: number }> = [];
+  for (const object of inventory) {
+    const version = versionOfObjectKey(object.key);
+    if (version === null) continue;
+    const rank = order.get(version);
+    if (rank === undefined) continue;
+    matching.push({ key: object.key, rank });
+  }
+
+  /*
+   * Oldest version first, rather than whatever order the bucket listed in.
+   *
+   * A run that deletes tens of thousands of objects may not finish inside a job, so it is capped
+   * and resumed. In listing order a capped run half-empties several versions at once and leaves
+   * the bucket in a state no report describes; in this order it clears whole versions and the
+   * remainder is still a clean set of them, which is what makes resuming meaningful.
+   */
+  matching.sort((a, b) => a.rank - b.rank || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  return matching.map((entry) => entry.key);
 }

@@ -134,4 +134,47 @@ describe("planning which national publishes to delete", () => {
     expect(plan.keep.map((entry) => entry.version)).toEqual([V2, V3]);
     expect(plan.remove.map((entry) => entry.version)).toEqual([V1]);
   });
+
+  /*
+   * The bucket lists lexicographically, which interleaves versions: every `departures/...` key
+   * of every version sorts together, before every `stops/...` key of every version. A run that
+   * deletes the first N of that order half-empties several versions at once, and a half-deleted
+   * version is a state no report describes. Removing oldest version first means a capped run
+   * leaves whole versions behind, so the next run resumes against a bucket the plan still fits.
+   */
+  it("removes whole versions in order, so a capped run can be resumed", () => {
+    const listed = [...publish(V1), ...publish(V2), ...publish(V3)].sort((a, b) =>
+      a.key < b.key ? -1 : 1,
+    );
+    const plan = planNetworkPrune(listed, {
+      liveVersion: V3,
+      previousVersion: null,
+      keepVersions: 1,
+    });
+    expect(plan.remove.map((entry) => entry.version)).toEqual([V1, V2]);
+
+    const doomed = keysToRemove(listed, plan);
+    const versionOf = (key: string) => versionOfObjectKey(key);
+
+    // Interleaved in listing order; grouped once ordered.
+    expect(listed.map((o) => versionOf(o.key)).slice(0, 3)).toEqual([V1, V2, V3]);
+    expect(doomed.map(versionOf)).toEqual([...Array(5).fill(V1), ...Array(5).fill(V2)]);
+
+    // A run capped below the total clears the oldest version outright and touches no other.
+    const firstRun = doomed.slice(0, 5);
+    expect(new Set(firstRun.map(versionOf))).toEqual(new Set([V1]));
+
+    const remaining = doomed.filter((key) => !firstRun.includes(key));
+    expect(new Set(remaining.map(versionOf))).toEqual(new Set([V2]));
+  });
+
+  it("never offers the live version for deletion, whatever the order", () => {
+    const listed = [...publish(V1), ...publish(V2), ...publish(V3)];
+    const plan = planNetworkPrune(listed, {
+      liveVersion: V3,
+      previousVersion: null,
+      keepVersions: 1,
+    });
+    expect(keysToRemove(listed, plan).some((key) => key.includes(V3))).toBe(false);
+  });
 });
