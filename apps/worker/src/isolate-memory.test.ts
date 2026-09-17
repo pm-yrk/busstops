@@ -942,3 +942,82 @@ describe("places in search", () => {
     expect(found!.hits.length).toBeGreaterThan(0);
   });
 });
+
+/**
+ * The two families that took geometry out of two questions that were never about geometry.
+ *
+ * The map asks "what routes call at this stop" and the planner asks "what stops does this pattern
+ * call at". Both were answered by reading pattern tiles, which carry route shapes and reach
+ * 3,935,975 bytes each — so both hit the three-mebibyte pattern cap, and capping the bytes turned
+ * an expensive read into permanent degradation. Run 43: `0 of the returned stops carry a service`
+ * on every dense viewport, and Leeds to Leeds Bradford Airport refused outright.
+ */
+describe("answering without reading geometry", () => {
+  it("publishes the route names a stop has on it, and the index says which tiles have them", async () => {
+    const store = new InMemoryObjectStore();
+    const result = await publishNetworkShards(store, network(), { version: "v1" });
+
+    expect(result.index?.stopRouteTiles?.length).toBeGreaterThan(0);
+    expect(result.index?.patternIndexBuckets).toBeGreaterThan(0);
+    expect(result.index?.patternIndexShards?.length).toBeGreaterThan(0);
+  });
+
+  it("labels a viewport's stops without opening a single pattern tile", async () => {
+    const { reader, reads } = await publishedReader();
+    reads.length = 0;
+
+    const named = await reader.routeNamesForStopTiles(
+      stopTilesForBoundingBox({ west: -1.7, south: 53.7, east: -1.4, north: 53.9 }),
+    );
+
+    expect(named.available).toBe(true);
+    expect(named.complete).toBe(true);
+    expect(named.byStopId.size).toBeGreaterThan(0);
+    for (const names of named.byStopId.values()) expect(names.length).toBeGreaterThan(0);
+    // The whole point: not one pattern tile, which is what the cap kept truncating.
+    expect(reads.filter((key) => key.includes(SHARDED.patternTile))).toEqual([]);
+  });
+
+  it("finds a pattern by its id, from one bucket rather than a geographic scan", async () => {
+    const { reader, reads } = await publishedReader();
+    const built = network();
+    const wanted = built.patterns.slice(0, 3).map((pattern) => pattern.id);
+
+    reads.length = 0;
+    const found = await reader.patternsByIds(wanted);
+
+    expect(found.available).toBe(true);
+    expect(found.complete).toBe(true);
+    expect(found.patterns.size).toBe(wanted.length);
+    for (const id of wanted) {
+      expect(found.patterns.get(id)?.stopSequence.length).toBeGreaterThan(0);
+    }
+    expect(reads.filter((key) => key.includes(SHARDED.patternTile))).toEqual([]);
+    // One object per bucket the wanted patterns hash into, never one per pattern and never a
+    // bucket the publish did not write.
+    const bucketReads = reads.filter((key) => key.includes("network/pattern-index/"));
+    expect(bucketReads.length).toBeGreaterThan(0);
+    expect(bucketReads.length).toBeLessThanOrEqual(wanted.length);
+  });
+
+  it("says a pattern index is unavailable rather than reporting a network with no routes", async () => {
+    // An artifact published before this family existed. The caller has to be able to tell that
+    // apart from "these patterns do not exist", which is the opposite fact.
+    const store = new InMemoryObjectStore();
+    const built = network();
+    const published = await publishNetworkShards(store, built, { version: "v1" });
+    const index = { ...published.index!, patternIndexBuckets: 0, patternIndexShards: [] };
+    await new ArtifactStore(store).publish({
+      dataset: SHARDED.index,
+      version: "v2",
+      records: [{ ...index, version: "v2" }],
+      schemaVersion: "1.0.0",
+      sources: ["naptan"],
+    });
+
+    const reader = new NetworkReader(store);
+    const found = await reader.patternsByIds([built.patterns[0]!.id]);
+    expect(found.available).toBe(false);
+    expect(found.patterns.size).toBe(0);
+  });
+});

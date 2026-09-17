@@ -33,6 +33,7 @@ import { ReadLedger } from "./read-ledger.js";
 import {
   passengerName,
   patternTilesForBoundingBox,
+  stopTilesForBoundingBox,
   routeBadgeName,
 } from "@busstops/pipeline-static-network";
 
@@ -68,6 +69,16 @@ const MAP_ENRICHMENT_BUDGET_MS = 1_800;
  * more than that says `truncated.stops` rather than spending the isolate on stops nobody sees.
  */
 const MAP_STOP_READ_CHARS = 5 * 1024 * 1024;
+
+/**
+ * And how much of the stop-routes index, which is the cheap half of the same question.
+ *
+ * A row is a stop id and a handful of route numbers, so a viewport's worth is measured in tens of
+ * kilobytes where the pattern tiles it replaces were measured in megabytes. Two mebibytes is far
+ * more than any viewport needs and is here so that a future grid change cannot make this the
+ * unbounded read.
+ */
+const MAP_STOP_ROUTES_CHARS = 2 * 1024 * 1024;
 
 /**
  * The same idea for route detail, though it should never come near it.
@@ -367,19 +378,6 @@ router.get("/v1/map", async (_request, { env, url }) => {
    *
    * Stops and vehicles are what the screen is for. They are read first and are never skipped.
    */
-  const stopsResult = network
-    ? await ledger.stage("stops", () =>
-        network!.stopsInBoundingBox(
-          bbox,
-          MAP_QUERY_LIMITS.maxStops,
-          Date.now(),
-          ledger,
-          MAP_STOP_READ_CHARS,
-        ),
-      )
-    : { stops: [], truncated: false };
-  ledger.count({ stops: stopsResult.stops.length });
-
   let vehicles: MapResponseData["vehicles"] = [];
   let vehiclesTruncated = false;
   let sources: Awaited<ReturnType<LiveService["vehiclesInBoundingBox"]>>["health"] = [];
@@ -387,12 +385,34 @@ router.get("/v1/map", async (_request, { env, url }) => {
   let observedAt: string | null = null;
 
   const liveAllowed = flags.liveVehicles && state !== "critical";
-  let liveObservations: Awaited<ReturnType<LiveService["vehiclesInBoundingBox"]>> | null = null;
-  if (liveAllowed && liveService) {
-    liveObservations = await ledger.stage("vehicles", () =>
-      liveService!.vehiclesInBoundingBox(bbox),
-    );
-  }
+
+  /*
+   * Together, because they are not competing for the same thing.
+   *
+   * These ran one after the other, and in run 43 the live feed took 828ms of an 1800ms budget
+   * while the stop read sat behind it — so the route-name enrichment, which runs on what is left,
+   * was declined before it started and every stop on the map came back with no services on it.
+   * The reads that were deliberately serialised elsewhere in this file are serialised because
+   * they compete for the isolate's memory. These two do not: one is object storage and the other
+   * is an HTTP request to a third party, and the vehicle list is capped at three hundred whatever
+   * comes back. What they were queueing for was wall-clock time, which is the one thing there is
+   * no reason to spend twice.
+   */
+  const [stopsResult, liveObservations] = await ledger.stage("essentials", () =>
+    Promise.all([
+      network
+        ? network.stopsInBoundingBox(
+            bbox,
+            MAP_QUERY_LIMITS.maxStops,
+            Date.now(),
+            ledger,
+            MAP_STOP_READ_CHARS,
+          )
+        : Promise.resolve({ stops: [], truncated: false }),
+      liveAllowed && liveService ? liveService.vehiclesInBoundingBox(bbox) : Promise.resolve(null),
+    ]),
+  );
+  ledger.count({ stops: stopsResult.stops.length });
 
   /*
    * Optional, and last: which services call where, and what route a vehicle is on.
@@ -402,11 +422,41 @@ router.get("/v1/map", async (_request, { env, url }) => {
    * that 503s is not. So it runs on whatever time is left, stops the moment the budget is spent,
    * and says so in the response rather than pretending it finished.
    */
-  const enrichment = network
-    ? await ledger.stage("patterns", () =>
-        network!.patternsInTilesDetailed(patternTilesForBoundingBox(bbox), Date.now(), ledger),
+  /*
+   * Which services call at each stop, from the index that answers exactly that.
+   *
+   * This read pattern tiles, which carry route geometry. A dense one is 3,935,975 bytes against a
+   * three-mebibyte cap, so in Leeds or Manchester the read truncated on its first tile every
+   * single time and every stop came back with no services on it — a cap on bytes turned into
+   * permanent degradation, which is worse than either the cost or the error it was avoiding.
+   * `network/stop-routes` is the same answer published as the answer, on the stops' own grid: a
+   * list of names where a polyline was.
+   */
+  const stopRoutes = network
+    ? await ledger.stage("stop-routes", () =>
+        network!.routeNamesForStopTiles(
+          stopTilesForBoundingBox(bbox),
+          Date.now(),
+          ledger,
+          MAP_STOP_ROUTES_CHARS,
+        ),
       )
-    : { geometries: [], complete: true };
+    : { byStopId: new Map<string, string[]>(), complete: true, available: true };
+
+  /*
+   * The tiles, only for what the index cannot answer.
+   *
+   * Two things still need geometry: matching a live vehicle to a route, and an artifact published
+   * before the stop-routes family existed. Neither is worth a four-megabyte read when there is
+   * nothing to match — a viewport with no live vehicles skips it entirely.
+   */
+  const needsGeometry = !stopRoutes.available || (liveObservations?.observations.length ?? 0) > 0;
+  const enrichment =
+    network && needsGeometry
+      ? await ledger.stage("patterns", () =>
+          network!.patternsInTilesDetailed(patternTilesForBoundingBox(bbox), Date.now(), ledger),
+        )
+      : { geometries: [], complete: true };
   const geometries = enrichment.geometries;
   const services =
     network && geometries.length > 0
@@ -425,13 +475,21 @@ router.get("/v1/map", async (_request, { env, url }) => {
    * patterns and a few hundred stops, and the per-stop version is the product of the two.
    */
   const routeNamesByStopId = new Map<string, Set<string>>();
-  for (const geometry of geometries) {
-    const service = services.get(geometry.pattern.serviceRouteId);
-    if (!service) continue;
-    for (const stopId of geometry.pattern.stopSequence) {
-      const names = routeNamesByStopId.get(stopId);
-      if (names) names.add(routeBadgeName(service.publicName));
-      else routeNamesByStopId.set(stopId, new Set([routeBadgeName(service.publicName)]));
+  if (stopRoutes.available) {
+    for (const [stopId, names] of stopRoutes.byStopId) {
+      routeNamesByStopId.set(stopId, new Set(names.map(routeBadgeName)));
+    }
+  } else {
+    // The legacy path, kept so the map still labels stops between a deploy and the next national
+    // rebuild. Labelled as legacy rather than left to look like the intended route.
+    for (const geometry of geometries) {
+      const service = services.get(geometry.pattern.serviceRouteId);
+      if (!service) continue;
+      for (const stopId of geometry.pattern.stopSequence) {
+        const names = routeNamesByStopId.get(stopId);
+        if (names) names.add(routeBadgeName(service.publicName));
+        else routeNamesByStopId.set(stopId, new Set([routeBadgeName(service.publicName)]));
+      }
     }
   }
 
@@ -551,8 +609,25 @@ router.get("/v1/map", async (_request, { env, url }) => {
       vehicles: vehiclesTruncated,
       incidents: false,
     },
-    degraded: !enrichment.complete || ledger.stopped,
-    degradationReason: ledger.reason ?? (enrichment.complete ? null : "pattern_read_budget"),
+    /*
+     * Degraded is about the labels, so it is about whichever read produced them.
+     *
+     * With the stop-routes index that is `stopRoutes.complete`; the pattern read is now only
+     * about matching live vehicles to routes, and a viewport with no buses in it skips it
+     * entirely — which must not be reported as a degraded map.
+     */
+    degraded: stopRoutes.available
+      ? !stopRoutes.complete || ledger.stopped
+      : !enrichment.complete || ledger.stopped,
+    degradationReason:
+      ledger.reason ??
+      (stopRoutes.available
+        ? stopRoutes.complete
+          ? null
+          : "stop_routes_budget"
+        : enrichment.complete
+          ? null
+          : "pattern_read_budget"),
   };
 
   const coverage = index ? (liveAllowed && failedSources.length === 0 ? 1 : 0.5) : 0;
@@ -933,17 +1008,29 @@ router.get("/v1/journeys", async (_request, { env, url }) => {
    * same five-mebibyte cap the map uses rather than the shared default.
    */
   const journeyLedger = new ReadLedger(JOURNEY_BUDGET_MS);
+  const journeyIndexForSlice = await journeyLedger.stage("index", () => network!.networkIndex());
+  /*
+   * Skip the pattern tiles when the pattern index exists.
+   *
+   * The planner reads `pattern.stopSequence` and never looks at a shape, and the tiles carry
+   * shapes — so a Leeds corridor spent its whole pattern budget on geometry it would discard, came
+   * back incomplete, and the planner refused to plan. With the index the patterns are fetched by
+   * id after the trips have said which ones matter, so reading the tiles as well would be paying
+   * that cost twice over for nothing.
+   */
+  const usePatternIndex = (journeyIndexForSlice?.patternIndexBuckets ?? 0) > 0;
   const slice = await journeyLedger.stage("slice", () =>
     network!.sliceForBoundingBox(
       corridorBoundingBox(origin, destination, JOURNEY_LIMITS.maxAccessWalkMetres),
       Date.now(),
       journeyLedger,
       JOURNEY_STOP_READ_CHARS,
+      { patterns: usePatternIndex ? "skip" : "tiles" },
     ),
   );
   journeyLedger.count({ stops: slice.stopsById.size, patterns: slice.patternsById.size });
 
-  const journeyIndex = await journeyLedger.stage("index", () => network!.networkIndex());
+  const journeyIndex = journeyIndexForSlice;
   if (!journeyIndex) {
     return errorResponse(
       "upstream_unavailable",
@@ -1023,6 +1110,12 @@ router.get("/v1/journeys", async (_request, { env, url }) => {
       // What the artifact says about its own storage. Absent on publishes written before layouts
       // were recorded, which the planner reports as unchecked rather than treating as agreement.
       layout: journeyIndex.layout ?? null,
+      ...(usePatternIndex
+        ? {
+            resolvePatterns: (patternIds: readonly string[]) =>
+              network!.patternsByIds(patternIds, Date.now(), journeyLedger),
+          }
+        : {}),
     }),
   );
 

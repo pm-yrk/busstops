@@ -38,7 +38,13 @@ import {
   stopTilesForShape,
   tokenize,
   decodeRoutePatternsForService,
+  decodePatternIndexFor,
   passengerName,
+  patternIndexBucketFor,
+  patternIndexDataset,
+  stopRoutesDataset,
+  type PatternIndexRow,
+  type StopRoutesRow,
   routeBadgeName,
   routePatternsBucketFor,
   routePatternsDataset,
@@ -514,6 +520,16 @@ export class NetworkReader {
     now: number = Date.now(),
     ledger?: ReadLedger,
     stopBudgetChars?: number,
+    /**
+     * Skip the pattern tiles entirely.
+     *
+     * The planner is the only caller that wanted them, and it wanted stop sequences rather than
+     * geometry — which is exactly what the pattern index answers, by id, for the patterns the
+     * corridor's trips actually name. Reading the tiles as well would be paying the four-megabyte
+     * cost to discard it. Passed as a flag rather than assumed, because an artifact published
+     * before the index existed still needs the old path.
+     */
+    options: { patterns?: "tiles" | "skip" } = {},
   ): Promise<NetworkSlice & { complete: boolean }> {
     /*
      * Stops and patterns are on different grids — a pattern is written to every tile it crosses,
@@ -531,11 +547,10 @@ export class NetworkReader {
       ledger,
       stopBudgetChars,
     );
-    const patterns = await this.patternsInTilesDetailed(
-      patternTilesForBoundingBox(bbox),
-      now,
-      ledger,
-    );
+    const patterns =
+      options.patterns === "skip"
+        ? { geometries: [] as PatternGeometry[], complete: true }
+        : await this.patternsInTilesDetailed(patternTilesForBoundingBox(bbox), now, ledger);
     const services = await this.services(now);
     return {
       stopsById: new Map(stops.stops.map((stop) => [stop.id, stop])),
@@ -714,6 +729,150 @@ export class NetworkReader {
       requested: keys.length,
       resolved: stopsById.size,
     };
+  }
+
+  /**
+   * Which route names call at each stop in these tiles.
+   *
+   * The map used to answer this by reading pattern tiles, which carry geometry: a dense one is
+   * 3,935,975 bytes against a three-mebibyte cap, so in Leeds the read truncated on its first tile
+   * every single time and every stop on the map came back with no services on it. The answer is
+   * published as the answer now, on the same grid as the stops, so this reads the tiles the map
+   * was already reading and opens no pattern tile at all.
+   *
+   * `complete` is what the map reports as `degraded`. An absent row means no service calls at that
+   * stop, which is a real answer; an unread tile means we do not know, which is a different one.
+   */
+  async routeNamesForStopTiles(
+    tiles: readonly string[],
+    now: number = Date.now(),
+    ledger?: ReadLedger,
+    budgetChars?: number,
+  ): Promise<{ byStopId: Map<string, string[]>; complete: boolean; available: boolean }> {
+    const index = await this.networkIndex(now);
+    // An artifact published before this family existed has no such tiles. Saying so lets the
+    // caller fall back to the pattern tiles rather than report a network with no services on it.
+    if (!index?.stopRouteTiles || index.stopRouteTiles.length === 0) {
+      return { byStopId: new Map(), complete: false, available: false };
+    }
+
+    const result = await this.readTiles<StopRoutesRow>(
+      stopRoutesDataset,
+      tiles,
+      index.stopRouteTiles,
+      index.version,
+      now,
+      budgetChars ?? this.requestChars,
+      ledger ? { ledger, family: "route-patterns", budgetReason: "stop_routes_budget" } : undefined,
+    );
+
+    const byStopId = new Map<string, string[]>();
+    for (const row of result.records) byStopId.set(row.s, row.r);
+    return { byStopId, complete: !result.truncated, available: true };
+  }
+
+  /**
+   * Patterns by id, read from the index rather than found by where they go.
+   *
+   * This is the journey planner's version of what the route-pattern index did for route detail.
+   * The planner needs a pattern's stop sequence and never its geometry, and it was reading the
+   * corridor's pattern tiles — geometry and all — to get it, which put a Leeds corridor past the
+   * pattern budget and made the planner refuse to plan at all. The trips name their patterns, so
+   * this asks for exactly those.
+   *
+   * Each bucket is one object and one prefix scan per pattern in it; the rest of the bucket is
+   * never parsed.
+   */
+  async patternsByIds(
+    patternIds: readonly string[],
+    now: number = Date.now(),
+    ledger?: ReadLedger,
+  ): Promise<{ patterns: Map<string, RoutePattern>; complete: boolean; available: boolean }> {
+    const index = await this.networkIndex(now);
+    const buckets = index?.patternIndexBuckets ?? 0;
+    if (!index || buckets === 0) {
+      return { patterns: new Map(), complete: false, available: false };
+    }
+
+    const wanted = new Map<number, string[]>();
+    for (const id of new Set(patternIds)) {
+      const bucket = patternIndexBucketFor(id, buckets);
+      // Only buckets the publish wrote are requested: the rest are a guaranteed miss, metered.
+      if (index.patternIndexShards && !index.patternIndexShards.includes(bucket)) continue;
+      const ids = wanted.get(bucket);
+      if (ids) ids.push(id);
+      else wanted.set(bucket, [id]);
+    }
+
+    const patterns = new Map<string, RoutePattern>();
+    let complete = true;
+    const entries = [...wanted];
+
+    /*
+     * The same measured batching the tiles use, for the same reason: the first round trip is the
+     * one no budget can undo. A bucket is small — these rows carry no geometry — but a corridor
+     * can touch a lot of them, and "small times many" is how the last two limits were reached.
+     */
+    let start = 0;
+    let batchSize = FIRST_TILE_BATCH;
+    let chars = 0;
+    let read = 0;
+
+    while (start < entries.length) {
+      const batch = entries.slice(start, start + batchSize);
+      const bodies = await Promise.all(
+        batch.map(async ([bucket, ids]) => {
+          const began = Date.now();
+          try {
+            const raw = await this.store.get(
+              objectKeyFor(patternIndexDataset(bucket), index.version),
+            );
+            ledger?.record("patterns", {
+              outcome: raw === null ? "missing" : "read",
+              chars: raw?.length ?? 0,
+              records: ids.length,
+              ms: Date.now() - began,
+            });
+            return { raw, ids };
+          } catch {
+            ledger?.record("patterns", { outcome: "failed", ms: Date.now() - began });
+            return { raw: null, ids, failed: true as const };
+          }
+        }),
+      );
+      start += batch.length;
+
+      for (const body of bodies) {
+        if (body.raw === null) {
+          // A bucket the index promised and the store could not produce is a gap, not an absence.
+          if ("failed" in body) complete = false;
+          continue;
+        }
+        chars += body.raw.length;
+        read += 1;
+        for (const id of body.ids) {
+          const row = decodePatternIndexFor(body.raw, id);
+          if (row) patterns.set(row.id, toRoutePattern(row));
+        }
+      }
+
+      if (ledger && !ledger.withinBudget && start < entries.length) {
+        ledger.stop("pattern_index_budget");
+        complete = false;
+        break;
+      }
+
+      const averageChars = Math.max(1, Math.ceil(chars / Math.max(1, read)));
+      const affordable = Math.floor((this.requestChars - chars) / averageChars);
+      if (affordable <= 0 && start < entries.length) {
+        complete = false;
+        break;
+      }
+      batchSize = Math.max(1, Math.min(TILE_READ_BATCH, affordable));
+    }
+
+    ledger?.count({ patterns: patterns.size });
+    return { patterns, complete, available: true };
   }
 
   /** Pattern geometries covering a viewport, for matching live vehicles to routes. */
@@ -1029,6 +1188,25 @@ function presentHit(hit: SearchHit): SearchHit {
       ...(hit.entry.subtitle === undefined ? {} : { subtitle: passengerName(hit.entry.subtitle) }),
     },
   };
+}
+
+/**
+ * An index row as the planner's pattern.
+ *
+ * The row is deliberately not a `RoutePattern` on the wire: it carries what a planner needs and
+ * leaves out what it does not, which is the whole point of the family. The shape reference is
+ * empty because there is no shape here — a caller that needs geometry reads the route-pattern
+ * index or the tiles, both of which have it.
+ */
+function toRoutePattern(row: PatternIndexRow): RoutePattern {
+  return {
+    id: row.id,
+    serviceRouteId: row.serviceRouteId,
+    direction: row.direction as RoutePattern["direction"],
+    stopSequence: row.stopSequence,
+    distanceMetres: row.distanceMetres,
+    shapeRef: "",
+  } as RoutePattern;
 }
 
 function toGeometries(records: readonly PatternTileRecord[]): PatternGeometry[] {

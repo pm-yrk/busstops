@@ -360,6 +360,101 @@ export function assemblePatternTile(lines: readonly PatternTileLine[]): PatternT
  * `assemblePatternTile` puts either back together and the two cannot drift apart.
  */
 export const ROUTE_PATTERN_BUCKETS = 512;
+/**
+ * Which services call at each stop, filed on the stop grid.
+ *
+ * The map asks one question — what route numbers does this stop have on it — and it was answering
+ * that by reading pattern tiles, which carry route geometry. A dense pattern tile is 3,935,975
+ * bytes against a three-mebibyte cap, so in Leeds or Manchester the read truncated on its first
+ * tile every single time and every stop on the map came back with no services on it. Capping the
+ * bytes turned an expensive read into permanent degradation, which is worse than either.
+ *
+ * So the answer is published as the answer. One row per stop, a list of route names, filed on the
+ * same grid as the stops themselves — so the map reads the tiles it was already reading and never
+ * opens a pattern tile at all. Nationally this is tens of bytes per stop against a pattern tile's
+ * megabytes, because a name is not a polyline.
+ */
+export const STOP_ROUTES_PREFIX = "network/stop-routes";
+
+export interface StopRoutesRow {
+  /** Stop id, as the stop tile files it. */
+  s: string;
+  /** Route public names calling here, sorted, so a marker's label does not reshuffle. */
+  r: string[];
+}
+
+export function stopRoutesDataset(tile: string): string {
+  return `${STOP_ROUTES_PREFIX}/${tile}`;
+}
+
+/**
+ * Every pattern by its own id, without its geometry.
+ *
+ * The journey planner needs a pattern's stop sequence and nothing else — `buildGraphFor` reads
+ * `pattern.stopSequence` and never touches the shape — and it was getting that by reading the
+ * corridor's pattern tiles, geometry and all, against the same three-mebibyte cap. A Leeds
+ * corridor exceeded it, so the slice came back incomplete and the planner refused to plan rather
+ * than plan on half a corridor.
+ *
+ * Trips name their pattern. So the planner reads its trips first, learns exactly which patterns
+ * it needs, and asks for those — the same targeted move that took route detail off the tiles.
+ * Without shapes these rows are small: a stop sequence is a list of ids, not a polyline.
+ */
+export const PATTERN_INDEX_PREFIX = "network/pattern-index";
+export const PATTERN_INDEX_BUCKETS = 512;
+
+/** What a planner needs to turn a trip's times into a journey. Deliberately not the geometry. */
+export interface PatternIndexRow {
+  id: string;
+  serviceRouteId: string;
+  direction: string;
+  stopSequence: string[];
+  distanceMetres: number;
+}
+
+export function patternIndexBucketFor(patternId: string, buckets = PATTERN_INDEX_BUCKETS): number {
+  // FNV-1a, the same hash the other buckets use, so one function decides every layout.
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < patternId.length; i += 1) {
+    hash ^= patternId.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash % buckets;
+}
+
+export function patternIndexDataset(bucket: number): string {
+  return `${PATTERN_INDEX_PREFIX}/${bucket}`;
+}
+
+/**
+ * The shard as text: a header, then one line per pattern keyed by its id.
+ *
+ * Read by prefix scan rather than by parsing the object — the same trick the route-pattern index
+ * and the departure shards use. A bucket holds a few hundred patterns and a request wants a
+ * handful of them; parsing the rest to throw them away is the cost this avoids.
+ */
+export function patternIndexShardLines(rows: readonly PatternIndexRow[]): string[] {
+  return [
+    JSON.stringify({ v: 1, n: rows.length }),
+    ...rows.map((row) => JSON.stringify([row.id, row])),
+  ];
+}
+
+export function decodePatternIndexFor(text: string, patternId: string): PatternIndexRow | null {
+  const needle = `\n[${JSON.stringify(patternId)},`;
+  const at = text.indexOf(needle);
+  if (at === -1) return null;
+  const start = at + 1;
+  const end = text.indexOf("\n", start);
+  const line = end === -1 ? text.slice(start) : text.slice(start, end);
+  try {
+    const parsed = JSON.parse(line) as [string, PatternIndexRow];
+    return parsed[1];
+  } catch {
+    return null;
+  }
+}
+
 export const ROUTE_PATTERNS_PREFIX = "network/route-patterns";
 export const ROUTE_PATTERNS_FORMAT = 1;
 
@@ -453,6 +548,17 @@ export interface NetworkIndexRecord {
    * all or has to say it cannot.
    */
   routePatternBuckets?: number;
+  /**
+   * Which stop tiles have a stop-routes companion, and which pattern-index buckets were written.
+   *
+   * Both optional, because an artifact published before these families existed has neither — and
+   * a reader meeting one has to fall back to the old path rather than ask for keys that cannot be
+   * there. `patternIndexShards` says which buckets exist, so "nothing was filed here" is
+   * distinguishable from "the object could not be read", which are opposite facts.
+   */
+  stopRouteTiles?: string[];
+  patternIndexBuckets?: number;
+  patternIndexShards?: number[];
   /**
    * Which of those buckets were actually written.
    *

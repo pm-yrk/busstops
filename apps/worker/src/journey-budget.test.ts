@@ -171,3 +171,63 @@ describe("a journey plan owns its trip read", () => {
     if (!outcome.ok) expect(outcome.code).toBe("incomplete_read");
   });
 });
+
+/**
+ * The order reversal that takes geometry out of the corridor.
+ *
+ * The slice used to read the corridor's pattern tiles — shapes and all — and a Leeds corridor
+ * spent the whole pattern budget on geometry the planner never looks at, came back incomplete,
+ * and the planner refused to plan. The trips name their patterns, so the read order reverses:
+ * trips first, then exactly the patterns they named.
+ */
+describe("patterns arrive after the trips that name them", () => {
+  it("asks only for the patterns the corridor's trips actually reference", async () => {
+    const { store } = await publish(20);
+    const asked: string[][] = [];
+
+    const outcome = await new JourneyService(store).planJourney(
+      // An empty slice: with a resolver, the corridor's own patterns are not read at all.
+      { ...slice(), patternsById: new Map() },
+      {
+        ...request,
+        resolvePatterns: (ids) => {
+          asked.push([...ids]);
+          return Promise.resolve({
+            patterns: slice().patternsById as Map<string, never>,
+            complete: true,
+            available: true,
+          });
+        },
+      },
+    );
+
+    expect(asked).toHaveLength(1);
+    // The fixture's trips are all on one pattern, plus filler on patterns the slice never had.
+    expect(asked[0]).toContain("p-a2");
+    expect(outcome.diagnostics.patternsRequested).toBe(asked[0]!.length);
+    expect(outcome.ok).toBe(true);
+  });
+
+  it("refuses when a pattern the trips named could not be read", async () => {
+    const { store } = await publish(5);
+    const outcome = await new JourneyService(store).planJourney(
+      { ...slice(), patternsById: new Map() },
+      {
+        ...request,
+        resolvePatterns: () =>
+          Promise.resolve({ patterns: new Map(), complete: false, available: true }),
+      },
+    );
+
+    expect(outcome.ok).toBe(false);
+    expect(outcome.diagnostics.code).toBe("incomplete_read");
+    if (!outcome.ok) expect(outcome.reason).toContain("could not read every route");
+  });
+
+  it("falls back to the corridor's own patterns when no index has been published", async () => {
+    const { store } = await publish(5);
+    // No resolver at all, which is an artifact published before the pattern index existed.
+    const outcome = await new JourneyService(store).planJourney(slice(), request);
+    expect(outcome.ok).toBe(true);
+  });
+});

@@ -36,6 +36,13 @@ import {
   routePatternsBucketFor,
   routePatternsDataset,
   routePatternsShardLines,
+  PATTERN_INDEX_BUCKETS,
+  patternIndexBucketFor,
+  patternIndexDataset,
+  patternIndexShardLines,
+  stopRoutesDataset,
+  type PatternIndexRow,
+  type StopRoutesRow,
   type RoutePatternsRow,
 } from "./shards.js";
 
@@ -228,6 +235,41 @@ export async function publishNetworkShards(
   );
   routePatternShards.clear();
 
+  /*
+   * The route names each stop has on it, filed on the stop grid.
+   *
+   * The map was answering "what routes call here" by reading pattern tiles, which carry geometry:
+   * a dense one is 3,935,975 bytes against a three-mebibyte cap, so in Leeds the read truncated on
+   * its first tile every time and every stop came back with no services on it. This is the answer
+   * published as the answer — a list of names is tens of bytes where a polyline is megabytes — so
+   * the map reads the tiles it was already reading and never opens a pattern tile at all.
+   */
+  const stopRouteShards = groupStopRoutesByTile(network);
+  const stopRouteTiles = [...stopRouteShards.keys()].sort();
+  await publishFamily(
+    [...stopRouteShards].map(([tile, records]) => shardOf(stopRoutesDataset(tile), records)),
+  );
+  stopRouteShards.clear();
+
+  /*
+   * And every pattern by its own id, without its geometry.
+   *
+   * The planner reads `pattern.stopSequence` and never touches a shape, and it was getting that
+   * from the corridor's pattern tiles against the same cap — so a Leeds corridor came back
+   * incomplete and the planner refused to plan rather than plan on half of one. Trips name their
+   * pattern, so the planner can ask for exactly the patterns its trips referenced.
+   */
+  const patternIndexShardMap = groupPatternIndexByBucket(network);
+  const patternIndexShards = [...patternIndexShardMap.keys()].sort((a, b) => a - b);
+  await publishFamily(
+    [...patternIndexShardMap].map(([bucket, rows]) => ({
+      dataset: patternIndexDataset(bucket),
+      lines: patternIndexShardLines(rows),
+      records: rows.length,
+    })),
+  );
+  patternIndexShardMap.clear();
+
   const searchEntries = buildSearchIndex(network, { builtAt: now().toISOString() }).entries;
 
   const searchTileShards = groupSearchByTile(searchEntries);
@@ -267,6 +309,9 @@ export async function publishNetworkShards(
     patternTiles,
     searchTiles,
     searchPrefixes,
+    stopRouteTiles,
+    patternIndexBuckets: PATTERN_INDEX_BUCKETS,
+    patternIndexShards,
     routePatternBuckets,
     routePatternShards: routePatternShardList,
     counts: {
@@ -434,6 +479,73 @@ function groupPatternsByService(network: BuiltNetwork): Map<number, RoutePattern
   }
   // Deterministic order, so the same network publishes byte-identical shards.
   for (const rows of buckets.values()) rows.sort((a, b) => (a.serviceId < b.serviceId ? -1 : 1));
+  return buckets;
+}
+
+/**
+ * Which route names call at each stop, on the stop grid.
+ *
+ * Walked once over the patterns rather than once per stop: a network holds tens of thousands of
+ * patterns and hundreds of thousands of stops, and the per-stop version is the product of the two.
+ * Names are deduplicated and sorted, so a marker's label is the same between requests rather than
+ * reshuffling as the map refreshes.
+ */
+function groupStopRoutesByTile(network: BuiltNetwork): Map<string, StopRoutesRow[]> {
+  const serviceNames = new Map(network.services.map((service) => [service.id, service.publicName]));
+  const namesByStop = new Map<string, Set<string>>();
+
+  for (const pattern of network.patterns) {
+    const name = serviceNames.get(pattern.serviceRouteId);
+    // A pattern whose service is not in this build has no name to publish. Filing the id instead
+    // would put a UUID on a bus stop.
+    if (!name) continue;
+    for (const stopId of pattern.stopSequence) {
+      const names = namesByStop.get(stopId);
+      if (names) names.add(name);
+      else namesByStop.set(stopId, new Set([name]));
+    }
+  }
+
+  const byTile = new Map<string, StopRoutesRow[]>();
+  for (const stop of network.stops) {
+    const names = namesByStop.get(stop.id);
+    // A stop nothing calls at publishes no row rather than an empty one: the map reads an absent
+    // row as "no services here", which is the same answer for a fraction of the bytes.
+    if (!names || names.size === 0) continue;
+    const tile = tileForStop(stop);
+    const row: StopRoutesRow = { s: stop.id, r: [...names].sort() };
+    const rows = byTile.get(tile);
+    if (rows) rows.push(row);
+    else byTile.set(tile, [row]);
+  }
+
+  // Deterministic order, so the same network publishes byte-identical shards.
+  for (const rows of byTile.values()) rows.sort((a, b) => (a.s < b.s ? -1 : 1));
+  return byTile;
+}
+
+/**
+ * Every pattern by its id, carrying what a planner needs and nothing else.
+ *
+ * No shape. `buildGraphFor` reads the stop sequence and never looks at geometry, and the geometry
+ * is the whole reason the tiles are too big to read a corridor's worth of.
+ */
+function groupPatternIndexByBucket(network: BuiltNetwork): Map<number, PatternIndexRow[]> {
+  const buckets = new Map<number, PatternIndexRow[]>();
+  for (const pattern of network.patterns) {
+    const row: PatternIndexRow = {
+      id: pattern.id,
+      serviceRouteId: pattern.serviceRouteId,
+      direction: pattern.direction,
+      stopSequence: [...pattern.stopSequence],
+      distanceMetres: pattern.distanceMetres,
+    };
+    const bucket = patternIndexBucketFor(pattern.id);
+    const rows = buckets.get(bucket);
+    if (rows) rows.push(row);
+    else buckets.set(bucket, [row]);
+  }
+  for (const rows of buckets.values()) rows.sort((a, b) => (a.id < b.id ? -1 : 1));
   return buckets;
 }
 

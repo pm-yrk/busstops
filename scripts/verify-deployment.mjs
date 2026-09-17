@@ -641,6 +641,19 @@ await check("the pattern-heavy endpoints survive dense cities, repeatedly", asyn
   let routePeakMs = 0;
   let routeWorstMs = -1;
   let routeWorst = "no route detail was sampled";
+  /*
+   * What every route request cost, kept as it happens.
+   *
+   * Run 43 died on attempt five. The four before it answered, and each carried a full stage
+   * breakdown — and every one of them was thrown away, because `assert` throws and the check's
+   * summary is only built if it returns. The request that gets killed can never report anything,
+   * so the ones that live are the only evidence there is, and they have to survive the failure.
+   */
+  const routeTrail = [];
+  const trail = () =>
+    routeTrail.length === 0
+      ? ""
+      : ` — what the requests before it cost: ${routeTrail.slice(-6).join(" | ")}`;
 
   for (const city of CITIES) {
     let mapOk = 0;
@@ -657,7 +670,8 @@ await check("the pattern-heavy endpoints survive dense cities, repeatedly", asyn
       assert(
         !html,
         `${city.name}: /v1/map answered the platform's error page, not the Worker ` +
-          `(${map.response.status}) on attempt ${String(attempt + 1)}`,
+          `(${map.response.status}${describePlatformPage(map.response, map.text)}) on attempt ` +
+          `${String(attempt + 1)}${trail()}`,
       );
       assert(map.response.ok, `${city.name}: /v1/map gave ${map.response.status}`);
       mapOk += 1;
@@ -737,8 +751,7 @@ await check("the pattern-heavy endpoints survive dense cities, repeatedly", asyn
           !detailHtml,
           `${city.name}: /v1/routes/${route.id} answered the platform's error page, not the ` +
             `Worker (${detail.response.status}${describePlatformPage(detail.response, detail.text)}) ` +
-            `on attempt ` +
-            `${String(attempt + 1)}`,
+            `on attempt ${String(attempt + 1)}${trail()}`,
         );
         assert(
           detail.response.ok,
@@ -755,7 +768,19 @@ await check("the pattern-heavy endpoints survive dense cities, repeatedly", asyn
          * be guessed at from the outside.
          */
         const routeDiagnostics = detail.body?.meta?.diagnostics;
-        assert(routeDiagnostics, `${city.name}: route detail carries no diagnostics`);
+        assert(routeDiagnostics, `${city.name}: route detail carries no diagnostics${trail()}`);
+        routeTrail.push(
+          `${city.name}#${String(attempt + 1)} ${sampledRoute}: ` +
+            `${String(routeDiagnostics.elapsedMs ?? 0)}ms, ` +
+            `${String(routeDiagnostics.objectsRequested ?? 0)} req/${String(routeDiagnostics.objectsRead ?? 0)} read/` +
+            `${String(routeDiagnostics.objectsCached ?? 0)} cached, ` +
+            `${((routeDiagnostics.chars ?? 0) / 1048576).toFixed(2)} MiB, ` +
+            `${String(routeDiagnostics.stopTilesRequested ?? 0)} tile(s), ` +
+            `${String(routeDiagnostics.stopsResolved ?? 0)}/${String(routeDiagnostics.stopsRequested ?? 0)} stop(s), ` +
+            Object.entries(routeDiagnostics.stages ?? {})
+              .map(([stage, ms]) => `${stage}=${ms}ms`)
+              .join(" "),
+        );
         routePeakMs = Math.max(routePeakMs, routeDiagnostics.elapsedMs ?? 0);
         routePeakChars = Math.max(routePeakChars, routeDiagnostics.chars ?? 0);
         routePeakObjects = Math.max(routePeakObjects, routeDiagnostics.objectsRequested ?? 0);

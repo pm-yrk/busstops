@@ -1,4 +1,4 @@
-import type { Coordinate } from "@busstops/contracts";
+import type { Coordinate, RoutePattern } from "@busstops/contracts";
 import {
   corridorBoundingBox,
   objectKeyFor,
@@ -59,6 +59,21 @@ export interface JourneyPlanRequest {
   serviceDate: string;
   /** The layout the artifact declares, from the network index. Absent on older publishes. */
   layout?: ArtifactLayout | null;
+  /**
+   * Patterns by id, for the trips this corridor actually holds.
+   *
+   * The planner needs a pattern's stop sequence and never its geometry, and it was getting that
+   * from the corridor's pattern tiles — which carry geometry, reach 3,935,975 bytes each, and put
+   * a Leeds corridor past its budget, so the planner refused to plan rather than plan on half of
+   * one. The trips name their patterns, so the order reverses: read the trips, then ask for
+   * exactly the patterns they named.
+   *
+   * Absent on an artifact published before the pattern index existed, and then the slice's own
+   * patterns are used as before.
+   */
+  resolvePatterns?: (
+    patternIds: readonly string[],
+  ) => Promise<{ patterns: Map<string, RoutePattern>; complete: boolean; available: boolean }>;
   /** The publish these shards belong to, from the network index, as every other reader takes it. */
   version: string;
 }
@@ -113,6 +128,8 @@ export interface JourneyDiagnostics {
   shardsSkipped?: number;
   /** Rows parsed and immediately discarded as outside the plan's window or corridor patterns. */
   tripsFiltered?: number;
+  /** Patterns the corridor's trips named, and therefore the patterns that had to be read. */
+  patternsRequested?: number;
   /** Trip rows read out of the shards. */
   tripsLoaded: number;
   /** Rows whose pattern was present in the slice, and rows whose pattern was not. */
@@ -304,7 +321,11 @@ export class JourneyService {
     }
 
     const readBegan = Date.now();
-    const loaded = await this.loadTrips(tiles, request, new Set(slice.patternsById.keys()));
+    const loaded = await this.loadTrips(
+      tiles,
+      request,
+      request.resolvePatterns ? null : new Set(slice.patternsById.keys()),
+    );
     diagnostics.stageMs.loadTrips = Date.now() - readBegan;
     diagnostics.stageMs.readTrips = loaded.readMs;
     diagnostics.stageMs.parseTrips = loaded.parseMs;
@@ -365,8 +386,45 @@ export class JourneyService {
       };
     }
 
+    /*
+     * Now the patterns, and only the ones these trips actually named.
+     *
+     * This is the journey planner's version of what the route-pattern index did for route detail:
+     * a targeted read of a handful of small rows in place of a geographic scan of megabytes of
+     * geometry the planner never looks at. An incomplete resolution is still a refusal — a pattern
+     * that could not be read is a bus the plan cannot see.
+     */
+    let planningSlice = slice;
+    if (request.resolvePatterns) {
+      const wanted = [...new Set(loaded.rows.map((row) => row.p))];
+      const patternBegan = Date.now();
+      const resolved = await request.resolvePatterns(wanted);
+      diagnostics.stageMs.resolvePatterns = Date.now() - patternBegan;
+      diagnostics.patternsRequested = wanted.length;
+
+      if (resolved.available) {
+        diagnostics.patternsInSlice = resolved.patterns.size;
+        if (!resolved.complete) {
+          return {
+            ok: false,
+            code: "incomplete_read",
+            reason:
+              "We could not read every route along this corridor inside one request, so any " +
+              "journey we showed you might be missing the bus you actually want. Try a shorter " +
+              "journey, or try again shortly.",
+            diagnostics: { ...diagnostics, code: "incomplete_read" },
+          };
+        }
+        planningSlice = { ...slice, patternsById: resolved.patterns };
+        // Rows on a pattern nothing could resolve cannot become trips; dropping them here keeps
+        // them out of the graph builder's memory rather than out of its output.
+        loaded.rows = loaded.rows.filter((row) => resolved.patterns.has(row.p));
+        diagnostics.tripsLoaded = loaded.rows.length;
+      }
+    }
+
     const graphBegan = Date.now();
-    const built = buildGraphFor(slice, loaded.rows, corridor, request.serviceDate);
+    const built = buildGraphFor(planningSlice, loaded.rows, corridor, request.serviceDate);
     diagnostics.stageMs.buildGraph = Date.now() - graphBegan;
     diagnostics.tripsWithPattern = built.tripsWithPattern;
     diagnostics.tripsWithoutPattern = built.tripsWithoutPattern;
@@ -432,7 +490,14 @@ export class JourneyService {
   private async loadTrips(
     tiles: readonly string[],
     request: JourneyPlanRequest,
-    patternIds: ReadonlySet<string>,
+    /**
+     * Null when the patterns are not known yet.
+     *
+     * With the pattern index the order reverses — the trips say which patterns to fetch — so the
+     * pattern test cannot be applied while parsing. The time test still can, and it is the one
+     * that drops most of a shard: a window is eight hours and a plan spans four.
+     */
+    patternIds: ReadonlySet<string> | null,
   ): Promise<{
     rows: PatternTripRow[];
     failures: Array<{ dataset: string; reason: string }>;
@@ -489,7 +554,7 @@ export class JourneyService {
      * on a pattern the corridor slice actually has.
      */
     const keep = (row: PatternTripRow): boolean => {
-      if (!patternIds.has(row.p)) return false;
+      if (patternIds !== null && !patternIds.has(row.p)) return false;
       const times = row.t;
       if (times.length === 0) return false;
       return times[times.length - 1]! >= from && times[0]! <= to;
