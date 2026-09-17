@@ -52,6 +52,19 @@ const FREE_STORAGE_BYTES = 10 * 1024 * 1024 * 1024;
 const DELETE_CONCURRENCY = Number(process.env.PRUNE_DELETE_CONCURRENCY ?? "16");
 const MAX_DELETES_PER_RUN = Number(process.env.PRUNE_MAX_DELETES ?? "20000");
 
+/**
+ * How long a run will spend deleting before it stops and writes its report.
+ *
+ * The count cap alone was not enough. The step carries a wall-clock limit as well, and a step
+ * killed by that limit is killed in the middle of the loop — so the run that did the most work
+ * would be the one that reported none of it, which is the same "evidence that technically exists"
+ * problem as a report printed where the log cannot reach. A deadline the script owns lets it stop
+ * on its own terms and say what it did.
+ *
+ * Under the step's 45 minutes, so the script always wins the race.
+ */
+const TIME_BUDGET_MS = Number(process.env.PRUNE_TIME_BUDGET_MS ?? String(35 * 60 * 1000));
+
 function report(body: Record<string, unknown>): void {
   body.finishedAt = new Date().toISOString();
   writeFileSync("prune-report.json", JSON.stringify(body, null, 2));
@@ -176,6 +189,7 @@ async function main(): Promise<number> {
     remainingAfterRun: 0,
     deletesPerSecond: 0,
     complete: true,
+    stoppedBecause: "nothing to remove",
   };
 
   console.log(
@@ -196,7 +210,14 @@ async function main(): Promise<number> {
   let deleted = 0;
   const startedAt = Date.now();
 
+  const deadline = startedAt + TIME_BUDGET_MS;
+  let ranOutOfTime = false;
+
   await mapWithConcurrency(batch, DELETE_CONCURRENCY, async (key) => {
+    if (Date.now() >= deadline) {
+      ranOutOfTime = true;
+      return;
+    }
     try {
       await store.delete(key);
       deleted += 1;
@@ -212,6 +233,11 @@ async function main(): Promise<number> {
   summary.remainingAfterRun = doomed.length - deleted;
   summary.deletesPerSecond = Number((deleted / seconds).toFixed(2));
   summary.complete = summary.remainingAfterRun === 0;
+  summary.stoppedBecause = summary.complete
+    ? "nothing left to remove"
+    : ranOutOfTime
+      ? "time budget spent"
+      : "per-run cap reached";
 
   console.log(
     `Deleted ${deleted} of ${batch.length} attempted (${doomed.length} removable); ` +
@@ -219,8 +245,8 @@ async function main(): Promise<number> {
   );
   if (!summary.complete) {
     console.log(
-      `${summary.remainingAfterRun} object(s) still removable. Run the retention job again to ` +
-        `continue; it resumes from the oldest version that is left.`,
+      `${summary.remainingAfterRun} object(s) still removable (${summary.stoppedBecause}). Run ` +
+        `the retention job again to continue; it resumes from the oldest version that is left.`,
     );
   }
   report(summary);

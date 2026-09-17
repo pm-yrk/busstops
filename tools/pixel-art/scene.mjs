@@ -62,13 +62,26 @@ function carriageway(c, { road, h }, { markings = true } = {}) {
   const cage = Math.floor(c.w * 0.42);
   const cageW = Math.floor(c.w * 0.34);
   const cageH = Math.min(11, h - road - 5);
-  // Painted, not drawn on top: a wash of red over the asphalt with a firmer edge. An outlined
-  // box read as a red picture frame lying in the road.
-  c.rect(cage, road + 2, cageW, cageH, "*");
-  c.frame(cage, road + 2, cageW, cageH, "r");
+  /*
+   * Painted, not washed.
+   *
+   * This was a rect of `*`, a thirty-two percent red. One cell of this canvas holds one colour,
+   * so painting it did not tint the asphalt — it replaced it, and a translucent red over nothing
+   * composites against the page rather than against the road. The bay came out as a flat pale
+   * pink slab with no texture in it, sitting on the carriageway like a stain rather than like
+   * paint, which is exactly what it looked like.
+   *
+   * So it is laid down in the road-paint ramp at full opacity and then given back its texture:
+   * the same speckle the asphalt gets, in the darker red, so the surface underneath still reads
+   * through the colour. Worn at the edges, because bus bays are.
+   */
+  c.rect(cage, road + 2, cageW, cageH, "r");
+  c.speckle(cage, road + 2, cageW, cageH, "q", 0.22, 7);
+  c.speckle(cage, road + 2, cageW, cageH, "s", 0.1, 23);
+  c.frame(cage, road + 2, cageW, cageH, "q");
   c.hline(cage + 1, road + 2, cageW - 2, "s");
   // The worn dashes along the kerb side of the bay.
-  for (let x = cage + 2; x < cage + cageW - 2; x += 4) c.hline(x, road + 2 + cageH - 1, 2, "s");
+  for (let x = cage + 2; x < cage + cageW - 2; x += 4) c.hline(x, road + 2 + cageH - 1, 2, "Q");
   // Gully.
   c.rect(Math.floor(c.w * 0.72), road + 1, 7, 3, "L");
   for (let y = road + 2; y < road + 4; y++)
