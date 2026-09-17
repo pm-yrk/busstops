@@ -213,13 +213,28 @@ const CITIES = [
 function assertDepartureIsPlausible(departure, stopName, city) {
   const route = departure.serviceRoutePublicName ?? "";
   /*
-   * A service designation as it is written on the front of a bus: 36, X84, 1A, 555. Anything
-   * longer than this is a route *description* leaking into the number field, which is a real
-   * failure mode when a feed puts "Leeds - Ripon - Newcastle" where the number belongs.
+   * What may appear in the route badge.
+   *
+   * The first version of this demanded a designation like 36, X84 or 1A. That is what most rows
+   * are, and it caught a real bug on the first run — York Rail Station offering a bus called
+   * `Golden_Tours_Hop_On_Hop_Off`, which is a GTFS route_id rendered as a service number. But it
+   * is the wrong rule: England genuinely runs services whose only published name is a phrase, and
+   * failing those would be the check disagreeing with the country.
+   *
+   * The invariant that is actually true is narrower and more useful. A passenger may be shown a
+   * number or a name; they may never be shown an internal key. Underscores and colons are what
+   * separates the two, and a length bound keeps a description out of a badge sized for three
+   * characters.
    */
+  assert(route.length > 0, `${city}: a departure at ${stopName} has no route name at all`);
   assert(
-    /^[A-Za-z0-9]{1,5}$/.test(route),
-    `${city}: "${route}" at ${stopName} is not a service number a bus would display`,
+    !/[_:]/.test(route),
+    `${city}: "${route}" at ${stopName} is an internal identifier, not a route a bus displays`,
+  );
+  assert(
+    route.length <= 24,
+    `${city}: "${route}" at ${stopName} is ${String(route.length)} characters — a description ` +
+      `in the badge, not a route name`,
   );
 
   const destination = departure.destinationName ?? "";

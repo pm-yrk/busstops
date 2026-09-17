@@ -272,7 +272,7 @@ export async function buildNetworkFromGtfs(options: GtfsBuildOptions): Promise<G
       }
       const agencyId = row.agency_id ?? "";
       const operator = operators.get(agencyId);
-      const publicName = row.route_short_name?.trim() || row.route_long_name?.trim() || routeId;
+      const publicName = servicePublicName(row.route_short_name, row.route_long_name, routeId);
 
       routeModes.set(routeId, mode);
       services.set(routeId, {
@@ -628,4 +628,49 @@ export async function buildNetworkFromGtfs(options: GtfsBuildOptions): Promise<G
     warnings,
     tables,
   };
+}
+
+/**
+ * What goes in the route badge on a departure board.
+ *
+ * GTFS gives three candidates and only one of them is a service designation. `route_short_name`
+ * is the number on the front of the bus — 36, X84, 1A — and is what a passenger matches against.
+ * `route_long_name` is a description. `route_id` is an internal key and is nobody's business.
+ *
+ * This fell through to `route_id`, and England's archive has feeds that publish neither name, so
+ * York Rail Station's board offered a bus called `Golden_Tours_Hop_On_Hop_Off`. An identifier
+ * rendered as a route number is not a cosmetic problem: it is the board telling someone to look
+ * out for a bus that does not exist under that name, in a badge sized for three characters.
+ *
+ * So an id is humanised rather than shown raw — separators become spaces and the result is
+ * collapsed and trimmed — and a name that is still unreasonably long is cut at a word boundary,
+ * because a badge that overflows takes the times with it.
+ */
+export const MAX_ROUTE_NAME_LENGTH = 24;
+
+export function servicePublicName(
+  shortName: string | undefined,
+  longName: string | undefined,
+  routeId: string,
+): string {
+  const short = shortName?.trim();
+  if (short) return short;
+
+  const long = longName?.trim();
+  if (long) return truncateAtWord(long, MAX_ROUTE_NAME_LENGTH);
+
+  // Nothing published. The id is all there is, so it is made readable rather than shown as a key.
+  const humanised = routeId
+    .replace(/[_\-.:]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return truncateAtWord(humanised.length > 0 ? humanised : routeId, MAX_ROUTE_NAME_LENGTH);
+}
+
+function truncateAtWord(value: string, limit: number): string {
+  if (value.length <= limit) return value;
+  const cut = value.slice(0, limit);
+  const lastSpace = cut.lastIndexOf(" ");
+  // Only break at a word if that leaves something worth reading; otherwise take the hard cut.
+  return (lastSpace > limit / 2 ? cut.slice(0, lastSpace) : cut).trimEnd();
 }
