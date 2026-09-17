@@ -48,6 +48,11 @@ const browserGlobals = {
   HTMLButtonElement: "readonly",
   HTMLDivElement: "readonly",
   HTMLInputElement: "readonly",
+  HTMLCanvasElement: "readonly",
+  HTMLImageElement: "readonly",
+  // The map rasterises its pixel artwork into textures rather than letting MapLibre filter it.
+  Image: "readonly",
+  ImageData: "readonly",
   Element: "readonly",
   Node: "readonly",
   Event: "readonly",

@@ -213,6 +213,10 @@ export function LiveMapPage() {
                 stops={stops}
                 vehicles={vehicles}
                 selectedStopId={selectedStop}
+                degraded={response.data.degraded}
+                intent={
+                  selectedStop ? { kind: "stop", atcoCode: selectedStop } : { kind: "explore" }
+                }
                 showStops={layers.stops}
                 showVehicles={layers.vehicles}
                 onSelectStop={setSelectedStop}

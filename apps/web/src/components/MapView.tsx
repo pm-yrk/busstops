@@ -1,13 +1,17 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import maplibregl, { type Map as MapLibreMap, type StyleSpecification } from "maplibre-gl";
 import type { MapStopSummary, MapVehicleSummary } from "@busstops/contracts";
 import type { Bounds } from "../lib/geo.js";
+import { MAP_ICONS, rasterise } from "./pixel/mapIcons.js";
 import {
-  PIXEL_BUS_MARKER,
-  PIXEL_BUS_MARKER_STALE,
-  PIXEL_STOP_MARKER,
-  PIXEL_STOP_MARKER_SELECTED,
-} from "./pixel/pixelMarkers.js";
+  ZOOM,
+  describeView,
+  scaleForZoom,
+  stopFeatures,
+  vehicleFeatures,
+  type MapIntent,
+  type MapScale,
+} from "./mapLayers.js";
 import "maplibre-gl/dist/maplibre-gl.css";
 import "./MapView.css";
 
@@ -19,10 +23,19 @@ import "./MapView.css";
  * render at all and the caller's list view stands alone — that is deliberate. Silently falling
  * back to a third-party tile server would breach both the provider's usage policy and the rule
  * that production paths never quietly substitute something else.
+ *
+ * **Drawn in layers, not in markers.** Every stop and every bus used to be a DOM element: a
+ * `<button>` or a `<div>` that the browser lays out, composites and moves on every frame of a
+ * pan. A Leeds viewport holds five or six hundred of them. They are GeoJSON sources with
+ * MapLibre layers over them now — the same artwork, uploaded once each as a texture, drawn by the
+ * GPU however many there are.
+ *
+ * What is drawn depends on how much ground is on screen, because the question changes with it.
+ * See mapLayers.ts: clusters with real counts over a city, directional marks over a
+ * neighbourhood, and the buses themselves with their route numbers over a street.
  */
 
-/** How many buses a viewport can hold before their route numbers stop being readable. */
-const ROUTE_LABELS_UP_TO = 40;
+const SOURCES = { stops: "busstops-stops", vehicles: "busstops-vehicles" } as const;
 
 export interface MapViewProps {
   bounds: Bounds;
@@ -33,6 +46,10 @@ export interface MapViewProps {
   onBoundsChange?: (bounds: Bounds, zoom: number) => void;
   showStops: boolean;
   showVehicles: boolean;
+  /** What the map is being used for. Decides emphasis, never what is loaded. */
+  intent?: MapIntent;
+  /** True when the API said some stops are missing their route names. */
+  degraded?: boolean;
 }
 
 /** Configured at build time; absent in environments with no licence-compliant style available. */
@@ -50,12 +67,37 @@ export function MapView({
   onBoundsChange,
   showStops,
   showVehicles,
+  intent = { kind: "explore" },
+  degraded = false,
 }: MapViewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
-  const markersRef = useRef<maplibregl.Marker[]>([]);
+  const selectRef = useRef(onSelectStop);
   const [failed, setFailed] = useState(false);
+  const [ready, setReady] = useState(false);
+  const [scale, setScale] = useState<MapScale>(() => scaleForZoom(14));
   const styleUrl = configuredStyleUrl();
+
+  /*
+   * The latest handler, without re-creating the map to get it.
+   *
+   * The map's click listeners are registered once, when the map is built, so they close over
+   * whatever `onSelectStop` was at that moment. Keeping it in a ref updated by an effect means a
+   * click always calls the current one; assigning during render would be reading and writing a
+   * ref in the render pass, which React rightly objects to.
+   */
+  useEffect(() => {
+    selectRef.current = onSelectStop;
+  }, [onSelectStop]);
+
+  const stopData = useMemo(
+    () => stopFeatures(showStops ? stops : [], intent, selectedStopId ?? null),
+    [stops, showStops, intent, selectedStopId],
+  );
+  const vehicleData = useMemo(
+    () => vehicleFeatures(showVehicles ? vehicles : [], intent),
+    [vehicles, showVehicles, intent],
+  );
 
   useEffect(() => {
     if (!containerRef.current || !styleUrl || mapRef.current) return;
@@ -82,9 +124,9 @@ export function MapView({
     map.on("error", () => setFailed(true));
 
     map.on("moveend", () => {
-      if (!onBoundsChange) return;
       const view = map.getBounds();
-      onBoundsChange(
+      setScale(scaleForZoom(map.getZoom()));
+      onBoundsChange?.(
         {
           west: view.getWest(),
           south: view.getSouth(),
@@ -95,10 +137,58 @@ export function MapView({
       );
     });
 
+    map.on("load", () => {
+      void (async () => {
+        for (const icon of MAP_ICONS) {
+          const data = await rasterise(icon);
+          // A missing icon means that layer does not draw. The map still works, which is a better
+          // answer than a map that fails to load because one texture could not be made.
+          if (data && !map.hasImage(icon.name)) map.addImage(icon.name, data, { pixelRatio: 1 });
+        }
+        addSourcesAndLayers(map);
+        setReady(true);
+        setScale(scaleForZoom(map.getZoom()));
+      })();
+    });
+
+    // A stop is chosen by clicking the thing that represents it, at whatever scale that is.
+    for (const layer of ["stop-flags", "stop-pips"]) {
+      map.on("click", layer, (event) => {
+        const code = event.features?.[0]?.properties?.atcoCode;
+        if (typeof code === "string") selectRef.current?.(code);
+      });
+      map.on("mouseenter", layer, () => (map.getCanvas().style.cursor = "pointer"));
+      map.on("mouseleave", layer, () => (map.getCanvas().style.cursor = ""));
+    }
+
+    // Clicking a cluster zooms into it, which is what a count is an invitation to do.
+    map.on("click", "stop-clusters", (event) => {
+      const feature = event.features?.[0];
+      if (!feature) return;
+      // A cluster is always a Point; the cast is narrowing MapLibre's union, not asserting a fact.
+      const geometry = feature.geometry as unknown as { coordinates: [number, number] };
+      map.easeTo({
+        center: geometry.coordinates,
+        zoom: Math.max(map.getZoom() + 2, ZOOM.neighbourhood),
+      });
+    });
+
     mapRef.current = map;
+    /*
+     * A deliberate seam for the deployed visual pass.
+     *
+     * With the markers gone there is nothing in the DOM to count, and counting DOM nodes was never
+     * the question anyway — what matters is whether the renderer painted anything. `queryRenderedFeatures`
+     * asks exactly that, and it needs the map instance. Read-only, and it exposes no data the page
+     * is not already drawing on screen.
+     */
+    (globalThis as { __busstopsMap?: MapLibreMap }).__busstopsMap = map;
+
     return () => {
       map.remove();
       mapRef.current = null;
+      delete (globalThis as { __busstopsMap?: MapLibreMap }).__busstopsMap;
+      setReady(false);
     };
     // Bounds are applied through a separate effect; re-creating the map on every pan would
     // fight the user's own navigation.
@@ -107,70 +197,10 @@ export function MapView({
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!map) return;
-
-    for (const marker of markersRef.current) marker.remove();
-    markersRef.current = [];
-
-    if (showStops) {
-      for (const stop of stops) {
-        const element = document.createElement("button");
-        element.type = "button";
-        element.className = `map-marker map-marker--stop ${
-          selectedStopId === stop.atcoCode ? "map-marker--selected" : ""
-        }`;
-        // Every marker is a real button with an accessible name, so the map is operable by
-        // keyboard as well as pointer.
-        const label = `${stop.name}${stop.indicator ? `, ${stop.indicator}` : ""}`;
-        // Static markup with no interpolated data; everything about this stop is on the element.
-        // The selected flag is a larger drawing rather than the same one under a transform.
-        element.innerHTML =
-          selectedStopId === stop.atcoCode ? PIXEL_STOP_MARKER_SELECTED : PIXEL_STOP_MARKER;
-        element.addEventListener("click", () => onSelectStop?.(stop.atcoCode));
-
-        markersRef.current.push(
-          addMarker(map, element, [stop.coordinate.lon, stop.coordinate.lat], label),
-        );
-      }
-    }
-
-    if (showVehicles) {
-      for (const vehicle of vehicles) {
-        const element = document.createElement("div");
-        element.className = "map-marker map-marker--vehicle";
-        element.setAttribute("role", "img");
-        const label = `${vehicle.routePublicName ?? "Bus"} to ${vehicle.destinationName ?? "unknown destination"}`;
-        // A stale position is drawn as a different vehicle, not as the same one faded.
-        const stale = vehicle.freshnessSeconds > 180;
-        element.innerHTML = stale ? PIXEL_BUS_MARKER_STALE : PIXEL_BUS_MARKER;
-        // The route number, revealed when the vehicle is pointed at or focused. Set as text, so
-        // an operator's own naming can never be markup.
-        if (vehicle.routePublicName) {
-          const route = document.createElement("span");
-          route.className = "map-marker__route";
-          route.textContent = vehicle.routePublicName;
-          element.appendChild(route);
-        }
-        if (vehicle.bearingDegrees !== null) {
-          element.style.setProperty("--bearing", `${vehicle.bearingDegrees}deg`);
-          // A drawn bus has a front, unlike a dot: heading west it faces the other way.
-          const westbound = vehicle.bearingDegrees > 180;
-          element.classList.toggle("map-marker--westbound", westbound);
-          // North and south are carried by a pip that orbits the bus, because the sprite is a
-          // side view and a side view turned to a northbound bearing is a bus on its back end.
-          const heading = document.createElement("span");
-          heading.className = "map-marker__heading";
-          heading.setAttribute("aria-hidden", "true");
-          element.appendChild(heading);
-        }
-        if (stale) element.classList.add("map-marker--stale");
-
-        markersRef.current.push(
-          addMarker(map, element, [vehicle.coordinate.lon, vehicle.coordinate.lat], label),
-        );
-      }
-    }
-  }, [stops, vehicles, showStops, showVehicles, selectedStopId, onSelectStop]);
+    if (!map || !ready) return;
+    (map.getSource(SOURCES.stops) as maplibregl.GeoJSONSource | undefined)?.setData(stopData);
+    (map.getSource(SOURCES.vehicles) as maplibregl.GeoJSONSource | undefined)?.setData(vehicleData);
+  }, [ready, stopData, vehicleData]);
 
   if (!styleUrl) {
     return (
@@ -193,45 +223,173 @@ export function MapView({
     );
   }
 
-  /*
-   * Whether every bus can wear its route number.
-   *
-   * The number belongs on the vehicle rather than in a legend, but a viewport holding two hundred
-   * buses would become two hundred numbered chips on top of each other, which is a worse map than
-   * two hundred buses. So the labels are shown while the view is quiet enough to read and fall
-   * back to hover and focus when it is not. Leeds at midday sits either side of this line, which
-   * is the point: the map stays legible at both.
-   */
-  const labelled = vehicles.length <= ROUTE_LABELS_UP_TO;
-
   return (
-    <div className={labelled ? "map-view map-view--labelled" : "map-view"}>
+    <div className="map-view" data-scale={scale}>
       <div ref={containerRef} className="map-view__canvas" />
-      <p className="visually-hidden">
-        The map shows {stops.length} stops and {vehicles.length} buses. The same items are listed
-        below this map.
+      <p className="visually-hidden" role="status">
+        {describeView(scale, stopData.features.length, vehicleData.features.length, degraded)} The
+        same items are listed below this map.
       </p>
+      {degraded && (
+        <p className="map-view__degraded small" role="status">
+          Some stops are missing their route numbers on this screen.
+        </p>
+      )}
     </div>
   );
 }
 
 /**
- * Place a marker and give it back its name.
+ * The sources and the layers over them.
  *
- * MapLibre writes `aria-label="Map marker"` onto the element it is handed, overwriting whatever
- * the caller set. Every stop and every bus on this map therefore announced itself as "Map marker"
- * to a screen reader — a hundred identical objects where the visual map has a hundred named ones.
- * The name is reapplied after construction, which is the only point at which it survives.
+ * Clustering is MapLibre's, so the counts are computed from the features actually present rather
+ * than estimated: a cluster that says 34 is 34 buses. Nothing here invents a number.
  */
-function addMarker(
-  map: maplibregl.Map,
-  element: HTMLElement,
-  lngLat: [number, number],
-  label: string,
-): maplibregl.Marker {
-  const marker = new maplibregl.Marker({ element }).setLngLat(lngLat).addTo(map);
-  element.setAttribute("aria-label", label);
-  return marker;
+function addSourcesAndLayers(map: MapLibreMap): void {
+  const empty = { type: "FeatureCollection" as const, features: [] };
+
+  map.addSource(SOURCES.stops, {
+    type: "geojson",
+    data: empty,
+    cluster: true,
+    // Clustering stops exactly where the neighbourhood scale begins, so the two never disagree
+    // about whether this screen is showing groups or things.
+    clusterMaxZoom: ZOOM.neighbourhood - 1,
+    clusterRadius: 48,
+  });
+  map.addSource(SOURCES.vehicles, {
+    type: "geojson",
+    data: empty,
+    cluster: true,
+    clusterMaxZoom: ZOOM.neighbourhood - 1,
+    clusterRadius: 56,
+  });
+
+  // ---- city: how much is here, and where is it busy ----------------------
+  map.addLayer({
+    id: "stop-clusters",
+    type: "circle",
+    source: SOURCES.stops,
+    filter: ["has", "point_count"],
+    paint: {
+      "circle-color": "#f7f6f1",
+      "circle-stroke-color": "#14110f",
+      "circle-stroke-width": 2,
+      // Area, not radius, so a cluster of 200 does not swamp the screen.
+      "circle-radius": ["interpolate", ["linear"], ["get", "point_count"], 2, 12, 50, 20, 300, 30],
+      "circle-opacity": 0.92,
+    },
+  });
+  map.addLayer({
+    id: "stop-cluster-counts",
+    type: "symbol",
+    source: SOURCES.stops,
+    filter: ["has", "point_count"],
+    layout: {
+      "text-field": ["get", "point_count_abbreviated"],
+      "text-size": 12,
+      "text-allow-overlap": true,
+    },
+    paint: { "text-color": "#14110f" },
+  });
+
+  map.addLayer({
+    id: "vehicle-clusters",
+    type: "circle",
+    source: SOURCES.vehicles,
+    filter: ["has", "point_count"],
+    paint: {
+      "circle-color": "#e5242a",
+      "circle-stroke-color": "#14110f",
+      "circle-stroke-width": 2,
+      "circle-radius": ["interpolate", ["linear"], ["get", "point_count"], 2, 11, 50, 18, 300, 26],
+    },
+  });
+  map.addLayer({
+    id: "vehicle-cluster-counts",
+    type: "symbol",
+    source: SOURCES.vehicles,
+    filter: ["has", "point_count"],
+    layout: {
+      "text-field": ["get", "point_count_abbreviated"],
+      "text-size": 12,
+      "text-allow-overlap": true,
+    },
+    paint: { "text-color": "#ffffff" },
+  });
+
+  // ---- neighbourhood: which way is everything going ----------------------
+  map.addLayer({
+    id: "stop-pips",
+    type: "circle",
+    source: SOURCES.stops,
+    filter: ["!", ["has", "point_count"]],
+    maxzoom: ZOOM.street,
+    paint: {
+      "circle-radius": ["case", ["==", ["get", "emphasis"], 1], 4, 2.5],
+      "circle-color": ["case", ["==", ["get", "emphasis"], 1], "#e5242a", "#7b736a"],
+      "circle-stroke-color": "#f7f6f1",
+      "circle-stroke-width": 1,
+    },
+  });
+  map.addLayer({
+    id: "vehicle-pips",
+    type: "symbol",
+    source: SOURCES.vehicles,
+    filter: ["!", ["has", "point_count"]],
+    maxzoom: ZOOM.street,
+    layout: {
+      // A triangle from the base style's own glyphs would need a font; a rotated square reads as
+      // a direction at this size and needs nothing.
+      "text-field": "▲",
+      "text-size": 11,
+      "text-rotate": ["coalesce", ["get", "bearing"], 0],
+      "text-allow-overlap": true,
+      "text-rotation-alignment": "map",
+    },
+    paint: {
+      "text-color": ["case", ["get", "stale"], "#a49b90", "#e5242a"],
+      "text-opacity": ["case", ["==", ["get", "emphasis"], 1], 1, 0.35],
+    },
+  });
+
+  // ---- street: which bus is that -----------------------------------------
+  map.addLayer({
+    id: "stop-flags",
+    type: "symbol",
+    source: SOURCES.stops,
+    filter: ["!", ["has", "point_count"]],
+    minzoom: ZOOM.street,
+    layout: {
+      "icon-image": ["case", ["==", ["get", "emphasis"], 1], "stop-flag-large", "stop-flag"],
+      "icon-allow-overlap": true,
+      // The pole's foot is the point on the ground, so the flag hangs above it.
+      "icon-anchor": "bottom",
+    },
+  });
+  map.addLayer({
+    id: "vehicle-buses",
+    type: "symbol",
+    source: SOURCES.vehicles,
+    filter: ["!", ["has", "point_count"]],
+    minzoom: ZOOM.street,
+    layout: {
+      "icon-image": ["case", ["get", "stale"], "bus-amber", "bus-red"],
+      "icon-allow-overlap": true,
+      "text-field": ["get", "route"],
+      "text-size": 11,
+      "text-offset": [0, -1.4],
+      "text-allow-overlap": false,
+      "text-optional": true,
+    },
+    paint: {
+      "text-color": "#14110f",
+      "text-halo-color": "#f7f6f1",
+      "text-halo-width": 1.5,
+      "icon-opacity": ["case", ["==", ["get", "emphasis"], 1], 1, 0.4],
+      "text-opacity": ["case", ["==", ["get", "emphasis"], 1], 1, 0.4],
+    },
+  });
 }
 
 function prefersReducedMotion(): boolean {

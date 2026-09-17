@@ -70,6 +70,29 @@ const PAGES = [
  * than the page. Whether any bus is moving is a property of the hour — at three in the morning
  * the honest answer is none — so this returns null and the sweep says so.
  */
+
+/**
+ * Clicks a stop where the renderer actually drew one.
+ *
+ * There is no element to click any more: stops are a symbol layer. This asks the map for a stop
+ * feature on screen, converts its position back to the page, and clicks there — which is what a
+ * person does, and the only way the map's own click handler can be exercised.
+ */
+async function clickPaintedStop(page) {
+  const point = await page.evaluate(() => {
+    const map = globalThis.__busstopsMap;
+    if (!map) return null;
+    const features = map.queryRenderedFeatures({ layers: ["stop-flags", "stop-pips"] });
+    const feature = features[0];
+    if (!feature) return null;
+    const projected = map.project(feature.geometry.coordinates);
+    const box = map.getCanvas().getBoundingClientRect();
+    return { x: box.left + projected.x, y: box.top + projected.y };
+  });
+  if (!point) throw new Error("no stop was painted, so none could be clicked");
+  await page.mouse.click(point.x, point.y);
+}
+
 async function findVehicleRef(apiUrl) {
   if (!apiUrl) return null;
   try {
@@ -302,44 +325,50 @@ for (const size of WIDTHS) {
         const map = await page.evaluate(() => {
           const canvas = document.querySelector("canvas.maplibregl-canvas");
           const unavailable = document.querySelector(".map-view--unavailable");
-          const box = document.querySelector(".map-view__canvas")?.getBoundingClientRect();
 
           /*
-           * Counting markers is not enough, and this is the check that was missing.
+           * What the renderer actually painted, rather than what the DOM contains.
            *
-           * Our own `.map-marker` rule set `position: relative`, which beat MapLibre's
-           * `position: absolute` because it is bundled later at equal specificity. Every marker
-           * dropped into normal flow, stacked down a map whose scrollHeight reached 26,682px, and
-           * was clipped by the map's own `overflow: hidden`. The DOM had 197 buses in it and the
-           * screen had none — so `markers > 0` passed while the page was visibly empty.
-           *
-           * What a person sees is whether the marker's rectangle is inside the map's rectangle.
+           * The old version of this counted `.map-marker` elements and then checked each one's
+           * rectangle against the map's, because a CSS rule had once dropped every marker into
+           * normal flow: the DOM held 197 buses and the screen showed none. There are no marker
+           * elements any more — stops and buses are GeoJSON layers — so that whole class of bug
+           * is gone, and the question is answered directly instead. `queryRenderedFeatures` is
+           * the renderer's own answer to "what is on screen".
            */
-          const inside = (el) => {
-            if (!box) return false;
-            const r = el.getBoundingClientRect();
-            return (
-              r.width > 0 &&
-              r.height > 0 &&
-              r.right > box.left &&
-              r.left < box.right &&
-              r.bottom > box.top &&
-              r.top < box.bottom
-            );
+          const instance = globalThis.__busstopsMap;
+          const painted = (layers) => {
+            if (!instance) return 0;
+            try {
+              return instance.queryRenderedFeatures({ layers }).length;
+            } catch {
+              // A layer that does not exist at this zoom is not an error; it is the point.
+              return 0;
+            }
           };
-          const vehicles = [...document.querySelectorAll(".map-marker--vehicle")];
-          const stops = [...document.querySelectorAll(".map-marker--stop")];
+          const clusterTotal = (layers) => {
+            if (!instance) return 0;
+            try {
+              return instance
+                .queryRenderedFeatures({ layers })
+                .reduce((sum, f) => sum + (Number(f.properties?.point_count) || 0), 0);
+            } catch {
+              return 0;
+            }
+          };
 
           return {
             hasCanvas: !!canvas,
             unavailable: !!unavailable,
-            markers: document.querySelectorAll(".map-marker").length,
-            vehiclesInDom: vehicles.length,
-            vehiclesOnScreen: vehicles.filter(inside).length,
-            stopsInDom: stops.length,
-            stopsOnScreen: stops.filter(inside).length,
-            // A map taller than its own box means the markers are in flow, whether or not any of
-            // them happens to land in frame.
+            zoom: instance ? Math.round(instance.getZoom() * 10) / 10 : null,
+            scale: document.querySelector(".map-view")?.getAttribute("data-scale") ?? null,
+            busesDrawn: painted(["vehicle-buses", "vehicle-pips"]),
+            busesClustered: clusterTotal(["vehicle-clusters"]),
+            stopsDrawn: painted(["stop-flags", "stop-pips"]),
+            stopsClustered: clusterTotal(["stop-clusters"]),
+            degraded: !!document.querySelector(".map-view__degraded"),
+            // A map taller than its own box would mean something is in flow, which layers cannot
+            // do — kept because it costs nothing and would catch a regression that reintroduced it.
             mapScrollHeight: document.querySelector(".maplibregl-map")?.scrollHeight ?? 0,
             // What the list says, which is what the API returned for this viewport.
             listedBuses: Number(
@@ -392,7 +421,8 @@ for (const size of WIDTHS) {
          * the screen. Reported when the viewport genuinely has none, failed when it has some and
          * none of them made it into the map's rectangle.
          */
-        if (map.vehiclesInDom === 0) {
+        const busesOnScreen = map.busesDrawn + map.busesClustered;
+        if (map.listedBuses === 0) {
           record(
             `${size.name}/${target.name} shows the buses the API returned`,
             true,
@@ -401,18 +431,21 @@ for (const size of WIDTHS) {
         } else {
           record(
             `${size.name}/${target.name} shows the buses the API returned`,
-            map.vehiclesOnScreen > 0,
-            `${map.vehiclesOnScreen} of ${map.vehiclesInDom} bus markers are inside the map` +
-              (map.vehiclesOnScreen === 0
-                ? ` — the list says ${map.listedBuses} buses are in view`
-                : ""),
+            busesOnScreen > 0,
+            `${busesOnScreen} bus(es) painted at zoom ${map.zoom} (${map.scale} scale): ` +
+              `${map.busesDrawn} drawn individually, ${map.busesClustered} inside clusters; ` +
+              `the list says ${map.listedBuses}`,
           );
         }
         record(
-          `${size.name}/${target.name} keeps its markers out of normal flow`,
+          `${size.name}/${target.name} draws its stops`,
+          map.stopsDrawn + map.stopsClustered > 0,
+          `${map.stopsDrawn} stop(s) drawn and ${map.stopsClustered} inside clusters`,
+        );
+        record(
+          `${size.name}/${target.name} keeps its map out of normal flow`,
           map.mapScrollHeight > 0 && map.mapScrollHeight < 2000,
-          `the map's scrollHeight is ${map.mapScrollHeight}px` +
-            (map.mapScrollHeight >= 2000 ? " — markers are stacking in flow" : ""),
+          `the map's scrollHeight is ${map.mapScrollHeight}px`,
         );
         record(
           `${size.name}/live loads tiles from the configured host`,
@@ -424,7 +457,11 @@ for (const size of WIDTHS) {
           map.attribution.length > 0,
           map.attribution.slice(0, 80) || "(none)",
         );
-        console.log(`        markers on the map: ${map.markers}`);
+        console.log(
+          `        ${map.scale} scale at zoom ${map.zoom}: ${map.stopsDrawn}+${map.stopsClustered} stops, ` +
+            `${map.busesDrawn}+${map.busesClustered} buses` +
+            (map.degraded ? " (route names degraded)" : ""),
+        );
 
         /*
          * Clicking a stop is the one interaction the whole Live page exists for, and nothing else
@@ -432,7 +469,7 @@ for (const size of WIDTHS) {
          * suite runs against a mocked map. Only here is it a real marker, drawn from real published
          * stops, opening a real board.
          */
-        if (map.markers > 0) {
+        if (map.stopsDrawn > 0) {
           /*
            * `force`, and inside a try. Four hundred stops in a city centre genuinely overlap, and
            * some sit under the sticky header, so the browser's actionability check refuses a click
@@ -442,7 +479,8 @@ for (const size of WIDTHS) {
            */
           let clickFailed = null;
           try {
-            await page.locator(".map-marker--stop").first().click({ force: true, timeout: 5_000 });
+            // Stops are painted by the renderer now, so the click goes to where one was drawn.
+            await clickPaintedStop(page);
           } catch (error) {
             clickFailed = error instanceof Error ? error.message.split("\n")[0] : String(error);
           }

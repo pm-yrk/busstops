@@ -1,0 +1,122 @@
+import { describe, expect, it } from "vitest";
+import type { MapStopSummary, MapVehicleSummary } from "@busstops/contracts";
+import { ZOOM, describeView, scaleForZoom, stopFeatures, vehicleFeatures } from "./mapLayers.js";
+
+/*
+ * The live map's semantic zoom.
+ *
+ * Three hundred pixel buses on one screen is a texture, not a map. What is drawn depends on how
+ * much ground is on screen, because the question a passenger is asking changes with it. These
+ * cover the rules rather than the rendering: a WebGL context proves nothing about whether the
+ * counts are honest, and the counts are the part that must not be invented.
+ */
+
+const stop = (over: Partial<MapStopSummary> = {}): MapStopSummary => ({
+  id: "stop-1",
+  atcoCode: "450010001",
+  name: "Leeds City Bus Station",
+  coordinate: { lat: 53.796, lon: -1.541 },
+  routePublicNames: ["36", "X84"],
+  hasLiveCoverage: true,
+  ...over,
+});
+
+const bus = (over: Partial<MapVehicleSummary> = {}): MapVehicleSummary =>
+  ({
+    vehicleRef: "v1",
+    coordinate: { lat: 53.797, lon: -1.542 },
+    routePublicName: "36",
+    destinationName: "Ripon",
+    bearingDegrees: 90,
+    freshnessSeconds: 20,
+    motionState: "moving",
+    ...over,
+  }) as MapVehicleSummary;
+
+describe("what the map draws at each zoom", () => {
+  it("groups a city, points a neighbourhood, and draws a street", () => {
+    expect(scaleForZoom(9)).toBe("city");
+    expect(scaleForZoom(ZOOM.neighbourhood - 0.1)).toBe("city");
+    expect(scaleForZoom(ZOOM.neighbourhood)).toBe("neighbourhood");
+    expect(scaleForZoom(ZOOM.street - 0.1)).toBe("neighbourhood");
+    expect(scaleForZoom(ZOOM.street)).toBe("street");
+    expect(scaleForZoom(18)).toBe("street");
+  });
+
+  it("never drops a bus in order to draw fewer of them", () => {
+    // Clustering is a way of showing three hundred buses, not a way of showing thirty. Every
+    // vehicle the API returned becomes a feature; the layers decide how it is painted.
+    const buses = Array.from({ length: 300 }, (_, i) => bus({ vehicleRef: `v${i}` }));
+    expect(vehicleFeatures(buses, { kind: "explore" }).features).toHaveLength(300);
+  });
+});
+
+describe("what the map emphasises", () => {
+  it("keeps the rest of the street when one route is selected", () => {
+    const features = vehicleFeatures(
+      [bus({ routePublicName: "36" }), bus({ routePublicName: "1" })],
+      {
+        kind: "route",
+        routePublicName: "36",
+      },
+    );
+    // Both are still there — a passenger looking at the 36 still wants to see the road is busy.
+    expect(features.features).toHaveLength(2);
+    expect(features.features.map((f) => f.properties.emphasis)).toEqual([1, 0]);
+  });
+
+  it("emphasises the selected stop and no other", () => {
+    const features = stopFeatures(
+      [stop({ atcoCode: "A" }), stop({ atcoCode: "B" })],
+      { kind: "explore" },
+      "A",
+    );
+    expect(features.features.map((f) => f.properties.emphasis)).toEqual([1, 0]);
+  });
+
+  it("emphasises the stops on a journey", () => {
+    const features = stopFeatures(
+      [stop({ id: "s1" }), stop({ id: "s2" })],
+      { kind: "journey", stopIds: ["s2"] },
+      null,
+    );
+    expect(features.features.map((f) => f.properties.emphasis)).toEqual([0, 1]);
+  });
+
+  it("marks an old position as stale rather than fading the same drawing", () => {
+    const fresh = vehicleFeatures([bus({ freshnessSeconds: 20 })], { kind: "explore" });
+    const old = vehicleFeatures([bus({ freshnessSeconds: 400 })], { kind: "explore" });
+    expect(fresh.features[0]!.properties.stale).toBe(false);
+    expect(old.features[0]!.properties.stale).toBe(true);
+  });
+});
+
+describe("what the map says it is showing", () => {
+  /*
+   * The map is a canvas: there is nothing in it for anyone who cannot see it, and clusters make
+   * that worse rather than better, because even the counts are painted.
+   */
+  it("says the same numbers the clusters do", () => {
+    const sentence = describeView("city", 412, 34, false);
+    expect(sentence).toContain("412 stops");
+    expect(sentence).toContain("34 buses");
+    expect(sentence).toContain("clusters");
+  });
+
+  it("says when there is nothing rather than implying an empty street", () => {
+    expect(describeView("street", 12, 0, false)).toContain("no buses are being reported");
+  });
+
+  it("says what is missing when the route names did not arrive", () => {
+    const sentence = describeView("street", 12, 4, true);
+    expect(sentence).toContain("missing their route numbers");
+    // And says what that does *not* mean, because "no routes" would be a claim about the stop.
+    expect(sentence).toContain("rather than the stops");
+  });
+
+  it("counts one stop and one bus in the singular", () => {
+    const sentence = describeView("street", 1, 1, false);
+    expect(sentence).toContain("1 stop ");
+    expect(sentence).toContain("1 bus,");
+  });
+});
