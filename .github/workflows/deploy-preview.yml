@@ -37,6 +37,14 @@ on:
         description: "Also collect stop weather into the preview bucket"
         type: boolean
         default: false
+      run_road_network:
+        description: "Extract OSM road segments (needed once before Pro can use live intelligence)"
+        type: boolean
+        default: false
+      run_intelligence:
+        description: "Collect live observations and run the analytics batch, so Pro reports live"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -288,6 +296,75 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+      # ---------------------------------------------------- road segments
+      # The input the analytics batch has always read and nothing has ever written.
+      #
+      # `run-batch.ts` names `network/segments`, reads it, finds nothing and stops — so every
+      # scheduled intelligence run since the first has failed on "No road segments published",
+      # and Bus Stops Pro has only ever been able to serve its dated demonstration snapshot. The
+      # batch's red runs looked like an analytics problem and were a missing producer.
+      #
+      # Off by default and rarely needed: a road network changes over months, so once the segments
+      # are in the bucket they stay useful. Bounded to the urban areas named in the pipeline's
+      # `areas.ts`, one Overpass query each, spaced — the endpoint is a shared volunteer service
+      # and its policy asks for targeted queries.
+      - name: Extract road segments from OpenStreetMap
+        if: ${{ !cancelled() && inputs.run_road_network }}
+        timeout-minutes: 20
+        continue-on-error: true
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -o pipefail
+          npx tsx pipelines/road-network/run-extract.ts 2>&1 | tee road-network.log
+
+      # ----------------------------------------------------- intelligence
+      # Collection then the batch, in that order, because the batch reads what collection writes.
+      #
+      # Collection takes a few minutes by design: BODS asks for no more than one central live-data
+      # request every five seconds, and the collector honours that at the point of request rather
+      # than bursting and hoping. Several passes, because one position per vehicle cannot yield a
+      # traversal or a speed.
+      - name: Collect live observations
+        if: ${{ !cancelled() && inputs.run_intelligence }}
+        timeout-minutes: 15
+        continue-on-error: true
+        env:
+          BODS_API_KEY: ${{ secrets.BODS_API_KEY }}
+          VEHICLE_SALT_SECRET: ${{ secrets.VEHICLE_SALT_SECRET }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -o pipefail
+          npx tsx pipelines/live-collection/run-collect.ts 2>&1 | tee collection.log
+
+      - name: Run the analytics batch
+        if: ${{ !cancelled() && inputs.run_intelligence }}
+        timeout-minutes: 20
+        continue-on-error: true
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -o pipefail
+          npx tsx pipelines/analytics-batch/run-batch.ts 2>&1 | tee batch.log
+
+      - name: Upload the intelligence reports
+        if: ${{ always() && (inputs.run_intelligence || inputs.run_road_network) }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: preview-intelligence-reports
+          path: |
+            road-network-report.json
+            road-network.log
+            collection-report.json
+            collection.log
+            batch-report.json
+            batch.log
+          retention-days: 7
+          if-no-files-found: ignore
+
       # Installed before the data bootstrap, not after it.
       #
       # Run 28 spent 43 of its 45 minutes ingesting GTFS and was cancelled partway through apt-get
@@ -456,6 +533,19 @@ jobs:
           echo "--- weather report (repeated at end of job) ---"
           cat weather-report.json 2>/dev/null || echo "no weather-report.json was written"
           echo "--- end weather report ---"
+
+      # Same again for the intelligence path. These are the reports that say whether Pro has any
+      # live figures at all, and they run before a two-hundred-line visual pass.
+      - name: Intelligence reports, where the log can reach them
+        if: ${{ always() && (inputs.run_intelligence || inputs.run_road_network) }}
+        run: |
+          echo "--- road network report (repeated at end of job) ---"
+          cat road-network-report.json 2>/dev/null || echo "no road-network-report.json was written"
+          echo "--- collection report ---"
+          cat collection-report.json 2>/dev/null || echo "no collection-report.json was written"
+          echo "--- analytics batch report ---"
+          cat batch-report.json 2>/dev/null || echo "no batch-report.json was written"
+          echo "--- end intelligence reports ---"
 
       # The same reachability problem the retention and weather reports had, and the one that
       # mattered most. Run 38 added the Cloudflare error code to every failing check and then put

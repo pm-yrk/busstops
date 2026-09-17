@@ -38,16 +38,37 @@ async function main(): Promise<number> {
 
   const observations = await artifacts.readCurrent<VehicleObservation>(OBSERVATION_DATASET);
   if (observations.records.length === 0) {
+    /*
+     * An empty window is a state, not a fault.
+     *
+     * This exited 1, so the hourly schedule went red whenever the collector had nothing — at
+     * four in the morning, after a suspended run, after any collection gap — and a wall of red
+     * runs is how a real failure goes unnoticed. The gap is reported and the previous
+     * intelligence publish is left exactly as it was, which is what Pro should keep serving.
+     */
     report.outcome = "no_input";
     console.error("No collected observations available; nothing to process.");
     writeReport(report);
-    return 1;
+    return 0;
   }
 
   const segments = await artifacts.readCurrent<RoadSegment>(SEGMENT_DATASET);
   if (segments.records.length === 0) {
+    /*
+     * This one is a fault, and it was the standing one.
+     *
+     * `network/segments` had no producer anywhere in the repository — one constant naming a
+     * dataset nothing wrote — so every run reached here and stopped, and Bus Stops Pro has only
+     * ever been able to serve its dated demonstration snapshot. `pipelines/road-network` is the
+     * producer; until it has run against this bucket, there is nothing to sample traces against
+     * and saying so loudly is right.
+     */
     report.outcome = "no_segments";
-    console.error("No road segments published; run the static network build first.");
+    console.error(
+      "No road segments published. Run pipelines/road-network/run-extract.ts against this " +
+        "bucket — the analytics batch samples vehicle traces against segment geometry and " +
+        "cannot produce anything without it.",
+    );
     writeReport(report);
     return 1;
   }
