@@ -344,6 +344,23 @@ export const JourneyPlanOptionSchema = z.object({
 });
 export type JourneyPlanOption = z.infer<typeof JourneyPlanOptionSchema>;
 
+export const JourneyDiagnosticsSchema = z.object({
+  code: z.enum(["planned", "no_options", "too_far", "no_data", "unreadable", "too_large"]),
+  corridorTiles: z.number().int().nonnegative(),
+  windows: z.array(z.number().int().nonnegative()),
+  shardsRead: z.number().int().nonnegative(),
+  shardsMissing: z.number().int().nonnegative(),
+  tripsLoaded: z.number().int().nonnegative(),
+  tripsWithPattern: z.number().int().nonnegative(),
+  tripsWithoutPattern: z.number().int().nonnegative(),
+  tripsInGraph: z.number().int().nonnegative(),
+  stopsInGraph: z.number().int().nonnegative(),
+  patternsInSlice: z.number().int().nonnegative(),
+  stopsInSlice: z.number().int().nonnegative(),
+  failures: z.array(z.object({ dataset: z.string(), reason: z.string() })),
+});
+export type JourneyDiagnostics = z.infer<typeof JourneyDiagnosticsSchema>;
+
 export const JourneyPlanResponseSchema = apiEnvelope(
   z.object({
     serviceDate: z.string(),
@@ -352,6 +369,17 @@ export const JourneyPlanResponseSchema = apiEnvelope(
     explanation: z.string().nullable(),
     /** Stated when no plan could be produced, in the words shown to the reader. */
     unavailableReason: z.string().nullable(),
+    /**
+     * Why the answer is the shape it is, in counts.
+     *
+     * Part of the contract rather than a debug extra, because the thing being guarded against is
+     * a zero that cannot be interpreted. One sentence covered six unrelated situations — nothing
+     * published here, a shard that could not be read, a corridor too wide to plan, trips whose
+     * patterns were not in the slice, a graph over its size limit, and a search that genuinely
+     * found no path — and without these a deployed check cannot tell a broken join from a quiet
+     * moor, which is exactly the confusion that let an empty national timetable read as `normal`.
+     */
+    diagnostics: JourneyDiagnosticsSchema.optional(),
   }),
 );
 export type JourneyPlanResponse = z.infer<typeof JourneyPlanResponseSchema>;

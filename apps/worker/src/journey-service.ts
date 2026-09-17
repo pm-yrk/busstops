@@ -56,6 +56,41 @@ export interface JourneyPlanRequest {
   version: string;
 }
 
+/**
+ * Why a plan came out the way it did, in numbers rather than in prose.
+ *
+ * A journey answered "0 options" and the response said only "We could not find a bus journey
+ * between these points at this time." That sentence covers at least six unrelated situations —
+ * no shard was written, a shard could not be read, the corridor spans too many tiles, the trips
+ * loaded but none of their patterns were in the slice, the graph hit a size limit, or the search
+ * genuinely found no path — and a deployed check could not tell them apart, so neither could
+ * anyone reading it. The response carried `unavailableReason` and the deployed check read
+ * `reason`, which meant even the prose was invisible.
+ *
+ * Every count here exists to separate two of those cases. `tripsWithoutPattern` is the sharpest:
+ * trips are published on one grid and the patterns that give them their stops on another, so a
+ * high number means the join failed rather than that England has no buses.
+ */
+export interface JourneyDiagnostics {
+  /** Machine-readable outcome, including the two ways of having no options. */
+  code: "planned" | "no_options" | "too_far" | "no_data" | "unreadable" | "too_large";
+  corridorTiles: number;
+  windows: number[];
+  shardsRead: number;
+  shardsMissing: number;
+  /** Trip rows read out of the shards. */
+  tripsLoaded: number;
+  /** Rows whose pattern was present in the slice, and rows whose pattern was not. */
+  tripsWithPattern: number;
+  tripsWithoutPattern: number;
+  /** Trips that survived into the graph, and the stops the corridor kept. */
+  tripsInGraph: number;
+  stopsInGraph: number;
+  patternsInSlice: number;
+  stopsInSlice: number;
+  failures: Array<{ dataset: string; reason: string }>;
+}
+
 export type JourneyPlanOutcome =
   | {
       ok: true;
@@ -70,8 +105,14 @@ export type JourneyPlanOutcome =
        * that cached an empty tile and carried on.
        */
       failures: Array<{ dataset: string; reason: string }>;
+      diagnostics: JourneyDiagnostics;
     }
-  | { ok: false; reason: string; code: "too_far" | "no_data" | "too_large" | "unreadable" };
+  | {
+      ok: false;
+      reason: string;
+      code: "too_far" | "no_data" | "too_large" | "unreadable";
+      diagnostics: JourneyDiagnostics;
+    };
 
 /**
  * How many shards an isolate keeps, and how much text they were parsed from.
@@ -96,16 +137,40 @@ export class JourneyService {
     );
     const tiles = tripTilesForBoundingBox(corridor);
 
+    // Filled in as the plan proceeds, so whatever it returns says how far it got.
+    const diagnostics: JourneyDiagnostics = {
+      code: "no_data",
+      corridorTiles: tiles.length,
+      windows: [],
+      shardsRead: 0,
+      shardsMissing: 0,
+      tripsLoaded: 0,
+      tripsWithPattern: 0,
+      tripsWithoutPattern: 0,
+      tripsInGraph: 0,
+      stopsInGraph: 0,
+      patternsInSlice: slice.patternsById.size,
+      stopsInSlice: slice.stopsById.size,
+      failures: [],
+    };
+
     if (tiles.length > JOURNEY_LIMITS.maxTiles) {
       return {
         ok: false,
         code: "too_far",
         reason:
           "These points are too far apart for this planner. It is built for local journeys, not cross-country ones.",
+        diagnostics: { ...diagnostics, code: "too_far" },
       };
     }
 
     const loaded = await this.loadTrips(tiles, request);
+    diagnostics.windows = loaded.windows;
+    diagnostics.shardsRead = loaded.shardsRead;
+    diagnostics.shardsMissing = loaded.shardsMissing;
+    diagnostics.tripsLoaded = loaded.rows.length;
+    diagnostics.failures = loaded.failures;
+
     if (loaded.rows.length === 0) {
       /*
        * Nothing read and something failed is a different answer from nothing read and nothing
@@ -118,6 +183,7 @@ export class JourneyService {
           code: "unreadable",
           reason:
             "The timetable for this area could not be read just now, so we cannot plan a journey. This is a fault on our side, not an absence of buses.",
+          diagnostics: { ...diagnostics, code: "unreadable" },
         };
       }
       return {
@@ -125,30 +191,47 @@ export class JourneyService {
         code: "no_data",
         reason:
           "No timetable data is published for this area yet, so we cannot plan a journey here.",
+        diagnostics: { ...diagnostics, code: "no_data" },
       };
     }
 
-    const graph = buildGraphFor(slice, loaded.rows, corridor, request.serviceDate);
-    if (graph === null) {
+    const built = buildGraphFor(slice, loaded.rows, corridor, request.serviceDate);
+    diagnostics.tripsWithPattern = built.tripsWithPattern;
+    diagnostics.tripsWithoutPattern = built.tripsWithoutPattern;
+
+    if (built.graph === null) {
       return {
         ok: false,
         code: "too_large",
         reason:
           "This journey covers more of the network than we can plan in one request. Try a shorter journey.",
+        diagnostics: { ...diagnostics, code: "too_large" },
       };
     }
 
+    const graph = built.graph;
+    diagnostics.tripsInGraph = graph.trips.length;
+    diagnostics.stopsInGraph = graph.stops.size;
+
+    const result = plan(graph, {
+      origin: request.origin,
+      destination: request.destination,
+      departAtSeconds: request.departAtSeconds,
+      maxAccessWalkSeconds: Math.round(JOURNEY_LIMITS.maxAccessWalkMetres / 1.3),
+    });
+
     return {
       ok: true,
-      result: plan(graph, {
-        origin: request.origin,
-        destination: request.destination,
-        departAtSeconds: request.departAtSeconds,
-        maxAccessWalkSeconds: Math.round(JOURNEY_LIMITS.maxAccessWalkMetres / 1.3),
-      }),
+      result,
       tilesLoaded: tiles,
       tripCount: graph.trips.length,
       failures: loaded.failures,
+      /*
+       * `no_options` rather than `planned` when the search found nothing. A graph that was built
+       * from real trips and yields no path is a different fact from an empty area, and it is the
+       * one the numbers above are needed to interpret.
+       */
+      diagnostics: { ...diagnostics, code: result.options.length > 0 ? "planned" : "no_options" },
     };
   }
 
@@ -167,9 +250,17 @@ export class JourneyService {
   private async loadTrips(
     tiles: readonly string[],
     request: JourneyPlanRequest,
-  ): Promise<{ rows: PatternTripRow[]; failures: Array<{ dataset: string; reason: string }> }> {
+  ): Promise<{
+    rows: PatternTripRow[];
+    failures: Array<{ dataset: string; reason: string }>;
+    windows: number[];
+    shardsRead: number;
+    shardsMissing: number;
+  }> {
     const rows: PatternTripRow[] = [];
     const failures: Array<{ dataset: string; reason: string }> = [];
+    let shardsRead = 0;
+    let shardsMissing = 0;
 
     const midnight = Date.parse(`${request.serviceDate}T00:00:00Z`) / 1000;
     const from = midnight + request.departAtSeconds;
@@ -183,6 +274,10 @@ export class JourneyService {
         const cacheKey = `${request.version}:${dataset}`;
         const cached = this.cache.get(cacheKey);
         if (cached) {
+          // A cached empty shard is one that was absent when first asked for, not one that was
+          // read and found empty; counting it as read would overstate the coverage of the plan.
+          if (cached.chars === 0) shardsMissing += 1;
+          else shardsRead += 1;
           rows.push(...cached.rows);
           continue;
         }
@@ -191,8 +286,10 @@ export class JourneyService {
           const raw = await this.store.get(objectKeyFor(dataset, request.version));
           if (raw === null) {
             this.cache.set(cacheKey, { rows: [], chars: 0 });
+            shardsMissing += 1;
             continue;
           }
+          shardsRead += 1;
           const parsed: PatternTripRow[] = [];
           for (const line of raw.split("\n")) {
             if (line.length === 0) continue;
@@ -210,7 +307,7 @@ export class JourneyService {
       }
     }
 
-    return { rows, failures };
+    return { rows, failures, windows, shardsRead, shardsMissing };
   }
 
   private evict(): void {
@@ -240,13 +337,31 @@ export class JourneyService {
  * journey cost to say the same thing — and it means a row whose pattern is not in this slice
  * cannot be placed at all, so it is skipped rather than guessed at.
  */
+/**
+ * The graph a corridor's trips make, with the counts that explain an empty one.
+ *
+ * `graph: null` is a size refusal. The counts are returned either way, because the number that
+ * matters most — how many trips named a pattern the slice did not have — is the one that
+ * distinguishes a broken join from an area with no buses, and it is worth having even when the
+ * graph was built successfully.
+ */
+export interface BuiltGraph {
+  graph: JourneyGraph | null;
+  tripsWithPattern: number;
+  tripsWithoutPattern: number;
+}
+
 export function buildGraphFor(
   slice: NetworkSlice,
   rows: readonly PatternTripRow[],
   corridor: ReturnType<typeof corridorBoundingBox>,
   serviceDate: string,
-): JourneyGraph | null {
-  if (rows.length > JOURNEY_LIMITS.maxTrips) return null;
+): BuiltGraph {
+  let tripsWithPattern = 0;
+  let tripsWithoutPattern = 0;
+  if (rows.length > JOURNEY_LIMITS.maxTrips) {
+    return { graph: null, tripsWithPattern, tripsWithoutPattern };
+  }
 
   const stopIds = new Set<string>();
   const trips: Trip[] = [];
@@ -254,7 +369,11 @@ export function buildGraphFor(
   for (const row of rows) {
     const pattern = slice.patternsById.get(row.p);
     // Without the pattern there is no stop sequence, and times alone are not a trip.
-    if (!pattern) continue;
+    if (!pattern) {
+      tripsWithoutPattern += 1;
+      continue;
+    }
+    tripsWithPattern += 1;
     const service = slice.services.get(pattern.serviceRouteId);
 
     const stopTimes = pattern.stopSequence
@@ -296,7 +415,9 @@ export function buildGraphFor(
     .filter((stop) => withinBoundingBox(stop.locationCoordinate, corridor))
     .map((stop) => ({ id: stop.id, name: stop.name, coordinate: stop.locationCoordinate }));
 
-  if (stops.length > JOURNEY_LIMITS.maxStops) return null;
+  if (stops.length > JOURNEY_LIMITS.maxStops) {
+    return { graph: null, tripsWithPattern, tripsWithoutPattern };
+  }
 
   const usableStopIds = new Set(stops.map((stop) => stop.id));
   const usableTrips = trips
@@ -306,7 +427,11 @@ export function buildGraphFor(
     }))
     .filter((trip) => trip.stopTimes.length >= 2);
 
-  return buildGraph({ stops, trips: usableTrips });
+  return {
+    graph: buildGraph({ stops, trips: usableTrips }),
+    tripsWithPattern,
+    tripsWithoutPattern,
+  };
 }
 
 function headsignFor(slice: NetworkSlice, lastStopId: string): string {

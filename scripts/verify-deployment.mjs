@@ -455,15 +455,45 @@ await check("a journey can be planned across real timetable data", async () => {
   assert(response.status !== 500, `the Worker failed: ${describe(response, body, text)}`);
   assert(response.ok, `expected an answer, got ${describe(response, body, text)}`);
   const options = body?.data?.options ?? [];
-  const reason = body?.data?.reason ?? body?.error?.code ?? "none";
+  /*
+   * `unavailableReason` is what the endpoint actually sends. This read `data.reason`, which does
+   * not exist, so a failing run reported "reason: none" and threw away the one sentence the API
+   * had written to explain itself — a check unable to see the thing it was checking.
+   *
+   * `diagnostics` is the useful half: counts that separate an unwritten shard from a broken
+   * pattern join from a search that genuinely found no path.
+   */
+  const unavailable = body?.data?.unavailableReason ?? body?.error?.code ?? "none";
+  const diagnostics = body?.data?.diagnostics ?? null;
+  const explained = diagnostics
+    ? `${diagnostics.code}: ${diagnostics.corridorTiles} corridor tile(s), ` +
+      `windows [${diagnostics.windows.join(",")}], ${diagnostics.shardsRead} shard(s) read and ` +
+      `${diagnostics.shardsMissing} missing, ${diagnostics.tripsLoaded} trip(s) loaded ` +
+      `(${diagnostics.tripsWithPattern} matched a pattern, ${diagnostics.tripsWithoutPattern} did not), ` +
+      `${diagnostics.tripsInGraph} in the graph over ${diagnostics.stopsInGraph} stop(s); ` +
+      `slice held ${diagnostics.patternsInSlice} pattern(s) and ${diagnostics.stopsInSlice} stop(s)` +
+      (diagnostics.failures.length > 0
+        ? `; failures: ${diagnostics.failures.map((f) => `${f.dataset} (${f.reason})`).join(", ")}`
+        : "")
+    : "no diagnostics in the response";
 
   if (SERVICE_HOURS.daytime) {
     assert(
       options.length > 0,
       `Leeds to Leeds Bradford Airport gave no option at ${SERVICE_HOURS.hour}:00 ` +
-        `${SERVICE_HOURS.weekday} London time (reason: ${reason})`,
+        `${SERVICE_HOURS.weekday} London time — ${unavailable} — ${explained}`,
     );
   }
+
+  /*
+   * A plan must never be built on part of its corridor and presented as whole. A shard that could
+   * not be read is a fault on our side, and saying "no journey found" for it is the same lie the
+   * departure board used to tell.
+   */
+  assert(
+    !diagnostics || diagnostics.failures.length === 0,
+    `the corridor could not be fully read: ${explained}`,
+  );
   /*
    * And the option has to be a journey rather than a shape that satisfies the schema.
    *
@@ -527,7 +557,7 @@ await check("a journey can be planned across real timetable data", async () => {
     : "";
 
   return (
-    `Leeds → Leeds Bradford Airport: ${options.length} option(s), reason ${reason}${summary}` +
+    `Leeds → Leeds Bradford Airport: ${options.length} option(s)${summary} [${explained}]` +
     (SERVICE_HOURS.daytime ? "" : " (outside service hours: options not required)")
   );
 });

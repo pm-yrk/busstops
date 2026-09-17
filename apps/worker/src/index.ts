@@ -753,7 +753,13 @@ router.get("/v1/journeys", async (_request, { env, url }) => {
     return json(
       {
         meta,
-        data: { serviceDate, options: [], explanation: null, unavailableReason: outcome.reason },
+        data: {
+          serviceDate,
+          options: [],
+          explanation: null,
+          unavailableReason: outcome.reason,
+          diagnostics: outcome.diagnostics,
+        },
       },
       cacheTtlSeconds("static", state),
     );
@@ -782,6 +788,13 @@ router.get("/v1/journeys", async (_request, { env, url }) => {
           outcome.result.options.length === 0
             ? "We could not find a bus journey between these points at this time."
             : null,
+        /*
+         * Carried on a successful plan too, because "we could not find a journey" is the answer
+         * that most needs explaining: the same sentence covered an unwritten shard, an unreadable
+         * one, a corridor too wide, a join that matched nothing, a graph over its size limit and a
+         * search that genuinely found no path. The counts say which.
+         */
+        diagnostics: outcome.diagnostics,
       },
     },
     // Short cache: a plan is time-sensitive, and a stale one sends someone to a bus that has gone.
