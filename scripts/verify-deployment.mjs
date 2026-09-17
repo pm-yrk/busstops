@@ -452,6 +452,94 @@ await check("route detail answers without the Worker falling over", async () => 
   return `${first.publicName ?? first.id} answered ${response.status}`;
 });
 
+/*
+ * The two endpoints that fell over, asked repeatedly in the densest places.
+ *
+ * `/v1/map` and `/v1/routes/:id` are the only two that read pattern tiles in bulk, and both
+ * answered Cloudflare's own HTML 503 on two consecutive deployments — desktop one time, tablet the
+ * next. A single sample per run is how that hid: it appeared in the visual pass and not in the
+ * verification, or the other way round. So each city is asked several times, because the failure
+ * is intermittent and one success proves very little about it.
+ *
+ * A Worker past its resource limit is answered by the platform, whose page is HTML and carries no
+ * CORS header — which is why a browser reported it as a CORS failure rather than a server error.
+ * That is what the HTML check below is looking for.
+ */
+await check("the pattern-heavy endpoints survive dense cities, repeatedly", async () => {
+  const ATTEMPTS_PER_CITY = 3;
+  const lines = [];
+  let platformErrors = 0;
+
+  for (const city of CITIES) {
+    let mapOk = 0;
+    let routeOk = 0;
+    let routeComplete = 0;
+    let routeIncomplete = 0;
+    let sampledRoute = null;
+
+    for (let attempt = 0; attempt < ATTEMPTS_PER_CITY; attempt += 1) {
+      const map = await getJson(`/v1/map?bbox=${city.bbox}&zoom=15`);
+      // An HTML body from an API is the platform speaking, not the Worker.
+      const html = map.text.trimStart().toLowerCase().startsWith("<!doctype");
+      if (html || map.response.status === 503) platformErrors += 1;
+      assert(
+        !html,
+        `${city.name}: /v1/map answered the platform's error page, not the Worker ` +
+          `(${map.response.status}) on attempt ${String(attempt + 1)}`,
+      );
+      assert(map.response.ok, `${city.name}: /v1/map gave ${map.response.status}`);
+      mapOk += 1;
+
+      // A route that genuinely calls in this city, taken from a stop the map just returned.
+      const stop = (map.body?.data?.stops ?? [])[0];
+      if (!stop) continue;
+      const board = await getJson(`/v1/stops/${encodeURIComponent(stop.id)}`);
+      const route = (board.body?.data?.routes ?? [])[0];
+      if (!route?.id) continue;
+      sampledRoute = route.publicName ?? route.id;
+
+      const detail = await getJson(`/v1/routes/${encodeURIComponent(route.id)}`);
+      const detailHtml = detail.text.trimStart().toLowerCase().startsWith("<!doctype");
+      if (detailHtml || detail.response.status === 503) platformErrors += 1;
+      assert(
+        !detailHtml,
+        `${city.name}: /v1/routes/${route.id} answered the platform's error page, not the ` +
+          `Worker (${detail.response.status}) on attempt ${String(attempt + 1)}`,
+      );
+      assert(
+        detail.response.ok,
+        `${city.name}: route detail gave ${describe(detail.response, detail.body, detail.text)}`,
+      );
+      routeOk += 1;
+
+      /*
+       * Completeness is a fact about the answer, not a confidence score. A capped read must say
+       * so; what must never happen is a truncated variant list presented as the route's extent.
+       */
+      const complete = detail.body?.data?.complete;
+      const coverage = detail.body?.meta?.coverage;
+      if (complete === false) {
+        routeIncomplete += 1;
+        assert(
+          coverage === 0,
+          `${city.name}: route detail says it is incomplete but reports coverage ${String(coverage)}`,
+        );
+      } else if (complete === true) {
+        routeComplete += 1;
+      }
+    }
+
+    lines.push(
+      `${city.name}: map ${mapOk}/${ATTEMPTS_PER_CITY}, route ${routeOk}` +
+        (sampledRoute ? ` (${sampledRoute})` : "") +
+        `, complete ${routeComplete}, incomplete ${routeIncomplete}`,
+    );
+  }
+
+  assert(platformErrors === 0, `${String(platformErrors)} platform error page(s) were returned`);
+  return lines.join("; ");
+});
+
 await check("a journey can be planned across real timetable data", async () => {
   /*
    * A journey a person would actually make, not two points a diagonal kilometre apart.
