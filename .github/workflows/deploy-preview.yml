@@ -382,11 +382,13 @@ jobs:
       # answers it just as well — skipping the check on a re-deploy only meant the run that
       # changed the frontend was the one run with no evidence behind it.
       - name: Verify real data through the deployed API
+        id: verify
         if: ${{ steps.bootstrap.outcome != 'failure' && steps.pages.outcome == 'success' }}
         run: |
+          set -o pipefail
           node scripts/verify-deployment.mjs \
             "${{ steps.worker.outputs.url }}" \
-            "${{ steps.pages.outputs.url }}"
+            "${{ steps.pages.outputs.url }}" 2>&1 | tee verify.log
 
       # Run here rather than in CI because the thing being judged is the deployment: the basemap
       # comes from a third-party tile host and the policy that permits it is generated at deploy
@@ -442,6 +444,17 @@ jobs:
           echo "--- weather report (repeated at end of job) ---"
           cat weather-report.json 2>/dev/null || echo "no weather-report.json was written"
           echo "--- end weather report ---"
+
+      # The same reachability problem the retention and weather reports had, and the one that
+      # mattered most. Run 38 added the Cloudflare error code to every failing check and then put
+      # it forty lines above the visual pass's two hundred, where the log is only retrievable from
+      # the tail — so the run that was dispatched to name the limit could not be read for it.
+      - name: What the verification actually said
+        if: ${{ always() && steps.verify.outcome != 'skipped' }}
+        run: |
+          echo "--- verification failures (repeated at end of job) ---"
+          grep -E "^\s*(FAIL|pass)" verify.log 2>/dev/null || echo "no verify.log was written"
+          echo "--- end verification failures ---"
 
       - name: Summary
         if: always()
