@@ -7,9 +7,9 @@ import {
 } from "@busstops/pipeline-core";
 import { buildGraph, plan, type JourneyGraph, type PlanResult, type Trip } from "@busstops/journey";
 import {
-  patternTilesForBoundingBox,
-  patternTripWindowsFor,
   patternTripsDataset,
+  tripTilesForBoundingBox,
+  tripWindowsFor,
   type PatternTripRow,
 } from "@busstops/pipeline-static-network";
 import type { NetworkSlice } from "./network-reader.js";
@@ -31,12 +31,12 @@ export const JOURNEY_LIMITS = {
   /**
    * More tiles than this means a journey longer than this planner is built for.
    *
-   * Counted on the pattern grid, which is an eighth of a degree — the grid the trips are
-   * published on. The number was six when trips were read from half-degree journey tiles; a
-   * corridor spans sixteen times as many of these, so keeping six would have refused every
-   * journey longer than a mile as "too far".
+   * Counted on the trip grid, which is half a degree — the grid the trips are published on. A
+   * corridor across a city is one or two of these and a long local journey four; eight leaves
+   * room for a diagonal one without admitting a cross-country query this planner is not built to
+   * answer.
    */
-  maxTiles: 24,
+  maxTiles: 8,
   /** Upper bound on graph size, so one request cannot exhaust the isolate. */
   maxTrips: 6000,
   maxStops: 4000,
@@ -89,7 +89,7 @@ export class JourneyService {
       request.destination,
       JOURNEY_LIMITS.maxAccessWalkMetres,
     );
-    const tiles = patternTilesForBoundingBox(corridor);
+    const tiles = tripTilesForBoundingBox(corridor);
 
     if (tiles.length > JOURNEY_LIMITS.maxTiles) {
       return {
@@ -170,7 +170,7 @@ export class JourneyService {
     const from = midnight + request.departAtSeconds;
     // A plan looks a few hours ahead; beyond that the answer is a different day's timetable.
     const to = from + 4 * 60 * 60;
-    const windows = patternTripWindowsFor(from, to, request.serviceDate);
+    const windows = tripWindowsFor(from, to, request.serviceDate);
 
     for (const tile of tiles) {
       for (const window of windows) {

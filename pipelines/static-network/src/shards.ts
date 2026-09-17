@@ -111,9 +111,19 @@ export const MAX_SHARD_BYTES = 8 * 1024 * 1024;
  * and is the thing the edge never has to read all of.
  *
  * Journey tiles keep the half degree they were published with; nothing here changes them.
+ *
+ * Trips are the exception, and they are sized against a different constraint entirely. A pattern
+ * is written to every tile it crosses, so a finer grid costs copies; a trip is written once, to
+ * the tile its first call is in, so a finer grid costs only objects. The first national run made
+ * that the expensive currency — the REST API the pipeline publishes through answers about four
+ * writes a second, so an eighth-degree grid across seven windows and two dates would have been
+ * two and a half thousand objects and ten minutes of a build's time limit before a single trip
+ * was read back. A half degree with eight-hour windows is a few hundred, and a corridor still
+ * reads only the tiles it crosses.
  */
 export const STOP_TILE_DEGREES = 0.25;
 export const PATTERN_TILE_DEGREES = 0.125;
+export const TRIP_TILE_DEGREES = 0.5;
 
 export function stopTileDataset(tile: string): string {
   return `${SHARDED.stopTile}/${tile}`;
@@ -317,6 +327,15 @@ function centreOut(bbox: BoundingBox, sizeDegrees: number): string[] {
 /** The stop tiles a viewport covers. Used by the edge, so the sizes cannot drift between sides. */
 export function stopTilesForBoundingBox(bbox: BoundingBox): string[] {
   return centreOut(bbox, STOP_TILE_DEGREES);
+}
+
+/**
+ * The trip tiles a corridor crosses. Coarser than the pattern grid, because a trip is filed once
+ * rather than copied into every tile its route touches, so the cost of a fine grid here is object
+ * count against a write budget rather than duplicated geometry.
+ */
+export function tripTilesForBoundingBox(bbox: BoundingBox): string[] {
+  return centreOut(bbox, TRIP_TILE_DEGREES);
 }
 
 export function patternTilesForBoundingBox(bbox: BoundingBox): string[] {

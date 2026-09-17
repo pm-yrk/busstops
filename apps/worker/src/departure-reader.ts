@@ -2,7 +2,7 @@ import { objectKeyFor, type ObjectStore } from "@busstops/pipeline-core";
 import {
   departureBucketFor,
   departureShardDataset,
-  departureWindowsBetween,
+  decodeDepartureShardForStop,
   type DepartureRow,
 } from "@busstops/pipeline-static-network";
 
@@ -15,11 +15,15 @@ import {
  * stop in England answered `200` with no departures and a degradation of `normal`. A passenger
  * and a monitoring check saw the same thing as a stop with genuinely nothing due.
  *
- * So this reads only the shards its own stop's rows can be in, and it distinguishes the two
- * answers that were previously one:
+ * So this reads one object per service date — the bucket its own stop's code hashes into — and
+ * parses one line out of it, the line that stop's calls are grouped onto. A shard holds about
+ * thirty thousand calls and a board reads about a hundred of them, without JSON.parse ever seeing
+ * the rest.
  *
- *   - a shard that was never written is a window with nothing departing in it, which is ordinary
- *     and true at four in the morning;
+ * It also distinguishes three answers that were previously one:
+ *
+ *   - a shard that was never written, or that does not contain this stop, is nothing scheduled,
+ *     which is ordinary and true at four in the morning and true all day at a stop out of use;
  *   - a shard that cannot be read or parsed is a failure, and is reported as one.
  *
  * The distinction is free because the object store already makes it: `get` resolves to null for
@@ -40,8 +44,7 @@ export interface DepartureReadResult {
 }
 
 interface CachedShard {
-  rows: DepartureRow[];
-  chars: number;
+  text: string;
   usedAt: number;
 }
 
@@ -49,13 +52,14 @@ interface CachedShard {
  * How long a shard is held, and how much of them.
  *
  * A published timetable does not change during a day, so the age limit is generous; the byte
- * budget is what actually bounds this. Both are far below the isolate's 128 MiB because the
- * parsed objects are several times the size of the text they came from, and a request needs room
- * to work on top of whatever is resident.
+ * budget is what actually bounds this. The text is cached rather than the parsed rows, because
+ * the parse is now per-stop and two passengers at different stops in the same bucket share the
+ * download but not the work. Both limits are far below the isolate's 128 MiB, because a request
+ * needs room to work on top of whatever is resident.
  */
 const TTL_MS = 10 * 60 * 1000;
-const MAX_CACHED_SHARDS = 12;
-const MAX_CACHED_CHARS = 8 * 1024 * 1024;
+const MAX_CACHED_SHARDS = 4;
+const MAX_CACHED_CHARS = 6 * 1024 * 1024;
 
 export class DepartureReader {
   private readonly shards = new Map<string, CachedShard>();
@@ -94,26 +98,23 @@ export class DepartureReader {
     let shardsMissing = 0;
 
     for (const serviceDate of serviceDates) {
-      for (const window of departureWindowsBetween(fromEpochSeconds, toEpochSeconds, serviceDate)) {
-        const dataset = departureShardDataset(serviceDate, bucket, window);
-        try {
-          const shard = await this.shard(dataset, version, now);
-          if (shard === null) {
-            shardsMissing += 1;
-            continue;
-          }
-          shardsRead += 1;
-          for (const row of shard) {
-            if (row.s !== atcoCode) continue;
-            if (row.t < fromEpochSeconds || row.t > toEpochSeconds) continue;
-            rows.push(row);
-          }
-        } catch (error) {
-          failures.push({
-            dataset,
-            reason: error instanceof Error ? `${error.name}: ${error.message}` : "unreadable",
-          });
+      const dataset = departureShardDataset(serviceDate, bucket);
+      try {
+        const text = await this.shard(dataset, version, now);
+        if (text === null) {
+          shardsMissing += 1;
+          continue;
         }
+        shardsRead += 1;
+        for (const row of decodeDepartureShardForStop(text, atcoCode) ?? []) {
+          if (row.t < fromEpochSeconds || row.t > toEpochSeconds) continue;
+          rows.push(row);
+        }
+      } catch (error) {
+        failures.push({
+          dataset,
+          reason: error instanceof Error ? `${error.name}: ${error.message}` : "unreadable",
+        });
       }
     }
 
@@ -122,16 +123,12 @@ export class DepartureReader {
   }
 
   /** Null when the shard was never written; throws when it exists and cannot be used. */
-  private async shard(
-    dataset: string,
-    version: string,
-    now: number,
-  ): Promise<DepartureRow[] | null> {
+  private async shard(dataset: string, version: string, now: number): Promise<string | null> {
     const key = `${version}:${dataset}`;
     const cached = this.shards.get(key);
     if (cached && now - cached.usedAt < this.ttlMs) {
       cached.usedAt = now;
-      return cached.rows;
+      return cached.text;
     }
 
     // Deliberately not wrapped: a store that rejects is a failure the caller has to hear about,
@@ -139,34 +136,27 @@ export class DepartureReader {
     const raw = await this.store.get(objectKeyFor(dataset, version));
     if (raw === null) return null;
 
-    const rows: DepartureRow[] = [];
-    for (const line of raw.split("\n")) {
-      if (line.length === 0) continue;
-      rows.push(JSON.parse(line) as DepartureRow);
-    }
-
     this.shards.delete(key);
-    this.shards.set(key, { rows, chars: raw.length, usedAt: now });
+    this.shards.set(key, { text: raw, usedAt: now });
     this.evict();
-    return rows;
+    return raw;
   }
 
   private evict(): void {
-    let chars = 0;
-    for (const shard of this.shards.values()) chars += shard.chars;
-    if (this.shards.size <= MAX_CACHED_SHARDS && chars <= MAX_CACHED_CHARS) return;
-
-    for (const [key, shard] of [...this.shards].slice(0, -1)) {
-      if (this.shards.size <= MAX_CACHED_SHARDS && chars <= MAX_CACHED_CHARS) break;
+    for (const [key, shard] of [...this.shards]) {
+      if (this.shards.size <= MAX_CACHED_SHARDS && this.cachedChars <= MAX_CACHED_CHARS) break;
+      // Never the one just inserted: evicting it would make the cache a no-op under exactly the
+      // pressure it exists for.
+      if (this.shards.size === 1) break;
       this.shards.delete(key);
-      chars -= shard.chars;
+      void shard;
     }
   }
 
-  /** How much text the resident shards were parsed from. Exposed so a test can bound it. */
+  /** How much text the resident shards hold. Exposed so a test can bound it. */
   get cachedChars(): number {
     let total = 0;
-    for (const shard of this.shards.values()) total += shard.chars;
+    for (const shard of this.shards.values()) total += shard.text.length;
     return total;
   }
 }

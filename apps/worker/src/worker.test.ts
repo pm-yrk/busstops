@@ -29,10 +29,11 @@ import {
 import worker, { initialiseWorker, resetWorkerState } from "./index.js";
 import { R2BindingStore, readFeatureFlags, type R2BucketLike, type WorkerEnv } from "./env.js";
 import {
-  PATTERN_TILE_DEGREES,
+  TRIP_TILE_DEGREES,
   departureBucketFor,
   departureShardDataset,
-  departureWindowFor,
+  encodeDepartureShard,
+  tripWindowFor,
   patternTripsDataset,
   type DepartureRow,
   type PatternTripRow,
@@ -132,8 +133,8 @@ async function publishPatternTrips(
     const row: PatternTripRow = { p: journey.routePatternId, j: journey.tripId, t: departures };
     const dataset = patternTripsDataset(
       journey.serviceDate,
-      tileIdFor(firstStop.locationCoordinate, PATTERN_TILE_DEGREES),
-      departureWindowFor(departures[0]!, journey.serviceDate),
+      tileIdFor(firstStop.locationCoordinate, TRIP_TILE_DEGREES),
+      tripWindowFor(departures[0]!, journey.serviceDate),
     );
     byShard.set(dataset, [...(byShard.get(dataset) ?? []), JSON.stringify(row)]);
   }
@@ -1418,18 +1419,11 @@ describe("the departure board reads the published index", () => {
     const store = await publishedStore();
     const byShard = new Map<string, DepartureRow[]>();
     for (const row of rows) {
-      const dataset = departureShardDataset(
-        today,
-        departureBucketFor(row.s),
-        departureWindowFor(row.t, today),
-      );
+      const dataset = departureShardDataset(today, departureBucketFor(row.s));
       byShard.set(dataset, [...(byShard.get(dataset) ?? []), row]);
     }
     for (const [dataset, shardRows] of byShard) {
-      await store.put(
-        objectKeyFor(dataset, "v1"),
-        shardRows.map((row) => JSON.stringify(row)).join("\n"),
-      );
+      await store.put(objectKeyFor(dataset, "v1"), encodeDepartureShard(today, shardRows));
     }
     return store;
   }

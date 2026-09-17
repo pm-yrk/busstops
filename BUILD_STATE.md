@@ -4,6 +4,76 @@ Last updated: 2026-09-17 (live buses proved in the deployment; the national time
 
 ## Current status
 
+### The timetable publishes; the write budget is what it ran out of (2026-09-17)
+
+**Live buses are done and deployed.** `Deploy Preview` run 30 proved the CSS positioning fix — at
+every width, in Leeds and York, every bus the API returned was inside the rectangle the map
+occupies. Run 32 proved the pointer-events fix that followed it: **84 of 84 visual checks passed**
+against https://preview.busstops.pages.dev, and clicking a stop opened the arrival board on all
+six camera/width combinations, where run 30 had failed that check three times in Leeds.
+
+| Width   | City  | Buses inside the map | Map scrollHeight | Stop click                |
+| ------- | ----- | -------------------- | ---------------- | ------------------------- |
+| desktop | Leeds | 156 of 156           | 672px            | NEXT BUS — Merrion D      |
+| desktop | York  | 71 of 71             | 690px            | NEXT BUS — Eboracum Way   |
+| tablet  | Leeds | 154 of 154           | 489px            | NEXT BUS — Merrion E      |
+| tablet  | York  | 70 of 70             | 497px            | NEXT BUS — Willerby House |
+| phone   | Leeds | 158 of 158           | 378px            | NEXT BUS — LGI A&E        |
+| phone   | York  | 71 of 71             | 393px            | NEXT BUS — Langley House  |
+
+Every board opened with **0 rows**, which is the honest state: run 32's bootstrap never finished,
+so there is no timetable in the bucket for them to read.
+
+**The departure index published at national scale. Writing it is what ran out of time.** Run 32
+(`35202327336`, 0848752) got as far as:
+
+```
+08:58:48  Timetable source: BODS GTFS "all", 1332.2 MiB in 41.5s
+09:22:56  Read 62,012,873 stop_times rows across 13,729 routes; 773,393 journeys on 2 dates
+09:50:23  Departure index: 29,358,096 rows across 7,168 shards, largest 1,489,273 bytes
+10:05:57  ##[error]The operation was canceled.
+```
+
+So the sharding works: the 281 MiB journey tile is gone, the largest shard is 1.49 MB, and nothing
+failed or was refused as oversized. What killed it is that **7,168 objects took 1,647 seconds —
+4.35 writes a second at a concurrency of eight**. That is a ceiling, not a pace. The pipeline
+writes through Cloudflare's REST API, which rate-limits per account; the same run moved about
+3.9 GB, which is 1.8 MB/s, so the identical number also reads as a bandwidth ceiling. One run
+cannot tell those two apart, and the job was cancelled fifteen minutes into the planner's trips.
+
+**What changed, and what it is measured at.** The layout is now sized against both currencies, and
+every publish reports its own objects/second and MiB/s so the next run says which one was real.
+
+|                             | Before                                    | After                             |
+| --------------------------- | ----------------------------------------- | --------------------------------- |
+| Departure objects per build | 7,168 (512 buckets × 7 windows × 2 dates) | **1,024** (512 buckets × 2 dates) |
+| Bytes per boardable call    | 134.6                                     | **46.5**                          |
+| National departure index    | 3.91 GB                                   | **1.35 GB**                       |
+| Largest shard               | 1,489,273 bytes                           | ~1.26 MiB                         |
+| Class A operations / month  | 215,040                                   | **30,720**                        |
+
+The window dimension is gone from departures: a board reads one object per service date. Rows are
+interned against a per-shard header — a 36-character pattern UUID, a route name and a destination
+repeated on every one of 29.4 million calls — times are offsets from the service date rather than
+ten-digit epochs, and the calls at one stop are grouped onto one line. That last part is the edge
+win as much as the wire win: a board finds its own line by prefix and parses that alone, so
+reading one stop out of a 28,000-call shard costs the hundred calls at that stop.
+
+The planner's trips moved from the eighth-degree pattern grid to a half-degree trip grid with
+eight-hour windows, for the same reason: a trip is filed once rather than copied into every tile
+its route crosses, so a fine grid there buys nothing and costs objects. `maxTiles` went 24 → 8 to
+match.
+
+**And the job limit was the wrong shape.** 70 minutes was rationing something that is not scarce —
+this repository is public, so Actions minutes are free — and worse, a _job_ timeout cancels every
+remaining step, so run 32 threw away the data verification that would have said how far it got.
+The job cap is now 150 minutes and the bootstrap step carries its own 110-minute limit, so a
+bootstrap that hangs fails the step and leaves the run able to report.
+
+Not yet proven, and not claimed: that a national build now finishes inside the job, and that
+Leeds, Manchester, Birmingham, Bristol and York return real routes and real departures with
+Leeds → Leeds Bradford Airport returning an option. That needs the next bootstrap run.
+
 ### Live buses are real in the deployment; the timetable is not (2026-09-17)
 
 Actions execution came back. `Deploy Preview` run 27 (`35184912332`, 8308013, `bootstrap_data:

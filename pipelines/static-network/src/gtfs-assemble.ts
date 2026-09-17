@@ -10,12 +10,12 @@ import { TileSpill } from "./gtfs-spill.js";
 import {
   departureBucketFor,
   departureShardDataset,
-  departureWindowFor,
+  tripWindowFor,
   patternTripsDataset,
   type DepartureRow,
   type PatternTripRow,
 } from "./departures-index.js";
-import { PATTERN_TILE_DEGREES } from "./shards.js";
+import { TRIP_TILE_DEGREES } from "./shards.js";
 
 /**
  * Assembles everything the publish path needs from a GTFS archive and the NaPTAN register.
@@ -156,11 +156,7 @@ export async function assembleGtfsNetwork(options: AssembleOptions): Promise<Ass
           ...(call.isTimingPoint ? { k: 1 as const } : {}),
         };
         departureSpill.append(
-          departureShardDataset(
-            journey.serviceDate,
-            departureBucketFor(stop.atcoCode),
-            departureWindowFor(epochSeconds, journey.serviceDate),
-          ),
+          departureShardDataset(journey.serviceDate, departureBucketFor(stop.atcoCode)),
           JSON.stringify(row),
         );
         departureRowCount += 1;
@@ -169,7 +165,7 @@ export async function assembleGtfsNetwork(options: AssembleOptions): Promise<Ass
       /*
        * And the trip, for the planner: the pattern it runs on plus its times.
        *
-       * Filed on the pattern grid under the window its first call falls in, and placed by the
+       * Filed on the trip grid under the window its first call falls in, and placed by the
        * first call's coordinate so a corridor search reads the tiles it actually crosses.
        */
       const departures = journey.stopTimes.map((call) =>
@@ -192,8 +188,8 @@ export async function assembleGtfsNetwork(options: AssembleOptions): Promise<Ass
         patternTripSpill.append(
           patternTripsDataset(
             journey.serviceDate,
-            tileIdFor(first, PATTERN_TILE_DEGREES),
-            departureWindowFor(departures[0]!, journey.serviceDate),
+            tileIdFor(first, TRIP_TILE_DEGREES),
+            tripWindowFor(departures[0]!, journey.serviceDate),
           ),
           JSON.stringify(trip),
         );

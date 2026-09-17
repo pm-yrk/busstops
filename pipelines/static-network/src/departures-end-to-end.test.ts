@@ -8,10 +8,11 @@ import { assembleGtfsNetwork } from "./gtfs-assemble.js";
 import { publishSpilledJourneyTiles } from "./publish-spilled-journeys.js";
 import { MAX_SHARD_BYTES } from "./shards.js";
 import {
+  decodeDepartureShard,
+  decodeDepartureShardForStop,
   departureBucketFor,
   departureShardDataset,
-  departureWindowFor,
-  type DepartureRow,
+  encodeDepartureShardFromJsonl,
   type PatternTripRow,
 } from "./departures-index.js";
 
@@ -184,6 +185,18 @@ async function assembleDenseCity() {
   });
 }
 
+/** Exactly the publish run-daily performs, encoder included, so the test proves the real path. */
+async function publishDepartures(
+  store: InMemoryObjectStore,
+  spill: Parameters<typeof publishSpilledJourneyTiles>[1],
+) {
+  return publishSpilledJourneyTiles(store, spill, {
+    version: RETRIEVED_AT,
+    datasetFor: (dataset) => dataset,
+    encode: (lines, dataset) => encodeDepartureShardFromJsonl(dataset, lines),
+  });
+}
+
 describe("a dense city, from archive to published departure shards", () => {
   it("emits a row for every boardable call and publishes them within the byte budget", async () => {
     const assembled = await assembleDenseCity();
@@ -192,10 +205,7 @@ describe("a dense city, from archive to published departure shards", () => {
     expect(assembled.departureRowCount).toBe(ROUTE_COUNT * TRIPS_PER_ROUTE * (CALLS_PER_TRIP - 1));
 
     const store = new InMemoryObjectStore();
-    const published = await publishSpilledJourneyTiles(store, assembled.departureSpill, {
-      version: RETRIEVED_AT,
-      datasetFor: (dataset) => dataset,
-    });
+    const published = await publishDepartures(store, assembled.departureSpill);
 
     expect(published.failed).toEqual([]);
     expect(published.oversized).toEqual([]);
@@ -212,30 +222,20 @@ describe("a dense city, from archive to published departure shards", () => {
   it("puts a real stop's rows where the edge will look for them", async () => {
     const assembled = await assembleDenseCity();
     const store = new InMemoryObjectStore();
-    await publishSpilledJourneyTiles(store, assembled.departureSpill, {
-      version: RETRIEVED_AT,
-      datasetFor: (dataset) => dataset,
-    });
+    await publishDepartures(store, assembled.departureSpill);
 
     // Pick a stop and a morning instant, then read exactly the shard the reader would.
     const atcoCode = atcoFor(42);
     const at = Date.parse(`${MONDAY}T08:30:00Z`) / 1000;
-    const dataset = departureShardDataset(
-      MONDAY,
-      departureBucketFor(atcoCode),
-      departureWindowFor(at, MONDAY),
-    );
+    const dataset = departureShardDataset(MONDAY, departureBucketFor(atcoCode));
 
     const raw = await store.get(objectKeyFor(dataset, RETRIEVED_AT));
     expect(raw).not.toBeNull();
 
-    const rows = raw!
-      .split("\n")
-      .filter((line) => line.length > 0)
-      .map((line) => JSON.parse(line) as DepartureRow)
-      .filter((row) => row.s === atcoCode);
-
+    // Read the way the edge reads it: one stop's line out of the shard, not the whole shard.
+    const rows = decodeDepartureShardForStop(raw!, atcoCode) ?? [];
     expect(rows.length).toBeGreaterThan(0);
+    expect(rows.some((row) => row.t * 1000 > at * 1000 - 3_600_000)).toBe(true);
     for (const row of rows) {
       // Everything an arrival board renders a row from, and all of it plausible.
       expect(row.r).toMatch(/^\d+$/);
@@ -249,18 +249,13 @@ describe("a dense city, from archive to published departure shards", () => {
   it("never writes the last call of a trip, because nobody boards there for anywhere", async () => {
     const assembled = await assembleDenseCity();
     const store = new InMemoryObjectStore();
-    await publishSpilledJourneyTiles(store, assembled.departureSpill, {
-      version: RETRIEVED_AT,
-      datasetFor: (dataset) => dataset,
-    });
+    await publishDepartures(store, assembled.departureSpill);
 
     const keys = await store.list("data/network/departures/");
     let terminating = 0;
     for (const key of keys) {
       const raw = (await store.get(key)) ?? "";
-      for (const line of raw.split("\n")) {
-        if (line.length === 0) continue;
-        const row = JSON.parse(line) as DepartureRow;
+      for (const row of decodeDepartureShard(raw)) {
         // A row whose stop is also its destination would be a bus departing for where it already is.
         if (row.d === `Stop ${Number(row.s.slice(-4))}`) terminating += 1;
       }

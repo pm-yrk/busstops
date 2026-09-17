@@ -42,6 +42,16 @@ export interface SpilledJourneyPublishResult {
    * which part of the country had lost its timetable.
    */
   oversized: Array<{ dataset: string; records: number; bytes: number }>;
+  /**
+   * What the publish actually achieved, per family.
+   *
+   * The first national run of the departure index published 7,168 objects in 1,647 seconds and
+   * was then killed by the job's time limit. 4.35 writes a second at a concurrency of eight is a
+   * ceiling rather than a pace, and the same figure reads equally as a request limit or as 1.8
+   * MB/s of bandwidth — one run cannot tell those apart. So every publish now reports both, and
+   * the next one says which number the layout is really up against.
+   */
+  throughput: { objects: number; bytes: number; seconds: number; objectsPerSecond: number };
 }
 
 export async function publishSpilledJourneyTiles(
@@ -55,10 +65,20 @@ export async function publishSpilledJourneyTiles(
      */
     datasetFor?: (tile: string) => string;
     maxBytes?: number;
+    /**
+     * How a tile's spilled lines become the object's body.
+     *
+     * The default writes the lines as they were spilled. The departure index encodes instead: its
+     * rows intern everything that repeats and group by stop, which is a transform that needs the
+     * whole tile in hand and so belongs here rather than at the point each row is emitted.
+     */
+    encode?: (lines: string[], dataset: string) => string;
   },
 ): Promise<SpilledJourneyPublishResult> {
   const datasetFor = options.datasetFor ?? journeyTileDataset;
   const maxBytes = options.maxBytes ?? MAX_SHARD_BYTES;
+  const encode = options.encode ?? ((lines: string[]) => lines.join("\n"));
+  const startedAt = Date.now();
   // Written before anything is read back, because a buffered tail would otherwise be published
   // as a shorter tile than the build produced — a silent, partial timetable.
   spill.flush();
@@ -79,7 +99,7 @@ export async function publishSpilledJourneyTiles(
           return { tile: entry.tile, error: null, records: 0, bytes: 0, oversized: false };
         }
 
-        const body = lines.join("\n");
+        const body = encode(lines, dataset);
         const bytes = Buffer.byteLength(body, "utf8");
         /*
          * Measured before the put, not discovered by it. R2 answering 413 tells you afterwards
@@ -95,7 +115,7 @@ export async function publishSpilledJourneyTiles(
           error: null,
           oversized: false,
           records: lines.length,
-          bytes: Buffer.byteLength(body, "utf8"),
+          bytes,
         };
       } catch (error) {
         return {
@@ -136,5 +156,21 @@ export async function publishSpilledJourneyTiles(
     }
   }
 
-  return { tiles: tiles.sort(), failed, records, largest, oversized };
+  const seconds = (Date.now() - startedAt) / 1000;
+  let bytesWritten = 0;
+  for (const outcome of outcomes) if (!outcome.oversized) bytesWritten += outcome.bytes;
+
+  return {
+    tiles: tiles.sort(),
+    failed,
+    records,
+    largest,
+    oversized,
+    throughput: {
+      objects: tiles.length,
+      bytes: bytesWritten,
+      seconds,
+      objectsPerSecond: seconds > 0 ? tiles.length / seconds : 0,
+    },
+  };
 }

@@ -17,11 +17,32 @@ import {
   type SourceFingerprint,
 } from "./src/fingerprint.js";
 import { publishNetwork, rollbackNetwork } from "./src/publish.js";
-import { publishSpilledJourneyTiles } from "./src/publish-spilled-journeys.js";
+import {
+  publishSpilledJourneyTiles,
+  type SpilledJourneyPublishResult,
+} from "./src/publish-spilled-journeys.js";
+import { encodeDepartureShardFromJsonl } from "./src/departures-index.js";
 import { publishNetworkShards } from "./src/publish-shards.js";
 import { fetchStaticSources } from "./src/sources.js";
 
 const FINGERPRINT_DATASET = "network/fingerprints";
+
+/**
+ * What a publish achieved, in the two currencies it can run out of.
+ *
+ * The first national departure publish wrote 7,168 objects in 1,647 seconds — 4.35 a second, at a
+ * concurrency of eight — and the build was killed by its own time limit before it finished the
+ * trips. That number reads equally as a per-account request limit on the REST API and as 1.8 MB/s
+ * of bandwidth, and one run cannot tell those apart. Printing both means the next one can.
+ */
+function throughput(result: SpilledJourneyPublishResult): string {
+  const { objects, bytes, seconds, objectsPerSecond } = result.throughput;
+  const megabytes = bytes / (1024 * 1024);
+  return (
+    `Wrote ${objects} objects, ${megabytes.toFixed(1)} MiB in ${seconds.toFixed(1)}s ` +
+    `(${objectsPerSecond.toFixed(2)} objects/s, ${(megabytes / Math.max(seconds, 0.001)).toFixed(2)} MiB/s).`
+  );
+}
 
 async function main(): Promise<number> {
   const startedAt = new Date();
@@ -219,13 +240,17 @@ async function main(): Promise<number> {
   /*
    * The departure index: what an arrival board actually reads.
    *
-   * Bucketed by a hash of the stop and split by four-hour window, so a board reads one small
+   * Bucketed by a hash of the stop, one object per bucket per service date, so a board reads one
    * object instead of a region's entire timetable. The spill keys are already dataset names, so
    * the publisher is handed identity rather than a tile-naming function.
+   *
+   * The encode is where the spilled rows become the shard: interned and grouped by stop, which is
+   * a whole-tile transform and so cannot happen as each row is emitted.
    */
   const departureResult = await publishSpilledJourneyTiles(store, assembled.departureSpill, {
     version: startedAt.toISOString(),
     datasetFor: (dataset) => dataset,
+    encode: (lines, dataset) => encodeDepartureShardFromJsonl(dataset, lines),
   });
   report.departures = {
     published: departureResult.tiles.length,
@@ -237,11 +262,11 @@ async function main(): Promise<number> {
   };
   console.log(
     `Departure index: ${departureResult.records} rows across ${departureResult.tiles.length} ` +
-      `shards, largest ${departureResult.largest?.bytes ?? 0} bytes.`,
+      `shards, largest ${departureResult.largest?.bytes ?? 0} bytes. ${throughput(departureResult)}`,
   );
 
   /*
-   * And the planner's trips, on the pattern grid. Published from their own spill for the same
+   * And the planner's trips, on the trip grid. Published from their own spill for the same
    * reason the departures are: derived once as each journey streams past, never re-read.
    */
   const tripResult = await publishSpilledJourneyTiles(store, assembled.patternTripSpill, {
@@ -258,7 +283,7 @@ async function main(): Promise<number> {
   };
   console.log(
     `Pattern trips: ${tripResult.records} trips across ${tripResult.tiles.length} shards, ` +
-      `largest ${tripResult.largest?.bytes ?? 0} bytes.`,
+      `largest ${tripResult.largest?.bytes ?? 0} bytes. ${throughput(tripResult)}`,
   );
   if (tripResult.failed.length > 0 || tripResult.oversized.length > 0) {
     console.error(

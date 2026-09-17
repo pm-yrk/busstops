@@ -50,9 +50,16 @@ jobs:
   preview:
     name: Build, provision and deploy the preview
     runs-on: ubuntu-latest
-    # Enough for a bootstrap run to finish and still leave the visual pass its time. A normal
-    # deploy without the bootstrap finishes in about five minutes and never approaches this.
-    timeout-minutes: 70
+    # A stop, not a ration. This repository is public, so Actions minutes are free and unlimited;
+    # the cap exists to kill a job that has hung, and choosing it tightly bought nothing. Run 32
+    # was cancelled at 70 minutes with the national departure index already published and the
+    # planner's trips half written, and a *job* timeout cancels every remaining step — so it also
+    # threw away the data verification that would have said what had made it in. The bootstrap
+    # step carries its own, shorter limit below for that reason.
+    #
+    # A normal deploy without the bootstrap finishes in about five minutes and never approaches
+    # either number.
+    timeout-minutes: 150
     outputs:
       worker_url: ${{ steps.worker.outputs.url }}
       pages_url: ${{ steps.pages.outputs.url }}
@@ -213,6 +220,10 @@ jobs:
       - name: Bootstrap the national network artifact
         id: bootstrap
         if: ${{ inputs.bootstrap_data }}
+        # Deliberately below the job's own limit. A step that times out fails the step and leaves
+        # the run to carry on with what it has; a job that times out cancels the verification and
+        # the screenshots too, and then nobody can see how far the build got.
+        timeout-minutes: 110
         env:
           BODS_API_KEY: ${{ secrets.BODS_API_KEY }}
           TFL_APP_KEY: ${{ secrets.TFL_APP_KEY }}
