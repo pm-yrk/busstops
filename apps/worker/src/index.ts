@@ -961,8 +961,17 @@ router.get("/v1/routes/:id", async (_request, { env, params }) => {
 
   const operator = (await network.operators()).get(route.operatorId) ?? null;
 
-  // Only the tiles this route is published in, and only the stops its patterns call at.
-  const geometries = await network.patternsForService(route.id);
+  /*
+   * Only the tiles this route is published in, and only the stops its patterns call at.
+   *
+   * `complete` is carried through to the response. A route's stops and geometry are a statement
+   * of fact — this is where the 36 goes — and a byte budget quietly dropping half of them would
+   * publish a shorter route as though it were the route. When the read was capped the page says
+   * so and the coverage drops, rather than the missing half simply not existing.
+   */
+  const patterns = await network.patternsForService(route.id);
+  const geometries = patterns.geometries;
+  const routeDetailComplete = patterns.complete;
   const stopIds = [...new Set(geometries.flatMap((geometry) => geometry.pattern.stopSequence))];
   const stopsById = await network.stopsByKeys(stopIds);
   const variants = routeVariants(geometries, stopsById);
@@ -1012,10 +1021,17 @@ router.get("/v1/routes/:id", async (_request, { env, params }) => {
       meta: buildMeta({
         sources: health,
         observedAt: oldestObservedAt(activeVehicles),
-        coverage: failedSources.length > 0 ? 0.5 : 1,
+        /*
+         * An incomplete route is not a whole one at reduced confidence — it is a different
+         * answer. Coverage drops and the failure is named, so nothing downstream can read a
+         * truncated variant list as the route's full extent.
+         */
+        coverage: !routeDetailComplete ? 0 : failedSources.length > 0 ? 0.5 : 1,
         governorState: state,
         now,
-        failedSources,
+        failedSources: routeDetailComplete
+          ? failedSources
+          : [...failedSources, "route pattern geometry"],
         networkPartialCoverage: index.partialCoverage,
         safeMode: safeModeActive(state),
       }),
@@ -1024,6 +1040,15 @@ router.get("/v1/routes/:id", async (_request, { env, params }) => {
         operator,
         variants,
         activeVehicles,
+        /*
+         * Whether what is above is all of it.
+         *
+         * False means the pattern read hit its byte budget before the route's tiles were all
+         * open, so `variants` holds part of the route and must not be presented as its extent.
+         * The endpoint answers rather than failing, because a partial route page with a stated
+         * gap is more use than a 503 — but only because the gap is stated.
+         */
+        complete: routeDetailComplete,
         // Stated only where the published timetable supports it; see network-queries.
         headwaySummary: null,
         reliability: [],

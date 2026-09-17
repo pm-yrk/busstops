@@ -191,6 +191,15 @@ export type PublishedMetric = z.infer<typeof PublishedMetricSchema>;
 
 export const RouteDetailResponseSchema = apiEnvelope(
   z.object({
+    /**
+     * Whether the variants below are the whole route.
+     *
+     * A route's stops and geometry are a statement of fact — this is where the 36 goes — so a
+     * read that hit its byte budget must not publish the part it managed as the extent of the
+     * route. Optional only so an older client is not broken by its arrival; the Worker always
+     * sends it.
+     */
+    complete: z.boolean().optional(),
     route: ServiceRouteSchema,
     operator: OperatorSchema.nullable(),
     variants: z.array(

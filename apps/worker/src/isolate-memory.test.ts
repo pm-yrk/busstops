@@ -9,6 +9,7 @@ import {
   buildNetwork,
   publishNetworkShards,
 } from "@busstops/pipeline-static-network";
+import { patternTilesForBoundingBox } from "@busstops/pipeline-static-network";
 import { NetworkReader } from "./network-reader.js";
 
 /**
@@ -342,5 +343,104 @@ describe("worker source", () => {
       .join("\n");
     expect(sources).not.toMatch(/NetworkSnapshot/);
     expect(sources).not.toMatch(/network-repository/);
+  });
+});
+
+/*
+ * A route's stops and geometry are a statement of fact — this is where the 36 goes.
+ *
+ * Pattern reads are capped, because `/v1/map` and `/v1/routes/:id` are the only two endpoints
+ * that read pattern tiles in bulk and both answered Cloudflare's own HTML 503 on two consecutive
+ * deployments. The cap is containment, and containment that silently shortens a route is worse
+ * than the crash it prevents: a passenger would be shown part of a route as though it were all
+ * of it. So the read reports whether it got everything, and the endpoint carries that through.
+ */
+describe("a route too large for one request", () => {
+  /** A route whose patterns are spread over enough tiles that a small budget cannot hold them. */
+  async function sprawlingRoute() {
+    const sprawling = network();
+    const seed = sprawling.stops[0]!;
+    const pattern = sprawling.patterns[0]!;
+    const stopIds = [...pattern.stopSequence];
+
+    // Stops strung across England, so the route's patterns land in many different tiles.
+    for (let i = 0; i < 400; i++) {
+      const id = `sprawl-${i}`;
+      sprawling.stops.push({
+        ...seed,
+        id,
+        atcoCode: `SPR${String(i).padStart(5, "0")}`,
+        name: `Sprawl ${i}`,
+        locationCoordinate: { lat: 51 + (i % 50) / 20, lon: -4 + (i % 40) / 10 },
+      });
+      stopIds.push(id);
+    }
+    sprawling.patterns[0] = { ...pattern, stopSequence: stopIds };
+    /*
+     * And the shape, which is what decides the tiles.
+     *
+     * The route-tiles index is built from a pattern's geometry, not from its stop sequence, so a
+     * fixture that stretched only the stops left the route in its original handful of tiles and
+     * the budget never bit. Worth knowing generally: these two can disagree.
+     */
+    sprawling.shapes.set(
+      pattern.shapeRef,
+      Array.from({ length: 400 }, (_, i) => ({
+        lat: 51 + (i % 50) / 20,
+        lon: -4 + (i % 40) / 10,
+      })),
+    );
+
+    const store = new InMemoryObjectStore();
+    await publishNetworkShards(store, sprawling, { version: "v1" });
+    return { store, serviceId: pattern.serviceRouteId };
+  }
+
+  it("says so rather than returning part of the route as though it were the route", async () => {
+    const { store, serviceId } = await sprawlingRoute();
+
+    // A budget far too small for the route's tiles: the read must not pretend it succeeded.
+    const starved = new NetworkReader(store, 15 * 60 * 1000, 2_000);
+    const capped = await starved.patternsForService(serviceId);
+    expect(capped.complete).toBe(false);
+  });
+
+  /*
+   * The other direction, on an ordinary route rather than the sprawling one.
+   *
+   * The sprawling fixture is genuinely too big for the cap even at the production budget — a
+   * pattern is written into every tile its shape crosses, so a route spanning England carries its
+   * geometry hundreds of times over. That is real duplication rather than a fixture artefact,
+   * which is why "complete" has to be provable on a route of normal size instead.
+   */
+  it("reports an ordinary route as whole", async () => {
+    const ordinary = network();
+    const store = new InMemoryObjectStore();
+    await publishNetworkShards(store, ordinary, { version: "v1" });
+
+    const reader = new NetworkReader(store);
+    const full = await reader.patternsForService(ordinary.patterns[0]!.serviceRouteId);
+    expect(full.complete).toBe(true);
+    expect(full.geometries.length).toBeGreaterThan(0);
+  });
+
+  it("reports a viewport whose patterns did not all fit", async () => {
+    const { store } = await sprawlingRoute();
+    const starved = new NetworkReader(store, 15 * 60 * 1000, 2_000);
+
+    const wide = { west: -4, east: 0, south: 51, north: 53.5 };
+    const detailed = await starved.patternsInTilesDetailed(patternTilesForBoundingBox(wide));
+    expect(detailed.complete).toBe(false);
+  });
+
+  /*
+   * An empty answer is complete when the publish says the route touches no tiles. Conflating that
+   * with a starved read would make every route without geometry look like a fault.
+   */
+  it("calls a route with no published tiles complete, not truncated", async () => {
+    const { store } = await sprawlingRoute();
+    const reader = new NetworkReader(store);
+    const absent = await reader.patternsForService("00000000-0000-5000-8000-00000000dead");
+    expect(absent).toEqual({ geometries: [], complete: true });
   });
 });

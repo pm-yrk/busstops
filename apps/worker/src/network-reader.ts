@@ -164,6 +164,17 @@ export class NetworkReader {
     private readonly requestChars = MAX_REQUEST_SHARD_CHARS,
   ) {}
 
+  /**
+   * The pattern budget, never above the request's own.
+   *
+   * Taking the smaller of the two keeps production at the three-mebibyte pattern cap while
+   * letting a test shrink both together — otherwise the pattern path would be the one thing a
+   * test could not make bite, which is exactly the path that needs proving.
+   */
+  private get patternChars(): number {
+    return Math.min(MAX_PATTERN_REQUEST_CHARS, this.requestChars);
+  }
+
   /** The version pointer. Null when nothing has been published, so callers degrade visibly. */
   async networkIndex(now: number = Date.now()): Promise<NetworkIndexRecord | null> {
     if (this.index && now - this.indexLoadedAt < INDEX_TTL_MS) return this.index;
@@ -317,17 +328,34 @@ export class NetworkReader {
     tiles: readonly string[],
     now: number = Date.now(),
   ): Promise<PatternGeometry[]> {
+    return (await this.patternsInTilesDetailed(tiles, now)).geometries;
+  }
+
+  /**
+   * The same read, with whether it got everything.
+   *
+   * A viewport that could not afford all its patterns shows fewer route names, which is a
+   * tolerable degradation as long as it is declared. The bare version above is kept for callers
+   * that genuinely do not care — matching a vehicle to a route is best-effort either way.
+   */
+  async patternsInTilesDetailed(
+    tiles: readonly string[],
+    now: number = Date.now(),
+  ): Promise<{ geometries: PatternGeometry[]; complete: boolean }> {
     const index = await this.networkIndex(now);
-    if (!index) return [];
+    if (!index) return { geometries: [], complete: false };
     const lines = await this.readTiles<PatternTileLine>(
       patternTileDataset,
       tiles,
       index.patternTiles,
       index.version,
       now,
-      MAX_PATTERN_REQUEST_CHARS,
+      this.patternChars,
     );
-    return toGeometries(assemblePatternTile(lines.records));
+    return {
+      geometries: toGeometries(assemblePatternTile(lines.records)),
+      complete: !lines.truncated,
+    };
   }
 
   /**
@@ -441,16 +469,24 @@ export class NetworkReader {
     return this.patternsInTiles(patternTilesForBoundingBox(bbox), now);
   }
 
-  /** Every pattern of one service, read from the tiles that service is known to touch. */
+  /**
+   * Every pattern of one service, read from the tiles that service is known to touch.
+   *
+   * `complete` is the part that matters. A route's stops and geometry are a statement of fact —
+   * "this is where the 36 goes" — and a byte budget quietly removing half of it would publish a
+   * shorter route as though it were the route. The flag was being discarded here; the caller has
+   * to be able to say "we cannot show all of this" instead.
+   */
   async patternsForService(
     serviceId: string,
     now: number = Date.now(),
-  ): Promise<PatternGeometry[]> {
+  ): Promise<{ geometries: PatternGeometry[]; complete: boolean }> {
     const index = await this.networkIndex(now);
-    if (!index) return [];
+    if (!index) return { geometries: [], complete: false };
     const routeTiles = await this.routeTiles(now);
     const tiles = routeTiles.get(serviceId) ?? [];
-    if (tiles.length === 0) return [];
+    // No tiles for this route is a complete answer: the publish says it touches none.
+    if (tiles.length === 0) return { geometries: [], complete: true };
 
     const lines = await this.readTiles<PatternTileLine>(
       patternTileDataset,
@@ -458,10 +494,13 @@ export class NetworkReader {
       index.patternTiles,
       index.version,
       now,
-      MAX_PATTERN_REQUEST_CHARS,
+      this.patternChars,
     );
     const records = assemblePatternTile(lines.records);
-    return toGeometries(records.filter((r) => r.pattern.serviceRouteId === serviceId));
+    return {
+      geometries: toGeometries(records.filter((r) => r.pattern.serviceRouteId === serviceId)),
+      complete: !lines.truncated,
+    };
   }
 
   /**

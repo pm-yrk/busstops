@@ -421,6 +421,19 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+      # Printed again at the end of the job, not only where the step ran.
+      #
+      # The first dry-run's numbers were unreadable in practice: the retention step sits before a
+      # browser install whose progress bars are a hundred lines, and the log is only retrievable
+      # from the tail. The artifact carries the same JSON and its storage host is refused by the
+      # egress proxy. A report nobody can read is not a report.
+      - name: Retention report, where the log can reach it
+        if: ${{ always() && inputs.prune_artifacts != 'skip' }}
+        run: |
+          echo "--- retention report (repeated at end of job) ---"
+          cat prune-report.json 2>/dev/null || echo "no prune-report.json was written"
+          echo "--- end retention report ---"
+
       - name: Summary
         if: always()
         run: |
