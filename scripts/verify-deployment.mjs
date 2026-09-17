@@ -88,11 +88,63 @@ async function getJson(path) {
   return { response, body, text };
 }
 
-/** A status line that carries what the server actually said, truncated to stay readable. */
+/**
+ * What the server actually said, reduced to the part that identifies the failure.
+ *
+ * When the platform answers instead of the Worker it sends a Cloudflare error page, and the first
+ * three hundred characters of that page are Internet Explorer conditional comments. Reporting
+ * those was worse than reporting nothing: three separate 503s in run 37 were indistinguishable
+ * from each other, and none of them named the limit that had been hit — which is the only fact
+ * that decides whether the cause is memory, CPU, subrequests or a thrown exception.
+ *
+ * Cloudflare puts the code in a `cf-error-code` element and repeats it as "Error 1102" in the
+ * prose, with a one-line summary in the `<title>`. Those, plus the ray id, are the diagnosis.
+ */
 function describe(response, body, text) {
-  const detail =
-    body?.error?.message ?? body?.error?.code ?? text.replace(/\s+/g, " ").trim().slice(0, 300);
-  return `${response.status}${detail ? `: ${detail}` : ""}`;
+  const fromWorker = body?.error?.message ?? body?.error?.code;
+  if (fromWorker) return `${response.status}: ${fromWorker}`;
+  return `${response.status}${describePlatformPage(response, text)}`;
+}
+
+/** The identifying parts of a Cloudflare error page, or the plain text when it is not one. */
+function describePlatformPage(response, text) {
+  const flat = text.replace(/\s+/g, " ").trim();
+  if (!flat) return "";
+  const ray = response.headers.get("cf-ray");
+  const suffix = ray ? ` [cf-ray ${ray}]` : "";
+
+  if (!/<html/i.test(flat)) return `: ${flat.slice(0, 300)}${suffix}`;
+
+  const parts = [];
+  const title = /<title[^>]*>([^<]+)<\/title>/i.exec(flat)?.[1]?.trim();
+  if (title) parts.push(title);
+
+  // "Error 1102" in the prose, and the same number in Cloudflare's own error-code element.
+  const codes = new Set();
+  for (const match of flat.matchAll(/\berror\s*(?:code[: ]*)?(\d{4})\b/gi)) codes.add(match[1]);
+  for (const match of flat.matchAll(/class="[^"]*cf-error-code[^"]*"[^>]*>\s*(\d{4})/gi)) {
+    codes.add(match[1]);
+  }
+  if (codes.size > 0) parts.push(`Cloudflare error ${[...codes].join("/")}`);
+
+  // The human sentence, e.g. "Worker exceeded resource limits". `cf-error-type` is not it: that
+  // span holds the literal word "Error", which adds nothing to a line that already says 503.
+  const reason = /class="[^"]*cf-subheadline[^"]*"[^>]*>\s*([^<]+)</i.exec(flat)?.[1]?.trim();
+  if (reason) parts.push(reason);
+  for (const phrase of [
+    "Worker exceeded resource limits",
+    "Worker threw exception",
+    "Exceeded CPU",
+    "Exceeded Memory",
+    "too many subrequests",
+    "Script startup exceeded",
+  ]) {
+    if (flat.toLowerCase().includes(phrase.toLowerCase())) parts.push(phrase);
+  }
+
+  const unique = [...new Set(parts)];
+  if (unique.length === 0) return `: an HTML page with no error code in it${suffix}`;
+  return `: ${unique.join(" — ")}${suffix}`;
 }
 
 // A small viewport over central Manchester: inside the map's size cap, densely stopped, and

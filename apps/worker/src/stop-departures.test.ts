@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ScheduledJourney, ServiceRoute, Stop } from "@busstops/contracts";
 import type { PatternGeometry } from "@busstops/matching";
 import {
+  departuresFromRows,
   mergeLiveIntoScheduled,
   scheduledDeparturesForStop,
   serviceDatesForBoard,
@@ -254,5 +255,50 @@ describe("merging live into the timetable", () => {
   /* "We cannot see this bus" and "this bus is not running" are different, and only one is true. */
   it("leaves an unmatched row on the board rather than hiding it", () => {
     expect(mergeLiveIntoScheduled(rows, [])[0]!.liveState).toBe("scheduled_only");
+  });
+});
+
+/*
+ * A published artifact is served for days after it is built, so the pipeline's fix reaches a
+ * passenger only after the next sixty-six-minute national rebuild. Until then the board is still
+ * reading rows that carry whatever the feed put in them — which at York Rail Station was
+ * `Golden_Tours_Hop_On_Hop_Off` in `route_short_name`. The board cleans on the way out, so no
+ * artifact, however old, can put an internal key in a badge sized for three characters.
+ */
+describe("the route badge a board renders from a published shard", () => {
+  const now = new Date("2026-09-04T09:00:00.000Z");
+  const at = (hhmm: string) => {
+    const [h, m] = hhmm.split(":").map(Number);
+    return Date.UTC(2026, 8, 4, h!, m!) / 1000;
+  };
+
+  const board = (route: string) =>
+    departuresFromRows({
+      stop,
+      rows: [
+        {
+          s: stop.atcoCode,
+          t: at("09:10"),
+          r: route,
+          d: "Ripon Market Place",
+          j: "VJ1",
+          p: PATTERN_ID,
+        },
+      ],
+      now,
+      retrievedAt: "2026-09-04T08:59:00.000Z",
+    });
+
+  it("never shows an identifier a feed smuggled into the artifact", () => {
+    const rows = board("Golden_Tours_Hop_On_Hop_Off");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.serviceRoutePublicName).toBe("Golden Tours Hop On Hop");
+    expect(rows[0]!.serviceRoutePublicName).not.toMatch(/[_:]/);
+  });
+
+  it("leaves an ordinary route number exactly as published", () => {
+    expect(board("36")[0]!.serviceRoutePublicName).toBe("36");
+    expect(board("X84")[0]!.serviceRoutePublicName).toBe("X84");
+    expect(board("Park & Ride")[0]!.serviceRoutePublicName).toBe("Park & Ride");
   });
 });

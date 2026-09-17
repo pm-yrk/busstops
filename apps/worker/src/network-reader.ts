@@ -9,7 +9,6 @@ import type {
 import {
   ArtifactStore,
   objectKeyFor,
-  tilesForCoordinates,
   type ObjectStore,
   haversineMetres,
 } from "@busstops/pipeline-core";
@@ -38,7 +37,6 @@ import {
   stopTilesForBoundingBox,
   tokenize,
 } from "@busstops/pipeline-static-network";
-import { journeyTileDataset } from "@busstops/pipeline-static-network";
 import type { PatternGeometry } from "@busstops/matching";
 
 /**
@@ -151,11 +149,6 @@ export class NetworkReader {
   private operatorsCache: Map<string, Operator> | null = null;
   private servicesCache: Map<string, ServiceRoute> | null = null;
   private routeTilesCache: Map<string, string[]> | null = null;
-  /**
-   * Journey tiles, cached per isolate. A stop board is read far more often than the timetable
-   * changes, and this is the read that would otherwise repeat on every refresh.
-   */
-  private readonly journeyCache = new Map<string, ScheduledJourney[]>();
 
   constructor(
     private readonly store: ObjectStore,
@@ -501,47 +494,6 @@ export class NetworkReader {
       geometries: toGeometries(records.filter((r) => r.pattern.serviceRouteId === serviceId)),
       complete: !lines.truncated,
     };
-  }
-
-  /**
-   * The scheduled journeys that could produce a departure at this stop.
-   *
-   * Bounded like everything else at the edge: the one journey tile containing the stop, filtered
-   * to the service dates a board at `now` can still show. Yesterday is included because a journey
-   * that began at 23:40 and calls here at 00:20 is published under yesterday's date, and a board
-   * that asked only for today would report the small hours as having no buses at all.
-   */
-  async journeysServingStop(
-    stop: Stop,
-    serviceDates: readonly string[],
-    now: number = Date.now(),
-  ): Promise<ScheduledJourney[]> {
-    const index = await this.networkIndex(now);
-    if (!index) return [];
-    const tile = tilesForCoordinates([stop.locationCoordinate])[0];
-    if (!tile) return [];
-
-    const cacheKey = `journeys:${tile}:${serviceDates.join(",")}`;
-    const cached = this.journeyCache.get(cacheKey);
-    if (cached) return cached;
-
-    try {
-      const artifacts = new ArtifactStore(this.store);
-      const loaded = await artifacts.readCurrent<ScheduledJourney>(journeyTileDataset(tile));
-      const dates = new Set(serviceDates);
-      const forStop = loaded.records.filter(
-        (journey) =>
-          dates.has(journey.serviceDate) &&
-          journey.stopTimes.some((stopTime) => stopTime.stopId === stop.id),
-      );
-      this.journeyCache.set(cacheKey, forStop);
-      return forStop;
-    } catch {
-      // A missing tile means this area has no published timetable yet. That is a coverage fact
-      // the response reports, not an error the passenger should see as a crash.
-      this.journeyCache.set(cacheKey, []);
-      return [];
-    }
   }
 
   /**

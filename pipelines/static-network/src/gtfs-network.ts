@@ -637,14 +637,23 @@ export async function buildNetworkFromGtfs(options: GtfsBuildOptions): Promise<G
  * is the number on the front of the bus — 36, X84, 1A — and is what a passenger matches against.
  * `route_long_name` is a description. `route_id` is an internal key and is nobody's business.
  *
- * This fell through to `route_id`, and England's archive has feeds that publish neither name, so
  * York Rail Station's board offered a bus called `Golden_Tours_Hop_On_Hop_Off`. An identifier
  * rendered as a route number is not a cosmetic problem: it is the board telling someone to look
  * out for a bus that does not exist under that name, in a badge sized for three characters.
  *
- * So an id is humanised rather than shown raw — separators become spaces and the result is
- * collapsed and trimmed — and a name that is still unreasonably long is cut at a word boundary,
- * because a badge that overflows takes the times with it.
+ * The first fix humanised `route_id` and trusted the two name columns, on the reasoning that a
+ * feed publishing a name means it. Run 37 rebuilt the country with that in and York's board still
+ * said `Golden_Tours_Hop_On_Hop_Off` — twenty-seven characters with the underscores intact, which
+ * neither of the other two branches can produce: the id branch would have said "Golden Tours Hop
+ * On Hop" and the description branch would at least have cut it to the badge. It was in
+ * `route_short_name` all along. Some feeds put their key in the column meant for the number on
+ * the front of the bus.
+ *
+ * So the cleaning belongs to the answer rather than to the column it came from. Whichever
+ * candidate wins, underscores and colons become spaces — no public route name has ever contained
+ * one — and the result is cut at a word boundary, because a badge that overflows takes the times
+ * with it. Hyphens and full stops are left alone outside the id branch: "Leeds - Ripon" is a real
+ * description and an id is the only place they are reliably separators.
  */
 export const MAX_ROUTE_NAME_LENGTH = 24;
 
@@ -654,10 +663,10 @@ export function servicePublicName(
   routeId: string,
 ): string {
   const short = shortName?.trim();
-  if (short) return short;
+  if (short) return routeBadgeName(short);
 
   const long = longName?.trim();
-  if (long) return truncateAtWord(long, MAX_ROUTE_NAME_LENGTH);
+  if (long) return routeBadgeName(long);
 
   // Nothing published. The id is all there is, so it is made readable rather than shown as a key.
   const humanised = routeId
@@ -665,6 +674,23 @@ export function servicePublicName(
     .replace(/\s+/g, " ")
     .trim();
   return truncateAtWord(humanised.length > 0 ? humanised : routeId, MAX_ROUTE_NAME_LENGTH);
+}
+
+/**
+ * A name a feed published, made fit for the badge.
+ *
+ * Only the two characters that a route number never contains are treated as separators, so a real
+ * description keeps its punctuation and a key smuggled into a name column stops looking like one.
+ *
+ * Exported because the Worker applies it again when it reads. The artifact is the right place to
+ * fix this and the only place that can fix it properly — but an artifact is published for sixty-six
+ * minutes and then served for days, so a board reading one that predates the fix would still put
+ * a key in front of a passenger. Cleaning on the way out costs a regex per row and means no
+ * published artifact, however old, can show one.
+ */
+export function routeBadgeName(value: string): string {
+  const cleaned = value.replace(/[_:]+/g, " ").replace(/\s+/g, " ").trim();
+  return truncateAtWord(cleaned.length > 0 ? cleaned : value, MAX_ROUTE_NAME_LENGTH);
 }
 
 function truncateAtWord(value: string, limit: number): string {

@@ -47,6 +47,42 @@ describe("the name a departure board puts in the route badge", () => {
     expect(single.length).toBe(MAX_ROUTE_NAME_LENGTH);
   });
 
+  /*
+   * The one run 37 actually failed on. The first fix cleaned `route_id` and trusted the name
+   * columns; York's board then served `Golden_Tours_Hop_On_Hop_Off` from a rebuilt national
+   * artifact, because that feed puts its key in `route_short_name`. Against the old function
+   * every assertion in this block fails — the first returns the raw twenty-seven characters.
+   */
+  it("cleans an identifier that arrived in the column meant for the number", () => {
+    expect(servicePublicName("Golden_Tours_Hop_On_Hop_Off", undefined, "GT1")).toBe(
+      "Golden Tours Hop On Hop",
+    );
+    expect(servicePublicName(undefined, "PARK_AND_RIDE", "x")).toBe("PARK AND RIDE");
+    expect(servicePublicName("FIRST:X84", undefined, "x")).toBe("FIRST X84");
+  });
+
+  it("caps every column at the badge, not only the description and the identifier", () => {
+    for (const [short, long, id] of [
+      ["The Sightseeing Circular Tour Of The City", undefined, "a"],
+      [undefined, "The Sightseeing Circular Tour Of The City", "b"],
+      [undefined, undefined, "The_Sightseeing_Circular_Tour_Of_The_City"],
+    ] as Array<[string | undefined, string | undefined, string]>) {
+      const name = servicePublicName(short, long, id);
+      expect(name.length).toBeLessThanOrEqual(MAX_ROUTE_NAME_LENGTH);
+      expect(name).not.toMatch(/[_:]/);
+      expect(name.trim()).toBe(name);
+    }
+  });
+
+  it("leaves a real number and a real description alone", () => {
+    // The cleaning must not be something a passenger can see happening to an ordinary name.
+    expect(servicePublicName("36", undefined, "x")).toBe("36");
+    expect(servicePublicName("X84", undefined, "x")).toBe("X84");
+    expect(servicePublicName("1A", undefined, "x")).toBe("1A");
+    expect(servicePublicName("Park & Ride", undefined, "x")).toBe("Park & Ride");
+    expect(servicePublicName(undefined, "Leeds - Ripon", "x")).toBe("Leeds - Ripon");
+  });
+
   it("never gives back an empty name", () => {
     expect(servicePublicName(undefined, undefined, "___")).toBe("___");
     expect(servicePublicName("", "", "r7")).toBe("r7");
