@@ -80,6 +80,24 @@
 }
 
 /*
+ * A bus does not swallow a click meant for a stop.
+ *
+ * Vehicles are added to the map after stops, so they paint on top — and a vehicle marker is a
+ * `role="img"` div with no click handler, so every click it intercepted did nothing at all. On
+ * the deployed Leeds camera, 169 buses over 400 stops, the arrival board stopped opening
+ * entirely; in York, with the markers further apart, the same click worked at every width. That
+ * is a product defect at real density and not a test artifact: the denser the city, the less
+ * likely a passenger is to be able to select the stop they are standing at.
+ *
+ * When vehicles become interactive — selecting a bus to see its route and next stops — this has
+ * to be revisited properly, because then two things want the same pixel and the answer is a
+ * deliberate hit-priority rather than the DOM order they happened to be added in.
+ */
+.map-marker--vehicle {
+  pointer-events: none;
+}
+
+/*
  * The compass direction, as a pip that orbits the bus.
  *
  * Chrome rather than artwork, so it can point at any angle without the pixel grid caring. It is

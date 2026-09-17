@@ -158,6 +158,25 @@ test("art bench", async ({ page }, testInfo) => {
   await map.screenshot({ path: `art-preview/${testInfo.project.name}-markers-crowded.png` });
 
   /*
+   * A stop stays selectable with buses drawn on top of it.
+   *
+   * Vehicles are added after stops and so paint above them. Being `role="img"` divs with no click
+   * handler, they used to intercept the click and do nothing with it — which on the deployed
+   * Leeds camera stopped the arrival board opening at all, while York, with its markers further
+   * apart, worked fine. Density decided whether the product functioned.
+   */
+  /*
+   * The last stop, not the first. Markers are added stops-then-vehicles, so the last stop is
+   * painted above every other stop and below every bus — which makes it precisely the target
+   * whose only possible obstruction is a vehicle. Clicking an arbitrary stop instead just finds
+   * whichever neighbouring stop happens to overlap it in a dense fixture, which is a different
+   * question and not this one.
+   */
+  await page.locator(".map-marker--stop").last().click({ timeout: 5_000 });
+  await expect(page.locator(".selected-stop")).toBeVisible({ timeout: 10_000 });
+  await page.keyboard.press("Escape");
+
+  /*
    * Panning must ask again for the new viewport.
    *
    * A map that keeps drawing the buses from the box you started in is worse than one with no
