@@ -173,12 +173,21 @@ async function main(): Promise<number> {
     stopsMatchedToNaptan: assembled.gtfsCounts.stopsMatchedToNaptan,
     stopsWithoutNaptan: assembled.gtfsCounts.stopsWithoutNaptan,
     outOfOrderTrips: assembled.gtfsCounts.outOfOrderTrips,
+    tripsRejectedForTime: assembled.gtfsCounts.tripsRejectedForTime,
   };
   console.log(
     `Read ${assembled.gtfsCounts.stopTimeRows} stop_times rows across ` +
       `${assembled.gtfsCounts.routes} routes; ${assembled.journeyCount} journeys on ` +
       `${serviceDates.join(" and ")}.`,
   );
+  // Printed rather than left in the report, because the number this replaced was an exception
+  // that ended the build, and a silent count would be a worse answer than a loud crash.
+  if (assembled.gtfsCounts.tripsRejectedForTime > 0) {
+    console.log(
+      `${assembled.gtfsCounts.tripsRejectedForTime} trips carried a time too far past their ` +
+        `service date to place, and were dropped.`,
+    );
+  }
 
   const result = await publishNetwork(store, network, {
     version: startedAt.toISOString(),

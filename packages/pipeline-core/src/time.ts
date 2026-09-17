@@ -136,16 +136,56 @@ export function baselineWindowStartMinute(instant: Date, windowMinutes = 15): nu
 }
 
 /**
+ * How far past its service date a scheduled time is believed rather than rejected.
+ *
+ * A timetable time-of-day counts from midnight on the service date and is allowed to run past
+ * 24:00, which is how a service that leaves at ten past midnight stays attached to the evening it
+ * belongs to. Two days is far more than any of that needs: the longest overnight runs in England
+ * finish before 30:00, and a coach that genuinely takes longer is expressed as separate trips.
+ *
+ * Beyond this, the value is not a late-running service, it is a number nobody meant. England's
+ * national GTFS extract contains `106:25:00` — four and a half days after its service date. A
+ * journey built from it would put a departure on a board four days early, so it is rejected.
+ * Where it comes from is unknowable from here, which is the point: the archive is 1.3 GiB of
+ * other people's data and the ingest cannot assume all of it is meant.
+ */
+export const MAX_SCHEDULED_HOUR = 48;
+
+/**
+ * A timetable time-of-day, or null when it is not one this can be trusted to place.
+ *
+ * Separate from `resolveScheduledInstant` because the two callers want different things. An
+ * ingest reading a national archive needs to ask before it commits, so one unusable row costs a
+ * trip rather than the build; code that has already established the value is a time wants the
+ * instant and an exception if it was wrong.
+ *
+ * The hour deliberately has no digit limit in the pattern. GTFS puts none on it either, and the
+ * bound that matters is a real one — how far past the service date the time lands — not how many
+ * characters were used to write it. That distinction is exactly what the old `\d{1,2}` got wrong:
+ * it rejected `106:25:00` for its width and would have accepted `99:00:00` for its narrowness.
+ */
+export function parseTimeOfDay(
+  timeOfDay: string,
+): { hours: number; minutes: number; seconds: number } | null {
+  const match = timeOfDay.match(/^(\d+):(\d{2})(?::(\d{2}))?$/);
+  if (!match) return null;
+  const hours = Number(match[1]);
+  if (hours > MAX_SCHEDULED_HOUR) return null;
+  return { hours, minutes: Number(match[2]), seconds: Number(match[3] ?? 0) };
+}
+
+/**
  * Resolve a timetable time-of-day (which may exceed 24:00) against a service date into a UTC
  * instant. DST-correct: it resolves through the Europe/London offset in effect at that moment,
  * so a 01:30 journey on a spring-forward morning lands on the correct instant.
+ *
+ * Throws on anything `parseTimeOfDay` will not place. A caller streaming an archive it does not
+ * control should ask that function first rather than catching this.
  */
 export function resolveScheduledInstant(serviceDateString: string, timeOfDay: string): Date {
-  const match = timeOfDay.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
-  if (!match) throw new Error(`Invalid time of day: ${timeOfDay}`);
-  const hours = Number(match[1]);
-  const minutes = Number(match[2]);
-  const seconds = Number(match[3] ?? 0);
+  const parts = parseTimeOfDay(timeOfDay);
+  if (!parts) throw new Error(`Invalid time of day: ${timeOfDay}`);
+  const { hours, minutes, seconds } = parts;
 
   const [year, month, day] = serviceDateString.split("-").map(Number) as [number, number, number];
   const dayOffset = Math.floor(hours / 24);

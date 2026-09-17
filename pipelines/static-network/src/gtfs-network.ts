@@ -9,7 +9,7 @@ import type {
   StopTime,
 } from "@busstops/contracts";
 import { deterministicUuid } from "@busstops/adapters";
-import { pathLengthMetres, resolveScheduledInstant } from "@busstops/pipeline-core";
+import { parseTimeOfDay, pathLengthMetres, resolveScheduledInstant } from "@busstops/pipeline-core";
 import { streamGtfsTable } from "./gtfs-csv.js";
 import { readZipDirectory, type ZipDirectoryEntry } from "./gtfs-zip.js";
 
@@ -120,6 +120,16 @@ export interface GtfsBuildCounts {
   danglingStopReferences: number;
   /** Journeys dropped for having fewer than two usable calls. */
   journeysTooShort: number;
+  /**
+   * Trips dropped because a call carried a time this cannot place.
+   *
+   * England's national extract contains at least one — `106:25:00`, four and a half days past its
+   * service date. Before this was counted it was thrown, and one row in 1.3 GiB ended the entire
+   * national build with nothing published. A number here means the archive contains rows nobody
+   * meant; a number here that starts climbing means something upstream has changed and is worth
+   * looking at, which is what a count gives you and an exception does not.
+   */
+  tripsRejectedForTime: number;
 }
 
 export interface GtfsBuildResult {
@@ -186,6 +196,7 @@ export async function buildNetworkFromGtfs(options: GtfsBuildOptions): Promise<G
     journeysEmitted: 0,
     patternsSeen: 0,
     outOfOrderTrips: 0,
+    tripsRejectedForTime: 0,
     danglingStopReferences: 0,
     journeysTooShort: 0,
   };
@@ -445,6 +456,26 @@ export async function buildNetworkFromGtfs(options: GtfsBuildOptions): Promise<G
 
     if (resolved.length < 2) {
       counts.journeysTooShort += 1;
+      return;
+    }
+
+    /*
+     * A trip is only publishable if every call on it can be placed in time.
+     *
+     * Checked here, once, before anything is emitted — rather than at the point of conversion
+     * inside the per-service-date loop — because a trip with one unplaceable call has a broken
+     * sequence, and half a journey on a departure board is worse than no journey. It also keeps
+     * the failure out of the pattern: the shape would be geometrically fine and would draw a line
+     * for a service that can never be timed.
+     */
+    if (
+      resolved.some(
+        (entry) =>
+          parseTimeOfDay(entry.call.departure) === null ||
+          (entry.call.arrival !== undefined && parseTimeOfDay(entry.call.arrival) === null),
+      )
+    ) {
+      counts.tripsRejectedForTime += 1;
       return;
     }
 

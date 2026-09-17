@@ -1,8 +1,60 @@
 # Bus Stops. Build State
 
-Last updated: 2026-09-05 (weather at the stop; the preview deploy is blocked by Actions)
+Last updated: 2026-09-17 (live buses proved in the deployment; the national timetable build still fails)
 
 ## Current status
+
+### Live buses are real in the deployment; the timetable is not (2026-09-17)
+
+Actions execution came back. `Deploy Preview` run 27 (`35184912332`, 8308013, `bootstrap_data:
+true`) deployed the Worker and Pages, then **failed at the national network bootstrap**. The probe
+job runs regardless, so the passenger surfaces were measured against the real deployment at
+2026-09-17T05:20Z.
+
+**Live vehicles: settled.** The deployed Worker's count matched an independent request made
+straight to BODS from the runner, in the same second, in every non-London city:
+
+| Area                 | `/v1/map` through the deployment | BODS direct from the runner | Diagnostics                               |
+| -------------------- | -------------------------------- | --------------------------- | ----------------------------------------- |
+| Leeds                | **115 vehicles**                 | 115 accepted                | bods ok · raw 230 · 115 rejected as stale |
+| Manchester           | **181**                          | 181                         | raw 421 · 240 stale                       |
+| Birmingham           | **163**                          | 163                         | raw 307 · 144 stale                       |
+| Bristol              | **106**                          | 106                         | raw 213 · 107 stale                       |
+| London (Westminster) | **0**                            | 345 (BODS)                  | TfL `degraded`, never fetched             |
+
+Exact agreement in four cities is what closes the "runner has hundreds of buses, the deployment
+has zero" question: the `SourceClient` fetch-receiver fix was the cause, and it is confirmed in a
+real isolate rather than argued from the diff. The stale rejections are the freshness filter doing
+its job — ages run to 84,797s in the raw feed, so roughly half of what BODS publishes for a
+viewport is a position from yesterday.
+
+**London is a separate, open failure.** The Worker serves London from TfL, and TfL reports
+`status: degraded` with `lastSuccessfulFetchAt: null` — it has never succeeded. BODS has 345
+vehicles in that same box, so the data exists and the London path is not reaching it.
+
+**The timetable is the thing that is broken.** Every sampled Manchester stop answered HTTP 200
+with **0 departures and 0 routes** — not a quiet hour, but a published network that knows no route
+at those stops at all. The journey planner returns 0 options for Leeds → Leeds Bradford Airport,
+which follows. `/v1/disruptions` reports `official 0`, and no weather: both jobs publish on a
+schedule, and a schedule only fires from the default branch, so neither has ever run against the
+preview bucket.
+
+**Why the rebuild failed, and what it says.** The archive itself was fine — `BODS GTFS "all",
+1332.2 MiB in 31.9s`, uncapped, exactly as designed. Then:
+
+```
+Daily static-network job failed: Error: Invalid time of day: 106:25:00
+```
+
+One `stop_times` row in England's national extract carries a time four and a half days past its
+service date. The resolver's pattern allowed a one- or two-digit hour, threw on a three-digit one,
+and the exception came out through the zip stream and ended the build with nothing published. The
+shape of that is the timetable cap again: a single input deciding whether England has departure
+boards. The hour is now bounded by how far past the service date it actually lands rather than by
+how many characters it was written in, a trip carrying a time that cannot be placed is dropped and
+counted in `tripsRejectedForTime`, and a test pins that the rest of the archive still publishes.
+
+Not yet proven, and not claimed: that the rebuild succeeds. That needs the next run.
 
 ### The recruiter preview cut (2026-09-05) — built, not deployed
 
@@ -782,17 +834,12 @@ provider rejection is never used as the governor.
 
 ### Known limitations
 
-**B0 — GitHub Actions execution withheld (blocking, unresolved).** Dispatch is refused with
-`failed to run workflow: Actions has been disabled for this user`, most recently at
-2026-09-05T17:14Z on `deploy-preview.yml`, and a repository-wide run listing returns
-`total_count: 0`. Read access to the API works; execution does not. This is the single blocker on
-everything that needs a deployment or a runner: the preview cut, the live-bus diagnosis, the GTFS
-measurement against a real archive, and every claim in this file that cites a run. It also
-supersedes B1's resolution — a runner with ordinary egress is only useful if a runner runs. There
-is no way around it from here: this container's egress policy denies `*.pages.dev` and
-`*.workers.dev` at CONNECT, no Cloudflare credential is present in the environment, and the
-Cloudflare tool surface available can read Workers but not deploy one. _Resolution:_ re-enable
-Actions for the account, then dispatch `Deploy Preview` once.
+**B0 — GitHub Actions execution withheld (resolved 2026-09-17).** Dispatch was refused with
+`Actions has been disabled for this user` through 2026-09-05 and a repository-wide run listing
+returned `total_count: 0`. Execution is back: the listing returns 147 runs and `Deploy Preview`
+run 27 executed normally. _Still true:_ this container's egress policy denies `*.pages.dev` and
+`*.workers.dev` at CONNECT, so the deployed preview can only be measured from a runner — which is
+what the probe job is for.
 
 **B1 — Upstream egress blocked from the build container (resolved for verification).** The build
 sandbox's egress policy still denies CONNECT to every transport, weather, flood and map host and

@@ -312,6 +312,39 @@ T1,09:55:00,09:55:00,450010003,2,0,0,1
     expect(result.counts.journeysEmitted).toBe(1);
   });
 
+  /*
+   * The failure that ended run 27 with nothing published.
+   *
+   * One stop_time in England's national extract reads 106:25:00 — four and a half days past its
+   * service date. The resolver threw on it, the exception came out through the zip stream, and a
+   * 1.3 GiB archive that had downloaded perfectly produced no artifact at all. So the assertion
+   * that matters is not that the bad trip is dropped: it is that everything else still arrives.
+   */
+  it("drops a trip it cannot place in time and keeps building the rest", async () => {
+    const withImpossibleTime = {
+      ...FEED,
+      "stop_times.txt": STOP_TIMES.replace(
+        "T1,09:55:00,09:55:00,450010003,3,1,0,1",
+        "T1,106:25:00,106:25:00,450010003,3,1,0,1",
+      ),
+    };
+
+    const { result, journeys } = await build(withImpossibleTime);
+
+    expect(result.counts.tripsRejectedForTime).toBe(1);
+
+    // T1 is gone in its entirety — a journey missing its last call is worse than no journey.
+    expect(journeys.some((journey) => journey.tripId === "T1")).toBe(false);
+
+    /*
+     * And the rest of the archive is untouched. One journey each: the calendar removes WEEKDAY on
+     * the Tuesday, so T2 runs on the Monday only, and the same exception adds SUNDAY to it, which
+     * is what puts T3 on a Monday.
+     */
+    expect(journeys.map((journey) => journey.tripId).sort()).toEqual(["T2", "T3"]);
+    expect(result.services.map((service) => service.publicName)).toEqual(["36"]);
+  });
+
   it("reports the tables the archive actually shipped", async () => {
     const { result } = await build();
     expect(result.tables.map((table) => table.name).sort()).toEqual([
