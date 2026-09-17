@@ -442,6 +442,31 @@ await check("live vehicles are reported for a covered area", async () => {
   return `${vehicles.length} vehicles from [${sources}] at ${new Date().toISOString()}`;
 });
 
+/*
+ * What a map request that *survives* cost.
+ *
+ * Every 1102 is a request that could not report anything, so the evidence has to come from the
+ * ones that finish. This prints it rather than asserting a threshold: nobody outside Cloudflare
+ * knows where the line is, and a made-up limit here would fail runs for no reason.
+ */
+await check("the map says what it cost", async () => {
+  const { response, body, text } = await getJson(`/v1/map?bbox=${BBOX}&zoom=15`);
+  assert(response.ok, `expected 2xx, got ${describe(response, body, text)}`);
+  const d = body?.meta?.diagnostics;
+  assert(d, "the map response carries no diagnostics");
+  assert(typeof body?.data?.degraded === "boolean", "the map does not say whether it is degraded");
+  const stages = Object.entries(d.stages ?? {})
+    .map(([stage, ms]) => `${stage}=${ms}ms`)
+    .join(" ");
+  return (
+    `${d.elapsedMs}ms of a ${d.budgetMs}ms budget; ` +
+    `${d.objectsRead} object(s) read, ${d.objectsCached} cached, ${d.objectsMissing} missing, ` +
+    `${d.objectsFailed} failed; ${(d.chars / 1048576).toFixed(2)} MiB decoded; ` +
+    `${d.records} record(s); ${stages}; ` +
+    `degraded ${String(body.data.degraded)}${body.data.degradationReason ? ` (${body.data.degradationReason})` : ""}`
+  );
+});
+
 await check("nearby stops come back for a real point", async () => {
   assert(observed.stop, "no stop was found by the earlier check");
   const { lat, lon } = observed.stop.coordinate;
@@ -631,6 +656,15 @@ await check("a journey can be planned across real timetable data", async () => {
       `candidate stop(s); ${diagnostics.roundsWithOption} of ${diagnostics.rounds} round(s) found ` +
       `an itinerary; slice held ${diagnostics.patternsInSlice} pattern(s) and ` +
       `${diagnostics.stopsInSlice} stop(s)` +
+      // Where the time actually went, which is the whole point of asking after a 1102.
+      (diagnostics.stageMs
+        ? `; stages ${Object.entries(diagnostics.stageMs)
+            .map(([stage, ms]) => `${stage}=${ms}ms`)
+            .join(" ")}` +
+          (typeof diagnostics.tripChars === "number"
+            ? `; ${(diagnostics.tripChars / 1048576).toFixed(2)} MiB of trip text decoded`
+            : "")
+        : "") +
       (diagnostics.failures.length > 0
         ? `; failures: ${diagnostics.failures.map((f) => `${f.dataset} (${f.reason})`).join(", ")}`
         : "")

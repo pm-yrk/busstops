@@ -328,6 +328,8 @@ export interface MetaInput {
   networkPartialCoverage?: boolean;
   failedSources?: readonly string[];
   safeMode?: boolean;
+  /** What the request cost. Counts and durations; see ResponseMetaSchema.diagnostics. */
+  diagnostics?: Record<string, unknown>;
 }
 
 /**
@@ -346,6 +348,7 @@ export function buildMeta(input: MetaInput): ResponseMeta {
     degradation,
     governorState: input.governorState,
     attribution: attributionsFor([...sourceNames, "naptan", "osm"]),
+    ...(input.diagnostics === undefined ? {} : { diagnostics: input.diagnostics }),
   };
 }
 

@@ -32,6 +32,11 @@ import {
   tileForSearchEntry,
   tileForStop,
   tilesForPattern,
+  ROUTE_PATTERN_BUCKETS,
+  routePatternsBucketFor,
+  routePatternsDataset,
+  routePatternsShardLines,
+  type RoutePatternsRow,
 } from "./shards.js";
 
 /**
@@ -204,6 +209,25 @@ export async function publishNetworkShards(
 
   await publishFamily([shardOf(SHARDED.routeTiles, routeTileRecords(network))]);
 
+  /*
+   * The route-pattern index: one line per service, carrying that service's whole route.
+   *
+   * Route detail asked the geographic tiles for this, which meant opening every tile a service
+   * crossed and parsing every other route in each of them. A cross-country service took the
+   * isolate over its limit doing it. Here the whole route is one line of one object.
+   */
+  const routePatternShards = groupPatternsByService(network);
+  const routePatternBuckets = ROUTE_PATTERN_BUCKETS;
+  const routePatternShardList = [...routePatternShards.keys()].sort((a, b) => a - b);
+  await publishFamily(
+    [...routePatternShards].map(([bucket, rows]) => ({
+      dataset: routePatternsDataset(bucket),
+      lines: routePatternsShardLines(rows),
+      records: rows.length,
+    })),
+  );
+  routePatternShards.clear();
+
   const searchEntries = buildSearchIndex(network, { builtAt: now().toISOString() }).entries;
 
   const searchTileShards = groupSearchByTile(searchEntries);
@@ -243,6 +267,8 @@ export async function publishNetworkShards(
     patternTiles,
     searchTiles,
     searchPrefixes,
+    routePatternBuckets,
+    routePatternShards: routePatternShardList,
     counts: {
       stops: network.stops.length,
       patterns: network.patterns.length,
@@ -360,6 +386,55 @@ function groupPatternsByTile(network: BuiltNetwork): Map<string, PatternTileLine
     lines.set(tile, out);
   }
   return lines;
+}
+
+/**
+ * The same patterns, filed by the service that runs them rather than by where they go.
+ *
+ * Each service's shapes are written once, before the patterns that name them, exactly as a tile
+ * does — so `assemblePatternTile` reads either and the two forms cannot drift. A service appears
+ * in exactly one bucket, so a route is always one object.
+ */
+function groupPatternsByService(network: BuiltNetwork): Map<number, RoutePatternsRow[]> {
+  const stopsById = new Map(network.stops.map((stop) => [stop.id, stop]));
+
+  const byService = new Map<string, { shapes: Set<string>; lines: PatternTileLine[] }>();
+  for (const pattern of network.patterns) {
+    const shape = network.shapes.get(pattern.shapeRef);
+    if (!shape || shape.length < 2) continue;
+
+    let entry = byService.get(pattern.serviceRouteId);
+    if (!entry) {
+      entry = { shapes: new Set<string>(), lines: [] };
+      byService.set(pattern.serviceRouteId, entry);
+    }
+    if (!entry.shapes.has(pattern.shapeRef)) {
+      entry.shapes.add(pattern.shapeRef);
+      entry.lines.push({
+        kind: "shape",
+        shapeRef: pattern.shapeRef,
+        points: shape as Coordinate[],
+      });
+    }
+    entry.lines.push({
+      kind: "pattern",
+      pattern,
+      shapeRef: pattern.shapeRef,
+      stopDistancesMetres: stopDistancesAlongShape(pattern, shape as Coordinate[], stopsById),
+    });
+  }
+
+  const buckets = new Map<number, RoutePatternsRow[]>();
+  for (const [serviceId, entry] of byService) {
+    const bucket = routePatternsBucketFor(serviceId);
+    const rows = buckets.get(bucket);
+    const row = { serviceId, lines: entry.lines };
+    if (rows) rows.push(row);
+    else buckets.set(bucket, [row]);
+  }
+  // Deterministic order, so the same network publishes byte-identical shards.
+  for (const rows of buckets.values()) rows.sort((a, b) => (a.serviceId < b.serviceId ? -1 : 1));
+  return buckets;
 }
 
 function groupSearchByTile(entries: readonly SearchIndexEntry[]): Map<string, SearchIndexEntry[]> {

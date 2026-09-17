@@ -9,8 +9,15 @@ import {
   buildNetwork,
   publishNetworkShards,
 } from "@busstops/pipeline-static-network";
+import { objectKeyFor } from "@busstops/pipeline-core";
 import { patternTilesForBoundingBox } from "@busstops/pipeline-static-network";
 import { NetworkReader } from "./network-reader.js";
+import { ReadLedger } from "./read-ledger.js";
+import {
+  ROUTE_PATTERN_BUCKETS,
+  routePatternsBucketFor,
+  routePatternsDataset,
+} from "@busstops/pipeline-static-network";
 
 /**
  * Guards against the national network returning to the isolate.
@@ -396,13 +403,69 @@ describe("a route too large for one request", () => {
     return { store, serviceId: pattern.serviceRouteId };
   }
 
-  it("says so rather than returning part of the route as though it were the route", async () => {
+  /*
+   * The dense route, which is the case that used to kill the isolate.
+   *
+   * It is read from the route-pattern index now: one object, one line. The byte budget that used
+   * to decide how much of this route a passenger saw is irrelevant to it, which is the point —
+   * starving the reader to two thousand characters no longer shortens the route, because the
+   * route was never being assembled from a scan.
+   */
+  it("reads a route spanning the country completely, from one object", async () => {
     const { store, serviceId } = await sprawlingRoute();
 
-    // A budget far too small for the route's tiles: the read must not pretend it succeeded.
     const starved = new NetworkReader(store, 15 * 60 * 1000, 2_000);
     const capped = await starved.patternsForService(serviceId);
-    expect(capped.complete).toBe(false);
+
+    expect(capped.source).toBe("route_pattern_index");
+    expect(capped.complete).toBe(true);
+    expect(capped.geometries.length).toBeGreaterThan(0);
+    // The whole route, not the part that fitted: the fixture's pattern calls at 400+ stops.
+    expect(capped.geometries[0]!.pattern.stopSequence.length).toBeGreaterThan(400);
+  });
+
+  it("asks for one object to answer a route, however far the route goes", async () => {
+    const { store, serviceId } = await sprawlingRoute();
+    const reader = new NetworkReader(store);
+    const ledger = new ReadLedger(60_000);
+
+    await reader.patternsForService(serviceId, Date.now(), ledger);
+
+    const report = ledger.toJSON();
+    expect(report.families["route-patterns"]?.requested).toBe(1);
+    expect(report.families.patterns).toBeUndefined();
+  });
+
+  /*
+   * The half-a-route case, which must never be presentable as a whole one.
+   *
+   * With the index there is no such thing as a partly-read route: the bucket is there or it is
+   * not. An object the index promises and the store cannot produce is `unavailable`, which is a
+   * different answer from "this route has no patterns" and is what stops an empty route being
+   * drawn as though the emptiness were a fact about the route.
+   */
+  it("cannot label an unreadable route complete", async () => {
+    const { store, serviceId } = await sprawlingRoute();
+    const reader = new NetworkReader(store);
+
+    const bucket = routePatternsBucketFor(serviceId, ROUTE_PATTERN_BUCKETS);
+    await store.delete(objectKeyFor(routePatternsDataset(bucket), "v1"));
+
+    const answer = await reader.patternsForService(serviceId);
+    expect(answer.source).toBe("unavailable");
+    expect(answer.complete).toBe(false);
+    expect(answer.geometries).toEqual([]);
+  });
+
+  it("tells an unreadable route apart from one with no patterns", async () => {
+    const { store } = await sprawlingRoute();
+    const reader = new NetworkReader(store);
+
+    // A service the index has never heard of: its bucket exists, its line does not.
+    const absent = await reader.patternsForService("00000000-0000-5000-8000-00000000beef");
+    expect(absent.source).toBe("route_pattern_index");
+    expect(absent.complete).toBe(true);
+    expect(absent.geometries).toEqual([]);
   });
 
   /*
@@ -421,6 +484,7 @@ describe("a route too large for one request", () => {
     const reader = new NetworkReader(store);
     const full = await reader.patternsForService(ordinary.patterns[0]!.serviceRouteId);
     expect(full.complete).toBe(true);
+    expect(full.source).toBe("route_pattern_index");
     expect(full.geometries.length).toBeGreaterThan(0);
   });
 
@@ -437,10 +501,121 @@ describe("a route too large for one request", () => {
    * An empty answer is complete when the publish says the route touches no tiles. Conflating that
    * with a starved read would make every route without geometry look like a fault.
    */
-  it("calls a route with no published tiles complete, not truncated", async () => {
+  it("calls a route with no published patterns complete, not truncated", async () => {
     const { store } = await sprawlingRoute();
     const reader = new NetworkReader(store);
     const absent = await reader.patternsForService("00000000-0000-5000-8000-00000000dead");
-    expect(absent).toEqual({ geometries: [], complete: true });
+    expect(absent.complete).toBe(true);
+    expect(absent.geometries).toEqual([]);
+  });
+});
+
+/*
+ * The clock, rather than the byte cap.
+ *
+ * Error 1102 is the platform killing a Worker that ran out of *something* — its page does not say
+ * what, and a budget counted in characters cannot stop a request that is slow rather than large.
+ * So the reader watches a wall clock the request owns, declines to start optional work when it has
+ * already gone, and books every object it touches so a request that survives can say what it cost.
+ */
+describe("a request that watches its own clock", () => {
+  /** A clock the test drives, so "out of time" is a fact rather than a race. */
+  function fakeClock(start = 1_000) {
+    let t = start;
+    return { now: () => t, advance: (ms: number) => (t += ms) };
+  }
+
+  it("declines to start pattern enrichment once the budget has gone", async () => {
+    const ordinary = network();
+    const store = new InMemoryObjectStore();
+    await publishNetworkShards(store, ordinary, { version: "v1" });
+    const reader = new NetworkReader(store);
+
+    const clock = fakeClock();
+    const ledger = new ReadLedger(500, clock.now);
+    clock.advance(600);
+
+    const detailed = await reader.patternsInTilesDetailed(
+      patternTilesForBoundingBox({ west: -2, east: 0, south: 53, north: 54 }),
+      Date.now(),
+      ledger,
+    );
+
+    expect(detailed.geometries).toEqual([]);
+    expect(detailed.complete).toBe(false);
+    expect(ledger.stopped).toBe(true);
+    expect(ledger.reason).toBe("pattern_enrichment_budget");
+  });
+
+  it("does the work when there is time for it, and says what it cost", async () => {
+    const ordinary = network();
+    const store = new InMemoryObjectStore();
+    await publishNetworkShards(store, ordinary, { version: "v1" });
+    const reader = new NetworkReader(store);
+
+    const ledger = new ReadLedger(60_000);
+    const detailed = await reader.patternsInTilesDetailed(
+      patternTilesForBoundingBox({ west: -2, east: 0, south: 53, north: 54 }),
+      Date.now(),
+      ledger,
+    );
+
+    expect(detailed.complete).toBe(true);
+    expect(ledger.stopped).toBe(false);
+
+    const report = ledger.toJSON();
+    expect(report.objectsRequested).toBeGreaterThan(0);
+    expect(report.families.patterns?.requested).toBeGreaterThan(0);
+    expect(report.chars).toBeGreaterThan(0);
+    expect(report.counts.patterns).toBe(detailed.geometries.length);
+    expect(report.degradationReason).toBeNull();
+  });
+
+  it("counts a cache hit apart from a read, because a cache hit decodes nothing", async () => {
+    const ordinary = network();
+    const store = new InMemoryObjectStore();
+    await publishNetworkShards(store, ordinary, { version: "v1" });
+    const reader = new NetworkReader(store);
+    const tiles = patternTilesForBoundingBox({ west: -2, east: 0, south: 53, north: 54 });
+
+    const first = new ReadLedger(60_000);
+    await reader.patternsInTilesDetailed(tiles, Date.now(), first);
+    const second = new ReadLedger(60_000);
+    await reader.patternsInTilesDetailed(tiles, Date.now(), second);
+
+    expect(first.toJSON().families.patterns?.read).toBeGreaterThan(0);
+    expect(second.toJSON().families.patterns?.read).toBe(0);
+    expect(second.toJSON().families.patterns?.cached).toBeGreaterThan(0);
+  });
+
+  it("books a missing shard as missing rather than as a failure", async () => {
+    const ordinary = network();
+    const store = new InMemoryObjectStore();
+    await publishNetworkShards(store, ordinary, { version: "v1" });
+    const reader = new NetworkReader(store);
+
+    const ledger = new ReadLedger(60_000);
+    await reader.stopsInTiles(["999_999"], Date.now(), ledger);
+    const report = ledger.toJSON();
+    expect(report.objectsFailed).toBe(0);
+  });
+
+  it("never puts a key or a URL in what it reports", async () => {
+    const ordinary = network();
+    const store = new InMemoryObjectStore();
+    await publishNetworkShards(store, ordinary, { version: "v1" });
+    const reader = new NetworkReader(store);
+
+    const ledger = new ReadLedger(60_000);
+    await reader.patternsInTilesDetailed(
+      patternTilesForBoundingBox({ west: -2, east: 0, south: 53, north: 54 }),
+      Date.now(),
+      ledger,
+    );
+
+    const serialised = JSON.stringify(ledger.toJSON()) + ledger.serverTiming();
+    expect(serialised).not.toMatch(/data\/network/);
+    expect(serialised).not.toMatch(/https?:/);
+    expect(serialised).not.toMatch(/\.jsonl/);
   });
 });

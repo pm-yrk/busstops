@@ -341,6 +341,83 @@ export function assemblePatternTile(lines: readonly PatternTileLine[]): PatternT
   return records;
 }
 
+/**
+ * The route-pattern index: every pattern of one service, in one line of one object.
+ *
+ * Route detail is not a viewport. A route page needs the *whole* route — every stop in sequence
+ * and the complete line on the map — and the geographic tiles cannot give it that cheaply. A
+ * pattern is written into every tile its shape crosses, so asking for a cross-country service
+ * meant opening dozens of tiles, parsing every other route in each of them, and throwing almost
+ * all of it away. That is what took `/v1/routes/:id` over the isolate's limit, and a byte cap
+ * only converts it from a crash into a route drawn half way.
+ *
+ * So services are hashed into buckets and each bucket holds one line per service, carrying that
+ * service's shapes and patterns and nothing else. Reading a route is one object and one
+ * `JSON.parse` of one line — the rest of the bucket is never parsed, which is the same trick the
+ * departure shards use and the reason they are cheap.
+ *
+ * The lines are `PatternTileLine`s, reusing the tile format rather than inventing a second one, so
+ * `assemblePatternTile` puts either back together and the two cannot drift apart.
+ */
+export const ROUTE_PATTERN_BUCKETS = 512;
+export const ROUTE_PATTERNS_PREFIX = "network/route-patterns";
+export const ROUTE_PATTERNS_FORMAT = 1;
+
+/** FNV-1a, the same hash the departure buckets use, so one service always lands in one place. */
+export function routePatternsBucketFor(
+  serviceId: string,
+  buckets: number = ROUTE_PATTERN_BUCKETS,
+): number {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < serviceId.length; i += 1) {
+    hash ^= serviceId.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash % buckets;
+}
+
+export function routePatternsDataset(bucket: number): string {
+  return `${ROUTE_PATTERNS_PREFIX}/${bucket}`;
+}
+
+export interface RoutePatternsRow {
+  serviceId: string;
+  lines: PatternTileLine[];
+}
+
+/** Header first, then one line per service, so the reader's prefix scan is uniform. */
+export function routePatternsShardLines(rows: readonly RoutePatternsRow[]): string[] {
+  const out = [JSON.stringify({ v: ROUTE_PATTERNS_FORMAT, n: rows.length })];
+  for (const row of rows) out.push(JSON.stringify([row.serviceId, row.lines]));
+  return out;
+}
+
+/** The same shard as one string, which is what a reader is handed. */
+export function encodeRoutePatternsShard(rows: readonly RoutePatternsRow[]): string {
+  return routePatternsShardLines(rows).join("\n");
+}
+
+/**
+ * One service's lines, without parsing the rest of the bucket.
+ *
+ * Null means the bucket was written and this service is not in it, which is an ordinary answer.
+ * The search includes the leading newline and the closing quote and comma, so a service whose id
+ * is a prefix of another's cannot match the wrong line.
+ */
+export function decodeRoutePatternsForService(
+  text: string,
+  serviceId: string,
+): PatternTileLine[] | null {
+  const needle = `\n[${JSON.stringify(serviceId)},`;
+  const at = text.indexOf(needle);
+  if (at === -1) return null;
+  const start = at + 1;
+  const end = text.indexOf("\n", start);
+  const line = end === -1 ? text.slice(start) : text.slice(start, end);
+  const parsed = JSON.parse(line) as [string, PatternTileLine[]];
+  return parsed[1];
+}
+
 /** Which tiles a service's patterns touch, so route detail reads those and no others. */
 export interface RouteTileRecord {
   serviceId: string;
@@ -368,6 +445,22 @@ export interface NetworkIndexRecord {
   patternTiles: string[];
   searchTiles: string[];
   searchPrefixes: string[];
+  /**
+   * How many route-pattern buckets this publish wrote.
+   *
+   * Absent on an artifact written before the index existed. A reader must be able to tell that
+   * apart from "zero buckets", because the answer decides whether route detail can be served at
+   * all or has to say it cannot.
+   */
+  routePatternBuckets?: number;
+  /**
+   * Which of those buckets were actually written.
+   *
+   * Without it, an object that is absent because nothing was ever filed there is indistinguishable
+   * from one that is absent because it could not be read — and those mean "this service has no
+   * patterns" and "we cannot say", which a route page must never confuse.
+   */
+  routePatternShards?: number[];
   counts: { stops: number; patterns: number; services: number; searchEntries: number };
 }
 

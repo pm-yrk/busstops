@@ -108,6 +108,17 @@ export interface JourneyDiagnostics {
   /** Walking transfers between those stops: the edges the search moves along between rides. */
   transferEdges: number;
   /**
+   * Milliseconds per stage, so a slow plan says which part of it was slow.
+   *
+   * Leeds to Leeds Bradford Airport answered Cloudflare error 1102 — the platform killing the
+   * isolate — and the counts alone could not say whether the cost was in reading the shards,
+   * parsing them, joining trips to patterns, building the graph, generating transfers or running
+   * the search. Timing each one is what turns "it is too expensive" into a thing to fix.
+   */
+  stageMs: Record<string, number>;
+  /** Characters of trip shard text this plan decoded. */
+  tripChars: number;
+  /**
    * Stops within walking distance of each end, and how the search fared.
    *
    * Zero at either end is stop selection, not planning: nothing was close enough to walk to. A
@@ -184,6 +195,8 @@ export class JourneyService {
       tripsInGraph: 0,
       stopsInGraph: 0,
       transferEdges: 0,
+      stageMs: {},
+      tripChars: 0,
       originCandidates: 0,
       destinationCandidates: 0,
       rounds: 0,
@@ -220,7 +233,11 @@ export class JourneyService {
       };
     }
 
+    const readBegan = Date.now();
     const loaded = await this.loadTrips(tiles, request);
+    diagnostics.stageMs.loadTrips = Date.now() - readBegan;
+    diagnostics.stageMs.parseTrips = loaded.parseMs;
+    diagnostics.tripChars = loaded.chars;
     diagnostics.windows = loaded.windows;
     diagnostics.shardsRead = loaded.shardsRead;
     diagnostics.shardsMissing = loaded.shardsMissing;
@@ -251,7 +268,9 @@ export class JourneyService {
       };
     }
 
+    const graphBegan = Date.now();
     const built = buildGraphFor(slice, loaded.rows, corridor, request.serviceDate);
+    diagnostics.stageMs.buildGraph = Date.now() - graphBegan;
     diagnostics.tripsWithPattern = built.tripsWithPattern;
     diagnostics.tripsWithoutPattern = built.tripsWithoutPattern;
 
@@ -272,6 +291,7 @@ export class JourneyService {
     for (const transfers of graph.transfers.values()) transferEdges += transfers.length;
     diagnostics.transferEdges = transferEdges;
 
+    const searchBegan = Date.now();
     const result = plan(graph, {
       origin: request.origin,
       destination: request.destination,
@@ -279,6 +299,7 @@ export class JourneyService {
       maxAccessWalkSeconds: Math.round(JOURNEY_LIMITS.maxAccessWalkMetres / 1.3),
     });
 
+    diagnostics.stageMs.search = Date.now() - searchBegan;
     diagnostics.originCandidates = result.reach.originCandidates;
     diagnostics.destinationCandidates = result.reach.destinationCandidates;
     diagnostics.rounds = result.reach.rounds;
@@ -320,11 +341,15 @@ export class JourneyService {
     windows: number[];
     shardsRead: number;
     shardsMissing: number;
+    chars: number;
+    parseMs: number;
   }> {
     const rows: PatternTripRow[] = [];
     const failures: Array<{ dataset: string; reason: string }> = [];
     let shardsRead = 0;
     let shardsMissing = 0;
+    let chars = 0;
+    let parseMs = 0;
 
     const midnight = Date.parse(`${request.serviceDate}T00:00:00Z`) / 1000;
     const from = midnight + request.departAtSeconds;
@@ -342,6 +367,7 @@ export class JourneyService {
           // read and found empty; counting it as read would overstate the coverage of the plan.
           if (cached.chars === 0) shardsMissing += 1;
           else shardsRead += 1;
+          chars += cached.chars;
           rows.push(...cached.rows);
           continue;
         }
@@ -354,11 +380,16 @@ export class JourneyService {
             continue;
           }
           shardsRead += 1;
+          chars += raw.length;
+          // Timed apart from the read, because "the network was slow" and "parsing eight
+          // megabytes of JSON was slow" are different problems with different fixes.
+          const parseBegan = Date.now();
           const parsed: PatternTripRow[] = [];
           for (const line of raw.split("\n")) {
             if (line.length === 0) continue;
             parsed.push(JSON.parse(line) as PatternTripRow);
           }
+          parseMs += Date.now() - parseBegan;
           this.cache.set(cacheKey, { rows: parsed, chars: raw.length });
           this.evict();
           rows.push(...parsed);
@@ -371,7 +402,7 @@ export class JourneyService {
       }
     }
 
-    return { rows, failures, windows, shardsRead, shardsMissing };
+    return { rows, failures, windows, shardsRead, shardsMissing, chars, parseMs };
   }
 
   private evict(): void {

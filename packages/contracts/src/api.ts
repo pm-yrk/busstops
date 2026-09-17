@@ -39,6 +39,18 @@ export const ResponseMetaSchema = z.object({
   degradation: DegradationStatusSchema,
   governorState: GovernorStateSchema,
   attribution: z.array(z.string()),
+  /**
+   * What this request cost, for the requests that survive to say.
+   *
+   * Cloudflare answers a Worker over its resource limit with error 1102 and an HTML page that
+   * names neither the limit nor how close anything else came to it. The only requests that can
+   * carry evidence are the ones that finish, so they carry it: elapsed time, objects asked for and
+   * read, characters decoded, records parsed, and which stage of the handler spent them.
+   *
+   * Counts and durations only — never a key, a URL or a credential. Optional because the light
+   * endpoints do not measure themselves.
+   */
+  diagnostics: z.record(z.string(), z.unknown()).optional(),
 });
 export type ResponseMeta = z.infer<typeof ResponseMetaSchema>;
 
@@ -111,6 +123,21 @@ export const MapResponseDataSchema = z.object({
     vehicles: z.boolean(),
     incidents: z.boolean(),
   }),
+  /**
+   * Whether the optional half of this map arrived.
+   *
+   * Stops and live vehicles are essential and are never skipped. Which services call at a stop,
+   * and which route a vehicle is on, come from pattern tiles that carry geometry and reach four
+   * megabytes each — expensive enough that a dense viewport used to take the whole isolate over
+   * its limit, and Cloudflare would answer with its own page instead of a map.
+   *
+   * So enrichment now runs on whatever time is left and stops when that is gone. When it does,
+   * the map is still returned, still true about where the buses are, and says here that some
+   * stops are missing their route names. A partial map that says so is a working map; silence
+   * would be the map claiming those stops have no services.
+   */
+  degraded: z.boolean(),
+  degradationReason: z.string().nullable(),
 });
 export type MapResponseData = z.infer<typeof MapResponseDataSchema>;
 
@@ -375,6 +402,16 @@ export const JourneyDiagnosticsSchema = z.object({
   tripsInGraph: z.number().int().nonnegative(),
   stopsInGraph: z.number().int().nonnegative(),
   transferEdges: z.number().int().nonnegative(),
+  /**
+   * Milliseconds per stage of the plan, and the text it decoded.
+   *
+   * Leeds to Leeds Bradford Airport answered Cloudflare error 1102 — the platform killing the
+   * isolate — and counts alone cannot say whether the cost was reading the shards, parsing them,
+   * joining trips to patterns, building the graph or running the search. Optional so an older
+   * deployment's response still validates.
+   */
+  stageMs: z.record(z.string(), z.number()).optional(),
+  tripChars: z.number().int().nonnegative().optional(),
   originCandidates: z.number().int().nonnegative(),
   destinationCandidates: z.number().int().nonnegative(),
   rounds: z.number().int().nonnegative(),

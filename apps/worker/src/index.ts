@@ -29,6 +29,26 @@ import {
   toMapVehicle,
 } from "./live-service.js";
 import { NetworkReader } from "./network-reader.js";
+import { ReadLedger } from "./read-ledger.js";
+import { patternTilesForBoundingBox, routeBadgeName } from "@busstops/pipeline-static-network";
+
+/**
+ * How long a map request will spend on optional enrichment before it stops and says so.
+ *
+ * Not a guess at Cloudflare's limit — nobody outside Cloudflare knows whether 1102 was CPU or
+ * memory here, and the error page does not say. It is a figure this handler can keep to: stops
+ * and vehicles are read first and are never skipped, so whatever is left is spent on route names,
+ * and a screen that has not got them in this long is better served a labelled map than a 503.
+ */
+const MAP_ENRICHMENT_BUDGET_MS = 900;
+
+/**
+ * The same idea for route detail, though it should never come near it.
+ *
+ * With the route-pattern index a route is one object and one line; the budget is here so that the
+ * legacy tile path, on an artifact published before the index, cannot run away either.
+ */
+const ROUTE_DETAIL_BUDGET_MS = 1_200;
 import {
   DEPARTURE_GRACE_MINUTES,
   DEPARTURE_WINDOW_MINUTES,
@@ -228,22 +248,63 @@ router.get("/v1/map", async (_request, { env, url }) => {
   }
 
   const now = new Date();
+  const ledger = new ReadLedger(MAP_ENRICHMENT_BUDGET_MS);
+
   // Only the tiles this viewport covers are read. The national stop set is 198 MiB against a
   // 128 MiB isolate, so "load it and filter" is not an option that exists.
-  const index = network ? await network.networkIndex() : null;
-  const stopsResult = network
-    ? await network.stopsInBoundingBox(bbox, MAP_QUERY_LIMITS.maxStops)
-    : { stops: [], truncated: false };
+  const index = network ? await ledger.stage("index", () => network!.networkIndex()) : null;
 
   /*
-   * The patterns crossing this viewport, read once.
+   * Essential first, and unconditionally: the stops are the map.
    *
-   * They were loaded inside the live-vehicle block, for matching an observation to a route. They
-   * are needed whether or not live vehicles are being drawn, because a stop's own services come
-   * from the same place — and while they did not, every stop on the map said it had none.
+   * The order in this handler is the whole fix for error 1102. A map request used to read its
+   * stops, then every pattern tile the viewport crossed, then its live vehicles, and a viewport
+   * over central Leeds spans enough four-megabyte pattern tiles to put the isolate over its limit
+   * — at which point Cloudflare answers with its own page and the passenger gets nothing at all.
+   * Not a map with fewer route names on it: nothing, and in a browser, a CORS error, because the
+   * platform's error page carries no CORS header.
+   *
+   * Stops and vehicles are what the screen is for. They are read first and are never skipped.
    */
-  const geometries = network ? await network.patternsInBoundingBox(bbox) : [];
-  const services = network ? await network.services() : new Map<string, ServiceRoute>();
+  const stopsResult = network
+    ? await ledger.stage("stops", () =>
+        network!.stopsInBoundingBox(bbox, MAP_QUERY_LIMITS.maxStops, Date.now(), ledger),
+      )
+    : { stops: [], truncated: false };
+  ledger.count({ stops: stopsResult.stops.length });
+
+  let vehicles: MapResponseData["vehicles"] = [];
+  let vehiclesTruncated = false;
+  let sources: Awaited<ReturnType<LiveService["vehiclesInBoundingBox"]>>["health"] = [];
+  let failedSources: string[] = [];
+  let observedAt: string | null = null;
+
+  const liveAllowed = flags.liveVehicles && state !== "critical";
+  let liveObservations: Awaited<ReturnType<LiveService["vehiclesInBoundingBox"]>> | null = null;
+  if (liveAllowed && liveService) {
+    liveObservations = await ledger.stage("vehicles", () =>
+      liveService!.vehiclesInBoundingBox(bbox),
+    );
+  }
+
+  /*
+   * Optional, and last: which services call where, and what route a vehicle is on.
+   *
+   * This is the expensive half — pattern tiles carry geometry and reach four megabytes each — and
+   * it is the half a passenger can do without. A map with unlabelled stops is a working map; a map
+   * that 503s is not. So it runs on whatever time is left, stops the moment the budget is spent,
+   * and says so in the response rather than pretending it finished.
+   */
+  const enrichment = network
+    ? await ledger.stage("patterns", () =>
+        network!.patternsInTilesDetailed(patternTilesForBoundingBox(bbox), Date.now(), ledger),
+      )
+    : { geometries: [], complete: true };
+  const geometries = enrichment.geometries;
+  const services =
+    network && geometries.length > 0
+      ? await ledger.stage("services", () => network!.services())
+      : new Map<string, ServiceRoute>();
 
   /*
    * Which services call at each stop on screen.
@@ -262,20 +323,13 @@ router.get("/v1/map", async (_request, { env, url }) => {
     if (!service) continue;
     for (const stopId of geometry.pattern.stopSequence) {
       const names = routeNamesByStopId.get(stopId);
-      if (names) names.add(service.publicName);
-      else routeNamesByStopId.set(stopId, new Set([service.publicName]));
+      if (names) names.add(routeBadgeName(service.publicName));
+      else routeNamesByStopId.set(stopId, new Set([routeBadgeName(service.publicName)]));
     }
   }
 
-  let vehicles: MapResponseData["vehicles"] = [];
-  let vehiclesTruncated = false;
-  let sources: Awaited<ReturnType<LiveService["vehiclesInBoundingBox"]>>["health"] = [];
-  let failedSources: string[] = [];
-  let observedAt: string | null = null;
-
-  const liveAllowed = flags.liveVehicles && state !== "critical";
-  if (liveAllowed && liveService) {
-    const live = await liveService.vehiclesInBoundingBox(bbox);
+  if (liveObservations) {
+    const live = liveObservations;
     sources = live.health;
     failedSources = live.failedSources;
     observedAt = oldestObservedAt(live.observations);
@@ -350,6 +404,8 @@ router.get("/v1/map", async (_request, { env, url }) => {
       vehicles: vehiclesTruncated,
       incidents: false,
     },
+    degraded: !enrichment.complete || ledger.stopped,
+    degradationReason: ledger.reason ?? (enrichment.complete ? null : "pattern_read_budget"),
   };
 
   const coverage = index ? (liveAllowed && failedSources.length === 0 ? 1 : 0.5) : 0;
@@ -365,10 +421,12 @@ router.get("/v1/map", async (_request, { env, url }) => {
         ...(index === null ? {} : { networkPartialCoverage: index.partialCoverage }),
         failedSources,
         safeMode: safeModeActive(state),
+        diagnostics: { ...ledger.toJSON() },
       }),
       data,
     },
     cacheTtlSeconds("bods", state),
+    { "Server-Timing": ledger.serverTiming() },
   );
 });
 
@@ -969,7 +1027,29 @@ router.get("/v1/routes/:id", async (_request, { env, params }) => {
    * publish a shorter route as though it were the route. When the read was capped the page says
    * so and the coverage drops, rather than the missing half simply not existing.
    */
-  const patterns = await network.patternsForService(route.id);
+  const routeLedger = new ReadLedger(ROUTE_DETAIL_BUDGET_MS);
+  const patterns = await routeLedger.stage("route-patterns", () =>
+    network!.patternsForService(route.id, Date.now(), routeLedger),
+  );
+
+  /*
+   * An unreadable route is refused outright rather than drawn as an empty one.
+   *
+   * "The index says this route has no patterns" and "the object holding this route could not be
+   * read" arrive here as the same empty array, and they mean opposite things. Serving the second
+   * as a route page would draw a service with no stops and no line on the map as though that were
+   * the truth about it. A route nobody can currently read is a 503 with a reason, which is a
+   * different answer from a 404 and from a route that genuinely has no geometry.
+   */
+  if (patterns.source === "unavailable") {
+    return errorResponse(
+      "upstream_unavailable",
+      "This route's patterns could not be read, so its stops and line cannot be shown. This is a " +
+        "fault on our side rather than a route that does not exist.",
+      503,
+    );
+  }
+
   const geometries = patterns.geometries;
   const routeDetailComplete = patterns.complete;
   const stopIds = [...new Set(geometries.flatMap((geometry) => geometry.pattern.stopSequence))];

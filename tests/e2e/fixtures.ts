@@ -327,6 +327,8 @@ export const EMPTY_MAP = {
     incidents: [],
     disruptions: [],
     truncated: { stops: false, vehicles: false, incidents: false },
+    degraded: false,
+    degradationReason: null,
   },
 };
 
@@ -405,6 +407,8 @@ export const MAP_WITH_TRAFFIC = {
     incidents: [],
     disruptions: [],
     truncated: { stops: false, vehicles: false, incidents: false },
+    degraded: false,
+    degradationReason: null,
   },
 };
 

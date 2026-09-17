@@ -36,8 +36,19 @@ import {
   stopTileDataset,
   stopTilesForBoundingBox,
   tokenize,
+  decodeRoutePatternsForService,
+  routePatternsBucketFor,
+  routePatternsDataset,
 } from "@busstops/pipeline-static-network";
 import type { PatternGeometry } from "@busstops/matching";
+import type { ArtifactFamily, ReadLedger } from "./read-ledger.js";
+
+/** Where a read should be booked, and what to call it if the clock stops it. */
+export interface ReadTrack {
+  ledger: ReadLedger;
+  family: ArtifactFamily;
+  budgetReason: string;
+}
 
 /**
  * Bounded reads of the published network.
@@ -193,24 +204,50 @@ export class NetworkReader {
   }
 
   /** Reads one shard at the pinned version. Missing shards are empty, not an error. */
-  private async readShard<T>(dataset: string, version: string, now: number): Promise<T[]> {
-    return (await this.readShardSized<T>(dataset, version, now)).records;
+  private async readShard<T>(
+    dataset: string,
+    version: string,
+    now: number,
+    track?: ReadTrack,
+  ): Promise<T[]> {
+    return (await this.readShardSized<T>(dataset, version, now, track)).records;
   }
 
-  /** As readShard, and also says how much text the shard cost, which is what bounds a request. */
+  /**
+   * As readShard, and also says how much text the shard cost, which is what bounds a request.
+   *
+   * Every outcome is reported to the caller's ledger when it has one: a cache hit, a body, an
+   * absent object, a throw. The isolate is shared between requests, so the ledger is the caller's
+   * rather than this reader's — a counter living here would blend concurrent requests into a
+   * number that describes neither of them.
+   */
   private async readShardSized<T>(
     dataset: string,
     version: string,
     now: number,
+    track?: ReadTrack,
   ): Promise<{ records: T[]; chars: number }> {
     const key = `${version}:${dataset}`;
     const cached = this.shards.get(key);
     if (cached && now - cached.usedAt < this.ttlMs) {
       cached.usedAt = now;
+      track?.ledger.record(track.family, {
+        outcome: "cached",
+        chars: cached.chars,
+        records: cached.records.length,
+      });
       return { records: cached.records as T[], chars: cached.chars };
     }
 
-    const raw = await this.store.get(objectKeyFor(dataset, version));
+    const began = Date.now();
+    let raw: string | null;
+    try {
+      raw = await this.store.get(objectKeyFor(dataset, version));
+    } catch (error) {
+      track?.ledger.record(track.family, { outcome: "failed", ms: Date.now() - began });
+      throw error;
+    }
+
     const records: T[] =
       raw === null
         ? []
@@ -220,6 +257,12 @@ export class NetworkReader {
             .map((line) => JSON.parse(line) as T);
 
     const chars = raw?.length ?? 0;
+    track?.ledger.record(track.family, {
+      outcome: raw === null ? "missing" : "read",
+      chars,
+      records: records.length,
+      ms: Date.now() - began,
+    });
     this.shards.set(key, { records, chars, usedAt: now });
     this.evictShards();
     return { records, chars };
@@ -270,6 +313,7 @@ export class NetworkReader {
     version: string,
     now: number,
     budgetChars = this.requestChars,
+    track?: ReadTrack,
   ): Promise<{ records: T[]; truncated: boolean }> {
     // Only tiles the publish actually wrote are requested: asking for the rest would be a read
     // operation per empty tile, metered, for a guaranteed miss.
@@ -281,14 +325,23 @@ export class NetworkReader {
     for (let start = 0; start < wanted.length; start += TILE_READ_BATCH) {
       const batch = wanted.slice(start, start + TILE_READ_BATCH);
       const results = await Promise.all(
-        batch.map((tile) => this.readShardSized<T>(dataset(tile), version, now)),
+        batch.map((tile) => this.readShardSized<T>(dataset(tile), version, now, track)),
       );
       for (const result of results) {
         records.push(...result.records);
         chars += result.chars;
       }
-      if (chars >= budgetChars) {
-        return { records, truncated: start + batch.length < wanted.length };
+      /*
+       * Two ways to run out, and a request can hit either first.
+       *
+       * The byte budget is what stops one viewport holding the national network. The clock is what
+       * stops a request being stopped for it: a reader that only counts bytes will happily spend
+       * two seconds doing so, and error 1102 does not care which resource ran out.
+       */
+      if (chars >= budgetChars || track?.ledger.withinBudget === false) {
+        const ranOut = start + batch.length < wanted.length;
+        if (ranOut && track && !track.ledger.withinBudget) track.ledger.stop(track.budgetReason);
+        return { records, truncated: ranOut };
       }
     }
     return { records, truncated: false };
@@ -304,6 +357,7 @@ export class NetworkReader {
   async stopsInTiles(
     tiles: readonly string[],
     now: number = Date.now(),
+    ledger?: ReadLedger,
   ): Promise<{ stops: Stop[]; truncated: boolean }> {
     const index = await this.networkIndex(now);
     if (!index) return { stops: [], truncated: false };
@@ -313,6 +367,8 @@ export class NetworkReader {
       index.stopTiles,
       index.version,
       now,
+      this.requestChars,
+      ledger ? { ledger, family: "stops", budgetReason: "stop_read_budget" } : undefined,
     );
     return { stops: result.records, truncated: result.truncated };
   }
@@ -320,8 +376,9 @@ export class NetworkReader {
   async patternsInTiles(
     tiles: readonly string[],
     now: number = Date.now(),
+    ledger?: ReadLedger,
   ): Promise<PatternGeometry[]> {
-    return (await this.patternsInTilesDetailed(tiles, now)).geometries;
+    return (await this.patternsInTilesDetailed(tiles, now, ledger)).geometries;
   }
 
   /**
@@ -334,9 +391,24 @@ export class NetworkReader {
   async patternsInTilesDetailed(
     tiles: readonly string[],
     now: number = Date.now(),
+    ledger?: ReadLedger,
   ): Promise<{ geometries: PatternGeometry[]; complete: boolean }> {
     const index = await this.networkIndex(now);
     if (!index) return { geometries: [], complete: false };
+
+    /*
+     * Enrichment is optional, so it is not started at all when the clock has already gone.
+     *
+     * A request that is nearly out of time and opens a four-megabyte pattern tile anyway is the
+     * request error 1102 kills — and a killed request answers with Cloudflare's own page, which
+     * carries no CORS header, so the browser reports a map that failed to load as a CORS failure.
+     * Declining to start is what turns that into a map with fewer route names on it.
+     */
+    if (ledger && !ledger.withinBudget) {
+      ledger.stop("pattern_enrichment_budget");
+      return { geometries: [], complete: false };
+    }
+
     const lines = await this.readTiles<PatternTileLine>(
       patternTileDataset,
       tiles,
@@ -344,11 +416,13 @@ export class NetworkReader {
       index.version,
       now,
       this.patternChars,
+      ledger
+        ? { ledger, family: "patterns", budgetReason: "pattern_enrichment_budget" }
+        : undefined,
     );
-    return {
-      geometries: toGeometries(assemblePatternTile(lines.records)),
-      complete: !lines.truncated,
-    };
+    const geometries = toGeometries(assemblePatternTile(lines.records));
+    ledger?.count({ patterns: geometries.length });
+    return { geometries, complete: !lines.truncated };
   }
 
   /**
@@ -380,8 +454,9 @@ export class NetworkReader {
     bbox: { west: number; south: number; east: number; north: number },
     limit: number,
     now: number = Date.now(),
+    ledger?: ReadLedger,
   ): Promise<StopsInViewport> {
-    const read = await this.stopsInTiles(stopTilesForBoundingBox(bbox), now);
+    const read = await this.stopsInTiles(stopTilesForBoundingBox(bbox), now, ledger);
 
     const inside = read.stops.filter((stop) => {
       const { lat, lon } = stop.locationCoordinate;
@@ -458,8 +533,10 @@ export class NetworkReader {
   async patternsInBoundingBox(
     bbox: { west: number; south: number; east: number; north: number },
     now: number = Date.now(),
+    ledger?: ReadLedger,
   ): Promise<PatternGeometry[]> {
-    return this.patternsInTiles(patternTilesForBoundingBox(bbox), now);
+    return (await this.patternsInTilesDetailed(patternTilesForBoundingBox(bbox), now, ledger))
+      .geometries;
   }
 
   /**
@@ -470,16 +547,91 @@ export class NetworkReader {
    * shorter route as though it were the route. The flag was being discarded here; the caller has
    * to be able to say "we cannot show all of this" instead.
    */
+  /**
+   * Every pattern of one service, read from the route-pattern index.
+   *
+   * A route page needs the whole route: every stop in sequence and the complete line on the map.
+   * That is a different question from the one the geographic tiles answer well. A pattern is
+   * written into every tile its shape crosses, so this used to open dozens of tiles, parse every
+   * other route in each of them, and discard almost all of it — which is what took this endpoint
+   * over the isolate's limit. Capping the bytes only turned the crash into a route drawn half way,
+   * and half a route presented as a whole one is worse than an error.
+   *
+   * The index files each service into one bucket and gives it one line, so this is one object and
+   * one `JSON.parse` of that line. `source` says which path answered, because an artifact
+   * published before the index exists cannot be read this way and the caller must be able to tell.
+   */
   async patternsForService(
     serviceId: string,
     now: number = Date.now(),
-  ): Promise<{ geometries: PatternGeometry[]; complete: boolean }> {
+    ledger?: ReadLedger,
+  ): Promise<{
+    geometries: PatternGeometry[];
+    complete: boolean;
+    source: "route_pattern_index" | "pattern_tiles" | "unavailable";
+  }> {
     const index = await this.networkIndex(now);
-    if (!index) return { geometries: [], complete: false };
+    if (!index) return { geometries: [], complete: false, source: "unavailable" };
+
+    if (index.routePatternBuckets && index.routePatternBuckets > 0) {
+      const bucket = routePatternsBucketFor(serviceId, index.routePatternBuckets);
+      const began = Date.now();
+      let raw: string | null;
+      try {
+        raw = await this.store.get(objectKeyFor(routePatternsDataset(bucket), index.version));
+      } catch {
+        ledger?.record("route-patterns", { outcome: "failed", ms: Date.now() - began });
+        // The object exists as far as the index is concerned and could not be read. That is not
+        // "this route has no patterns"; it is "we cannot say", and the caller must not round it
+        // down to an empty route drawn as though it were complete.
+        return { geometries: [], complete: false, source: "unavailable" };
+      }
+
+      if (raw === null) {
+        ledger?.record("route-patterns", { outcome: "missing", ms: Date.now() - began });
+        /*
+         * Absent for two quite different reasons, and only the index can tell them apart.
+         *
+         * Nothing was ever filed in this bucket — no service that hashes here has a pattern with
+         * geometry — which makes an empty answer a complete one. Or the publish says the bucket is
+         * there and the store cannot produce it, which is a fault, and rounding that down to "this
+         * route has no stops" would draw the fault as a fact about the route.
+         */
+        const written = index.routePatternShards;
+        if (written && !written.includes(bucket)) {
+          return { geometries: [], complete: true, source: "route_pattern_index" };
+        }
+        return { geometries: [], complete: false, source: "unavailable" };
+      }
+
+      const lines = decodeRoutePatternsForService(raw, serviceId);
+      ledger?.record("route-patterns", {
+        outcome: "read",
+        chars: raw.length,
+        records: lines?.length ?? 0,
+        ms: Date.now() - began,
+      });
+      // The bucket was written and this service is not in it: the publish says it has no patterns
+      // with geometry. A complete answer, and an empty one.
+      if (lines === null) {
+        return { geometries: [], complete: true, source: "route_pattern_index" };
+      }
+      const geometries = toGeometries(assemblePatternTile(lines));
+      ledger?.count({ patterns: geometries.length });
+      return { geometries, complete: true, source: "route_pattern_index" };
+    }
+
+    /*
+     * An artifact published before the index existed.
+     *
+     * Kept so the endpoint still answers between a deploy and the next national rebuild, and
+     * labelled so nobody mistakes it for the targeted path. It is still honest about completeness:
+     * a read that ran out of budget reports `complete: false` and the endpoint refuses to present
+     * what it got as the whole route.
+     */
     const routeTiles = await this.routeTiles(now);
     const tiles = routeTiles.get(serviceId) ?? [];
-    // No tiles for this route is a complete answer: the publish says it touches none.
-    if (tiles.length === 0) return { geometries: [], complete: true };
+    if (tiles.length === 0) return { geometries: [], complete: true, source: "pattern_tiles" };
 
     const lines = await this.readTiles<PatternTileLine>(
       patternTileDataset,
@@ -488,11 +640,13 @@ export class NetworkReader {
       index.version,
       now,
       this.patternChars,
+      ledger ? { ledger, family: "patterns", budgetReason: "route_read_budget" } : undefined,
     );
     const records = assemblePatternTile(lines.records);
     return {
       geometries: toGeometries(records.filter((r) => r.pattern.serviceRouteId === serviceId)),
       complete: !lines.truncated,
+      source: "pattern_tiles",
     };
   }
 
