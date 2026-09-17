@@ -21,6 +21,19 @@ import "./PixelStreetScene.css";
 
 const { WIDE, TALL } = SCENE_GEOMETRY;
 
+/**
+ * How much carriageway is left in front of the near bus.
+ *
+ * It used to be none: the bus was placed at `h - its height`, so its wheels ended on the last row
+ * of the composition and it read as cut off by the frame rather than as standing on a road. The
+ * phone composition had it worst, because the hero there is almost exactly as tall as the artwork
+ * and there is nowhere for the eye to land underneath.
+ *
+ * A few rows of asphalt below the wheels is what makes the near lane the foreground rather than
+ * the bottom edge. The upright street gets more of them because it has more road to spare.
+ */
+const NEAR_LANE_INSET = { wide: 3, tall: 7 } as const;
+
 interface LaneProps {
   variant: "wide" | "tall";
 }
@@ -79,7 +92,7 @@ function Street({ variant }: LaneProps) {
       {/* Near carriageway. */}
       <div
         className="street-scene__lane street-scene__lane--near"
-        style={{ "--art-y": geometry.h - near.h } as CSSProperties}
+        style={{ "--art-y": geometry.h - near.h - NEAR_LANE_INSET[variant] } as CSSProperties}
       >
         <div className="street-scene__vehicle">
           <img

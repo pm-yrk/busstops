@@ -50,6 +50,7 @@ export function busSide({
   trim = "W",
   route = "36",
   wheelPhase = 0,
+  facing = "right",
 } = {}) {
   const c = new Canvas(W, H);
 
@@ -128,12 +129,8 @@ export function busSide({
   c.hline(3, WAISTRAIL, 78, "K");
   c.hline(4, WAISTRAIL + 1, 76, bodyLight);
 
-  // ---- windscreen, blind and cab ---------------------------------------
-  c.rect(82, 3, 15, 6, "K"); // blind box
-  text(c, 83, 4, route, "Z");
-  c.rect(83 + route.length * 4 + 1, 5, 11, 1, "z");
-  c.rect(83 + route.length * 4 + 1, 7, 7, 1, "y");
-  c.frame(81, 2, 17, 8, "L");
+  // ---- windscreen and cab ----------------------------------------------
+  // The blind is drawn last, after the facing is settled: see the end of this function.
 
   c.rect(82, 11, 15, 9, "g");
   c.rect(82, 11, 15, 2, "f");
@@ -209,11 +206,50 @@ export function busSide({
 
   c.outline("K");
 
-  // ---- ground shadow, drawn after the outline so it stays soft ----------
-  c.hline(6, 31, 88, "-");
-  c.hline(14, 30, 16, "=");
-  c.hline(72, 30, 16, "=");
-  return c;
+  /*
+   * Where the bus meets the road.
+   *
+   * This was one 88-pixel bar across the whole underside, which is not what a shadow does: a
+   * vehicle in flat daylight is in contact with the ground at four small patches and floats over
+   * the rest. Drawn as a slab it read as an unexplained dark stain the length of the bus, and it
+   * followed the bus down the street.
+   *
+   * So: a firm patch under each axle, a soft one spreading a little either side of it, and
+   * nothing at all between them.
+   */
+  contactShadow(c, REAR_AXLE);
+  contactShadow(c, FRONT_AXLE);
+
+  /*
+   * The blind goes on last, on whichever end is the front.
+   *
+   * The far carriageway used to be this same drawing under `scaleX(-1)`, which mirrors the raster
+   * — and the raster has a route number painted on it, so a bus came up the street with its own
+   * number written backwards. A transform cannot know which pixels are text.
+   *
+   * Flipping and then repainting the blind was the first attempt and it left a stray gold dash at
+   * the tail: the destination strokes overflow the blind box, so the flip puts part of them where
+   * the repaint does not reach. Nothing is mirrored if the blind is never drawn before the flip.
+   */
+  const drawn = facing === "left" ? c.flipped() : c;
+  sideBlind(drawn, facing === "left" ? W - 97 : 82, route);
+  return drawn;
+}
+
+/** The route blind and its surround, anchored at the left edge of the box. */
+function sideBlind(c, x, route) {
+  c.rect(x, 3, 15, 6, "K");
+  text(c, x + 1, 4, route, "Z");
+  c.rect(x + 1 + route.length * 4 + 1, 5, 11, 1, "z");
+  c.rect(x + 1 + route.length * 4 + 1, 7, 7, 1, "y");
+  c.frame(x - 1, 2, 17, 8, "L");
+}
+
+/** One wheel's worth of contact with the road. */
+function contactShadow(c, axleX) {
+  c.hline(axleX - WHEEL_R - 2, 31, WHEEL_R * 2 + 5, "=");
+  c.hline(axleX - WHEEL_R, 31, WHEEL_R * 2 + 1, "-");
+  c.hline(axleX - WHEEL_R + 1, 30, WHEEL_R * 2 - 1, "=");
 }
 
 /**
@@ -229,6 +265,7 @@ export function busMid({
   trim = "W",
   route = "12",
   wheelPhase = 0,
+  facing = "right",
 } = {}) {
   const c = new Canvas(64, 22);
   for (let y = 3; y <= 17; y++) c.hline(1, y, 62, body);
@@ -270,10 +307,7 @@ export function busMid({
   c.hline(1, 13, 46, "K");
   c.hline(2, 14, 60, trim);
 
-  c.rect(48, 1, 13, 6, "K"); // blind
-  text(c, 49, 2, route, "Z");
-  c.rect(49 + route.length * 4, 4, 9, 1, "z");
-  c.frame(47, 0, 15, 8, "L");
+  // The blind is drawn last, once the facing is settled.
   c.rect(48, 8, 13, 7, "g"); // windscreen
   c.rect(48, 8, 13, 2, "f");
   for (let k = 0; k < 14; k++) c.px(48 + k, 10 + Math.floor(k / 3), "i");
@@ -301,8 +335,23 @@ export function busMid({
     }
   }
   c.outline("K");
-  c.hline(3, 21, 58, "-");
-  return c;
+  // Contact, not a slab: the same correction as the hero bus, at this drawing's axles.
+  for (const cx of [14, 52]) {
+    c.hline(cx - 5, 21, 11, "=");
+    c.hline(cx - 3, 21, 7, "-");
+  }
+
+  const drawn = facing === "left" ? c.flipped() : c;
+  midBlind(drawn, facing === "left" ? 3 : 48, route);
+  return drawn;
+}
+
+/** The mid bus's blind, anchored at the left edge of the box, so a flip can restore it. */
+function midBlind(c, x, route) {
+  c.rect(x, 1, 13, 6, "K");
+  text(c, x + 1, 2, route, "Z");
+  c.rect(x + 1 + route.length * 4, 4, 9, 1, "z");
+  c.frame(x - 1, 0, 15, 8, "L");
 }
 
 /** The same vehicle head on, for the vehicle page and the empty states. */

@@ -181,12 +181,20 @@
   }
 }
 
+/*
+ * No `scaleX(-1)` on the far lane any more.
+ *
+ * Mirroring the element mirrored the artwork, and the artwork has a route number painted on it.
+ * The far bus came up the street with "12" written backwards, along with its destination blind
+ * and every other asymmetric detail on that side. A transform cannot know which pixels are text.
+ * The far bus is drawn facing left in tools/pixel-art/bus.mjs now, so this only has to move it.
+ */
 @keyframes street-scene-drive-left {
   from {
-    transform: translateX(calc(var(--art-w) * var(--px) * 1px)) scaleX(-1);
+    transform: translateX(calc(var(--art-w) * var(--px) * 1px));
   }
   to {
-    transform: translateX(calc(-70 * var(--px) * 1px)) scaleX(-1);
+    transform: translateX(calc(-70 * var(--px) * 1px));
   }
 }
 
@@ -246,14 +254,14 @@
   }
 
   .street-scene__lane--far .street-scene__vehicle {
-    transform: translateX(calc(148 * var(--px) * 1px)) scaleX(-1);
+    transform: translateX(calc(148 * var(--px) * 1px));
   }
 }
 
 @media (max-aspect-ratio: 5 / 4) {
   @media (prefers-reduced-motion: reduce) {
     .street-scene__lane--far .street-scene__vehicle {
-      transform: translateX(calc(84 * var(--px) * 1px)) scaleX(-1);
+      transform: translateX(calc(84 * var(--px) * 1px));
     }
   }
 }

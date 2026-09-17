@@ -293,6 +293,6 @@ export function edgeStrip(g, { height = 72, wall = "brick" } = {}) {
 /** The vehicles, kept out of the scene so they can be driven across it. */
 export const VEHICLES = {
   near: busSide({ route: "36" }),
-  far: busMid({ route: "12" }),
+  far: busMid({ route: "12", facing: "left" }),
 };
 export const GEOMETRY = { WIDE, TALL };
