@@ -38,6 +38,8 @@ import {
   stopTilesForShape,
   tokenize,
   decodeRoutePatternsForService,
+  passengerName,
+  routeBadgeName,
   routePatternsBucketFor,
   routePatternsDataset,
 } from "@busstops/pipeline-static-network";
@@ -389,6 +391,44 @@ export class NetworkReader {
    * orders the tiles so that what a large box loses is its far corners. `truncated` says whether
    * anything was left unread, so the answer is never quietly partial.
    */
+  /**
+   * Stop tiles, with the names cleaned on the way out.
+   *
+   * Feeds publish stop names with their own separators in them — `White_Rose_Shopping_Centre`,
+   * `Gledhow_Lidgett_Lane`, `Easterly_Road_Hollin_Park_Mount` — and those were reaching the map,
+   * the board, the route page and the itinerary exactly as filed. `passengerName` is deliberately
+   * conservative: it replaces underscores and colons and collapses runs of spaces, and touches
+   * nothing else, so `King's Cross`, `Stratford-upon-Avon` and `Park & Ride` come through as
+   * written.
+   *
+   * Done here, at the read boundary, rather than at each of the four places that render a stop
+   * name — that is how three of them come to disagree — and rather than in the published artifact,
+   * which would mean a national rebuild to fix a display bug. The canonical identifiers are not
+   * touched: `id` and `atcoCode` are what links are built from and they are left exactly as filed.
+   */
+  private async readStopTiles(
+    tiles: readonly string[],
+    available: readonly string[],
+    version: string,
+    now: number,
+    budgetChars?: number,
+    track?: ReadTrack,
+  ): Promise<{ records: Stop[]; truncated: boolean }> {
+    const result = await this.readTiles<Stop>(
+      stopTileDataset,
+      tiles,
+      available,
+      version,
+      now,
+      budgetChars ?? this.requestChars,
+      track,
+    );
+    return {
+      records: result.records.map((stop) => ({ ...stop, name: passengerName(stop.name) })),
+      truncated: result.truncated,
+    };
+  }
+
   async stopsInTiles(
     tiles: readonly string[],
     now: number = Date.now(),
@@ -397,8 +437,7 @@ export class NetworkReader {
   ): Promise<{ stops: Stop[]; truncated: boolean }> {
     const index = await this.networkIndex(now);
     if (!index) return { stops: [], truncated: false };
-    const result = await this.readTiles<Stop>(
-      stopTileDataset,
+    const result = await this.readStopTiles(
       tiles,
       index.stopTiles,
       index.version,
@@ -569,9 +608,7 @@ export class NetworkReader {
     if (tileByKey.size === 0) return resolved;
 
     const tiles = [...new Set(tileByKey.values())];
-    const stops = (
-      await this.readTiles<Stop>(stopTileDataset, tiles, index.stopTiles, index.version, now)
-    ).records;
+    const stops = (await this.readStopTiles(tiles, index.stopTiles, index.version, now)).records;
 
     const byId = new Map<string, Stop>();
     const byAtco = new Map<string, Stop>();
@@ -645,8 +682,7 @@ export class NetworkReader {
       };
     }
 
-    const result = await this.readTiles<Stop>(
-      stopTileDataset,
+    const result = await this.readStopTiles(
       tiles,
       index.stopTiles,
       index.version,
@@ -907,7 +943,7 @@ export class NetworkReader {
         ? { limit: options.limit }
         : { limit: options.limit, near: options.near },
     );
-    return { hits, builtAt: index.publishedAt };
+    return { hits: hits.map(presentHit), builtAt: index.publishedAt };
   }
 
   /** Stops near a point, from the tiles around it. */
@@ -932,8 +968,29 @@ export class NetworkReader {
       coordinate,
       options,
     );
-    return { hits, builtAt: index.publishedAt };
+    return { hits: hits.map(presentHit), builtAt: index.publishedAt };
   }
+}
+
+/**
+ * A search hit as a passenger should read it.
+ *
+ * The index is built from the same feed names the tiles are, so a search for "white rose" listed
+ * `White_Rose_Shopping_Centre`. Only the display fields are touched — `id` and `codes` are what a
+ * result navigates by, and the tokens are what it matched on, so neither is rewritten. A route is
+ * cleaned as a badge (a route number is short by nature and a long one is truncated); everything
+ * else is cleaned as a name, which changes separators and nothing else.
+ */
+function presentHit(hit: SearchHit): SearchHit {
+  const clean = hit.entry.kind === "route" ? routeBadgeName : passengerName;
+  return {
+    ...hit,
+    entry: {
+      ...hit.entry,
+      title: clean(hit.entry.title),
+      ...(hit.entry.subtitle === undefined ? {} : { subtitle: passengerName(hit.entry.subtitle) }),
+    },
+  };
 }
 
 function toGeometries(records: readonly PatternTileRecord[]): PatternGeometry[] {

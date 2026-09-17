@@ -802,3 +802,65 @@ describe("a route's stops", () => {
     expect(ledger.reason).toBeNull();
   });
 });
+
+/**
+ * Names a passenger reads, cleaned once, where they are read.
+ *
+ * Deployed screenshots showed `White_Rose_Shopping_Centre`, `Gledhow_Lidgett_Lane`,
+ * `Whinmoor_Shopping_Centre` and `Easterly_Road_Hollin_Park_Mount` on the map, the board and the
+ * route page. Cleaning at each of those four is how three of them come to disagree, and cleaning
+ * in the published artifact would mean a national rebuild to fix a display bug — so it happens at
+ * the read boundary, and the canonical identifiers are left exactly as filed.
+ */
+describe("passenger-facing names", () => {
+  async function readerWithName(name: string) {
+    const built = network();
+    const seed = built.stops[0]!;
+    built.stops.push({
+      ...seed,
+      id: "underscored-stop",
+      atcoCode: "450019999",
+      name,
+      locationCoordinate: { lat: 53.7996, lon: -1.56 },
+    });
+    const store = new InMemoryObjectStore();
+    await publishNetworkShards(store, built, { version: "v1" });
+    return new NetworkReader(store);
+  }
+
+  it("replaces a feed's separators without touching the identifiers", async () => {
+    const reader = await readerWithName("White_Rose_Shopping_Centre");
+    const found = await reader.stopByKey("underscored-stop");
+
+    expect(found?.name).toBe("White Rose Shopping Centre");
+    // What links are built from is exactly what was published.
+    expect(found?.id).toBe("underscored-stop");
+    expect(found?.atcoCode).toBe("450019999");
+  });
+
+  it("cleans the same name whichever read path found the stop", async () => {
+    const reader = await readerWithName("Easterly_Road_Hollin_Park_Mount");
+    const viewport = await reader.stopsInBoundingBox(
+      { west: -1.7, south: 53.7, east: -1.4, north: 53.9 },
+      400,
+    );
+    const inViewport = viewport.stops.find((stop) => stop.atcoCode === "450019999");
+    expect(inViewport?.name).toBe("Easterly Road Hollin Park Mount");
+  });
+
+  it("leaves punctuation that belongs in a place name alone", async () => {
+    const reader = await readerWithName("King's Cross & Park-and-Ride");
+    const found = await reader.stopByKey("underscored-stop");
+    expect(found?.name).toBe("King's Cross & Park-and-Ride");
+  });
+
+  it("cleans what a search result shows without changing what it navigates by", async () => {
+    const reader = await readerWithName("Whinmoor_Shopping_Centre");
+    const found = await reader.search("Whinmoor", { limit: 5 });
+
+    const hit = found?.hits.find((entry) => entry.entry.codes.includes("450019999"));
+    expect(hit).toBeDefined();
+    expect(hit!.entry.title).toBe("Whinmoor Shopping Centre");
+    expect(hit!.entry.id).toBe("underscored-stop");
+  });
+});

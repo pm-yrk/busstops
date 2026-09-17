@@ -15,6 +15,7 @@ import { JourneyPage, clockLabel } from "./JourneyPage.js";
 import { LiveMapPage } from "./LiveMapPage.js";
 import { OperatorPage } from "./OperatorPage.js";
 import { RoutePage } from "./RoutePage.js";
+import { SearchPage } from "./SearchPage.js";
 import { apiClient } from "../lib/api.js";
 
 const meta: ResponseMeta = {
@@ -439,5 +440,63 @@ describe("the live map's deep link", () => {
   ])("ignores a bbox that is %s", (_why, path) => {
     renderLive(path);
     expect(bboxFromFirstCall()).toBe("-1.6,53.775,-1.49,53.825");
+  });
+});
+
+/*
+ * Every result goes to the thing it is.
+ *
+ * Only a stop did. A route and an operator linked to `/search?q=<their own title>` — back to this
+ * page, with the same query, for the same results. It looked like a broken link and was in fact a
+ * link to where you already were.
+ */
+describe("search results go somewhere", () => {
+  const results = [
+    {
+      kind: "stop" as const,
+      id: "00000000-0000-5000-8000-0000000000c1",
+      title: "Leeds City Bus Station",
+      coordinate: { lat: 53.79, lon: -1.54 },
+    },
+    {
+      kind: "route" as const,
+      id: "00000000-0000-5000-8000-0000000000e1",
+      title: "36",
+      subtitle: "Transdev",
+    },
+    {
+      kind: "operator" as const,
+      id: "00000000-0000-5000-8000-0000000000a1",
+      title: "First West Yorkshire",
+    },
+  ];
+
+  it("sends a stop, a route and an operator to their own pages", async () => {
+    vi.spyOn(apiClient, "search").mockResolvedValue({ meta, data: { results } });
+
+    render(
+      <MemoryRouter initialEntries={["/search?q=leeds"]}>
+        <Routes>
+          <Route path="/search" element={<SearchPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    const stop = await screen.findByRole("link", { name: /Leeds City Bus Station/ });
+    expect(stop).toHaveAttribute("href", "/stops/00000000-0000-5000-8000-0000000000c1");
+
+    expect(screen.getByRole("link", { name: /36/ })).toHaveAttribute(
+      "href",
+      "/routes/00000000-0000-5000-8000-0000000000e1",
+    );
+    expect(screen.getByRole("link", { name: /First West Yorkshire/ })).toHaveAttribute(
+      "href",
+      "/operators/00000000-0000-5000-8000-0000000000a1",
+    );
+
+    // And none of them back to the page they are already on.
+    for (const link of screen.getAllByRole("link")) {
+      expect(link.getAttribute("href")).not.toMatch(/^\/search/);
+    }
   });
 });
