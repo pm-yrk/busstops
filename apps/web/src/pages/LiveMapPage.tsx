@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { MAP_QUERY_LIMITS, type MapResponse } from "@busstops/contracts";
 import { apiClient, ApiError } from "../lib/api.js";
 import { useFetch, useTicker } from "../lib/use-fetch.js";
@@ -47,8 +47,40 @@ const REFRESH_INTERVAL_MS = 20_000;
 
 type LayerKey = "stops" | "vehicles";
 
+/**
+ * A viewport named in the URL, or null.
+ *
+ * `?bbox=west,south,east,north`, the same four numbers in the same order the API takes, so a link
+ * to a place on the map is a link anyone can read and anyone can write. Without this the map only
+ * ever opened on its default camera and there was no way to point at anywhere else — not for a
+ * person sharing where they are, and not for the deployed visual check, which cannot photograph
+ * York if it cannot ask for York.
+ *
+ * Anything that is not four finite numbers in the right order is ignored rather than corrected:
+ * a half-understood bbox would frame somewhere nobody asked for, and the default camera is a
+ * better answer than a wrong one.
+ */
+function boundsFromSearch(raw: string | null): Bounds | null {
+  if (!raw) return null;
+  const parts = raw.split(",").map(Number);
+  if (parts.length !== 4 || parts.some((value) => !Number.isFinite(value))) return null;
+  const [west, south, east, north] = parts as [number, number, number, number];
+  if (west >= east || south >= north) return null;
+  if (Math.abs(west) > 180 || Math.abs(east) > 180) return null;
+  if (Math.abs(south) > 90 || Math.abs(north) > 90) return null;
+  return { west, south, east, north };
+}
+
 export function LiveMapPage() {
-  const [bounds, setBounds] = useState<Bounds>(DEFAULT_VIEW);
+  const [searchParams] = useSearchParams();
+  /*
+   * Read once, as the initial camera. The map is a live surface after that: panning changes the
+   * viewport and the URL is deliberately left alone rather than rewritten on every `moveend`,
+   * which would fill the history with a hundred entries between two streets.
+   */
+  const [bounds, setBounds] = useState<Bounds>(
+    () => boundsFromSearch(searchParams.get("bbox")) ?? DEFAULT_VIEW,
+  );
   // The stop whose arrival board is open over the map, by ATCO code. Null when none is selected.
   const [selectedStop, setSelectedStop] = useState<string | null>(null);
   const [zoom, setZoom] = useState(15);

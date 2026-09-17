@@ -312,9 +312,16 @@ jobs:
       # And run it last. A step with an `if` is skipped once an earlier one has failed, so with
       # the visual pass first a slow tile host would have taken the data verification down with
       # it — hiding the more important answer behind the less important one.
+      # `always()`, so a data failure never costs the screenshots.
+      #
+      # This is gated on the deploy having happened, not on the data behind it being right. The
+      # two answer different questions: "is there a national timetable in the bucket" and "can a
+      # person see the buses on the map". Run 29 failed the first — correctly, the timetable
+      # names no route at the stop it sampled — and GitHub skipped every later step, so a run
+      # whose entire purpose was to photograph the deployed map produced no photographs of it.
       - name: Look at the deployed preview
         id: visual
-        if: ${{ steps.bootstrap.outcome != 'failure' && steps.pages.outcome == 'success' }}
+        if: ${{ always() && steps.bootstrap.outcome != 'failure' && steps.pages.outcome == 'success' }}
         # The API URL as well, so the sweep can find a real vehicle to follow: a bus on the map is
         # a picture with a label rather than a link, so the vehicle page needs a reference, and
         # inventing one would look at the not-found state instead of the page.

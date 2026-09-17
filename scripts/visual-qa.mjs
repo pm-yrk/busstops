@@ -43,9 +43,19 @@ const WIDTHS = [
   { name: "phone", width: 390, height: 844 },
 ];
 
+/*
+ * York as well as Leeds, by deep link.
+ *
+ * One city proves the map renders; two prove it renders wherever the data is, which is the claim
+ * being made. York is also the destination this product is meant to plan a journey to, and it had
+ * never been looked at.
+ */
+const YORK_BBOX = "-1.12,53.94,-1.03,53.99";
+
 const PAGES = [
   { name: "home", path: "/" },
   { name: "live", path: "/live" },
+  { name: "live-york", path: `/live?bbox=${encodeURIComponent(YORK_BBOX)}` },
   { name: "search", path: "/search" },
   { name: "journey", path: "/journey" },
   { name: "disruptions", path: "/disruptions" },
@@ -145,7 +155,7 @@ for (const size of WIDTHS) {
         waitUntil: "domcontentloaded",
         timeout: 60_000,
       });
-      await page.waitForTimeout(target.name === "live" ? 9_000 : 2_000);
+      await page.waitForTimeout(target.name.startsWith("live") ? 9_000 : 2_000);
 
       await page.screenshot({
         path: join(screenshotDir, `${size.name}-${target.name}.png`),
@@ -288,7 +298,7 @@ for (const size of WIDTHS) {
         );
       }
 
-      if (target.name === "live") {
+      if (target.name.startsWith("live")) {
         const map = await page.evaluate(() => {
           const canvas = document.querySelector("canvas.maplibregl-canvas");
           const unavailable = document.querySelector(".map-view--unavailable");
@@ -365,14 +375,14 @@ for (const size of WIDTHS) {
         const tileErrors = sink.tileResponses.filter((r) => r.status >= 400);
 
         record(
-          `${size.name}/live renders a map rather than the fallback`,
+          `${size.name}/${target.name} renders a map rather than the fallback`,
           map.hasCanvas && !map.unavailable,
           `canvas ${map.hasCanvas ? "present" : "absent"}, list-only fallback ${
             map.unavailable ? "shown" : "not shown"
           }`,
         );
         record(
-          `${size.name}/live basemap actually paints`,
+          `${size.name}/${target.name} basemap actually paints`,
           paintedBytes > BLANK_CANVAS_BYTES,
           `${paintedBytes} bytes of rendered map (a blank one is a few hundred)`,
         );
@@ -384,13 +394,13 @@ for (const size of WIDTHS) {
          */
         if (map.vehiclesInDom === 0) {
           record(
-            `${size.name}/live shows the buses the API returned`,
+            `${size.name}/${target.name} shows the buses the API returned`,
             true,
             "no buses in this viewport at this moment, so there is nothing to draw",
           );
         } else {
           record(
-            `${size.name}/live shows the buses the API returned`,
+            `${size.name}/${target.name} shows the buses the API returned`,
             map.vehiclesOnScreen > 0,
             `${map.vehiclesOnScreen} of ${map.vehiclesInDom} bus markers are inside the map` +
               (map.vehiclesOnScreen === 0
@@ -399,7 +409,7 @@ for (const size of WIDTHS) {
           );
         }
         record(
-          `${size.name}/live keeps its markers out of normal flow`,
+          `${size.name}/${target.name} keeps its markers out of normal flow`,
           map.mapScrollHeight > 0 && map.mapScrollHeight < 2000,
           `the map's scrollHeight is ${map.mapScrollHeight}px` +
             (map.mapScrollHeight >= 2000 ? " — markers are stacking in flow" : ""),

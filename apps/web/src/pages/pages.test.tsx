@@ -12,6 +12,7 @@ import type {
 } from "@busstops/contracts";
 import { DisruptionsPage } from "./DisruptionsPage.js";
 import { JourneyPage, clockLabel } from "./JourneyPage.js";
+import { LiveMapPage } from "./LiveMapPage.js";
 import { OperatorPage } from "./OperatorPage.js";
 import { RoutePage } from "./RoutePage.js";
 import { apiClient } from "../lib/api.js";
@@ -383,5 +384,50 @@ describe("JourneyPage", () => {
   it("renders times past midnight as the next day's clock, not as 25:10", () => {
     expect(clockLabel(90_600, "2026-09-03")).toBe("01:10");
     expect(clockLabel(32_400, "2026-09-03")).toBe("09:00");
+  });
+});
+
+describe("the live map's deep link", () => {
+  /**
+   * The viewport the page asked the API for, which is the only observable that says where the
+   * map actually opened.
+   */
+  function bboxFromFirstCall(): string {
+    const call = vi.mocked(apiClient.map).mock.calls[0];
+    const bounds = call?.[0] as { west: number; south: number; east: number; north: number };
+    return [bounds.west, bounds.south, bounds.east, bounds.north].join(",");
+  }
+
+  function renderLive(path: string) {
+    vi.spyOn(apiClient, "map").mockImplementation(
+      () => new Promise(() => {}) as ReturnType<typeof apiClient.map>,
+    );
+    return renderAt(path, "/live", <LiveMapPage />);
+  }
+
+  it("opens on the viewport the URL names", () => {
+    renderLive("/live?bbox=-1.12,53.94,-1.03,53.99");
+    // York, not the Leeds default.
+    expect(bboxFromFirstCall()).toBe("-1.12,53.94,-1.03,53.99");
+  });
+
+  it("opens on the default camera when no viewport is named", () => {
+    renderLive("/live");
+    expect(bboxFromFirstCall()).toBe("-1.6,53.775,-1.49,53.825");
+  });
+
+  /*
+   * A half-understood bbox would frame somewhere nobody asked for. Every one of these falls back
+   * to the default rather than being corrected into a viewport of its own.
+   */
+  it.each([
+    ["too few numbers", "/live?bbox=-1.12,53.94,-1.03"],
+    ["not numbers", "/live?bbox=york,please,now,thanks"],
+    ["inverted west and east", "/live?bbox=-1.03,53.94,-1.12,53.99"],
+    ["inverted south and north", "/live?bbox=-1.12,53.99,-1.03,53.94"],
+    ["off the planet", "/live?bbox=-400,53.94,-1.03,53.99"],
+  ])("ignores a bbox that is %s", (_why, path) => {
+    renderLive(path);
+    expect(bboxFromFirstCall()).toBe("-1.6,53.775,-1.49,53.825");
   });
 });
