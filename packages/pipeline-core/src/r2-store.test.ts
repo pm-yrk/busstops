@@ -104,3 +104,108 @@ describe("R2ObjectStore retries", () => {
     expect(await store.get("data/x/v1.jsonl")).toBeNull();
   });
 });
+
+/*
+ * Listing the whole bucket, which is what the retention job believes it is doing.
+ *
+ * It asked for one page of a thousand and returned it as the answer. A national publish writes
+ * several thousand objects, so the one job whose purpose is to keep storage inside the free tier
+ * was pruning and reporting an inventory from the first thousand keys — and a short list looks
+ * exactly like a complete one.
+ */
+describe("R2ObjectStore listing", () => {
+  /** A bucket of `total` objects, served a page at a time with a cursor, counting the requests. */
+  function bucketOf(total: number, options: { truncatedFlag?: boolean } = {}) {
+    const urls: string[] = [];
+    const store = new R2ObjectStore({
+      accountId: "acct",
+      bucket: "bucket",
+      apiToken: "token",
+      sleep: async () => {},
+      fetchImpl: (async (url: string | URL) => {
+        const parsed = new URL(String(url));
+        urls.push(String(url));
+        const from = Number(parsed.searchParams.get("cursor") ?? "0");
+        const perPage = Number(parsed.searchParams.get("per_page") ?? "1000");
+        const to = Math.min(total, from + perPage);
+        const result = [];
+        for (let index = from; index < to; index += 1) {
+          result.push({
+            key: `data/network/departures/${String(index).padStart(6, "0")}.jsonl`,
+            size: 1000,
+            uploaded: "2026-09-17T00:00:00.000Z",
+          });
+        }
+        const more = to < total;
+        return new Response(
+          JSON.stringify({
+            result,
+            result_info: {
+              cursor: more ? String(to) : "",
+              ...(options.truncatedFlag === true ? { is_truncated: more } : {}),
+            },
+          }),
+          { status: 200 },
+        );
+      }) as unknown as typeof fetch,
+    });
+    return { store, urls };
+  }
+
+  it("returns every object in a bucket larger than one page", async () => {
+    // 3,618 is the object count a real national publish reported; the page is a thousand.
+    const { store, urls } = bucketOf(3_618);
+    const objects = await store.listDetailed("data/");
+    expect(objects).toHaveLength(3_618);
+    expect(urls).toHaveLength(4);
+    // In key order, and every one of them distinct: a repeated page would also reach the count.
+    expect(new Set(objects.map((object) => object.key)).size).toBe(3_618);
+    expect(objects[0]!.key).toContain("000000");
+    expect(objects[3_617]!.key).toContain("003617");
+  });
+
+  it("stops at the end rather than following an empty cursor forever", async () => {
+    const { store, urls } = bucketOf(500);
+    expect(await store.listDetailed("data/")).toHaveLength(500);
+    expect(urls).toHaveLength(1);
+  });
+
+  it("honours is_truncated where the API gives it", async () => {
+    const { store } = bucketOf(2_500, { truncatedFlag: true });
+    expect(await store.listDetailed("data/")).toHaveLength(2_500);
+  });
+
+  /*
+   * A cursor that never ends must not spin, and must not quietly return what it has. A caller
+   * that asked for the whole bucket and is handed part of it is the bug this replaces.
+   */
+  it("refuses rather than returning a partial listing when the cursor never ends", async () => {
+    const store = new R2ObjectStore({
+      accountId: "acct",
+      bucket: "bucket",
+      apiToken: "token",
+      sleep: async () => {},
+      fetchImpl: (async () =>
+        new Response(
+          JSON.stringify({
+            result: [{ key: "data/x.jsonl", size: 1, uploaded: "2026-09-17T00:00:00.000Z" }],
+            result_info: { cursor: "always-more" },
+          }),
+          { status: 200 },
+        )) as unknown as typeof fetch,
+    });
+    await expect(store.listDetailed("data/")).rejects.toThrow(/did not end after/);
+  });
+
+  it("carries the failure rather than an empty bucket when a page cannot be read", async () => {
+    const store = new R2ObjectStore({
+      accountId: "acct",
+      bucket: "bucket",
+      apiToken: "token",
+      maxRateLimitRetries: 0,
+      sleep: async () => {},
+      fetchImpl: (async () => new Response("nope", { status: 403 })) as unknown as typeof fetch,
+    });
+    await expect(store.listDetailed("data/")).rejects.toThrow(/R2 list failed/);
+  });
+});
