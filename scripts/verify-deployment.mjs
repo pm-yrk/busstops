@@ -187,6 +187,137 @@ await check("a stop can be selected and returns a departure board", async () => 
   );
 });
 
+/*
+ * Five real cities, not one.
+ *
+ * A single viewport proves a shard published. It does not prove the country did, and the failure
+ * this guards against is precisely regional: the departure index is bucketed by a hash of the
+ * stop, so a bucket that failed to write takes an arbitrary scatter of stops across England with
+ * it and leaves every other bucket looking perfect. Five cities in five different parts of the
+ * country, each with its own bucket spread, is what turns "a board works" into "boards work".
+ *
+ * All five are outside London, so these are BODS and NaPTAN rather than TfL.
+ */
+const CITIES = [
+  { name: "Leeds", bbox: "-1.57,53.78,-1.52,53.81" },
+  { name: "Manchester", bbox: "-2.26,53.46,-2.21,53.50" },
+  { name: "Birmingham", bbox: "-1.92,52.46,-1.87,52.49" },
+  { name: "Bristol", bbox: "-2.61,51.44,-2.56,51.47" },
+  { name: "York", bbox: "-1.10,53.95,-1.05,53.97" },
+];
+
+/** What a board has to say for a row to be worth rendering, beyond merely existing. */
+function assertDepartureIsPlausible(departure, stopName, city) {
+  const route = departure.serviceRoutePublicName ?? "";
+  /*
+   * A service designation as it is written on the front of a bus: 36, X84, 1A, 555. Anything
+   * longer than this is a route *description* leaking into the number field, which is a real
+   * failure mode when a feed puts "Leeds - Ripon - Newcastle" where the number belongs.
+   */
+  assert(
+    /^[A-Za-z0-9]{1,5}$/.test(route),
+    `${city}: "${route}" at ${stopName} is not a service number a bus would display`,
+  );
+
+  const destination = departure.destinationName ?? "";
+  assert(
+    destination.length >= 3,
+    `${city}: a departure at ${stopName} has destination "${destination}"`,
+  );
+  assert(
+    destination !== stopName,
+    `${city}: a bus at ${stopName} is signed for ${destination}, where it already is`,
+  );
+
+  const scheduled = Date.parse(departure.scheduledTime ?? "");
+  assert(
+    Number.isFinite(scheduled),
+    `${city}: a departure at ${stopName} has no readable scheduled time`,
+  );
+  /*
+   * Inside the window the board asked for. A time far outside it means the epoch or the offset
+   * arithmetic is wrong — which is exactly the failure a service-date offset could introduce, and
+   * it would otherwise show up as a board full of confident, plausible, wrong times.
+   */
+  const minutesAway = (scheduled - Date.now()) / 60_000;
+  assert(
+    minutesAway > -30 && minutesAway < 24 * 60,
+    `${city}: ${route} to ${destination} at ${stopName} is due ${Math.round(minutesAway)} ` +
+      `minutes from now, which is outside the board's window`,
+  );
+}
+
+await check("five cities across England return their real routes and departures", async () => {
+  const lines = [];
+  for (const city of CITIES) {
+    const map = await getJson(`/v1/map?bbox=${city.bbox}&zoom=15`);
+    assert(
+      map.response.ok,
+      `${city.name}: /v1/map gave ${describe(map.response, map.body, map.text)}`,
+    );
+    const stops = map.body?.data?.stops ?? [];
+    assert(stops.length > 0, `${city.name}: the map returned no stops at all`);
+
+    const withRoutes = stops.filter((stop) => (stop.routePublicNames ?? []).length > 0);
+    assert(
+      withRoutes.length > 0,
+      `${city.name}: not one of ${stops.length} stops in the city centre has a service in the ` +
+        `published timetable`,
+    );
+
+    // The busiest stop in the viewport, which is the one a passenger is most likely to be at and
+    // the one least excusable to have nothing at.
+    const target = withRoutes.sort(
+      (a, b) => (b.routePublicNames?.length ?? 0) - (a.routePublicNames?.length ?? 0),
+    )[0];
+
+    const board = await getJson(`/v1/stops/${encodeURIComponent(target.id)}`);
+    assert(
+      board.response.ok,
+      `${city.name}: ${target.name} gave ${describe(board.response, board.body, board.text)}`,
+    );
+    const routes = board.body?.data?.routes ?? [];
+    const departures = board.body?.data?.departures ?? [];
+    const degradation = board.body?.meta?.degradation ?? "unknown";
+    // The board's own name for the stop, not the map's. They are the same stop and should agree,
+    // but the "signed for where it already is" check compares against this one, and comparing
+    // against the map's copy made that check silently unable to fire.
+    const stopName = board.body?.data?.stop?.name ?? target.name;
+    assert(
+      stopName === target.name,
+      `${city.name}: the map calls it ${target.name}, the board calls it ${stopName}`,
+    );
+
+    assert(
+      routes.length > 0,
+      `${city.name}: the published timetable names no route calling at ${stopName}`,
+    );
+    /*
+     * A board that could not read its shard must not look like a quiet one. The reader reports a
+     * failed shard and the Worker degrades on it, so "normal" with nothing due is a claim that
+     * there is genuinely nothing due — and in service hours at the busiest stop in a city centre
+     * that claim is false.
+     */
+    if (SERVICE_HOURS.daytime) {
+      assert(
+        departures.length > 0,
+        `${city.name}: ${stopName} has ${routes.length} routes but nothing due at ` +
+          `${SERVICE_HOURS.hour}:00 ${SERVICE_HOURS.weekday} London time (degradation: ${degradation})`,
+      );
+    }
+    for (const departure of departures)
+      assertDepartureIsPlausible(departure, target.name, city.name);
+
+    lines.push(
+      `${city.name}: ${stopName} — ${routes.length} routes, ${departures.length} due` +
+        (departures[0]
+          ? `, next ${departures[0].serviceRoutePublicName} to ${departures[0].destinationName}`
+          : ""),
+    );
+  }
+  return lines.join("; ");
+});
+
 await check("search finds a real stop by name", async () => {
   assert(observed.stop, "no stop was found by the earlier check");
   // Search for a word from a stop the API itself returned, so the query is guaranteed to be a
@@ -310,8 +441,70 @@ await check("a journey can be planned across real timetable data", async () => {
         `${SERVICE_HOURS.weekday} London time (reason: ${reason})`,
     );
   }
+  /*
+   * And the option has to be a journey rather than a shape that satisfies the schema.
+   *
+   * "At least one option" was the bar while there were none at all. It is the wrong bar now: a
+   * planner reading a corrupt timetable can return a confident itinerary made of legs that do not
+   * join up, and a count of one would pass it. So every leg is checked for the things a passenger
+   * reads off it — where it starts, where it ends, when, on what — and the legs are checked
+   * against each other for the thing a passenger relies on: that you are never asked to be in two
+   * places at once.
+   */
+  for (const option of options) {
+    const legs = option.legs ?? [];
+    assert(legs.length > 0, "an option has no legs");
+
+    let previousArrival = null;
+    for (const [index, leg] of legs.entries()) {
+      const at = `leg ${index + 1} of ${legs.length}`;
+      assert(["walk", "bus", "coach", "tram"].includes(leg.mode), `${at} has mode "${leg.mode}"`);
+      assert(
+        Number.isFinite(leg.fromCoordinate?.lat) && Number.isFinite(leg.toCoordinate?.lat),
+        `${at} does not say where it goes`,
+      );
+
+      const departs = Date.parse(leg.departAtExpected ?? "");
+      const arrives = Date.parse(leg.arriveAtExpected ?? "");
+      assert(Number.isFinite(departs) && Number.isFinite(arrives), `${at} has unreadable times`);
+      assert(arrives >= departs, `${at} arrives before it departs`);
+
+      const minutes = (arrives - departs) / 60_000;
+      if (leg.mode === "walk") {
+        // A walking leg the planner would actually offer: it caps access walks at 1200m, which is
+        // a good deal less than an hour at any pace.
+        assert(minutes <= 60, `${at} is a ${Math.round(minutes)}-minute walk`);
+      } else {
+        // A bus leg is a real vehicle on a real pattern, not an abstract hop between points.
+        assert(leg.routePatternId, `${at} is a ${leg.mode} leg on no route`);
+        assert(leg.fromStopId && leg.toStopId, `${at} is a ${leg.mode} leg not between two stops`);
+        assert(minutes <= 240, `${at} is a ${Math.round(minutes)}-minute bus ride`);
+      }
+
+      // The transfer: you cannot board a bus before the one before it has put you down.
+      assert(
+        previousArrival === null || departs >= previousArrival,
+        `${at} departs before the previous leg arrives — the legs do not join up`,
+      );
+      previousArrival = arrives;
+    }
+
+    const rides = legs.filter((leg) => leg.mode !== "walk").length;
+    assert(rides > 0, "an option is entirely walking, which is not a bus journey");
+    assert(
+      option.changeCount === Math.max(0, rides - 1),
+      `an option claims ${option.changeCount} changes across ${rides} ride(s)`,
+    );
+  }
+
+  const best = options[0];
+  const summary = best
+    ? `: ${best.legs.length} legs (${best.legs.map((leg) => leg.mode).join(" → ")}), ` +
+      `${best.changeCount} change(s), ${Math.round((best.totalWalkSeconds ?? 0) / 60)} min walking`
+    : "";
+
   return (
-    `Leeds → Leeds Bradford Airport: ${options.length} option(s), reason ${reason}` +
+    `Leeds → Leeds Bradford Airport: ${options.length} option(s), reason ${reason}${summary}` +
     (SERVICE_HOURS.daytime ? "" : " (outside service hours: options not required)")
   );
 });
