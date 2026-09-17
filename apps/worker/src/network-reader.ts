@@ -43,6 +43,7 @@ import {
   routePatternsBucketFor,
   routePatternsDataset,
 } from "@busstops/pipeline-static-network";
+import { PLACES_DATASET, placeAsSearchEntry, type PlaceRecord } from "@busstops/pipeline-places";
 import type { PatternGeometry } from "@busstops/matching";
 import type { ArtifactFamily, ReadLedger } from "./read-ledger.js";
 
@@ -171,6 +172,7 @@ export class NetworkReader {
 
   private operatorsCache: Map<string, Operator> | null = null;
   private servicesCache: Map<string, ServiceRoute> | null = null;
+  private placesCache: SearchIndexEntry[] | null = null;
   private routeTilesCache: Map<string, string[]> | null = null;
 
   constructor(
@@ -862,6 +864,31 @@ export class NetworkReader {
     return geometries.filter((geometry) => geometry.pattern.stopSequence.includes(stop.id));
   }
 
+  /**
+   * The places gazetteer, held whole and cached like operators and services.
+   *
+   * One object rather than a second prefix-sharding scheme, because this is not a national
+   * dataset in the way stops are: the landmarks people search by name across the extracted areas
+   * are in the thousands, the same order as the 1,043 services already held here. The publish
+   * enforces a ceiling, and the isolate test counts what this holds — so outgrowing it is a
+   * failure that shows up rather than a slow return of the national index.
+   *
+   * Absent is a normal answer: a bucket the places job has not run against has no gazetteer, and
+   * search then finds stops, routes and operators exactly as it did before.
+   */
+  private async placeEntries(): Promise<SearchIndexEntry[]> {
+    if (this.placesCache) return this.placesCache;
+    const artifacts = new ArtifactStore(this.store);
+    try {
+      const result = await artifacts.readCurrent<PlaceRecord>(PLACES_DATASET);
+      this.placesCache = result.records.map(placeAsSearchEntry);
+    } catch {
+      // A gazetteer that cannot be read costs a search its landmarks, not its answer.
+      this.placesCache = [];
+    }
+    return this.placesCache;
+  }
+
   async operators(now: number = Date.now()): Promise<Map<string, Operator>> {
     if (this.operatorsCache) return this.operatorsCache;
     const artifacts = new ArtifactStore(this.store);
@@ -935,6 +962,17 @@ export class NetworkReader {
     // ranking so a multi-word match is not counted twice.
     const unique = new Map<string, SearchIndexEntry>();
     for (const entry of buckets.flat()) unique.set(`${entry.kind}:${entry.id}`, entry);
+
+    /*
+     * Places are ranked with everything else, not stapled on afterwards.
+     *
+     * A query is one question — "Leeds" could be the station, the stops or the routes — and
+     * scoring them together is what lets the station come first when it deserves to. Two lists
+     * concatenated would put whichever happened to be first ahead of a better match.
+     */
+    for (const entry of await this.placeEntries()) {
+      unique.set(`${entry.kind}:${entry.id}`, entry);
+    }
 
     const hits = rankSearch(
       { entries: [...unique.values()], builtAt: index.publishedAt },

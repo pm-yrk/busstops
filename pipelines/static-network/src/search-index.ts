@@ -10,7 +10,14 @@ import { haversineMetres } from "@busstops/pipeline-core";
  */
 
 export interface SearchIndexEntry {
-  kind: "stop" | "route" | "operator" | "area";
+  /**
+   * `place` is a named landmark from the gazetteer — a station, a cathedral, a shopping centre.
+   *
+   * It is a separate kind and not a stop on purpose: a place has no departures and no ATCO code,
+   * and what a passenger wants from one is a journey to it. Merging the two would send somebody
+   * searching "York Minster" to a departure board for a cathedral.
+   */
+  kind: "stop" | "route" | "operator" | "area" | "place";
   id: string;
   title: string;
   subtitle?: string;

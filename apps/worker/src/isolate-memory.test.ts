@@ -2,7 +2,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { InMemoryObjectStore } from "@busstops/pipeline-core";
+import { ArtifactStore, InMemoryObjectStore } from "@busstops/pipeline-core";
 import {
   DATASETS,
   SHARDED,
@@ -11,6 +11,7 @@ import {
 } from "@busstops/pipeline-static-network";
 import { objectKeyFor } from "@busstops/pipeline-core";
 import { patternTilesForBoundingBox } from "@busstops/pipeline-static-network";
+import { PLACES_DATASET } from "@busstops/pipeline-places";
 import { NetworkReader } from "./network-reader.js";
 import { ReadLedger } from "./read-ledger.js";
 import {
@@ -267,6 +268,14 @@ describe("national datasets the edge does still hold", () => {
        * only reason: if the cap ever comes off, this entry must come off with it.
        */
       "DISRUPTIONS_DATASET",
+      /*
+       * The gazetteer is capped at publish time — MAX_GAZETTEER_RECORDS, enforced by the job that
+       * writes it, which refuses rather than trimming — so its size is a property of the pipeline
+       * and not of how many landmarks England has. Same reasoning as the disruption set, and the
+       * same condition: if that ceiling ever comes off, this entry comes off with it and the
+       * gazetteer gets sharded the way the search index is.
+       */
+      "PLACES_DATASET",
     ]);
     for (const expression of wholeDatasetReads) {
       expect(allowedExpressions.has(expression), `${expression} is read whole`).toBe(true);
@@ -862,5 +871,74 @@ describe("passenger-facing names", () => {
     expect(hit).toBeDefined();
     expect(hit!.entry.title).toBe("Whinmoor Shopping Centre");
     expect(hit!.entry.id).toBe("underscored-stop");
+  });
+});
+
+/**
+ * Places, and the one thing they must not become.
+ *
+ * Search could find a stop, a route or an operator, so "York Minster" matched nothing — and the
+ * fix for that is a gazetteer rather than a special case for York Minster. The gazetteer is held
+ * whole, like operators and services, because the landmarks people search by name are in the
+ * thousands rather than the hundreds of thousands. What is guarded here is that it stays that
+ * shape: one object, read once, and never a second national index arriving through a new door.
+ */
+describe("places in search", () => {
+  async function readerWithPlaces(places: unknown[]) {
+    const recording = recordingStore();
+    await publishNetworkShards(recording.store, network(), { version: "v1" });
+    const artifacts = new ArtifactStore(recording.store);
+    await artifacts.publish({
+      dataset: PLACES_DATASET,
+      version: "v1",
+      records: places,
+      schemaVersion: "1.0.0",
+      sources: ["osm"],
+    });
+    return { reader: new NetworkReader(recording.store), reads: recording.reads };
+  }
+
+  const minster = {
+    id: "00000000-0000-5000-8000-0000000000aa",
+    name: "York Minster",
+    kind: "attraction" as const,
+    coordinate: { lat: 53.962, lon: -1.082 },
+    subtitle: "Landmark · York",
+    prominence: 8,
+    osmId: "way/1",
+  };
+
+  it("finds a landmark that is not a bus stop", async () => {
+    const { reader } = await readerWithPlaces([minster]);
+    const found = await reader.search("York Minster", { limit: 10 });
+
+    const hit = found?.hits.find((entry) => entry.entry.id === minster.id);
+    expect(hit).toBeDefined();
+    expect(hit!.entry.kind).toBe("place");
+    expect(hit!.entry.coordinate).toEqual(minster.coordinate);
+  });
+
+  it("never presents a place as something with buses of its own", async () => {
+    const { reader } = await readerWithPlaces([minster]);
+    const found = await reader.search("York Minster", { limit: 10 });
+    const hit = found!.hits.find((entry) => entry.entry.id === minster.id)!;
+    expect(hit.entry.hasLiveCoverage).toBe(false);
+    expect(hit.entry.codes).toEqual([]);
+  });
+
+  it("reads the gazetteer once per isolate, not once per search", async () => {
+    const { reader, reads } = await readerWithPlaces([minster]);
+    await reader.search("York", { limit: 10 });
+    reads.length = 0;
+    await reader.search("Minster", { limit: 10 });
+    await reader.search("York Minster", { limit: 10 });
+    expect(reads.filter((key) => key.includes("places/gazetteer"))).toEqual([]);
+  });
+
+  it("still answers when no gazetteer has been published", async () => {
+    const { reader } = await publishedReader();
+    const found = await reader.search("Armley", { limit: 10 });
+    expect(found).not.toBeNull();
+    expect(found!.hits.length).toBeGreaterThan(0);
   });
 });

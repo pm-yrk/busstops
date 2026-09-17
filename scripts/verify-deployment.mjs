@@ -426,6 +426,61 @@ await check("search finds a real stop by name", async () => {
   return `"${term}" → ${matches.length} results`;
 });
 
+/*
+ * Places, which is the search that could never work.
+ *
+ * "York Minster" matched nothing, because search knew about stops, routes and operators and a
+ * minster is none of those. The gazetteer is what fixes that — and the check has to be for a real
+ * landmark by its real name, because a special case for York Minster would pass a test written
+ * against York Minster.
+ *
+ * Reported rather than asserted while the gazetteer may not have been extracted into this bucket
+ * yet: an empty result says "no gazetteer here", which is a different fact from "place search is
+ * broken", and the line says which.
+ */
+await check("search finds real places, not only bus stops", async () => {
+  const wanted = [
+    "York Minster",
+    "Leeds Station",
+    "Manchester Arndale",
+    "Bullring",
+    "Bristol Temple Meads",
+  ];
+  const found = [];
+  const missed = [];
+
+  for (const term of wanted) {
+    const { response, body, text } = await getJson(`/v1/search?q=${encodeURIComponent(term)}`);
+    assert(response.ok, `search for "${term}" gave ${describe(response, body, text)}`);
+    const results = body?.data?.results ?? [];
+    const place = results.find((result) => result.kind === "place");
+    if (place) {
+      /*
+       * A place must be a place. Presenting one as a stop would send somebody to a departure
+       * board for a cathedral, and claiming live coverage would put a live lozenge on a park.
+       */
+      assert(
+        Number.isFinite(place.coordinate?.lat) && Number.isFinite(place.coordinate?.lon),
+        `"${term}" returned a place with nowhere to go to`,
+      );
+      assert(
+        place.hasLiveCoverage !== true,
+        `"${term}" returned a place claiming live bus coverage of its own`,
+      );
+      found.push(`${term} → ${place.title}`);
+    } else {
+      missed.push(term);
+    }
+  }
+
+  observed.placesFound = found.length;
+  return found.length === 0
+    ? `no gazetteer in this bucket yet: none of ${wanted.length} landmarks matched ` +
+        "(run the preview with run_places to extract one)"
+    : `${found.length} of ${wanted.length} landmarks found — ${found.join("; ")}` +
+        (missed.length > 0 ? `; still missing: ${missed.join(", ")}` : "");
+});
+
 await check("live vehicles are reported for a covered area", async () => {
   /*
    * How many buses are moving is a property of the hour, not of the deployment — at three in the

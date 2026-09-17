@@ -41,6 +41,10 @@ on:
         description: "Extract OSM road segments (needed once before Pro can use live intelligence)"
         type: boolean
         default: false
+      run_places:
+        description: "Extract the OSM places gazetteer, so search can find York Minster"
+        type: boolean
+        default: false
       run_intelligence:
         description: "Collect live observations and run the analytics batch, so Pro reports live"
         type: boolean
@@ -319,6 +323,25 @@ jobs:
           set -o pipefail
           npx tsx pipelines/road-network/run-extract.ts 2>&1 | tee road-network.log
 
+      # ------------------------------------------------------- places
+      # Why search could not find York Minster: it could find a stop, a route or an operator, and
+      # a minster is none of those. The answer is a gazetteer rather than a special case, and it
+      # is extracted here for the same reason the road segments are — its own workflow file would
+      # exist only on this branch and could never be dispatched.
+      #
+      # Rarely needed. Landmarks do not move, so once the gazetteer is in the bucket it stays
+      # useful; a rebuild is for adding areas.
+      - name: Extract the places gazetteer from OpenStreetMap
+        if: ${{ !cancelled() && inputs.run_places }}
+        timeout-minutes: 15
+        continue-on-error: true
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -o pipefail
+          npx tsx pipelines/places/run-extract.ts 2>&1 | tee places.log
+
       # ----------------------------------------------------- intelligence
       # Collection then the batch, in that order, because the batch reads what collection writes.
       #
@@ -351,13 +374,15 @@ jobs:
           npx tsx pipelines/analytics-batch/run-batch.ts 2>&1 | tee batch.log
 
       - name: Upload the intelligence reports
-        if: ${{ always() && (inputs.run_intelligence || inputs.run_road_network) }}
+        if: ${{ always() && (inputs.run_intelligence || inputs.run_road_network || inputs.run_places) }}
         uses: actions/upload-artifact@v4
         with:
           name: preview-intelligence-reports
           path: |
             road-network-report.json
             road-network.log
+            places-report.json
+            places.log
             collection-report.json
             collection.log
             batch-report.json
@@ -537,10 +562,12 @@ jobs:
       # Same again for the intelligence path. These are the reports that say whether Pro has any
       # live figures at all, and they run before a two-hundred-line visual pass.
       - name: Intelligence reports, where the log can reach them
-        if: ${{ always() && (inputs.run_intelligence || inputs.run_road_network) }}
+        if: ${{ always() && (inputs.run_intelligence || inputs.run_road_network || inputs.run_places) }}
         run: |
           echo "--- road network report (repeated at end of job) ---"
           cat road-network-report.json 2>/dev/null || echo "no road-network-report.json was written"
+          echo "--- places report ---"
+          cat places-report.json 2>/dev/null || echo "no places-report.json was written"
           echo "--- collection report ---"
           cat collection-report.json 2>/dev/null || echo "no collection-report.json was written"
           echo "--- analytics batch report ---"

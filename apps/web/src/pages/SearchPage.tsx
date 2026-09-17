@@ -23,7 +23,7 @@ const DEBOUNCE_MS = 250;
  * page takes exactly that. An `area` has no page of its own yet, so it opens the map where it is
  * rather than pretending to be somewhere to visit.
  */
-function resultHref(result: { kind: string; id: string; title: string }): string {
+function resultHref(result: SearchResult): string {
   switch (result.kind) {
     case "stop":
       return `/stops/${encodeURIComponent(result.id)}`;
@@ -31,8 +31,39 @@ function resultHref(result: { kind: string; id: string; title: string }): string
       return `/routes/${encodeURIComponent(result.id)}`;
     case "operator":
       return `/operators/${encodeURIComponent(result.id)}`;
+    default: {
+      /*
+       * A place is somewhere to go, not a departure board.
+       *
+       * York Minster has no ATCO code and no next bus; what a passenger wants from it is a
+       * journey to it, with the planner choosing the boarding and alighting stops. So a place
+       * result opens the planner with the destination already filled in — which is also why the
+       * gazetteer exists rather than a hard-coded special case for York Minster.
+       */
+      if (!result.coordinate) return `/live?q=${encodeURIComponent(result.title)}`;
+      const query = new URLSearchParams({
+        toLat: String(result.coordinate.lat),
+        toLon: String(result.coordinate.lon),
+        toLabel: result.title,
+      });
+      return `/journey?${query.toString()}`;
+    }
+  }
+}
+
+/** The kind, as a passenger reads it. `rail_station` is a tag, not a word. */
+function kindLabel(kind: SearchResult["kind"]): string {
+  switch (kind) {
+    case "stop":
+      return "Stop";
+    case "route":
+      return "Route";
+    case "operator":
+      return "Operator";
+    case "place":
+      return "Place";
     default:
-      return `/live?q=${encodeURIComponent(result.title)}`;
+      return "Area";
   }
 }
 
@@ -195,7 +226,7 @@ export function SearchPage() {
                     {result.subtitle && <span className="muted small"> {result.subtitle}</span>}
                   </Link>
                   <span className="search-page__result-meta">
-                    <StateLozenge tone="neutral">{result.kind}</StateLozenge>
+                    <StateLozenge tone="neutral">{kindLabel(result.kind)}</StateLozenge>
                     {result.distanceMetres !== undefined && (
                       <span className="muted small">{distanceLabel(result.distanceMetres)}</span>
                     )}
