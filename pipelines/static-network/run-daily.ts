@@ -316,10 +316,23 @@ async function main(): Promise<number> {
     // The size of the biggest shard in each family, which is the number that says whether the
     // sharding key is still fine enough — a record count never did.
     largest: shardResult.largest,
+    // Where the wall clock went. A family that doubles in object count doubles the writes, and
+    // the writes are most of this step's runtime as well as the metered operation.
+    families: shardResult.families,
     stopTiles: shardResult.index?.stopTiles.length ?? 0,
     patternTiles: shardResult.index?.patternTiles.length ?? 0,
     searchPrefixes: shardResult.index?.searchPrefixes.length ?? 0,
   };
+  console.log(
+    "Shard families: " +
+      shardResult.families
+        .map(
+          (family) =>
+            `${family.name} ${family.objects} object(s) in ${(family.ms / 1000).toFixed(1)}s` +
+            (family.failed > 0 ? ` (${family.failed} failed)` : ""),
+        )
+        .join(", "),
+  );
   if (shardResult.index === null) {
     console.error(
       `Shard publish incomplete (${shardResult.failed.length} failed); the edge keeps the ` +

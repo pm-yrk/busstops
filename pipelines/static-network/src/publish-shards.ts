@@ -76,6 +76,15 @@ export interface ShardPublishResult {
    * real national data, not estimating from record counts.
    */
   largest: Array<{ dataset: string; bytes: number; records: number }>;
+  /**
+   * How long each family took, and how many objects it wrote.
+   *
+   * The report said how many objects a build published in total and nothing about where the time
+   * went, so a bootstrap that ran an hour longer than the one before it could only be explained by
+   * guessing which family had grown. These writes are the bulk of the build's wall clock, and the
+   * free tier is counted in operations, so both numbers are worth keeping.
+   */
+  families: Array<{ name: string; objects: number; failed: number; ms: number }>;
 }
 
 export interface ShardPublishOptions {
@@ -129,7 +138,17 @@ export async function publishNetworkShards(
    * gigabytes, and an earlier version of this function died there.
    */
   let published = 0;
-  const publishFamily = async (shards: Shard[]): Promise<void> => {
+  /*
+   * How long each family took and how many objects it wrote.
+   *
+   * The report said how many objects a build published in total and nothing about where the time
+   * went, so a bootstrap that ran an hour longer than the one before it could only be explained
+   * by guessing which family had grown. These writes are the bulk of the build's wall clock and
+   * the free tier is counted in operations, so both numbers are worth keeping.
+   */
+  const families: ShardPublishResult["families"] = [];
+  const publishFamily = async (name: string, shards: Shard[]): Promise<void> => {
+    const began = Date.now();
     let biggest: ShardPublishResult["largest"][number] | null = null;
 
     const outcomes = await mapWithConcurrency(shards, TILE_PUBLISH_CONCURRENCY, async (shard) => {
@@ -188,22 +207,34 @@ export async function publishNetworkShards(
       }
     });
 
+    let familyFailed = 0;
     for (const outcome of outcomes) {
       if (outcome.error === null) published += 1;
-      else failed.push({ dataset: outcome.dataset, reason: outcome.error });
+      else {
+        familyFailed += 1;
+        failed.push({ dataset: outcome.dataset, reason: outcome.error });
+      }
     }
     if (biggest) largest.push(biggest);
+    families.push({
+      name,
+      objects: shards.length,
+      failed: familyFailed,
+      ms: Date.now() - began,
+    });
   };
 
   const stopShards = groupStopsByTile(network);
   const stopTiles = [...stopShards.keys()].sort();
   await publishFamily(
+    "stops",
     [...stopShards].map(([tile, records]) => shardOf(stopTileDataset(tile), records)),
   );
   stopShards.clear();
 
   const locatorShards = groupLocators(network);
   await publishFamily(
+    "locators",
     [...locatorShards].map(([bucket, records]) => shardOf(stopLocatorDataset(bucket), records)),
   );
   locatorShards.clear();
@@ -211,11 +242,12 @@ export async function publishNetworkShards(
   const patternShards = groupPatternsByTile(network);
   const patternTiles = [...patternShards.keys()].sort();
   await publishFamily(
+    "patterns",
     [...patternShards].map(([tile, lines]) => shardOf(patternTileDataset(tile), lines)),
   );
   patternShards.clear();
 
-  await publishFamily([shardOf(SHARDED.routeTiles, routeTileRecords(network))]);
+  await publishFamily("route-tiles", [shardOf(SHARDED.routeTiles, routeTileRecords(network))]);
 
   /*
    * The route-pattern index: one line per service, carrying that service's whole route.
@@ -228,6 +260,7 @@ export async function publishNetworkShards(
   const routePatternBuckets = ROUTE_PATTERN_BUCKETS;
   const routePatternShardList = [...routePatternShards.keys()].sort((a, b) => a - b);
   await publishFamily(
+    "route-patterns",
     [...routePatternShards].map(([bucket, rows]) => ({
       dataset: routePatternsDataset(bucket),
       lines: routePatternsShardLines(rows),
@@ -248,6 +281,7 @@ export async function publishNetworkShards(
   const stopRouteShards = groupStopRoutesByTile(network);
   const stopRouteTiles = [...stopRouteShards.keys()].sort();
   await publishFamily(
+    "stop-routes",
     [...stopRouteShards].map(([tile, records]) => shardOf(stopRoutesDataset(tile), records)),
   );
   stopRouteShards.clear();
@@ -263,6 +297,7 @@ export async function publishNetworkShards(
   const patternIndexShardMap = groupPatternIndexByBucket(network);
   const patternIndexShards = [...patternIndexShardMap.keys()].sort((a, b) => a - b);
   await publishFamily(
+    "pattern-index-hashed",
     [...patternIndexShardMap].map(([bucket, rows]) => ({
       dataset: patternIndexDataset(bucket),
       lines: patternIndexShardLines(rows),
@@ -274,6 +309,7 @@ export async function publishNetworkShards(
   const patternIndexTileMap = groupPatternIndexByTile(network);
   const patternIndexTiles = [...patternIndexTileMap.keys()].sort();
   await publishFamily(
+    "pattern-index-tiles",
     [...patternIndexTileMap].map(([tile, rows]) => ({
       dataset: patternIndexTileDataset(tile),
       lines: patternIndexShardLines(rows),
@@ -287,6 +323,7 @@ export async function publishNetworkShards(
   const searchTileShards = groupSearchByTile(searchEntries);
   const searchTiles = [...searchTileShards.keys()].sort();
   await publishFamily(
+    "search-tiles",
     [...searchTileShards].map(([tile, records]) => shardOf(searchTileDataset(tile), records)),
   );
   searchTileShards.clear();
@@ -294,13 +331,14 @@ export async function publishNetworkShards(
   const searchPrefixShards = groupSearchByPrefix(searchEntries);
   const searchPrefixes = [...searchPrefixShards.keys()].sort();
   await publishFamily(
+    "search-prefixes",
     [...searchPrefixShards].map(([prefix, records]) =>
       shardOf(searchPrefixDataset(prefix), records),
     ),
   );
   searchPrefixShards.clear();
 
-  const partial = { published, failed, oversized, truncated, largest };
+  const partial = { published, failed, oversized, truncated, largest, families };
 
   if (failed.length > 0) {
     // The index is the pointer that makes a publish live. Withholding it when a shard failed
