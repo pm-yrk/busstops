@@ -152,5 +152,30 @@ main()
   })
   .catch((error: unknown) => {
     console.error("Road network extraction failed:", error);
+    /*
+     * A job that throws still has to say so in its report.
+     *
+     * Every ordinary exit writes one; an exception wrote nothing at all, and the workflow step runs
+     * with `continue-on-error`, which marks a failed step "success" in the job's own step list. So a
+     * collection that threw looked from the outside like a collection that had worked and simply
+     * chosen not to report — which is how run 47's "no collection-report.json was written" read for
+     * three runs. The report is the only thing that distinguishes them.
+     */
+    try {
+      writeFileSync(
+        "road-network-report.json",
+        JSON.stringify(
+          {
+            outcome: "threw",
+            error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+            finishedAt: new Date().toISOString(),
+          },
+          null,
+          2,
+        ),
+      );
+    } catch {
+      // A report we cannot write is not worth failing twice over; the console still carries it.
+    }
     process.exitCode = 1;
   });
