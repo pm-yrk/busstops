@@ -1058,6 +1058,10 @@ await check("a journey can be planned across real timetable data", async () => {
       (typeof diagnostics.patternsRequested === "number"
         ? `; ${diagnostics.patternsInSlice} of ${diagnostics.patternsRequested} pattern(s) resolved`
         : "") +
+      (meta?.diagnostics?.patternSource
+        ? `; patterns from the ${meta.diagnostics.patternSource} ` +
+          `(${meta.diagnostics.corridorPatternTiles} corridor pattern tile(s))`
+        : "") +
       (meta?.diagnostics?.degradationReason
         ? `; the read stopped itself: ${meta.diagnostics.degradationReason}`
         : "") +

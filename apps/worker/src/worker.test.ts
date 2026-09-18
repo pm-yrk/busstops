@@ -1195,6 +1195,30 @@ describe("GET /v1/sources/health", () => {
   });
 });
 
+describe("which way a journey gets its patterns", () => {
+  /*
+   * Runs 45, 46 and 47 all refused the same journey on the index path, and run 47 measured why:
+   * 91 buckets, 12.23 MiB — the request's whole byte budget — for 112 of 197 patterns. A bucket
+   * holds every pattern in England whose id hashes to it, so a corridor reads it almost entirely
+   * to discard it. Run 44 planned the same journey from one corridor tile.
+   */
+  it("reads the corridor's tiles for a short journey and says which path it took", async () => {
+    const store = await publishedStore();
+    const response = await worker.fetch(
+      get(
+        "/v1/journeys?fromLat=53.795&fromLon=-1.548&toLat=53.801&toLon=-1.540&when=2026-09-04T08:00:00.000Z",
+      ),
+      makeEnv(store),
+      ctx,
+    );
+    const body = (await response.json()) as {
+      meta: { diagnostics?: { patternSource?: string; corridorPatternTiles?: number } };
+    };
+    expect(body.meta.diagnostics?.patternSource).toBe("tiles");
+    expect(body.meta.diagnostics?.corridorPatternTiles).toBeLessThanOrEqual(4);
+  });
+});
+
 describe("unknown routes", () => {
   it("returns 404 without revealing anything about the internals", async () => {
     const store = await publishedStore();

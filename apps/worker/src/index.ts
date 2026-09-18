@@ -116,6 +116,16 @@ const ROUTE_STOP_READ_CHARS = 4 * 1024 * 1024;
  */
 const JOURNEY_BUDGET_MS = 6_000;
 const JOURNEY_STOP_READ_CHARS = 5 * 1024 * 1024;
+/**
+ * Above this many pattern tiles, a corridor asks the index instead of reading the tiles.
+ *
+ * Four, because a pattern tile reaches 3.9 MB and the slice's own pattern budget is three
+ * mebibytes: beyond a handful of tiles the tile read is certain to be cut short, and a cut-short
+ * corridor refuses the journey. Below it the tiles are both cheaper and complete — run 44 planned
+ * Leeds to Leeds Bradford Airport from one of them, where runs 45 to 47 spent 12 MiB of index
+ * buckets on the same corridor and refused.
+ */
+const JOURNEY_PATTERN_TILE_LIMIT = 4;
 
 /** The same clock every other read has. "Stops near me" is one tile's worth of question. */
 const NEARBY_BUDGET_MS = 1_500;
@@ -1088,23 +1098,31 @@ router.get("/v1/journeys", async (_request, { env, url }) => {
   const endJourneyResidency = beginResidency(journeyLedger);
   const journeyIndexForSlice = await journeyLedger.stage("index", () => network!.networkIndex());
   /*
-   * Skip the pattern tiles when the pattern index exists.
+   * Which way to get the patterns, decided from what each one actually costs.
    *
-   * The planner reads `pattern.stopSequence` and never looks at a shape, and the tiles carry
-   * shapes — so a Leeds corridor spent its whole pattern budget on geometry it would discard, came
-   * back incomplete, and the planner refused to plan. With the index the patterns are fetched by
-   * id after the trips have said which ones matter, so reading the tiles as well would be paying
-   * that cost twice over for nothing.
+   * The reasoning for the index was sound and the measurement contradicted it. The planner reads
+   * `pattern.stopSequence` and never looks at a shape, and the tiles carry shapes — so fetching
+   * patterns by id after the trips have named them should read far less than a tile of geometry.
+   *
+   * Runs 45, 46 and 47 all measured the opposite, and run 47 measured it exactly: **91 index
+   * buckets, 12.23 MiB**, the request's whole byte budget, 112 of 197 patterns resolved, journey
+   * refused. A bucket averages 137 kilobytes because it holds every pattern in England whose id
+   * hashes to it, and a corridor wants a handful from each — so the index is read almost entirely
+   * to be discarded. Run 44, on the tile path, planned the same journey from **one** corridor tile.
+   *
+   * So the tiles win while the corridor is small, which is what a journey usually is, and the
+   * index wins once it is large enough that the tiles would be unbounded. The count is known here,
+   * before either read, and it is recorded so the next run says which path it took.
    */
-  const usePatternIndex = (journeyIndexForSlice?.patternIndexBuckets ?? 0) > 0;
+  const corridorBox = corridorBoundingBox(origin, destination, JOURNEY_LIMITS.maxAccessWalkMetres);
+  const corridorPatternTiles = patternTilesForBoundingBox(corridorBox).length;
+  const usePatternIndex =
+    (journeyIndexForSlice?.patternIndexBuckets ?? 0) > 0 &&
+    corridorPatternTiles > JOURNEY_PATTERN_TILE_LIMIT;
   const slice = await journeyLedger.stage("slice", () =>
-    network!.sliceForBoundingBox(
-      corridorBoundingBox(origin, destination, JOURNEY_LIMITS.maxAccessWalkMetres),
-      Date.now(),
-      journeyLedger,
-      JOURNEY_STOP_READ_CHARS,
-      { patterns: usePatternIndex ? "skip" : "tiles" },
-    ),
+    network!.sliceForBoundingBox(corridorBox, Date.now(), journeyLedger, JOURNEY_STOP_READ_CHARS, {
+      patterns: usePatternIndex ? "skip" : "tiles",
+    }),
   );
   journeyLedger.count({ stops: slice.stopsById.size, patterns: slice.patternsById.size });
 
@@ -1138,7 +1156,11 @@ router.get("/v1/journeys", async (_request, { env, url }) => {
           now,
           networkPartialCoverage: index.partialCoverage,
           safeMode: safeModeActive(state),
-          diagnostics: { ...journeyLedger.toJSON() },
+          diagnostics: {
+            ...journeyLedger.toJSON(),
+            patternSource: usePatternIndex ? "index" : "tiles",
+            corridorPatternTiles,
+          },
         }),
         data: {
           serviceDate,
@@ -1207,7 +1229,12 @@ router.get("/v1/journeys", async (_request, { env, url }) => {
     now,
     networkPartialCoverage: index.partialCoverage,
     safeMode: safeModeActive(state),
-    diagnostics: { ...journeyLedger.toJSON() },
+    diagnostics: {
+      ...journeyLedger.toJSON(),
+      // Which of the two pattern paths this corridor took, and why it was eligible for it.
+      patternSource: usePatternIndex ? "index" : "tiles",
+      corridorPatternTiles,
+    },
   });
 
   if (!outcome.ok) {
