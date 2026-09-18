@@ -557,6 +557,31 @@ for (const size of WIDTHS) {
          * could not see it. An API failure is a real failure, but it is the API's, and calling it
          * a missing fallback sends the next person looking in the wrong place.
          */
+        /*
+         * A deep-linked stop has to arrive with its board open.
+         *
+         * `/live/stops/:id` is an acceptance criterion in its own right — "must actually
+         * initialise and open the selected stop board" — and the sweep was photographing the page
+         * without ever asking whether it had. A link that lands on the map with nothing selected
+         * looks identical in a screenshot to one that worked.
+         */
+        if (target.name === "live-stop-deeplink") {
+          const board = await page
+            .locator(".selected-stop")
+            .first()
+            .isVisible()
+            .catch(() => false);
+          const heading = board
+            ? ((await page.locator(".selected-stop h2, .selected-stop h3").first().textContent()) ??
+              "")
+            : "";
+          record(
+            `${size.name}/${target.name} opens the stop board it was linked to`,
+            board,
+            board ? `board open: ${heading.trim().slice(0, 60)}` : "no stop board on the page",
+          );
+        }
+
         record(
           `${size.name}/${target.name} renders a map rather than the fallback`,
           map.hasCanvas ? !map.unavailable : map.apiError,

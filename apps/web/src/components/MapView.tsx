@@ -324,12 +324,12 @@ const PIP_SIZE = 9;
 
 function trianglePip(): { width: number; height: number; data: Uint8Array } {
   const data = new Uint8Array(PIP_SIZE * PIP_SIZE * 4);
+  const middle = (PIP_SIZE - 1) / 2;
   for (let y = 0; y < PIP_SIZE; y += 1) {
-    // A solid triangle: the row's half-width grows with its distance from the apex.
-    const half = Math.floor((y * (PIP_SIZE - 1)) / (2 * (PIP_SIZE - 1)) + y / 2);
+    // A solid triangle: the row's half-width is its distance from the apex, so the last row is
+    // the full width and the first is a single pixel.
     for (let x = 0; x < PIP_SIZE; x += 1) {
-      const middle = (PIP_SIZE - 1) / 2;
-      if (Math.abs(x - middle) > half) continue;
+      if (Math.abs(x - middle) > y) continue;
       const at = (y * PIP_SIZE + x) * 4;
       // White, so `icon-color` can tint it per feature the way the text colour used to.
       data[at] = 255;
@@ -475,6 +475,9 @@ function addSourcesAndLayers(map: MapLibreMap): void {
       // An image, not a character: a symbol layer's text needs glyphs the basemap does not serve,
       // and this layer drew nothing at all on the deployment because of it.
       "icon-image": "direction-pip",
+      // The character it replaced was drawn at text-size 11; nine art pixels at 1.2 is the same
+      // mark at the same weight, which is what keeps a zoom from changing how busy the map looks.
+      "icon-size": 1.2,
       "icon-rotate": ["coalesce", ["get", "bearing"], 0],
       "icon-allow-overlap": true,
       "icon-rotation-alignment": "map",
