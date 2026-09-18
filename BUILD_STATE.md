@@ -4,6 +4,72 @@ Last updated: 2026-09-17 (live buses proved in the deployment; the national time
 
 ## Current status
 
+### Run 44 named four causes; the weather art is second generation (2026-09-18)
+
+**Run 44 rebuilt the nation and proved two things.** Leeds → Leeds Bradford Airport plans:
+`3 legs (walk → bus → walk), 0 change(s), 9 min walking`, and every leg passed the coherence
+checks — where it starts, where it ends, when, on which service by `routeId`, and joining up with
+its neighbour in time and in place. And the map came back `degraded false` with
+`297 of the returned stops carry a service` on a cold isolate, where run 43 had `0 of the returned
+stops` on every dense viewport. Both new artifact families published; the additive fallbacks were
+never needed.
+
+**Four causes, each measured rather than guessed.**
+
+1. **Overpass refused us by name.** Both OSM extractions failed identically and instantly with
+   `406` across all six areas — a request refused before it is read, not a query that is wrong.
+   Overpass's policy asks every consumer to identify itself and its operators enforce that on
+   generic agents; Node sends `undici`. This is why `network/segments` stayed empty, why the batch
+   reported `no_segments`, and why Pro is still on its demonstration snapshot.
+2. **The map was reading more than before the index existed.** The condition for reading pattern
+   geometry was "are there any vehicles", which in a city is always yes, so stop tiles, stop-routes
+   _and_ pattern tiles were all read. A SIRI-VM record carries the line name on the front of the
+   bus; shape matching is the fallback for a feed that publishes none, and is read only when a bus
+   is in that state.
+3. **`nearby` was the last unbounded read on the reader** — search entries on the stop grid, tens
+   of thousands decoded to answer a question about eight hundred metres.
+4. **The journey planned correctly and spent 5,411ms of its 6,000ms budget** reading pattern-index
+   buckets two at a time: forty-five round trips of latency for a corridor's ninety patterns.
+
+**On 1102, and what is not being claimed.** Three endpoints still answered it in run 44. Across
+runs 42 to 44 the pattern is that requests answering from a warm shard cache pass and cold ones sit
+at the edge, which is consistent with either a CPU ceiling on parsing or with memory. Nothing
+measured settles which, and neither is claimed. Every fix above reduces bytes decoded per request,
+which helps under either reading.
+
+**The retention budget did not cover the phase that was slow.** The deadline was measured from the
+start of the delete loop; the listing before it follows the cursor over every object under the
+prefix, which after a national rebuild is tens of thousands. Run 45 spent over forty minutes there
+against a thirty-five minute budget and was killed by the workflow's cap — the exact failure the
+budget exists to replace, reached through the one phase it did not cover. The clock starts at the
+process now, and a listing that spends the budget reports the plan and deletes nothing.
+
+### The weather vignette, redrawn (2026-09-18)
+
+96 × 72 was the right composition at the wrong size: a shelter is a box with three grey panels in
+it, and every detail that makes a British bus stop recognisable costs more pixels than there were.
+At **176 × 128** — the same generational jump the hero made — it carries brick with staggered
+perpends, a cranked roof, four glazed bays with their own reflections, a timetable case that reads
+as print, a perch rail, a litter bin, buff tactile paving with its blisters, a kerb, asphalt, the
+yellow clearway line where the double yellows break, a gully, and a street tree with a lit flank.
+At night the frontage and the case light up.
+
+Three composition failures were caught by screenshotting all eight weather states, and none would
+have been caught by reading the code. The first pass filled the background with a wall and left
+four rows of sky — and sky is where the rain has to happen. The second drew the stop cage as a
+wash in the 32%-alpha red, and `px` replaces rather than composites, so the asphalt was destroyed
+and the translucent red came back as pale pink: the same bug the hero's bus bay had, made twice.
+The third tried to fix the tree's outline by punching a disc of `.` out of it, and `.` is
+transparent rather than sky, so it cut a hole through the picture to the page behind.
+
+The effects follow the scene's size rather than carrying their counts over — thirty-four raindrops
+read as rain over the old area and as drizzle over three times as much. Fog took a fourth attempt
+and the failure was density. Rain now has a road to land on, snow settles, and a bus can approach,
+drawn only when one is truthfully due.
+
+**Gates.** 1,126 node tests, 159 web, 160 e2e; prettier, eslint `--max-warnings=0`, typecheck,
+preflight at `ci`, secret scan clean across 510 tracked files.
+
 ### Run 43 named the cause, and it was the same cause twice (2026-09-17)
 
 **What run 43 proved.** `/v1/map` no longer hits error 1102 — twenty-five dense requests across
