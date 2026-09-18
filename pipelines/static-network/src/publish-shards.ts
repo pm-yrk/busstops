@@ -39,6 +39,7 @@ import {
   PATTERN_INDEX_BUCKETS,
   patternIndexBucketFor,
   patternIndexDataset,
+  patternIndexTileDataset,
   patternIndexShardLines,
   stopRoutesDataset,
   type PatternIndexRow,
@@ -270,6 +271,17 @@ export async function publishNetworkShards(
   );
   patternIndexShardMap.clear();
 
+  const patternIndexTileMap = groupPatternIndexByTile(network);
+  const patternIndexTiles = [...patternIndexTileMap.keys()].sort();
+  await publishFamily(
+    [...patternIndexTileMap].map(([tile, rows]) => ({
+      dataset: patternIndexTileDataset(tile),
+      lines: patternIndexShardLines(rows),
+      records: rows.length,
+    })),
+  );
+  patternIndexTileMap.clear();
+
   const searchEntries = buildSearchIndex(network, { builtAt: now().toISOString() }).entries;
 
   const searchTileShards = groupSearchByTile(searchEntries);
@@ -312,6 +324,7 @@ export async function publishNetworkShards(
     stopRouteTiles,
     patternIndexBuckets: PATTERN_INDEX_BUCKETS,
     patternIndexShards,
+    patternIndexTiles,
     routePatternBuckets,
     routePatternShards: routePatternShardList,
     counts: {
@@ -530,6 +543,41 @@ function groupStopRoutesByTile(network: BuiltNetwork): Map<string, StopRoutesRow
  * No shape. `buildGraphFor` reads the stop sequence and never looks at geometry, and the geometry
  * is the whole reason the tiles are too big to read a corridor's worth of.
  */
+/**
+ * The same rows as `groupPatternIndexByBucket`, filed by the tiles the pattern runs through.
+ *
+ * A journey corridor wants the patterns along one strip of the country, and a hash scatters those
+ * across every bucket — so the planner read one bucket per pattern and threw away almost all of
+ * each. Filed geographically, a corridor reads the two or three tiles it crosses and wants most
+ * of what is in them.
+ *
+ * A pattern crossing four tiles is written into all four, exactly as its geometry is: a corridor
+ * must find it from whichever tile it enters on, and these rows are small enough that the
+ * duplication is cheaper than the read it prevents.
+ */
+function groupPatternIndexByTile(network: BuiltNetwork): Map<string, PatternIndexRow[]> {
+  const byTile = new Map<string, PatternIndexRow[]>();
+  for (const pattern of network.patterns) {
+    const shape = network.shapes.get(pattern.shapeRef);
+    // No geometry means no tile to file it under; the hashed layout still carries it.
+    if (!shape || shape.length < 2) continue;
+    const row: PatternIndexRow = {
+      id: pattern.id,
+      serviceRouteId: pattern.serviceRouteId,
+      direction: pattern.direction,
+      stopSequence: [...pattern.stopSequence],
+      distanceMetres: pattern.distanceMetres,
+    };
+    for (const tile of tilesForPattern(shape)) {
+      const rows = byTile.get(tile);
+      if (rows) rows.push(row);
+      else byTile.set(tile, [row]);
+    }
+  }
+  for (const rows of byTile.values()) rows.sort((a, b) => (a.id < b.id ? -1 : 1));
+  return byTile;
+}
+
 function groupPatternIndexByBucket(network: BuiltNetwork): Map<number, PatternIndexRow[]> {
   const buckets = new Map<number, PatternIndexRow[]>();
   for (const pattern of network.patterns) {

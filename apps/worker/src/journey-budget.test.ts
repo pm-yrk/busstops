@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { InMemoryObjectStore, objectKeyFor, corridorBoundingBox } from "@busstops/pipeline-core";
 import {
@@ -250,6 +251,22 @@ describe("a live lookup cannot outlive the budget it entered with", () => {
 
     await service.vehiclesInBoundingBox({ west: -1.6, south: 53.7, east: -1.5, north: 53.8 }, 500);
     expect(attempts).toBe(1);
+  });
+
+  it("bounds every endpoint that reads the feed, not only the one that was measured", async () => {
+    /*
+     * Run 52 bounded route detail and left the map, the vehicle page and the live endpoint on
+     * three retries — and the platform answered `/v1/map` on the first attempt of the first city,
+     * taking `/v1/search` and `/v1/nearby` down with it on the same isolate. A request holding a
+     * four-second retry does not fail alone, so a fix that covers one caller covers none.
+     */
+    const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+    const calls = [...source.matchAll(/vehiclesInBoundingBox\(([^)]*)\)/g)].map((m) => m[1]!);
+    expect(calls.length).toBeGreaterThan(2);
+    for (const args of calls) {
+      // Every call site passes a second argument: a deadline, from a ledger or a named constant.
+      expect(args.includes(","), `un-bounded call: vehiclesInBoundingBox(${args})`).toBe(true);
+    }
   });
 
   it("keeps its retries when nobody handed it a deadline", async () => {

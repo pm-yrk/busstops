@@ -151,6 +151,16 @@ const JOURNEY_PATTERN_READ_CHARS = 6 * 1024 * 1024;
 /** The same clock every other read has. "Stops near me" is one tile's worth of question. */
 const NEARBY_BUDGET_MS = 1_500;
 
+/**
+ * What an endpoint with no read ledger of its own gives the live feed.
+ *
+ * The map and route detail hand over whatever their own budget has left. The vehicle and live
+ * endpoints have no staged budget to subtract from, so they name a figure — comfortably inside
+ * one upstream round trip, and far inside the three attempts and two backoffs that a slow BODS
+ * used to cost them.
+ */
+const LIVE_LOOKUP_BUDGET_MS = 2_500;
+
 const LIVE_BBOX_SNAP_DEGREES = 0.25;
 
 /** Snapped outward, so the box still contains everything it contained before. */
@@ -393,7 +403,7 @@ router.get("/v1/diagnostics/live", async (_request, { env, url }) => {
     );
   }
 
-  const live = await liveService.vehiclesInBoundingBox(bbox);
+  const live = await liveService.vehiclesInBoundingBox(bbox, LIVE_LOOKUP_BUDGET_MS);
   return json(
     {
       meta: buildMeta({
@@ -497,7 +507,19 @@ router.get("/v1/map", async (_request, { env, url }) => {
             MAP_STOP_READ_CHARS,
           )
         : Promise.resolve({ stops: [], truncated: false }),
-      liveAllowed && liveService ? liveService.vehiclesInBoundingBox(bbox) : Promise.resolve(null),
+      liveAllowed && liveService
+        ? /*
+           * With the map's own remaining time, for the reason route detail already has it.
+           *
+           * `fetchText` retries three times with backoff and its timeout bounds one attempt, so an
+           * upstream that is slow costs three attempts and their gaps — three to four seconds
+           * against a 1,800ms budget. Run 52 measured the consequence with route detail bounded
+           * and this one not: the platform answered `/v1/map` on the first attempt of the first
+           * city, and took `/v1/search` and `/v1/nearby` on the same isolate down with it. A
+           * request holding a four-second retry does not fail alone.
+           */
+          liveService.vehiclesInBoundingBox(bbox, Math.max(300, ledger.remainingMs))
+        : Promise.resolve(null),
     ]),
   );
   ledger.count({ stops: stopsResult.stops.length });
@@ -1136,10 +1158,24 @@ router.get("/v1/journeys", async (_request, { env, url }) => {
    * before either read, and it is recorded so the next run says which path it took.
    */
   const corridorBox = corridorBoundingBox(origin, destination, JOURNEY_LIMITS.maxAccessWalkMetres);
-  const corridorPatternTiles = patternTilesForBoundingBox(corridorBox).length;
+  const corridorPatternTileList = patternTilesForBoundingBox(corridorBox);
+  const corridorPatternTiles = corridorPatternTileList.length;
+  /*
+   * The geographic index, when the artifact carries one.
+   *
+   * The hashed buckets were the right idea aimed at the wrong question: a corridor's patterns are
+   * a strip of the country and a hash scatters them across all 512 buckets, so the planner read a
+   * bucket per pattern and threw away almost all of each. Runs 47, 48, 50 and 52 all measured the
+   * same ceiling — around ninety buckets and twelve mebibytes for roughly half the patterns.
+   * Filed on the pattern-tile grid the corridor reads the tiles it crosses and wants most of what
+   * is in them.
+   */
+  const patternIndexTiles = journeyIndexForSlice?.patternIndexTiles ?? [];
+  const useIndexTiles = patternIndexTiles.length > 0;
   const usePatternIndex =
-    (journeyIndexForSlice?.patternIndexBuckets ?? 0) > 0 &&
-    corridorPatternTiles > JOURNEY_PATTERN_TILE_LIMIT;
+    useIndexTiles ||
+    ((journeyIndexForSlice?.patternIndexBuckets ?? 0) > 0 &&
+      corridorPatternTiles > JOURNEY_PATTERN_TILE_LIMIT);
   const slice = await journeyLedger.stage("slice", () =>
     network!.sliceForBoundingBox(corridorBox, Date.now(), journeyLedger, JOURNEY_STOP_READ_CHARS, {
       patterns: usePatternIndex ? "skip" : "tiles",
@@ -1180,7 +1216,11 @@ router.get("/v1/journeys", async (_request, { env, url }) => {
           safeMode: safeModeActive(state),
           diagnostics: {
             ...journeyLedger.toJSON(),
-            patternSource: usePatternIndex ? "index" : "tiles",
+            patternSource: useIndexTiles
+              ? "index-tiles"
+              : usePatternIndex
+                ? "index-hashed"
+                : "tiles",
             corridorPatternTiles,
           },
         }),
@@ -1235,8 +1275,16 @@ router.get("/v1/journeys", async (_request, { env, url }) => {
       layout: journeyIndex.layout ?? null,
       ...(usePatternIndex
         ? {
-            resolvePatterns: (patternIds: readonly string[]) =>
-              network!.patternsByIds(patternIds, Date.now(), journeyLedger),
+            resolvePatterns: useIndexTiles
+              ? () =>
+                  network!.patternsInIndexTiles(
+                    corridorPatternTileList,
+                    Date.now(),
+                    journeyLedger,
+                    JOURNEY_PATTERN_READ_CHARS,
+                  )
+              : (patternIds: readonly string[]) =>
+                  network!.patternsByIds(patternIds, Date.now(), journeyLedger),
           }
         : {}),
     }),
@@ -1254,7 +1302,7 @@ router.get("/v1/journeys", async (_request, { env, url }) => {
     diagnostics: {
       ...journeyLedger.toJSON(),
       // Which of the two pattern paths this corridor took, and why it was eligible for it.
-      patternSource: usePatternIndex ? "index" : "tiles",
+      patternSource: useIndexTiles ? "index-tiles" : usePatternIndex ? "index-hashed" : "tiles",
       corridorPatternTiles,
     },
   });
@@ -1366,7 +1414,9 @@ router.get("/v1/vehicles/:ref", async (_request, { env, params, url }) => {
     return errorResponse("upstream_unavailable", "Live data is not configured.", 503, 60);
   }
 
-  const live = await liveService.vehiclesInBoundingBox(bboxResult.bbox);
+  // Bounded like the map and route detail: three retries of a slow upstream is what takes an
+  // isolate past its limit, and this endpoint reads the same feed as both of them.
+  const live = await liveService.vehiclesInBoundingBox(bboxResult.bbox, LIVE_LOOKUP_BUDGET_MS);
   const observation = live.observations.find(
     (candidate) => candidate.vehicleRef === (params.ref ?? ""),
   );

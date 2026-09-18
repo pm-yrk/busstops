@@ -42,6 +42,7 @@ import {
   passengerName,
   patternIndexBucketFor,
   patternIndexDataset,
+  patternIndexTileDataset,
   stopRoutesDataset,
   type PatternIndexRow,
   type StopRoutesRow,
@@ -1085,6 +1086,55 @@ export class NetworkReader {
 
     ledger?.count({ patterns: patterns.size });
     return { patterns, complete, available: true };
+  }
+
+  /**
+   * The corridor's patterns, read from the tiles it crosses rather than a bucket per pattern.
+   *
+   * `patternsByIds` asks the hashed layout, which files a pattern by a hash of its id — so a
+   * corridor's two hundred patterns are two hundred small objects scattered across the country's
+   * worth of buckets, and run 47 measured what that costs: 91 buckets, 12.23 MiB, the request's
+   * whole byte budget, 112 of 197 resolved, journey refused. These rows are the same rows filed
+   * by where the pattern actually runs, so a corridor reads the handful of tiles it crosses and
+   * wants most of what is in each.
+   *
+   * Parsed whole rather than by targeted decode, which is the opposite of the hashed layout's
+   * trick and right for the same reason: there almost every row was unwanted, here almost every
+   * row is wanted.
+   */
+  async patternsInIndexTiles(
+    tiles: readonly string[],
+    now: number = Date.now(),
+    ledger?: ReadLedger,
+    budgetChars?: number,
+  ): Promise<{ patterns: Map<string, RoutePattern>; complete: boolean; available: boolean }> {
+    const index = await this.networkIndex(now);
+    const published = index?.patternIndexTiles;
+    if (!index || !published || published.length === 0) {
+      return { patterns: new Map(), complete: false, available: false };
+    }
+
+    const result = await this.readTiles<[string, PatternIndexRow]>(
+      patternIndexTileDataset,
+      tiles,
+      published,
+      index.version,
+      now,
+      Math.min(budgetChars ?? this.requestChars, this.requestChars),
+      ledger ? { ledger, family: "patterns", budgetReason: "pattern_index_budget" } : undefined,
+    );
+
+    const patterns = new Map<string, RoutePattern>();
+    for (const line of result.records) {
+      // The header line parses as an object rather than a pair; a row is always `[id, row]`.
+      if (!Array.isArray(line) || line.length !== 2) continue;
+      const row = line[1];
+      if (row && typeof row === "object" && "stopSequence" in row) {
+        patterns.set(row.id, toRoutePattern(row));
+      }
+    }
+    ledger?.count({ patterns: patterns.size });
+    return { patterns, complete: !result.truncated, available: true };
   }
 
   /** Pattern geometries covering a viewport, for matching live vehicles to routes. */

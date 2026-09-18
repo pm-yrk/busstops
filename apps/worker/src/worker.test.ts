@@ -1202,7 +1202,7 @@ describe("which way a journey gets its patterns", () => {
    * holds every pattern in England whose id hashes to it, so a corridor reads it almost entirely
    * to discard it. Run 44 planned the same journey from one corridor tile.
    */
-  it("reads the corridor's tiles for a short journey and says which path it took", async () => {
+  it("reads the corridor's own tiles, never a bucket per pattern, and says which", async () => {
     const store = await publishedStore();
     const response = await worker.fetch(
       get(
@@ -1214,7 +1214,13 @@ describe("which way a journey gets its patterns", () => {
     const body = (await response.json()) as {
       meta: { diagnostics?: { patternSource?: string; corridorPatternTiles?: number } };
     };
-    expect(body.meta.diagnostics?.patternSource).toBe("tiles");
+    /*
+     * Either geographic path is correct; the hashed one is not. `index-tiles` reads the pattern
+     * index filed by where a pattern runs, `tiles` reads the geometry tiles — both are the
+     * corridor's own strip of the country. `index-hashed` is the layout that scattered a
+     * corridor's patterns across 512 buckets and spent twelve mebibytes resolving half of them.
+     */
+    expect(["index-tiles", "tiles"]).toContain(body.meta.diagnostics?.patternSource);
     expect(body.meta.diagnostics?.corridorPatternTiles).toBeLessThanOrEqual(4);
   });
 });

@@ -427,6 +427,27 @@ export function patternIndexDataset(bucket: number): string {
 }
 
 /**
+ * The same rows, filed by where the pattern runs rather than by a hash of its id.
+ *
+ * The hashed buckets were the right idea aimed at the wrong question. A journey corridor wants the
+ * patterns along one strip of the country, and hashing scatters them across all 512 buckets — so
+ * the planner read a bucket per pattern, each one holding a few hundred patterns from everywhere
+ * in England of which it wanted one. Run 47 measured the result exactly: **91 buckets, 12.23 MiB,
+ * the whole request budget, and 112 of 197 patterns resolved** before the read was cut short.
+ *
+ * Filed on the pattern-tile grid instead, a corridor reads the two or three tiles it crosses and
+ * almost everything in them is wanted. Run 48 measured the same corridor's *geometry* tiles at
+ * 4.21 MiB for 625 patterns — fifteen times more pattern per byte — and these rows are those
+ * patterns without their polylines, which is the expensive part removed.
+ *
+ * The hashed layout stays published and readable, because an artifact built before this existed
+ * must keep working until it is rebuilt.
+ */
+export function patternIndexTileDataset(tile: string): string {
+  return `${PATTERN_INDEX_PREFIX}/t/${tile}`;
+}
+
+/**
  * The shard as text: a header, then one line per pattern keyed by its id.
  *
  * Read by prefix scan rather than by parsing the object — the same trick the route-pattern index
@@ -559,6 +580,13 @@ export interface NetworkIndexRecord {
   stopRouteTiles?: string[];
   patternIndexBuckets?: number;
   patternIndexShards?: number[];
+  /**
+   * The pattern-tile grid the index is also filed on, when the publish wrote one.
+   *
+   * Absent on an artifact built before the geographic layout existed, and its absence is what
+   * sends a reader back to the hashed buckets rather than to an object that is not there.
+   */
+  patternIndexTiles?: string[];
   /**
    * Which of those buckets were actually written.
    *
