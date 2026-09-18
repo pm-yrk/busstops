@@ -222,6 +222,65 @@ function valueAt(body: string, start: number, end: number, field: string): strin
   return to < 0 || to > end ? null : body.slice(from, to);
 }
 
+/**
+ * A JSON number read in place, for fields that are not strings.
+ *
+ * `valueAt` looks for `"field":"` and stops at the closing quote, which finds nothing when the
+ * value is a number. A coordinate is two numbers, and filtering a viewport's stops before they
+ * are built is the whole point of reading them positionally.
+ */
+function numberAt(body: string, start: number, end: number, field: string): number | null {
+  const needle = `"${field}":`;
+  const at = body.indexOf(needle, start);
+  if (at < 0 || at >= end) return null;
+  let from = at + needle.length;
+  // A number, not a quoted one: if this field is a string here, it is not the field we mean.
+  if (body.charCodeAt(from) === 34) return null;
+  let to = from;
+  while (to < end) {
+    const code = body.charCodeAt(to);
+    // digits, '-', '+', '.', 'e', 'E' — everything a JSON number may contain
+    const numeric =
+      (code >= 48 && code <= 57) ||
+      code === 45 ||
+      code === 43 ||
+      code === 46 ||
+      code === 101 ||
+      code === 69;
+    if (!numeric) break;
+    to += 1;
+  }
+  if (to === from) return null;
+  const value = Number(body.slice(from, to));
+  return Number.isFinite(value) ? value : null;
+}
+
+/**
+ * Stops inside a viewport, decided before the record is built.
+ *
+ * Run 54 measured one `/v1/map` request parsing 7.00 MiB into 23,806 stop records and returning
+ * 400 of them: the box filter ran over the finished objects, so ninety-eight per cent of the
+ * parse was allocated and thrown away. The tiles are a quarter of a degree and a dense city fills
+ * one, so the ratio is a property of the grid rather than of that viewport.
+ *
+ * A `Stop` carries exactly one coordinate, so `"lat":` occurs once per record and can be read
+ * where it lies. A record whose coordinate cannot be read is kept: the filter exists to save
+ * allocations, not to decide what is a stop, and the schema is what rejects a malformed one.
+ */
+function withinBoundingBox(bbox: {
+  west: number;
+  south: number;
+  east: number;
+  north: number;
+}): LineFilter {
+  return (body, start, end) => {
+    const lat = numberAt(body, start, end, "lat");
+    const lon = numberAt(body, start, end, "lon");
+    if (lat === null || lon === null) return true;
+    return lat >= bbox.south && lat <= bbox.north && lon >= bbox.west && lon <= bbox.east;
+  };
+}
+
 /** Matching on `"id":"` rather than on `id` is what keeps `"stopAreaId":"…"` out of it. */
 function hasWantedKey(
   body: string,
@@ -620,6 +679,7 @@ export class NetworkReader {
     now: number = Date.now(),
     ledger?: ReadLedger,
     budgetChars?: number,
+    keep?: LineFilter,
   ): Promise<{ stops: Stop[]; truncated: boolean }> {
     const index = await this.networkIndex(now);
     if (!index) return { stops: [], truncated: false };
@@ -630,6 +690,7 @@ export class NetworkReader {
       now,
       Math.min(budgetChars ?? this.requestChars, this.requestChars),
       ledger ? { ledger, family: "stops", budgetReason: "stop_read_budget" } : undefined,
+      keep,
     );
     return { stops: result.records, truncated: result.truncated };
   }
@@ -764,7 +825,22 @@ export class NetworkReader {
     ledger?: ReadLedger,
     budgetChars?: number,
   ): Promise<StopsInViewport> {
-    const read = await this.stopsInTiles(stopTilesForBoundingBox(bbox), now, ledger, budgetChars);
+    /*
+     * The box is applied twice, and only the first one costs anything.
+     *
+     * `withinBoundingBox` decides before the record is built, which is what stops a viewport
+     * allocating a whole quarter-degree tile to keep the part of it on screen. The filter below
+     * is the exact one — it reads the parsed coordinate rather than the text — and it is kept
+     * because the parse-time pass is deliberately forgiving: a record whose coordinate it cannot
+     * read positionally is let through rather than silently dropped.
+     */
+    const read = await this.stopsInTiles(
+      stopTilesForBoundingBox(bbox),
+      now,
+      ledger,
+      budgetChars,
+      withinBoundingBox(bbox),
+    );
 
     const inside = read.stops.filter((stop) => {
       const { lat, lon } = stop.locationCoordinate;

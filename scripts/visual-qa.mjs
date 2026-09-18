@@ -721,12 +721,29 @@ for (const size of WIDTHS) {
           } catch (error) {
             busClickFailed = error instanceof Error ? error.message.split("\n")[0] : String(error);
           }
-          await page.waitForTimeout(3_000);
+          /*
+           * Wait for the panel to settle, rather than for three seconds.
+           *
+           * The panel has three states — loading, error, loaded — and a fixed timeout reads
+           * whichever one happens to be on screen. Run 54 reported "(no route) to (no
+           * destination) — no facts" at all three widths and that was the loading state being
+           * photographed, not an empty panel: the component renders `LoadingBus` while its
+           * lookup is in flight and shows a real message when it fails. Reporting that as a
+           * product defect is the same mistake as run 51's "blank screen", so the check now
+           * waits for the loading indicator to go and says outright when it never did.
+           */
+          await page
+            .locator(".selected-vehicle .loading-bus")
+            .waitFor({ state: "detached", timeout: 15_000 })
+            .catch(() => {
+              /* Still loading is an outcome, reported below rather than thrown. */
+            });
           const busPanel = await page.evaluate(() => {
             const panel = document.querySelector(".selected-vehicle");
             if (!panel) return { open: false };
             return {
               open: true,
+              loading: panel.querySelector(".loading-bus") !== null,
               route: panel.querySelector(".route-badge")?.textContent?.trim() ?? "",
               destination:
                 panel.querySelector(".selected-vehicle__destination")?.textContent?.trim() ?? "",
@@ -752,16 +769,21 @@ for (const size of WIDTHS) {
             `${size.name}/live opens a bus when one is clicked`,
             busClickFailed === null &&
               busPanel.open &&
+              !busPanel.loading &&
               busPanel.error === "" &&
               busPanel.destination.length > 0,
             busClickFailed !== null
               ? `the click did not land: ${busClickFailed}`
-              : busPanel.open
-                ? `${busPanel.route || "(no route)"} to ${busPanel.destination || "(no destination)"} — ` +
-                  `${busPanel.facts.join(", ") || "no facts"}` +
-                  (busPanel.routeLink ? `; route link ${busPanel.routeLink}` : "; no route link") +
-                  (busPanel.error ? `; error: ${busPanel.error}` : "")
-                : "no bus panel opened",
+              : !busPanel.open
+                ? "no bus panel opened"
+                : busPanel.loading
+                  ? "the panel was still loading after 15s — the lookup never answered"
+                  : `${busPanel.route || "(no route)"} to ${busPanel.destination || "(no destination)"} — ` +
+                    `${busPanel.facts.join(", ") || "no facts"}` +
+                    (busPanel.routeLink
+                      ? `; route link ${busPanel.routeLink}`
+                      : "; no route link") +
+                    (busPanel.error ? `; error: ${busPanel.error}` : ""),
           );
           /*
            * A link built from the number on the front would be a link to somebody else's route.
@@ -807,12 +829,29 @@ for (const size of WIDTHS) {
       if (axe.error) {
         record(`${size.name}/${target.name} could be scanned for accessibility`, false, axe.error);
       } else {
+        /*
+         * Axe's own measurement, not just the selector.
+         *
+         * Run 54 reported `target-size (serious)` on a map control and a stop link, and neither
+         * could be reproduced here — this container cannot reach the basemap host, so MapLibre
+         * never draws its controls at all. A selector alone does not say how big the target
+         * actually was or what it was too close to, which is the difference between a fix and a
+         * guess. `failureSummary` carries the measured numbers, so the next run says outright
+         * what to change.
+         */
         const violations = axe.violations.map(
           (violation) =>
             `${violation.id} (${violation.impact ?? "unrated"}) on ` +
             violation.nodes
               .slice(0, 2)
-              .map((node) => node.target.join(" "))
+              .map((node) => {
+                const why = (node.failureSummary ?? "")
+                  .split("\n")
+                  .map((line) => line.trim())
+                  .filter((line) => line.length > 0 && !line.startsWith("Fix"))
+                  .join(" ");
+                return `${node.target.join(" ")}${why ? ` [${why.slice(0, 160)}]` : ""}`;
+              })
               .join(", "),
         );
         record(
@@ -959,7 +998,22 @@ for (const size of WIDTHS) {
         if ((await link.count()) > 0) {
           const href = await link.getAttribute("href");
           await link.click();
-          await page.waitForLoadState("networkidle", { timeout: 15_000 }).catch(() => {});
+          /*
+           * Wait for a heading, not for the network.
+           *
+           * These pages refresh on a ticker, so `networkidle` never arrives and the wait always
+           * expired — leaving the DOM read before the page had rendered anything, which is what
+           * "(no heading)" meant in run 54 rather than a broken link. A heading or an error state
+           * is what "the page arrived" actually looks like; still having neither after fifteen
+           * seconds is its own reported outcome.
+           */
+          await page
+            .locator("h1, .state-block--error")
+            .first()
+            .waitFor({ state: "visible", timeout: 15_000 })
+            .catch(() => {
+              /* Neither appeared; reported below rather than thrown. */
+            });
           const landed = await page.evaluate(() => {
             const body = document.body.textContent ?? "";
             return {
@@ -976,7 +1030,7 @@ for (const size of WIDTHS) {
               !landed.needsViewport &&
               !landed.notFound &&
               !landed.errored,
-            `${href} -> ${landed.path} (${landed.heading || "no heading"})` +
+            `${href} -> ${landed.path} (${landed.heading || "no heading after 15s"})` +
               (landed.needsViewport ? "; asked for a map area" : "") +
               (landed.notFound ? "; not found" : "") +
               (landed.errored ? "; error state" : ""),

@@ -361,11 +361,11 @@ describe("the shard cache stays bounded", () => {
      * capped, so reading many distinct tiles cannot grow past it.
      */
     const { reader } = await publishedReader();
+    // Unfiltered tile reads, for the reason given above: a viewport read no longer caches.
     for (let lat = 50; lat < 56; lat += 0.25) {
       for (let lon = -6; lon < 1; lon += 0.25) {
-        await reader.stopsInBoundingBox(
-          { west: lon, south: lat, east: lon + 0.1, north: lat + 0.1 },
-          10,
+        await reader.stopsInTiles(
+          stopTilesForBoundingBox({ west: lon, south: lat, east: lon + 0.1, north: lat + 0.1 }),
         );
       }
     }
@@ -384,7 +384,16 @@ describe("the shard cache stays bounded", () => {
     const { reader } = await publishedReader();
     expect(reader.residency()).toMatchObject({ shards: 0, chars: 0, records: 0 });
 
-    await reader.stopsInBoundingBox({ west: -1.6, south: 53.7, east: -1.5, north: 53.8 }, 10);
+    /*
+     * Through `stopsInTiles` rather than `stopsInBoundingBox`.
+     *
+     * A viewport read now filters at parse time and a filtered parse is deliberately never cached
+     * — see `withinBoundingBox` — so it is no longer a way to put anything in the cache. What is
+     * being asserted here is the cache, so the read has to be one that fills it.
+     */
+    await reader.stopsInTiles(
+      stopTilesForBoundingBox({ west: -1.6, south: 53.7, east: -1.5, north: 53.8 }),
+    );
     const after = reader.residency();
     expect(after.shards).toBeGreaterThan(0);
     expect(after.chars).toBeGreaterThan(0);
@@ -394,12 +403,14 @@ describe("the shard cache stays bounded", () => {
 
   it("can be trimmed to a floor before a request starts, rather than after it has failed", async () => {
     const { reader } = await publishedReader();
+    // Unfiltered tile reads: a viewport read filters at parse time and is never cached, so it is
+    // no longer a way to fill the cache this test is about.
     for (let lat = 50; lat < 56; lat += 0.25) {
       for (let lon = -6; lon < 1; lon += 0.25) {
-        await reader.stopsInBoundingBox(
-          { west: lon, south: lat, east: lon + 0.1, north: lat + 0.1 },
-          10,
-        );
+        const box = { west: lon, south: lat, east: lon + 0.1, north: lat + 0.1 };
+        await reader.stopsInTiles(stopTilesForBoundingBox(box));
+        // Two families, so "trim frees everything" is tested against more than a single shard.
+        await reader.patternsInTiles(patternTilesForBoundingBox(box));
       }
     }
     const before = reader.residency();
@@ -410,7 +421,9 @@ describe("the shard cache stays bounded", () => {
     expect(reader.residency()).toMatchObject({ shards: 0, chars: 0, records: 0 });
 
     // And a floor above what is resident is a no-op, so a warm isolate keeps its working set.
-    await reader.stopsInBoundingBox({ west: -1.6, south: 53.7, east: -1.5, north: 53.8 }, 10);
+    await reader.stopsInTiles(
+      stopTilesForBoundingBox({ west: -1.6, south: 53.7, east: -1.5, north: 53.8 }),
+    );
     const warm = reader.residency();
     expect(reader.trimTo(warm.chars)).toBe(0);
     expect(reader.residency().shards).toBe(warm.shards);
@@ -1162,5 +1175,79 @@ describe("answering without reading geometry", () => {
     const found = await reader.patternsByIds([built.patterns[0]!.id]);
     expect(found.available).toBe(false);
     expect(found.patterns.size).toBe(0);
+  });
+});
+
+/**
+ * The viewport parses what it returns, not the tile it came from.
+ *
+ * Run 54 measured one `/v1/map` request decoding 7.00 MiB into 23,806 stop records and answering
+ * with 400 of them, on an isolate that the platform then killed at its second request. The box
+ * filter ran over finished objects, so the other 23,406 were allocated and discarded. These
+ * assert the two things that matter about moving it into the parse: that the records stop being
+ * built, and that the answer does not change.
+ */
+describe("a viewport allocates the stops it keeps", () => {
+  it("builds far fewer records than the tile holds, for a box inside one tile", async () => {
+    const { reader } = await publishedReader();
+
+    // The whole tile, which is what the reader used to build whatever the box asked for.
+    const wide = await reader.stopsInBoundingBox(
+      { west: -3, south: 53, east: -1, north: 54.5 },
+      400,
+    );
+    expect(wide.stops.length).toBeGreaterThan(0);
+
+    const ledger = new ReadLedger(5_000);
+    const narrow = await reader.stopsInBoundingBox(
+      { west: -1.5605, south: 53.7994, east: -1.5595, north: 53.7998 },
+      400,
+      Date.now(),
+      ledger,
+    );
+
+    // Armley Road is in that pinhole; nothing else published here is.
+    expect(narrow.stops.map((stop) => stop.name)).toContain("Armley Road");
+    expect(narrow.stops.length).toBeLessThan(wide.stops.length);
+
+    /*
+     * The measurement the fix is for. `records` counts what the parse built, so a filter applied
+     * after the parse would leave this at the tile's full count however small the box was.
+     */
+    const parsed = ledger.toJSON().families.stops?.records ?? null;
+    expect(parsed).not.toBeNull();
+    expect(parsed).toBe(narrow.stops.length);
+  });
+
+  it("returns the same stops whether or not the filter ran", async () => {
+    const { reader } = await publishedReader();
+    const bbox = { west: -1.7, south: 53.7, east: -1.4, north: 53.9 };
+
+    const viaFilter = await reader.stopsInBoundingBox(bbox, 400);
+    // The unfiltered path, filtered afterwards, is the answer the filter must reproduce exactly.
+    const all = await reader.stopsInTiles(stopTilesForBoundingBox(bbox));
+    const expected = all.stops
+      .filter((stop) => {
+        const { lat, lon } = stop.locationCoordinate;
+        return lat >= bbox.south && lat <= bbox.north && lon >= bbox.west && lon <= bbox.east;
+      })
+      .map((stop) => stop.id)
+      .sort();
+
+    expect(viaFilter.stops.map((stop) => stop.id).sort()).toEqual(expected);
+  });
+
+  it("does not cache a filtered parse as though it were the whole tile", async () => {
+    const { reader } = await publishedReader();
+    const pinhole = { west: -1.5605, south: 53.7994, east: -1.5595, north: 53.7998 };
+
+    await reader.stopsInBoundingBox(pinhole, 400);
+    // A wide box over the same tile must still see everything in it: if the pinhole's parse had
+    // been cached, the tile would now "be" one stop and the rest of the city would vanish.
+    const wide = await reader.stopsInBoundingBox(
+      { west: -3, south: 53, east: -1, north: 54.5 },
+      400,
+    );
+    expect(wide.stops.length).toBeGreaterThan(1);
   });
 });
