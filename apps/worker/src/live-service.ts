@@ -98,6 +98,20 @@ export interface VehicleSourceDiagnostics {
   /** Age in seconds of the newest and oldest record the feed offered, accepted or not. */
   newestRecordAgeSeconds: number | null;
   oldestRecordAgeSeconds: number | null;
+  /**
+   * Where the time in this stage actually went.
+   *
+   * Every 1102 this deployment has produced arrived immediately after the largest `vehicles` stage
+   * in its trail, and run 49 measured that stage at 1,379ms, 1,729ms and 2,530ms during the
+   * morning peak against a 1,200ms budget — on route detail and then on the map, which is every
+   * endpoint that reads this feed. Handing the fetch a deadline did not shorten it, which points
+   * at the parse; but "points at" is not a measurement, and the last time a sound-looking
+   * inference went in without one it cost three runs. These two numbers settle it.
+   */
+  fetchMs?: number;
+  parseMs?: number;
+  /** Characters of feed text this source returned, which is what the parse is proportional to. */
+  chars?: number;
   error?: string;
 }
 
@@ -225,12 +239,16 @@ export class LiveService {
       const url = bodsDatafeedUrl(bbox, this.deps.env.BODS_API_KEY);
       const cacheKey = `bods:${url}`;
       try {
+        const fetchBegan = Date.now();
         const xml = await client.coalesce(cacheKey, () => client.fetchText(url, { timeoutMs }));
+        const fetchMs = Date.now() - fetchBegan;
+        const parseBegan = Date.now();
         const normalized = normalizeSiriVm(xml, {
           retrievedAt: now.toISOString(),
           vehicleSalt: this.vehicleSalt(),
           now,
         });
+        const parseMs = Date.now() - parseBegan;
         observations.push(...normalized.observations);
         for (const [ref, context] of normalized.journeyContext) {
           journeyContext.set(ref, {
@@ -242,15 +260,18 @@ export class LiveService {
               : { destinationName: context.destinationName }),
           });
         }
-        diagnostics.push(
-          summariseVehicleSource(
+        diagnostics.push({
+          ...summariseVehicleSource(
             "bods",
             normalized.observations.length,
             normalized.rejected,
             now,
             normalized.recordAgeSeconds,
           ),
-        );
+          fetchMs,
+          parseMs,
+          chars: xml.length,
+        });
       } catch (error) {
         failedSources.push("bods");
         diagnostics.push({

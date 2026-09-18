@@ -927,6 +927,19 @@ await check("the pattern-heavy endpoints survive dense cities, repeatedly", asyn
                * request and the kill arrives at the top of it, that is a memory ceiling; if it
                * shows the same figures throughout, it is not.
                */
+              /*
+               * And where the live stage's own time went. It is the largest stage in every trail
+               * and every 1102 has followed the largest one in its own; fetch and parse apart is
+               * what says whether that is the network or the isolate's CPU.
+               */
+              (routeDiagnostics.liveSources ?? [])
+                .map(
+                  (entry) =>
+                    `, ${entry.source} fetch=${entry.fetchMs ?? "?"}ms ` +
+                    `parse=${entry.parseMs ?? "?"}ms ` +
+                    `${((entry.chars ?? 0) / 1048576).toFixed(2)} MiB → ${entry.accepted} accepted`,
+                )
+                .join("") +
               describeResidency(routeDiagnostics.residency),
           );
           routePeakMs = Math.max(routePeakMs, routeDiagnostics.elapsedMs ?? 0);

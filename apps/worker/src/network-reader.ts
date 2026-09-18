@@ -652,6 +652,17 @@ export class NetworkReader {
     tiles: readonly string[],
     now: number = Date.now(),
     ledger?: ReadLedger,
+    /**
+     * How many characters of pattern text this read may open. Defaults to the map's own cap.
+     *
+     * The default exists for a viewport, which on the pattern grid can span ninety-six tiles —
+     * that is what three mebibytes is protecting against. A journey corridor is a different shape
+     * of question: run 48's spanned four tiles, and the cap cut it off after two and 4.21 MiB, so
+     * the slice came back incomplete and the planner refused before the trips were read. Stops and
+     * trips already take their budget from the caller for exactly this reason; patterns were the
+     * last read still using a number calibrated for somebody else's question.
+     */
+    budgetChars?: number,
   ): Promise<{ geometries: PatternGeometry[]; complete: boolean }> {
     const index = await this.networkIndex(now);
     if (!index) return { geometries: [], complete: false };
@@ -675,7 +686,8 @@ export class NetworkReader {
       index.patternTiles,
       index.version,
       now,
-      this.patternChars,
+      // Never above the request's own budget, whatever the caller asks for.
+      Math.min(budgetChars ?? this.patternChars, this.requestChars),
       ledger
         ? { ledger, family: "patterns", budgetReason: "pattern_enrichment_budget" }
         : undefined,
@@ -706,7 +718,7 @@ export class NetworkReader {
      * cost to discard it. Passed as a flag rather than assumed, because an artifact published
      * before the index existed still needs the old path.
      */
-    options: { patterns?: "tiles" | "skip" } = {},
+    options: { patterns?: "tiles" | "skip"; patternBudgetChars?: number } = {},
   ): Promise<NetworkSlice & { complete: boolean }> {
     /*
      * Stops and patterns are on different grids — a pattern is written to every tile it crosses,
@@ -727,7 +739,12 @@ export class NetworkReader {
     const patterns =
       options.patterns === "skip"
         ? { geometries: [] as PatternGeometry[], complete: true }
-        : await this.patternsInTilesDetailed(patternTilesForBoundingBox(bbox), now, ledger);
+        : await this.patternsInTilesDetailed(
+            patternTilesForBoundingBox(bbox),
+            now,
+            ledger,
+            options.patternBudgetChars,
+          );
     const services = await this.services(now);
     return {
       stopsById: new Map(stops.stops.map((stop) => [stop.id, stop])),

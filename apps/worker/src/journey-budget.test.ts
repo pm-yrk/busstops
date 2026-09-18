@@ -9,6 +9,8 @@ import {
 import { JOURNEY_LIMITS, JourneyService } from "./journey-service.js";
 import type { NetworkSlice } from "./network-reader.js";
 import { LiveService } from "./live-service.js";
+import { NetworkReader } from "./network-reader.js";
+import { patternTilesForBoundingBox } from "@busstops/pipeline-static-network";
 
 /**
  * The stage that answered Cloudflare error 1102 on Leeds to Leeds Bradford Airport.
@@ -181,6 +183,28 @@ describe("a journey plan owns its trip read", () => {
  * and the planner refused to plan. The trips name their patterns, so the read order reverses:
  * trips first, then exactly the patterns they named.
  */
+describe("a corridor's patterns get a corridor's budget", () => {
+  it("never lets a caller's pattern budget exceed the request's own ceiling", async () => {
+    /*
+     * The journey asks for six mebibytes of pattern where the map asks for three, because a
+     * corridor is not a viewport. What must not follow is a caller being able to ask for more
+     * than the request may hold in total — that ceiling is the one the isolate depends on.
+     */
+    const { store } = await publish(20);
+    const reader = new NetworkReader(store, 15 * 60 * 1000, 1024);
+    const result = await reader.patternsInTilesDetailed(
+      patternTilesForBoundingBox(corridorBoundingBox(request.origin, request.destination, 800)),
+      Date.now(),
+      undefined,
+      // Far above the request ceiling this reader was built with.
+      64 * 1024 * 1024,
+    );
+    // The request ceiling wins: a kilobyte cannot hold a pattern tile, so the read is cut short
+    // and says so — which is what the caller's budget must never be able to talk it out of.
+    expect(result.complete).toBe(false);
+  });
+});
+
 describe("a live lookup cannot outlive the budget it entered with", () => {
   it("hands the route's remaining time to the vehicle fetch", async () => {
     /*

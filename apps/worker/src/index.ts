@@ -119,19 +119,34 @@ const JOURNEY_STOP_READ_CHARS = 5 * 1024 * 1024;
 /**
  * Above this many pattern tiles, a corridor asks the index instead of reading the tiles.
  *
- * One, and the number is measured rather than chosen. Run 44 planned Leeds to Leeds Bradford
- * Airport from a single corridor tile. Run 48 set this to four, took the tile path over a
- * four-tile corridor, and read 4.21 MiB across two tiles before the three-mebibyte pattern budget
- * cut it short — so the corridor came back incomplete and the journey refused without the trips
- * ever being read. Two tiles is already too many; one is where it is known to work.
- *
- * Above one tile the index is used instead, and on a long corridor that currently refuses too —
- * runs 45 to 47 spent 12 MiB of index buckets to resolve 112 of 197 patterns. Neither path plans
- * a multi-tile corridor today, which is recorded in BUILD_STATE.md rather than papered over: the
- * fix is to bucket the pattern index so a corridor's patterns land together instead of hashing
- * across the country, and that is a republish of a national artifact.
+ * Two, paired with the pattern budget below. Run 44 planned Leeds to Leeds Bradford Airport from
+ * a single corridor tile; run 48 measured two tiles at 4.21 MiB, which that budget covers. Beyond
+ * two the index is used instead, because tiles have no ceiling of their own and a cross-country
+ * corridor would open them without end.
  */
-const JOURNEY_PATTERN_TILE_LIMIT = 1;
+const JOURNEY_PATTERN_TILE_LIMIT = 2;
+
+/**
+ * What a corridor's pattern tiles may cost, as against a viewport's.
+ *
+ * This is a byte limit being raised, so it is worth being exact about why. Three mebibytes is the
+ * map's cap and it protects against a viewport, which on the pattern grid can span ninety-six
+ * tiles. A journey corridor is narrow: run 48's spanned four, and the map's cap stopped the read
+ * after two tiles and 4.21 MiB — so the slice came back incomplete and the planner refused before
+ * a single trip had been read.
+ *
+ * The same run measured what the alternative costs. The index path spent 12.23 MiB across 91
+ * buckets to resolve 112 of 197 patterns; those two tiles held 625 patterns for 4.21 MiB — about
+ * fifteen times more pattern per byte. The cheap read was being stopped by a number chosen to
+ * protect against the expensive one.
+ *
+ * Six mebibytes covers two corridor tiles with room, and every other bound is unchanged: the
+ * request's own twelve-mebibyte ceiling still caps it, the six-second clock still ends it, and
+ * `JOURNEY_PATTERN_TILE_LIMIT` still sends a wider corridor to the index rather than opening tiles
+ * without end. A corridor that still cannot be read in full is still refused rather than planned
+ * around.
+ */
+const JOURNEY_PATTERN_READ_CHARS = 6 * 1024 * 1024;
 
 /** The same clock every other read has. "Stops near me" is one tile's worth of question. */
 const NEARBY_BUDGET_MS = 1_500;
@@ -1128,6 +1143,7 @@ router.get("/v1/journeys", async (_request, { env, url }) => {
   const slice = await journeyLedger.stage("slice", () =>
     network!.sliceForBoundingBox(corridorBox, Date.now(), journeyLedger, JOURNEY_STOP_READ_CHARS, {
       patterns: usePatternIndex ? "skip" : "tiles",
+      patternBudgetChars: JOURNEY_PATTERN_READ_CHARS,
     }),
   );
   journeyLedger.count({ stops: slice.stopsById.size, patterns: slice.patternsById.size });
@@ -1619,6 +1635,8 @@ router.get("/v1/routes/:id", async (_request, { env, params }) => {
   let health: Awaited<ReturnType<LiveService["vehiclesInBoundingBox"]>>["health"] = [];
   let failedSources: string[] = [];
   let liveSkipped = false;
+  let liveDiagnostics: Awaited<ReturnType<LiveService["vehiclesInBoundingBox"]>>["diagnostics"] =
+    [];
 
   if (cappedBox && liveService) {
     /*
@@ -1646,6 +1664,7 @@ router.get("/v1/routes/:id", async (_request, { env, params }) => {
       );
       health = live.health;
       failedSources = live.failedSources;
+      liveDiagnostics = live.diagnostics;
       activeVehicles = live.observations
         .filter((observation) => {
           const context = live.journeyContext.get(observation.vehicleRef);
@@ -1731,6 +1750,21 @@ router.get("/v1/routes/:id", async (_request, { env, params }) => {
           stopsResolved: stopsResult.resolved,
           stopReadTruncated: stopsResult.truncated,
           liveLookupSkipped: liveSkipped,
+          /*
+           * How long the live feed took to fetch and how long to parse, separately.
+           *
+           * This stage is the largest in every trail and every 1102 has followed the largest one
+           * in its own. One number could not say whether that was the network or the isolate's
+           * CPU; two can.
+           */
+          liveSources: liveDiagnostics.map((entry) => ({
+            source: entry.source,
+            outcome: entry.outcome,
+            accepted: entry.accepted,
+            fetchMs: entry.fetchMs ?? null,
+            parseMs: entry.parseMs ?? null,
+            chars: entry.chars ?? null,
+          })),
           liveBoxCapped,
           degradationReason,
         },
