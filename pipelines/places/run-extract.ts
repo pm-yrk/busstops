@@ -28,6 +28,15 @@ import {
 const PAUSE_BETWEEN_AREAS_MS = 5_000;
 /** Names carried into the report per area, so a missing landmark can be checked against reality. */
 const SAMPLE_NAMES_PER_AREA = 40;
+/**
+ * Kinds listed in full rather than sampled.
+ *
+ * The smallest categories, and the ones somebody types into a search box by name: a shopping
+ * centre, a station, an airport. If a landmark of one of these kinds is missing from the
+ * gazetteer, this is the list that says so outright instead of leaving it to be inferred from a
+ * count.
+ */
+const LANDMARK_KINDS = new Set(["shopping", "bus_station", "rail_station", "airport"]);
 const QUERY_TIMEOUT_MS = 120_000;
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -73,16 +82,28 @@ async function main(): Promise<number> {
       for (const place of extracted.places) places.set(place.id, place);
       const kinds: Record<string, number> = {};
       for (const place of extracted.places) kinds[place.kind] = (kinds[place.kind] ?? 0) + 1;
+      /*
+       * Two samples, because the first one answered the wrong question.
+       *
+       * Forty names taken alphabetically off the top of Birmingham's 290 were all "B" — every one
+       * of them a Birmingham-something — and `Bullring`, the landmark this report exists to
+       * account for, sorts after them. A sample that only ever shows the first letter cannot say
+       * what an area holds. So the general one is spread evenly across the sorted list, and the
+       * categories a passenger actually names a destination from are listed in full: they are the
+       * smallest kinds, and they are where a missing landmark would be.
+       */
+      const sorted = extracted.places.map((place) => place.name).sort((a, b) => a.localeCompare(b));
+      const step = Math.max(1, Math.ceil(sorted.length / SAMPLE_NAMES_PER_AREA));
       perArea.push({
         area: area.id,
         places: extracted.places.length,
         skipped: extracted.skipped,
         kinds,
-        // Alphabetical and capped: a stable sample that names what is in there, not a dump.
-        sampleNames: extracted.places
-          .map((place) => place.name)
-          .sort((a, b) => a.localeCompare(b))
-          .slice(0, SAMPLE_NAMES_PER_AREA),
+        sampleNames: sorted.filter((_, at) => at % step === 0),
+        landmarks: extracted.places
+          .filter((place) => LANDMARK_KINDS.has(place.kind))
+          .map((place) => `${place.name} (${place.kind})`)
+          .sort((a, b) => a.localeCompare(b)),
       });
       console.log(
         `${area.name}: ${extracted.places.length} place(s), ${extracted.skipped} skipped.`,

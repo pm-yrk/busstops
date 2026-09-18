@@ -773,198 +773,217 @@ await check("the pattern-heavy endpoints survive dense cities, repeatedly", asyn
       ? ""
       : ` — what the requests before it cost: ${routeTrail.slice(-6).join(" | ")}`;
 
-  for (const city of CITIES) {
-    let mapOk = 0;
-    let routeOk = 0;
-    let routeComplete = 0;
-    let routeIncomplete = 0;
-    let sampledRoute = null;
-
-    for (let attempt = 0; attempt < ATTEMPTS_PER_CITY; attempt += 1) {
-      const map = await getJson(`/v1/map?bbox=${city.bbox}&zoom=15`);
-      // An HTML body from an API is the platform speaking, not the Worker.
-      const html = map.text.trimStart().toLowerCase().startsWith("<!doctype");
-      if (html || map.response.status === 503) platformErrors += 1;
-      assert(
-        !html,
-        `${city.name}: /v1/map answered the platform's error page, not the Worker ` +
-          `(${map.response.status}${describePlatformPage(map.response, map.text)}) on attempt ` +
-          `${String(attempt + 1)}${trail()}`,
-      );
-      assert(map.response.ok, `${city.name}: /v1/map gave ${map.response.status}`);
-      mapOk += 1;
-      mapRequests += 1;
-
-      /*
-       * The core of the map is not optional, whatever happened to the enrichment.
-       *
-       * Stops and live vehicles are read first and are never skipped; route names run on what
-       * time is left. So a degraded answer must still be a real map — and it must say it is
-       * degraded rather than implying those stops have no services.
-       */
-      const data = map.body?.data;
-      assert(
-        Array.isArray(data?.stops) && data.stops.length > 0,
-        `${city.name}: /v1/map returned no stops on attempt ${String(attempt + 1)}`,
-      );
-      assert(
-        Array.isArray(data?.vehicles),
-        `${city.name}: /v1/map returned no vehicles array on attempt ${String(attempt + 1)}`,
-      );
-      assert(
-        typeof data?.degraded === "boolean",
-        `${city.name}: /v1/map does not say whether it is degraded`,
-      );
-      if (data.degraded) {
-        degradedResponses += 1;
-        assert(
-          typeof data.degradationReason === "string" && data.degradationReason.length > 0,
-          `${city.name}: /v1/map says it is degraded and will not say why`,
-        );
-      } else {
-        // Not degraded means the enrichment finished, so the stops must actually carry it.
-        const named = data.stops.filter((stop) => (stop.routePublicNames ?? []).length > 0);
-        assert(
-          named.length > 0,
-          `${city.name}: /v1/map claims it is not degraded and yet no stop carries a service`,
-        );
-      }
-
-      const diagnostics = map.body?.meta?.diagnostics;
-      assert(diagnostics, `${city.name}: /v1/map carries no diagnostics`);
-      assert(
-        diagnostics.objectsRequested > 0,
-        `${city.name}: /v1/map says it requested no objects, which cannot be true`,
-      );
-      peakChars = Math.max(peakChars, diagnostics.chars ?? 0);
-      peakObjects = Math.max(peakObjects, diagnostics.objectsRequested ?? 0);
-      peakMs = Math.max(peakMs, diagnostics.elapsedMs ?? 0);
-
-      // Routes that genuinely call in this city, taken from a stop the map just returned.
-      const stop = (map.body?.data?.stops ?? [])[0];
-      if (!stop) continue;
-      const board = await getJson(`/v1/stops/${encodeURIComponent(stop.id)}`);
-      /*
-       * More than one route per attempt, and different ones.
-       *
-       * The loop used to take the first route of the first stop every time, so five attempts in
-       * Leeds were five requests for the same route and the fifth was answered from a warm cache.
-       * The failure being hunted is what a *sequence of different* route pages leaves in an
-       * isolate, so the sample has to move.
-       */
-      const routes = (board.body?.data?.routes ?? []).filter((candidate) => candidate?.id);
-      if (routes.length === 0) continue;
-      const chosen = [routes[attempt % routes.length], routes[(attempt + 1) % routes.length]]
-        .filter(Boolean)
-        .filter((candidate, at, all) => all.findIndex((r) => r.id === candidate.id) === at);
-
-      for (const route of chosen) {
-        sampledRoute = route.publicName ?? route.id;
-
-        const detail = await getJson(`/v1/routes/${encodeURIComponent(route.id)}`);
-        routeRequests += 1;
-        const detailHtml = detail.text.trimStart().toLowerCase().startsWith("<!doctype");
-        if (detailHtml || detail.response.status === 503) platformErrors += 1;
-        assert(
-          !detailHtml,
-          `${city.name}: /v1/routes/${route.id} answered the platform's error page, not the ` +
-            `Worker (${detail.response.status}${describePlatformPage(detail.response, detail.text)}) ` +
-            `on attempt ${String(attempt + 1)}${trail()}`,
-        );
-        assert(
-          detail.response.ok,
-          `${city.name}: route detail gave ${describe(detail.response, detail.body, detail.text)}`,
-        );
-        routeOk += 1;
-
-        /*
-         * What the route page actually cost, by stage.
-         *
-         * Run 42 had the pattern read measured and route detail still died, so the rest of the
-         * handler is on the ledger now: the index, services, operators, stop resolution, the live
-         * feed. This is the line that says which of them is expensive, rather than leaving it to
-         * be guessed at from the outside.
-         */
-        const routeDiagnostics = detail.body?.meta?.diagnostics;
-        assert(routeDiagnostics, `${city.name}: route detail carries no diagnostics${trail()}`);
-        routeTrail.push(
-          `${city.name}#${String(attempt + 1)} ${sampledRoute}: ` +
-            `${String(routeDiagnostics.elapsedMs ?? 0)}ms, ` +
-            `${String(routeDiagnostics.objectsRequested ?? 0)} req/${String(routeDiagnostics.objectsRead ?? 0)} read/` +
-            `${String(routeDiagnostics.objectsCached ?? 0)} cached, ` +
-            `${((routeDiagnostics.chars ?? 0) / 1048576).toFixed(2)} MiB, ` +
-            `${String(routeDiagnostics.stopTilesRequested ?? 0)} tile(s), ` +
-            `${String(routeDiagnostics.stopsResolved ?? 0)}/${String(routeDiagnostics.stopsRequested ?? 0)} stop(s), ` +
-            Object.entries(routeDiagnostics.stages ?? {})
-              .map(([stage, ms]) => `${stage}=${ms}ms`)
-              .join(" ") +
-            /*
-             * What the isolate was already holding, which is the half of the question that four
-             * runs of diagnostics could not answer.
-             *
-             * Run 45 answered six of these requests in 300–900ms, reading two or three mebibytes
-             * apiece, and the platform killed the seventh. On the per-request numbers alone
-             * "these requests are cheap" and "this isolate is full" are the same reading. This is
-             * the line that separates them: if the trail shows residency climbing request by
-             * request and the kill arrives at the top of it, that is a memory ceiling; if it
-             * shows the same figures throughout, it is not.
-             */
-            describeResidency(routeDiagnostics.residency),
-        );
-        routePeakMs = Math.max(routePeakMs, routeDiagnostics.elapsedMs ?? 0);
-        routePeakChars = Math.max(routePeakChars, routeDiagnostics.chars ?? 0);
-        routePeakObjects = Math.max(routePeakObjects, routeDiagnostics.objectsRequested ?? 0);
-        if ((routeDiagnostics.elapsedMs ?? 0) >= routeWorstMs) {
-          routeWorstMs = routeDiagnostics.elapsedMs ?? 0;
-          routeWorst =
-            `${city.name} ${sampledRoute}: ` +
-            Object.entries(routeDiagnostics.stages ?? {})
-              .map(([stage, ms]) => `${stage}=${ms}ms`)
-              .join(" ") +
-            `; ${String(routeDiagnostics.objectsRequested ?? 0)} object(s), ` +
-            `${((routeDiagnostics.chars ?? 0) / 1048576).toFixed(2)} MiB, ` +
-            `${String(routeDiagnostics.stopTilesRequested ?? 0)} stop tile(s), ` +
-            `${String(routeDiagnostics.stopsResolved ?? 0)}/${String(routeDiagnostics.stopsRequested ?? 0)} stop(s)` +
-            (routeDiagnostics.liveLookupSkipped ? ", live skipped" : "") +
-            (routeDiagnostics.liveBoxCapped ? ", live area capped" : "");
-        }
-
-        /*
-         * Completeness is a fact about the answer, not a confidence score. A capped read must say
-         * so; what must never happen is a truncated variant list presented as the route's extent.
-         */
-        const complete = detail.body?.data?.complete;
-        const coverage = detail.body?.meta?.coverage;
-        if (complete === false) {
-          routeIncomplete += 1;
-          assert(
-            coverage === 0,
-            `${city.name}: route detail says it is incomplete but reports coverage ${String(coverage)}`,
-          );
-        } else if (complete === true) {
-          routeComplete += 1;
-          /*
-           * And a complete route has to be a route. `complete: true` with no stops on it would be
-           * the same wrong answer the flag exists to prevent, arrived at from the other side.
-           */
-          const variants = detail.body?.data?.variants ?? [];
-          const stops = variants.reduce(
-            (total, variant) => total + (variant.stops?.length ?? 0),
-            0,
-          );
-          assert(
-            stops > 0,
-            `${city.name}: route ${sampledRoute} calls itself complete and lists no stops`,
-          );
-        }
-      }
-    }
-
-    lines.push(
-      `${city.name}: map ${mapOk}/${ATTEMPTS_PER_CITY}, route ${routeOk}` +
-        (sampledRoute ? ` (${sampledRoute})` : "") +
-        `, complete ${routeComplete}, incomplete ${routeIncomplete}`,
+  /*
+   * And it has to survive a throw that is not an assertion, too.
+   *
+   * Run 47 failed here with "The operation was aborted due to timeout" and nothing else: the
+   * fetch's own abort escaped the loop before any assertion ran, taking the whole trail with it.
+   * A request that is slow enough to abort is exactly the case the trail exists to describe, so
+   * the loop is wrapped and any escape is re-thrown carrying what the requests before it cost.
+   */
+  try {
+    await sweepCities();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      message.includes("what the requests before it cost") ? message : message + trail(),
     );
+  }
+
+  async function sweepCities() {
+    for (const city of CITIES) {
+      let mapOk = 0;
+      let routeOk = 0;
+      let routeComplete = 0;
+      let routeIncomplete = 0;
+      let sampledRoute = null;
+
+      for (let attempt = 0; attempt < ATTEMPTS_PER_CITY; attempt += 1) {
+        const map = await getJson(`/v1/map?bbox=${city.bbox}&zoom=15`);
+        // An HTML body from an API is the platform speaking, not the Worker.
+        const html = map.text.trimStart().toLowerCase().startsWith("<!doctype");
+        if (html || map.response.status === 503) platformErrors += 1;
+        assert(
+          !html,
+          `${city.name}: /v1/map answered the platform's error page, not the Worker ` +
+            `(${map.response.status}${describePlatformPage(map.response, map.text)}) on attempt ` +
+            `${String(attempt + 1)}${trail()}`,
+        );
+        assert(map.response.ok, `${city.name}: /v1/map gave ${map.response.status}`);
+        mapOk += 1;
+        mapRequests += 1;
+
+        /*
+         * The core of the map is not optional, whatever happened to the enrichment.
+         *
+         * Stops and live vehicles are read first and are never skipped; route names run on what
+         * time is left. So a degraded answer must still be a real map — and it must say it is
+         * degraded rather than implying those stops have no services.
+         */
+        const data = map.body?.data;
+        assert(
+          Array.isArray(data?.stops) && data.stops.length > 0,
+          `${city.name}: /v1/map returned no stops on attempt ${String(attempt + 1)}`,
+        );
+        assert(
+          Array.isArray(data?.vehicles),
+          `${city.name}: /v1/map returned no vehicles array on attempt ${String(attempt + 1)}`,
+        );
+        assert(
+          typeof data?.degraded === "boolean",
+          `${city.name}: /v1/map does not say whether it is degraded`,
+        );
+        if (data.degraded) {
+          degradedResponses += 1;
+          assert(
+            typeof data.degradationReason === "string" && data.degradationReason.length > 0,
+            `${city.name}: /v1/map says it is degraded and will not say why`,
+          );
+        } else {
+          // Not degraded means the enrichment finished, so the stops must actually carry it.
+          const named = data.stops.filter((stop) => (stop.routePublicNames ?? []).length > 0);
+          assert(
+            named.length > 0,
+            `${city.name}: /v1/map claims it is not degraded and yet no stop carries a service`,
+          );
+        }
+
+        const diagnostics = map.body?.meta?.diagnostics;
+        assert(diagnostics, `${city.name}: /v1/map carries no diagnostics`);
+        assert(
+          diagnostics.objectsRequested > 0,
+          `${city.name}: /v1/map says it requested no objects, which cannot be true`,
+        );
+        peakChars = Math.max(peakChars, diagnostics.chars ?? 0);
+        peakObjects = Math.max(peakObjects, diagnostics.objectsRequested ?? 0);
+        peakMs = Math.max(peakMs, diagnostics.elapsedMs ?? 0);
+
+        // Routes that genuinely call in this city, taken from a stop the map just returned.
+        const stop = (map.body?.data?.stops ?? [])[0];
+        if (!stop) continue;
+        const board = await getJson(`/v1/stops/${encodeURIComponent(stop.id)}`);
+        /*
+         * More than one route per attempt, and different ones.
+         *
+         * The loop used to take the first route of the first stop every time, so five attempts in
+         * Leeds were five requests for the same route and the fifth was answered from a warm cache.
+         * The failure being hunted is what a *sequence of different* route pages leaves in an
+         * isolate, so the sample has to move.
+         */
+        const routes = (board.body?.data?.routes ?? []).filter((candidate) => candidate?.id);
+        if (routes.length === 0) continue;
+        const chosen = [routes[attempt % routes.length], routes[(attempt + 1) % routes.length]]
+          .filter(Boolean)
+          .filter((candidate, at, all) => all.findIndex((r) => r.id === candidate.id) === at);
+
+        for (const route of chosen) {
+          sampledRoute = route.publicName ?? route.id;
+
+          const detail = await getJson(`/v1/routes/${encodeURIComponent(route.id)}`);
+          routeRequests += 1;
+          const detailHtml = detail.text.trimStart().toLowerCase().startsWith("<!doctype");
+          if (detailHtml || detail.response.status === 503) platformErrors += 1;
+          assert(
+            !detailHtml,
+            `${city.name}: /v1/routes/${route.id} answered the platform's error page, not the ` +
+              `Worker (${detail.response.status}${describePlatformPage(detail.response, detail.text)}) ` +
+              `on attempt ${String(attempt + 1)}${trail()}`,
+          );
+          assert(
+            detail.response.ok,
+            `${city.name}: route detail gave ${describe(detail.response, detail.body, detail.text)}`,
+          );
+          routeOk += 1;
+
+          /*
+           * What the route page actually cost, by stage.
+           *
+           * Run 42 had the pattern read measured and route detail still died, so the rest of the
+           * handler is on the ledger now: the index, services, operators, stop resolution, the live
+           * feed. This is the line that says which of them is expensive, rather than leaving it to
+           * be guessed at from the outside.
+           */
+          const routeDiagnostics = detail.body?.meta?.diagnostics;
+          assert(routeDiagnostics, `${city.name}: route detail carries no diagnostics${trail()}`);
+          routeTrail.push(
+            `${city.name}#${String(attempt + 1)} ${sampledRoute}: ` +
+              `${String(routeDiagnostics.elapsedMs ?? 0)}ms, ` +
+              `${String(routeDiagnostics.objectsRequested ?? 0)} req/${String(routeDiagnostics.objectsRead ?? 0)} read/` +
+              `${String(routeDiagnostics.objectsCached ?? 0)} cached, ` +
+              `${((routeDiagnostics.chars ?? 0) / 1048576).toFixed(2)} MiB, ` +
+              `${String(routeDiagnostics.stopTilesRequested ?? 0)} tile(s), ` +
+              `${String(routeDiagnostics.stopsResolved ?? 0)}/${String(routeDiagnostics.stopsRequested ?? 0)} stop(s), ` +
+              Object.entries(routeDiagnostics.stages ?? {})
+                .map(([stage, ms]) => `${stage}=${ms}ms`)
+                .join(" ") +
+              /*
+               * What the isolate was already holding, which is the half of the question that four
+               * runs of diagnostics could not answer.
+               *
+               * Run 45 answered six of these requests in 300–900ms, reading two or three mebibytes
+               * apiece, and the platform killed the seventh. On the per-request numbers alone
+               * "these requests are cheap" and "this isolate is full" are the same reading. This is
+               * the line that separates them: if the trail shows residency climbing request by
+               * request and the kill arrives at the top of it, that is a memory ceiling; if it
+               * shows the same figures throughout, it is not.
+               */
+              describeResidency(routeDiagnostics.residency),
+          );
+          routePeakMs = Math.max(routePeakMs, routeDiagnostics.elapsedMs ?? 0);
+          routePeakChars = Math.max(routePeakChars, routeDiagnostics.chars ?? 0);
+          routePeakObjects = Math.max(routePeakObjects, routeDiagnostics.objectsRequested ?? 0);
+          if ((routeDiagnostics.elapsedMs ?? 0) >= routeWorstMs) {
+            routeWorstMs = routeDiagnostics.elapsedMs ?? 0;
+            routeWorst =
+              `${city.name} ${sampledRoute}: ` +
+              Object.entries(routeDiagnostics.stages ?? {})
+                .map(([stage, ms]) => `${stage}=${ms}ms`)
+                .join(" ") +
+              `; ${String(routeDiagnostics.objectsRequested ?? 0)} object(s), ` +
+              `${((routeDiagnostics.chars ?? 0) / 1048576).toFixed(2)} MiB, ` +
+              `${String(routeDiagnostics.stopTilesRequested ?? 0)} stop tile(s), ` +
+              `${String(routeDiagnostics.stopsResolved ?? 0)}/${String(routeDiagnostics.stopsRequested ?? 0)} stop(s)` +
+              (routeDiagnostics.liveLookupSkipped ? ", live skipped" : "") +
+              (routeDiagnostics.liveBoxCapped ? ", live area capped" : "");
+          }
+
+          /*
+           * Completeness is a fact about the answer, not a confidence score. A capped read must say
+           * so; what must never happen is a truncated variant list presented as the route's extent.
+           */
+          const complete = detail.body?.data?.complete;
+          const coverage = detail.body?.meta?.coverage;
+          if (complete === false) {
+            routeIncomplete += 1;
+            assert(
+              coverage === 0,
+              `${city.name}: route detail says it is incomplete but reports coverage ${String(coverage)}`,
+            );
+          } else if (complete === true) {
+            routeComplete += 1;
+            /*
+             * And a complete route has to be a route. `complete: true` with no stops on it would be
+             * the same wrong answer the flag exists to prevent, arrived at from the other side.
+             */
+            const variants = detail.body?.data?.variants ?? [];
+            const stops = variants.reduce(
+              (total, variant) => total + (variant.stops?.length ?? 0),
+              0,
+            );
+            assert(
+              stops > 0,
+              `${city.name}: route ${sampledRoute} calls itself complete and lists no stops`,
+            );
+          }
+        }
+      }
+
+      lines.push(
+        `${city.name}: map ${mapOk}/${ATTEMPTS_PER_CITY}, route ${routeOk}` +
+          (sampledRoute ? ` (${sampledRoute})` : "") +
+          `, complete ${routeComplete}, incomplete ${routeIncomplete}`,
+      );
+    }
   }
 
   assert(platformErrors === 0, `${String(platformErrors)} platform error page(s) were returned`);
