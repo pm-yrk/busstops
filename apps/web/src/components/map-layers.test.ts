@@ -9,6 +9,7 @@ import {
   stopFeatures,
   vehicleFeatures,
 } from "./mapLayers.js";
+import { basemapFontStack } from "./MapView.js";
 
 /*
  * The live map's semantic zoom.
@@ -192,5 +193,54 @@ describe("why a viewport has no buses on it", () => {
   it("falls back to the ordinary answer when no source is named", () => {
     expect(emptyVehicleReason([], "none")).toBe("none_reported");
     expect(describeEmptyVehicles("none_reported")).toContain("Try panning");
+  });
+});
+
+describe("the font the map draws its text with", () => {
+  /**
+   * A minimal stand-in for MapLibre's map: `basemapFontStack` reads one thing off it.
+   */
+  const mapWith = (layers: unknown[]) =>
+    ({ getStyle: () => ({ layers }) }) as unknown as Parameters<typeof basemapFontStack>[0];
+
+  it("borrows the stack the basemap's own labels already use", () => {
+    expect(
+      basemapFontStack(
+        mapWith([
+          { id: "ground", type: "background" },
+          { id: "roads", type: "line" },
+          { id: "place-labels", type: "symbol", layout: { "text-font": ["Noto Sans Regular"] } },
+        ]),
+      ),
+    ).toEqual(["Noto Sans Regular"]);
+  });
+
+  /*
+   * The whole defect: MapLibre asks for its *default* stack when a symbol layer names none, the
+   * basemap 404s, and the layer draws nothing at all — silently, while the list beside it is
+   * full. Where there is no stack to borrow, the text is omitted rather than requested.
+   */
+  it("reports none when the style has no symbol layer to borrow from", () => {
+    expect(basemapFontStack(mapWith([{ id: "ground", type: "background" }]))).toBeNull();
+  });
+
+  it("reports none rather than throwing when the style cannot be read at all", () => {
+    const broken = {
+      getStyle: () => {
+        throw new Error("style not loaded");
+      },
+    } as unknown as Parameters<typeof basemapFontStack>[0];
+    expect(basemapFontStack(broken)).toBeNull();
+  });
+
+  it("ignores a symbol layer whose font is not a list of names", () => {
+    expect(
+      basemapFontStack(
+        mapWith([
+          { id: "odd", type: "symbol", layout: { "text-font": ["get", "font"] as unknown } },
+          { id: "labels", type: "symbol", layout: { "text-font": ["Open Sans Regular"] } },
+        ]),
+      ),
+    ).toEqual(["Open Sans Regular"]);
   });
 });

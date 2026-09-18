@@ -353,14 +353,37 @@ function trianglePip(): { width: number; height: number; data: Uint8Array } {
  * Null when the style has no symbol layers at all, which is what a blank test style is. The
  * layers then draw their icons and circles and skip their text, rather than failing to draw.
  */
+/**
+ * The heads of the expressions `text-font` is allowed to be.
+ *
+ * A font stack and a data-driven expression are both arrays of strings — `["Noto Sans Regular"]`
+ * and `["get", "font"]` are indistinguishable by shape — so borrowing the second as though it were
+ * the first would ask the basemap for a font called "get" and land back where this started. No
+ * font is named after a MapLibre operator, which makes the head the reliable tell.
+ */
+const FONT_EXPRESSION_HEADS = new Set([
+  "literal",
+  "step",
+  "case",
+  "match",
+  "coalesce",
+  "get",
+  "interpolate",
+  "concat",
+  "to-string",
+  "let",
+  "var",
+]);
+
 export function basemapFontStack(map: MapLibreMap): string[] | null {
   try {
     for (const layer of map.getStyle()?.layers ?? []) {
       if (layer.type !== "symbol") continue;
       const font = (layer.layout as { "text-font"?: unknown } | undefined)?.["text-font"];
-      if (Array.isArray(font) && font.every((entry) => typeof entry === "string")) {
-        return font as string[];
-      }
+      if (!Array.isArray(font) || font.length === 0) continue;
+      if (!font.every((entry) => typeof entry === "string")) continue;
+      if (FONT_EXPRESSION_HEADS.has(font[0] as string)) continue;
+      return font as string[];
     }
   } catch {
     // A style that cannot be read is a style with no font to borrow.
