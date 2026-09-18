@@ -1052,7 +1052,41 @@ await check("Pro is reachable with no credential and states its data mode", asyn
     "Pro did not state its data mode",
   );
   observed.proDataMode = mode;
-  return `data mode ${mode}`;
+
+  /*
+   * What the mode actually means, in the response's own numbers.
+   *
+   * "data mode live" on its own is not evidence of anything: a run with four observations
+   * publishes a manifest and suppresses every figure for want of a denominator, which is the
+   * designed and honest behaviour — and reads identically to a healthy one in a one-word summary.
+   * So the line says how many headline metrics carry a value, out of how many, and over what
+   * total denominator.
+   */
+  const headline = body?.data?.headline ?? [];
+  const withValue = headline.filter((metric) => metric?.value !== null && !metric?.suppressed);
+  const denominator = headline.reduce((total, metric) => total + (metric?.denominator ?? 0), 0);
+
+  /*
+   * A demonstration snapshot has to be dated. It is the one mode that is not a claim about now,
+   * and an undated one presented beside live figures is the confusion the mode exists to prevent.
+   */
+  if (mode === "demo_snapshot") {
+    assert(
+      typeof body?.data?.provenance?.snapshotDate === "string",
+      "Pro is serving a demonstration snapshot and will not say which one",
+    );
+  }
+
+  observed.proHeadlineWithValue = withValue.length;
+  return (
+    `data mode ${mode}` +
+    (mode === "demo_snapshot" ? ` (${body.data.provenance.snapshotDate})` : "") +
+    `; ${withValue.length} of ${headline.length} headline metric(s) carry a figure ` +
+    `over ${denominator} observation(s)` +
+    (mode === "live" && withValue.length === 0
+      ? " — live, and not yet enough observations to publish a single figure"
+      : "")
+  );
 });
 
 if (siteUrl) {
