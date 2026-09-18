@@ -1,8 +1,50 @@
 # Bus Stops. Build State
 
-Last updated: 2026-09-17 (live buses proved in the deployment; the national timetable build still fails)
+Last updated: 2026-09-18 (Bus stopped? no longer claims an unread board is empty; run 53 bootstrapping)
 
 ## Current status
+
+### Waiting on run 53: three honesty defects fixed, one hypothesis disproved (2026-09-18)
+
+Run 53 ([35359663871](https://github.com/pm-yrk/busstops/actions/runs/35359663871), `bd7d219`) is
+still bootstrapping the national artifact. Everything below was done locally while it runs, and
+none of it needs a deployment to be correct.
+
+**"Bus stopped?" could tell a passenger nothing was due about a board it had never read.** The
+panel gathers its own context behind the button — the other buses in the viewport, the departure
+board at the stop this one is heading for — and took `otherVehiclesObserved={0}`,
+`otherVehiclesMoving={null}` and `nextServices={[]}` whether that lookup had finished, failed, or
+genuinely come back empty. Three different facts, one sentence. It now carries the state with the
+numbers: only `ready` licences a claim about the world, `unavailable` offers a retry, and the peer
+counts are withheld from the assessment until they mean something (`otherVehiclesMoving: false`
+with nothing observed reads as "nothing nearby is moving", which is a claim about the road).
+Official incidents are deliberately _not_ withheld — they arrive with the vehicle, not the lookup.
+The state is derived from the lookup's own key rather than a flag set as the effect starts, so it
+costs no extra render and a stale answer from the previous viewport cannot be mistaken for this
+one's.
+
+**The sweep had never opened that panel, and had never run a search with anything in it.** Both are
+now targets at all three widths. The search one asserts the specific defect this page had: a result
+linking to `/search?q=<its own title>`, a loop that read as a broken link. Saved's empty state also
+offered to save "a stop" when the route page has had a working save control for some time.
+
+**The `Bullring` ranking hypothesis was wrong, and testing it was the point.** A plausible story was
+that `searchIndex` weights all query tokens equally, so "Birmingham Bullring" would be swamped by
+everything else named Birmingham. Measured against an index of 300 Birmingham stops plus the
+landmark: `Bullring = 19.50`, `Birmingham Road Stop N = 13.50`. The prominence bonus carries it and
+the ranking is fine. Birmingham's bbox (`-1.96,52.43,-1.83,52.52`) also contains the Bullring's
+real position, so the bbox is not the gap either. That leaves extraction — the OSM tagging against
+`placesQuery`'s selectors — and Overpass is blocked from this container, so **only a CI places run
+with the improved report can answer it**. That run is queued behind run 53 rather than guessed at.
+
+**Two things checked and found already correct**, recorded so they are not re-opened: the homepage's
+London copy is accurate (it states plainly that TfL publishes no vehicle positions, so there will
+never be a bus on the map in London, and describes what London does have), and the journey
+itinerary continuity check does cover transfer walks — every leg takes its coordinates from the
+same graph stops, and the access and egress walks both carry the stop id the adjacent leg carries.
+
+Gates: 1,147 node, **174 web** (168 + 6), 166 e2e; prettier, eslint `--max-warnings=0`, typecheck,
+secret scan clean across 512 tracked files. Production untouched.
 
 ### Run 52: bounding one caller bought nothing, and the index moves grid (2026-09-18)
 
