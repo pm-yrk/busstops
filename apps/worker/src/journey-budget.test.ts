@@ -8,6 +8,7 @@ import {
 } from "@busstops/pipeline-static-network";
 import { JOURNEY_LIMITS, JourneyService } from "./journey-service.js";
 import type { NetworkSlice } from "./network-reader.js";
+import { LiveService } from "./live-service.js";
 
 /**
  * The stage that answered Cloudflare error 1102 on Leeds to Leeds Bradford Airport.
@@ -180,6 +181,30 @@ describe("a journey plan owns its trip read", () => {
  * and the planner refused to plan. The trips name their patterns, so the read order reverses:
  * trips first, then exactly the patterns they named.
  */
+describe("a live lookup cannot outlive the budget it entered with", () => {
+  it("hands the route's remaining time to the vehicle fetch", async () => {
+    /*
+     * Run 48's last request before the platform killed it entered this stage with time to spare
+     * and spent 1,167ms inside it; run 45's spent 891ms. Both kills arrived immediately after the
+     * largest `vehicles` stage in their trail. A budget checked before a stage cannot stop the
+     * stage overrunning, so the deadline is handed over.
+     */
+    let sawTimeout: number | undefined;
+    const service = new LiveService({
+      env: { BODS_API_KEY: "k", VEHICLE_SALT_SECRET: "s" } as never,
+      now: () => new Date("2026-09-04T08:00:00.000Z"),
+      fetchImpl: (async (_url: string, init?: { signal?: AbortSignal }) => {
+        sawTimeout = init?.signal ? 1 : 0;
+        return new Response("<Siri/>", { status: 200 });
+      }) as unknown as typeof fetch,
+    });
+
+    await service.vehiclesInBoundingBox({ west: -1.6, south: 53.7, east: -1.5, north: 53.8 }, 500);
+    // The fetch was given an abort signal, which is what a deadline is made of.
+    expect(sawTimeout).toBe(1);
+  });
+});
+
 describe("patterns arrive after the trips that name them", () => {
   it("asks only for the patterns the corridor's trips actually reference", async () => {
     const { store } = await publish(20);

@@ -4,6 +4,55 @@ Last updated: 2026-09-17 (live buses proved in the deployment; the national time
 
 ## Current status
 
+### Runs 47 and 48: London proven, and both journey paths named (2026-09-18)
+
+**P11 London passes on the deployment.** Run 47:
+`400 stop(s), 400 with a London ATCO; sources [tfl]; vehicle layer empty, as TfL publishes no
+positions`, and a real 490 stop answers. Stated plainly: that second check ran at 03:23, outside
+service hours, so it proved the path and not the predictions — the live claim still needs a
+daytime run. The home page and the live map now say London has live arrivals at every stop and no
+buses on the map, rather than describing a permanent property of TfL's API as a temporary gap.
+
+**The pattern index reads seven times more than the tiles it replaced.** Run 47 measured it
+exactly: `112 of 197 pattern(s) resolved; pattern index 91 read/0 missing, 12.23 MiB` — the
+request's whole byte budget, with the ledger's own stop reason absent, so the clock did not end it.
+A bucket averages **137 KB** because it holds every pattern in England whose id hashes to it, and a
+corridor wants a handful from each.
+
+Run 48 took the tile path instead and measured the other side: a four-tile corridor read
+**4.21 MiB across two tiles** before the three-mebibyte pattern budget cut it short, so the slice
+came back incomplete and the journey refused before the trips were read at all. But the same read
+held **625 patterns** where the index path held 112 — about fifteen times more pattern per byte.
+
+So the tile limit is **one**, which is where run 44 proved it works, and above that the index is
+used. **Neither path plans a multi-tile corridor today.** That is the honest state. The fix is to
+bucket the pattern index so a corridor's patterns land together instead of hashing across the
+country — which is a republish of a national artifact, and is not being done unilaterally.
+
+**Route detail: the parse filter worked, and 1102 has a new suspect with two runs behind it.**
+Residency per request fell from 5,157–12,215 records to a steady **3,636** once a route's stops
+were parsed instead of its tiles. It still answered 1102, on attempt 4 — and the trail shows what
+both kills have in common:
+
+```
+run 45, request before the kill:  vehicles=891ms
+run 48, request before the kill:  vehicles=1167ms  (1549ms total, budget 1200ms)
+```
+
+Every stage but one is tens of milliseconds. The live-vehicle fetch is the largest stage in every
+trail, and both kills arrived immediately after the largest one in theirs. The budget was checked
+before that stage and could not help, because the overrun happens inside it: the request entered
+with time to spare. The deadline is now handed down to the fetch, with a 300ms floor, so the page
+answers degraded rather than being answered by the platform.
+
+**Also.** Every pipeline runner writes a report when it throws — their steps run with
+`continue-on-error`, which marks a failed step "success", so a collection that threw was
+indistinguishable from one that worked and chose not to report. The visual sweep covers the stop,
+route, operator, Saved and all ten Pro pages, carries a viewport on the vehicle page (it had been
+screenshotting "This link needs a map area" at three sizes and calling it covered), and scans every
+page for raw identifiers. The phone nav fits six items at 390px and fades rather than guillotines
+at 320px.
+
 ### Run 46: Pro is live, and residency rules out the memory reading (2026-09-18)
 
 Run 46 ([35300783901](https://github.com/pm-yrk/busstops/actions/runs/35300783901), head

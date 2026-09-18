@@ -195,7 +195,19 @@ export class LiveService {
   }
 
   /** Live vehicles inside a viewport. Never fetches beyond the requested bounding box. */
-  async vehiclesInBoundingBox(bbox: BoundingBox): Promise<VehicleFetchResult> {
+  /**
+   * @param timeoutMs How long the upstream fetch may take. Defaults to the map's own limit.
+   *
+   * Route detail checks its time budget before starting this and the check cannot help, because
+   * the overrun happens *inside* the stage: run 48's last request before the platform killed it
+   * spent 1,167ms here alone, having entered with time to spare. Run 45's spent 891ms, and both
+   * kills arrived immediately after the largest `vehicles` stage in their trail. A caller with a
+   * deadline has to be able to hand it over rather than hope.
+   */
+  async vehiclesInBoundingBox(
+    bbox: BoundingBox,
+    timeoutMs: number = MAP_QUERY_LIMITS.timeoutMs,
+  ): Promise<VehicleFetchResult> {
     const now = this.deps.now();
     const observations: VehicleObservation[] = [];
     const journeyContext = new Map<
@@ -213,9 +225,7 @@ export class LiveService {
       const url = bodsDatafeedUrl(bbox, this.deps.env.BODS_API_KEY);
       const cacheKey = `bods:${url}`;
       try {
-        const xml = await client.coalesce(cacheKey, () =>
-          client.fetchText(url, { timeoutMs: MAP_QUERY_LIMITS.timeoutMs }),
-        );
+        const xml = await client.coalesce(cacheKey, () => client.fetchText(url, { timeoutMs }));
         const normalized = normalizeSiriVm(xml, {
           retrievedAt: now.toISOString(),
           vehicleSalt: this.vehicleSalt(),

@@ -119,13 +119,19 @@ const JOURNEY_STOP_READ_CHARS = 5 * 1024 * 1024;
 /**
  * Above this many pattern tiles, a corridor asks the index instead of reading the tiles.
  *
- * Four, because a pattern tile reaches 3.9 MB and the slice's own pattern budget is three
- * mebibytes: beyond a handful of tiles the tile read is certain to be cut short, and a cut-short
- * corridor refuses the journey. Below it the tiles are both cheaper and complete — run 44 planned
- * Leeds to Leeds Bradford Airport from one of them, where runs 45 to 47 spent 12 MiB of index
- * buckets on the same corridor and refused.
+ * One, and the number is measured rather than chosen. Run 44 planned Leeds to Leeds Bradford
+ * Airport from a single corridor tile. Run 48 set this to four, took the tile path over a
+ * four-tile corridor, and read 4.21 MiB across two tiles before the three-mebibyte pattern budget
+ * cut it short — so the corridor came back incomplete and the journey refused without the trips
+ * ever being read. Two tiles is already too many; one is where it is known to work.
+ *
+ * Above one tile the index is used instead, and on a long corridor that currently refuses too —
+ * runs 45 to 47 spent 12 MiB of index buckets to resolve 112 of 197 patterns. Neither path plans
+ * a multi-tile corridor today, which is recorded in BUILD_STATE.md rather than papered over: the
+ * fix is to bucket the pattern index so a corridor's patterns land together instead of hashing
+ * across the country, and that is a republish of a national artifact.
  */
-const JOURNEY_PATTERN_TILE_LIMIT = 4;
+const JOURNEY_PATTERN_TILE_LIMIT = 1;
 
 /** The same clock every other read has. "Stops near me" is one tile's worth of question. */
 const NEARBY_BUDGET_MS = 1_500;
@@ -1625,8 +1631,18 @@ router.get("/v1/routes/:id", async (_request, { env, params }) => {
       liveSkipped = true;
       routeLedger.stop("route_live_budget");
     } else {
+      /*
+       * With whatever time the request has left, not with the map's own limit.
+       *
+       * The check above cannot stop a stage that overruns from inside itself, and this is the
+       * stage that does: run 48 entered it with time to spare and spent 1,167ms in it before the
+       * platform killed the request. Handing the deadline down means the fetch is abandoned when
+       * the budget is gone and the page answers degraded — which is the whole point of having a
+       * budget. A floor of 300ms, because a deadline shorter than a round trip is a guaranteed
+       * failure dressed up as a timeout.
+       */
       const live = await routeLedger.stage("vehicles", () =>
-        liveService!.vehiclesInBoundingBox(cappedBox),
+        liveService!.vehiclesInBoundingBox(cappedBox, Math.max(300, routeLedger.remainingMs)),
       );
       health = live.health;
       failedSources = live.failedSources;
