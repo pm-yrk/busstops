@@ -26,6 +26,8 @@ import {
 } from "./src/index.js";
 
 const PAUSE_BETWEEN_AREAS_MS = 5_000;
+/** Names carried into the report per area, so a missing landmark can be checked against reality. */
+const SAMPLE_NAMES_PER_AREA = 40;
 const QUERY_TIMEOUT_MS = 120_000;
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -51,8 +53,15 @@ async function main(): Promise<number> {
   const perArea: Array<Record<string, unknown>> = [];
   const failed: string[] = [];
 
-  for (const [at, area] of ROAD_AREAS.entries()) {
-    if (at > 0) await sleep(PAUSE_BETWEEN_AREAS_MS);
+  /**
+   * One area, recorded either way.
+   *
+   * Returns the names it found, because a report that says "290 places" cannot answer the
+   * question run 45 actually raised: the Birmingham extraction succeeded with 290 places and
+   * `Bullring` was not findable afterwards. "How many" and "which ones" are different facts, and
+   * only the second one says whether a gap is in the query or in the index.
+   */
+  async function extractArea(area: (typeof ROAD_AREAS)[number]): Promise<PlaceRecord[] | null> {
     try {
       const payload = await client.fetchJson<unknown>(
         `${OVERPASS_URL}?data=${encodeURIComponent(placesQuery(area.bbox))}`,
@@ -62,15 +71,52 @@ async function main(): Promise<number> {
       // Areas overlap; the id is derived from the OSM element, so a second sighting is the same
       // record rather than a duplicate result in the list.
       for (const place of extracted.places) places.set(place.id, place);
-      perArea.push({ area: area.id, places: extracted.places.length, skipped: extracted.skipped });
+      const kinds: Record<string, number> = {};
+      for (const place of extracted.places) kinds[place.kind] = (kinds[place.kind] ?? 0) + 1;
+      perArea.push({
+        area: area.id,
+        places: extracted.places.length,
+        skipped: extracted.skipped,
+        kinds,
+        // Alphabetical and capped: a stable sample that names what is in there, not a dump.
+        sampleNames: extracted.places
+          .map((place) => place.name)
+          .sort((a, b) => a.localeCompare(b))
+          .slice(0, SAMPLE_NAMES_PER_AREA),
+      });
       console.log(
         `${area.name}: ${extracted.places.length} place(s), ${extracted.skipped} skipped.`,
       );
+      return extracted.places;
     } catch (error) {
       const reason = error instanceof Error ? `${error.name}: ${error.message}` : "unreadable";
-      failed.push(`${area.id} (${reason})`);
       perArea.push({ area: area.id, error: reason });
       console.error(`${area.name}: extraction failed — ${reason}`);
+      return null;
+    }
+  }
+
+  const firstPassFailures: Array<(typeof ROAD_AREAS)[number]> = [];
+  for (const [at, area] of ROAD_AREAS.entries()) {
+    if (at > 0) await sleep(PAUSE_BETWEEN_AREAS_MS);
+    if ((await extractArea(area)) === null) firstPassFailures.push(area);
+  }
+
+  /*
+   * One more attempt at whatever failed, at the end rather than immediately.
+   *
+   * Run 45 lost Bristol to `osm server error 504` — Overpass timing out on its own side under
+   * load — while the five areas either side of it succeeded. The client's own retries happen
+   * within seconds and meet the same busy server; coming back after the rest of the run is
+   * minutes later, which is the interval that actually differs. A second failure is reported as a
+   * failure and the gazetteer publishes without that area, labelled.
+   */
+  for (const area of firstPassFailures) {
+    await sleep(PAUSE_BETWEEN_AREAS_MS);
+    console.log(`${area.name}: retrying after the other areas.`);
+    if ((await extractArea(area)) === null) {
+      const record = [...perArea].reverse().find((entry) => entry.area === area.id);
+      failed.push(`${area.id} (${String(record?.error ?? "unreadable")}, twice)`);
     }
   }
 
