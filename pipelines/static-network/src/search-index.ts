@@ -38,6 +38,22 @@ export interface SearchIndex {
 
 const STOP_WORDS = new Set(["the", "of", "and", "at", "on", "in", "to", "opp", "adj", "nr"]);
 
+/**
+ * A name with its spacing and punctuation removed.
+ *
+ * OpenStreetMap files Birmingham's shopping centre as **"Bull Ring"**; people type **"Bullring"**.
+ * Tokenised, those share no token at all — `["bull","ring"]` against `["bullring"]` — so the place
+ * scored zero and was never returned, through five runs of looking for it in the extraction, the
+ * bounding box and the ranker in turn. It was in the gazetteer the whole time.
+ *
+ * Comparing the two with their spaces taken out settles that whole class: a compound name written
+ * open in one place and closed in the other still matches, in both directions, and nothing else
+ * about the ranking changes.
+ */
+export function squash(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
 export function tokenize(value: string): string[] {
   return value
     .toLowerCase()
@@ -135,6 +151,7 @@ export function searchIndex(
 
   const limit = options.limit ?? 20;
   const queryTokens = tokenize(query);
+  const squashedQuery = squash(query);
   const hits: SearchHit[] = [];
 
   for (const entry of index.entries) {
@@ -152,6 +169,18 @@ export function searchIndex(
     if (title === query) score += 60;
     else if (title.startsWith(query)) score += 30;
     else if (title.includes(query)) score += 15;
+    else if (squashedQuery.length > 0) {
+      /*
+       * Only when the spaced comparison found nothing, so this costs a string replace per
+       * candidate on the queries that need it and nothing on the queries that do not. "Bullring"
+       * against "Bull Ring" is an exact match that happens to disagree about a space, and is
+       * scored as one; a prefix is scored as a prefix.
+       */
+      const squashedTitle = squash(entry.title);
+      if (squashedTitle === squashedQuery) score += 60;
+      else if (squashedTitle.startsWith(squashedQuery)) score += 30;
+      else if (squashedTitle.includes(squashedQuery)) score += 15;
+    }
 
     if (queryTokens.length > 0) {
       let matchedTokens = 0;

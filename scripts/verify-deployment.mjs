@@ -507,19 +507,35 @@ await check("search finds real places, not only bus stops", async () => {
     "Leeds Station": "Leeds",
     "York Minster": "York",
   };
+  /*
+   * Each word on its own, not the city.
+   *
+   * Searching the city listed eight places all beginning "Birmingham" — because a name search
+   * finds names, and the Bullring is not called Birmingham-anything. The listing said nothing
+   * about whether the landmark was there, which is the question. Run 54's places report answered
+   * it instead: Birmingham extracted 290 places including `Bull Ring (shopping)`. OSM writes the
+   * name open and the query writes it closed, so they shared no token and it scored zero.
+   *
+   * So the probe is the landmark's own words, each alone: "bull" and "ring" reach a place called
+   * "Bull Ring" however the query is spaced, and a landmark that is genuinely absent comes back
+   * empty for all of them.
+   */
   const around = [];
   for (const term of missed) {
+    const words = term.split(/\s+/).filter((word) => word.length > 3);
+    const seen = [];
+    for (const word of words) {
+      const { body } = await getJson(`/v1/search?q=${encodeURIComponent(word)}`);
+      for (const result of body?.data?.results ?? []) {
+        if (result.kind === "place" && !seen.includes(result.title)) seen.push(result.title);
+      }
+    }
     const city = cityFor[term];
-    if (!city) continue;
-    const { body } = await getJson(`/v1/search?q=${encodeURIComponent(city)}`);
-    const places = (body?.data?.results ?? []).filter((result) => result.kind === "place");
     around.push(
-      places.length === 0
-        ? `${city}: no places at all in the gazetteer`
-        : `${city} has ${places.length} place(s): ${places
-            .slice(0, 8)
-            .map((place) => place.title)
-            .join(", ")}`,
+      seen.length === 0
+        ? `nothing in the gazetteer matches any word of "${term}"` +
+            (city ? ` (${city} was extracted; the name may be spelled differently)` : "")
+        : `"${term}" word-by-word finds: ${seen.slice(0, 8).join(", ")}`,
     );
   }
 
