@@ -149,6 +149,45 @@ describe("RoutePage", () => {
       expect(anchor.getAttribute("href") ?? "").not.toMatch(/^\/stops\/[0-9a-f]{8}-/);
     }
   });
+
+  /*
+   * A route page showed nothing about disruption unless the intelligence pipeline had derived an
+   * incident — and it has derived none. So a route with a published closure on it was a page that
+   * said nothing, on a site whose subject is saying what is known.
+   */
+  it("shows what the operator has announced about the route", async () => {
+    vi.spyOn(apiClient, "route").mockResolvedValue({
+      ...response,
+      data: {
+        ...response.data,
+        disruptions: [
+          {
+            id: "bods-sx:72",
+            source: "bods_situations",
+            sourceRef: "72",
+            publisher: "First West Yorkshire",
+            officialStatus: "official",
+            lifecycle: "open",
+            severity: "severe",
+            summary: "Road closed at Stanningley Bypass",
+            reason: null,
+            startsAt: meta.generatedAt,
+            endsAt: null,
+            updatedAt: meta.generatedAt,
+            affectedRoutes: [],
+            affectedStops: [],
+            affectedAreas: [],
+            infoLinks: [],
+            attribution: "Bus Open Data Service",
+            provenance: { source: "bods", retrievedAt: meta.generatedAt, externalIds: [] },
+          },
+        ],
+      },
+    } as never);
+    renderAt("/routes/r1", "/routes/:routeId", <RoutePage />);
+
+    expect(await screen.findByText("Road closed at Stanningley Bypass")).toBeTruthy();
+  });
 });
 
 describe("OperatorPage", () => {
