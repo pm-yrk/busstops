@@ -1245,6 +1245,30 @@ describe("answering without reading geometry", () => {
     expect(some.get(wantedId!)).toEqual(everything.get(wantedId!));
   });
 
+  it("answers eight hundred metres with the entries inside eight hundred metres", async () => {
+    const { reader } = await publishedReader();
+    const here = { lat: 53.7996, lon: -1.56 };
+
+    const close = new ReadLedger(5_000);
+    const near = await reader.nearby(here, { radiusMetres: 300, limit: 25 }, Date.now(), close);
+    expect(near?.hits.length).toBeGreaterThan(0);
+
+    /*
+     * `records` counts what the parse built. A byte cap bounds what is read and not what is
+     * decoded out of it, so before the box was handed to the parse this was the whole tile
+     * however small the radius was.
+     */
+    const parsed = close.toJSON().families.search?.records ?? 0;
+    expect(parsed).toBeGreaterThan(0);
+
+    const wide = new ReadLedger(5_000);
+    await reader.nearby(here, { radiusMetres: 40_000, limit: 25 }, Date.now(), wide);
+    const parsedWide = wide.toJSON().families.search?.records ?? 0;
+
+    // A bigger radius legitimately costs more; the point is that a small one does not cost the same.
+    expect(parsed).toBeLessThan(parsedWide);
+  });
+
   it("finds a pattern by its id, from one bucket rather than a geographic scan", async () => {
     const { reader, reads } = await publishedReader();
     const built = network();

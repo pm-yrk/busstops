@@ -1611,14 +1611,25 @@ export class NetworkReader {
      * about eight hundred metres. Run 44 answered error 1102 on `nearby` for a real point. The cap
      * is the same one the map's stops get, because it is the same shape of question.
      */
+    /*
+     * The box was already being computed, and only used to pick the tiles.
+     *
+     * The comment above is right that a quarter-degree tile holds tens of thousands of entries —
+     * and they were still all being built, because a byte cap bounds what is *read* and not what
+     * is parsed out of it. Handing the same box to the parse means eight hundred metres costs the
+     * entries inside eight hundred metres. `nearbyStops` still does the real distance test; this
+     * only stops the far corners of the tile becoming objects first.
+     */
+    const box = boxAround(coordinate, options.radiusMetres);
     const entries = await this.readTiles<SearchIndexEntry>(
       searchTileDataset,
-      searchTilesForBoundingBox(boxAround(coordinate, options.radiusMetres)),
+      searchTilesForBoundingBox(box),
       index.searchTiles,
       index.version,
       now,
       NEARBY_READ_CHARS,
       ledger ? { ledger, family: "search", budgetReason: "nearby_read_budget" } : undefined,
+      withinBoundingBox(box),
     );
 
     const hits = nearbyStops(
