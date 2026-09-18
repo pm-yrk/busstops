@@ -93,7 +93,19 @@ export interface IsolateResidency {
 
 export interface ReadDiagnostics {
   elapsedMs: number;
+  /**
+   * The wall-clock budget — which is not the resource this Worker runs out of.
+   *
+   * Workers Free allows **10 ms of CPU** per invocation, and waiting on a fetch or an R2 read
+   * costs none of it. A Worker's `Date.now()` also advances only across I/O, so every figure here
+   * measures time spent waiting and none of the time spent computing: a request can report
+   * "509ms of a 1800ms budget, degraded false" and be killed for exceeding its compute limit in
+   * the same breath. Read these as I/O accounting. The compute is not visible from in here, and
+   * the way to spend less of it is to parse less, not to lower this number.
+   */
   budgetMs: number;
+  /** Stated in the payload so nobody reads the number above as headroom. */
+  budgetMeasures: "wall-clock-io";
   objectsRequested: number;
   objectsRead: number;
   objectsCached: number;
@@ -225,6 +237,7 @@ export class ReadLedger {
     return {
       elapsedMs: this.elapsedMs,
       budgetMs: this.budgetMs,
+      budgetMeasures: "wall-clock-io",
       objectsRequested,
       objectsRead,
       objectsCached,
