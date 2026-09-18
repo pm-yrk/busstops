@@ -405,3 +405,83 @@ describe("patterns arrive after the trips that name them", () => {
     expect(outcome.ok).toBe(true);
   });
 });
+
+/**
+ * The parse is the expensive half, and it was being paid for on every request.
+ *
+ * `coalesce` deduplicates concurrent fetches and drops its entry the moment one settles, so two
+ * sequential `/v1/map` requests fetched and parsed the feed twice. On Workers Free the whole CPU
+ * budget for an invocation is ten milliseconds and SIRI-VM normalises at roughly a hundred per
+ * mebibyte, so that parse is several times the budget on its own — and `parseMs` could never show
+ * it, because a Worker's clock does not advance across pure computation.
+ */
+describe("a feed is parsed once, not once per request", () => {
+  const bbox = { west: -1.6, south: 53.7, east: -1.5, north: 53.8 };
+  const siri = `<?xml version="1.0"?><Siri xmlns="http://www.siri.org.uk/siri"><ServiceDelivery>
+    <ResponseTimestamp>2026-09-04T08:00:00Z</ResponseTimestamp><VehicleMonitoringDelivery>
+    <VehicleActivity><RecordedAtTime>2026-09-04T07:59:50Z</RecordedAtTime>
+    <MonitoredVehicleJourney><LineRef>36</LineRef><VehicleRef>v1</VehicleRef>
+    <VehicleLocation><Longitude>-1.55</Longitude><Latitude>53.75</Latitude></VehicleLocation>
+    </MonitoredVehicleJourney></VehicleActivity>
+    </VehicleMonitoringDelivery></ServiceDelivery></Siri>`;
+
+  function serviceAt(clock: { now: Date }, counter: { fetches: number }) {
+    return new LiveService({
+      env: { BODS_API_KEY: "k", VEHICLE_SALT_SECRET: "s" } as never,
+      now: () => clock.now,
+      fetchImpl: (async () => {
+        counter.fetches += 1;
+        return new Response(siri, { status: 200 });
+      }) as unknown as typeof fetch,
+    });
+  }
+
+  it("reuses the parse for a second request in the same window, and says so", async () => {
+    const clock = { now: new Date("2026-09-04T08:00:00.000Z") };
+    const counter = { fetches: 0 };
+    const service = serviceAt(clock, counter);
+
+    const first = await service.vehiclesInBoundingBox(bbox, 500);
+    clock.now = new Date("2026-09-04T08:00:03.000Z");
+    const second = await service.vehiclesInBoundingBox(bbox, 500);
+
+    expect(counter.fetches).toBe(1);
+    expect(first.diagnostics[0]?.reusedParse).toBe(false);
+    expect(second.diagnostics[0]?.reusedParse).toBe(true);
+    // And the answer is the same one, not a degraded version of it.
+    expect(second.observations.map((o) => o.vehicleRef)).toEqual(
+      first.observations.map((o) => o.vehicleRef),
+    );
+  });
+
+  it("parses again once the feed could have moved on", async () => {
+    const clock = { now: new Date("2026-09-04T08:00:00.000Z") };
+    const counter = { fetches: 0 };
+    const service = serviceAt(clock, counter);
+
+    await service.vehiclesInBoundingBox(bbox, 500);
+    // Past the window: BODS republishes about every ten seconds, so reusing beyond it would be
+    // answering with something staler than the feed.
+    clock.now = new Date("2026-09-04T08:00:20.000Z");
+    const later = await service.vehiclesInBoundingBox(bbox, 500);
+
+    expect(counter.fetches).toBe(2);
+    expect(later.diagnostics[0]?.reusedParse).toBe(false);
+  });
+
+  it("does not answer one viewport with another viewport's buses", async () => {
+    const clock = { now: new Date("2026-09-04T08:00:00.000Z") };
+    const counter = { fetches: 0 };
+    const service = serviceAt(clock, counter);
+
+    await service.vehiclesInBoundingBox(bbox, 500);
+    // A different box is a different feed URL, so it must be fetched rather than reused.
+    const elsewhere = await service.vehiclesInBoundingBox(
+      { west: -2.3, south: 53.4, east: -2.2, north: 53.5 },
+      500,
+    );
+
+    expect(counter.fetches).toBe(2);
+    expect(elsewhere.diagnostics[0]?.reusedParse).toBe(false);
+  });
+});

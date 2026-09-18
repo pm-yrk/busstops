@@ -112,6 +112,13 @@ export interface VehicleSourceDiagnostics {
   parseMs?: number;
   /** Characters of feed text this source returned, which is what the parse is proportional to. */
   chars?: number;
+  /**
+   * Whether this answer reused a parse instead of making one.
+   *
+   * The only way to see the saving from outside: a Worker's clock does not advance across pure
+   * computation, so `parseMs` cannot show it and never could.
+   */
+  reusedParse?: boolean;
   error?: string;
 }
 
@@ -180,8 +187,36 @@ export function summariseVehicleSource(
   };
 }
 
+/**
+ * How long a normalised feed is reused before it is parsed again.
+ *
+ * BODS republishes SIRI-VM every ten seconds or so, so a parse held for less than that cannot
+ * make an answer staler than the feed already is — the observations keep the timestamps they were
+ * published with, so freshness is reported from the data rather than from when it was reused.
+ */
+const NORMALIZED_FEED_TTL_MS = 8_000;
+
+interface NormalizedFeed {
+  /** The whole parse, so a reuse answers exactly what a fresh parse would have. */
+  parsed: ReturnType<typeof normalizeSiriVm>;
+  chars: number;
+  at: number;
+}
+
 export class LiveService {
   private readonly clients = new Map<string, SourceClient>();
+
+  /**
+   * The parsed feed, not just the in-flight fetch.
+   *
+   * `coalesce` deduplicates concurrent requests and drops the entry the moment one settles, so
+   * every `/v1/map` re-fetched *and* re-parsed the feed. On the free plan that is the expensive
+   * half: a local benchmark puts SIRI-VM at about a hundred milliseconds per mebibyte, and the
+   * whole CPU budget for an invocation is ten. The Worker's own diagnostics could never show it —
+   * `Date.now()` in Workers advances only across I/O, so every one of these parses has been
+   * reporting `parse=0ms` while costing several times the budget.
+   */
+  private readonly normalized = new Map<string, NormalizedFeed>();
 
   constructor(private readonly deps: LiveServiceDeps) {}
 
@@ -277,19 +312,37 @@ export class LiveService {
          * retry a flaky upstream and has no passenger waiting.
          */
         const bounded = timeoutMs !== MAP_QUERY_LIMITS.timeoutMs;
-        const xml = await client.coalesce(cacheKey, () =>
-          client.fetchText(url, { timeoutMs, ...(bounded ? { maxAttempts: 1 } : {}) }),
-        );
+
+        const fresh = this.normalized.get(cacheKey);
+        const reused = fresh !== undefined && now.getTime() - fresh.at < NORMALIZED_FEED_TTL_MS;
+
+        let normalized: NormalizedFeed;
+        if (reused) {
+          normalized = fresh;
+        } else {
+          const xml = await client.coalesce(cacheKey, () =>
+            client.fetchText(url, { timeoutMs, ...(bounded ? { maxAttempts: 1 } : {}) }),
+          );
+          const parsed = normalizeSiriVm(xml, {
+            retrievedAt: now.toISOString(),
+            vehicleSalt: this.vehicleSalt(),
+            now,
+          });
+          normalized = { parsed, chars: xml.length, at: now.getTime() };
+          /*
+           * One feed per viewport, and only the newest. The key carries the bounding box, so a
+           * sweep across five cities would otherwise leave five parses resident for nothing.
+           */
+          this.normalized.clear();
+          this.normalized.set(cacheKey, normalized);
+        }
+
         const fetchMs = Date.now() - fetchBegan;
-        const parseBegan = Date.now();
-        const normalized = normalizeSiriVm(xml, {
-          retrievedAt: now.toISOString(),
-          vehicleSalt: this.vehicleSalt(),
-          now,
-        });
-        const parseMs = Date.now() - parseBegan;
-        observations.push(...normalized.observations);
-        for (const [ref, context] of normalized.journeyContext) {
+        // Zero on a reuse, and zero on a parse too: see `normalized` — a Worker's clock does not
+        // advance across pure computation, so this number has never been able to show the cost.
+        const parseMs = 0;
+        observations.push(...normalized.parsed.observations);
+        for (const [ref, context] of normalized.parsed.journeyContext) {
           journeyContext.set(ref, {
             ...(context.publishedLineName === undefined
               ? {}
@@ -302,14 +355,16 @@ export class LiveService {
         diagnostics.push({
           ...summariseVehicleSource(
             "bods",
-            normalized.observations.length,
-            normalized.rejected,
+            normalized.parsed.observations.length,
+            normalized.parsed.rejected,
             now,
-            normalized.recordAgeSeconds,
+            normalized.parsed.recordAgeSeconds,
           ),
           fetchMs,
           parseMs,
-          chars: xml.length,
+          chars: normalized.chars,
+          // So a run can see how often the parse is actually being paid for.
+          reusedParse: reused,
         });
       } catch (error) {
         failedSources.push("bods");
