@@ -27,3 +27,8 @@ network-changes.json
 
 # Pixel-art preview renders (tools/pixel-art/sheet.mjs, page-shots.mjs)
 art-preview/
+
+# The weather-vignette preview sheet, written into the served directory by
+# tools/pixel-art/preview/vignette-shot.mjs so the sprites resolve over http. It is a scratch
+# page for judging the art, not part of the site, and it must never be deployed with it.
+apps/web/public/_vignette.html

@@ -52,6 +52,16 @@ const WIDTHS = [
  */
 const YORK_BBOX = "-1.12,53.94,-1.03,53.99";
 
+/*
+ * A viewport to look a bus up in.
+ *
+ * `/vehicles/:ref` needs one: the live feeds are area-scoped, so without a bounding box the page
+ * renders "This link needs a map area" and nothing else. The sweep pushed a bare path, so every
+ * run of it has screenshotted that empty state at three sizes and called the vehicle page looked
+ * at. The reference is found in this box, so this is the box it is looked up in.
+ */
+const MANCHESTER_BBOX = "-2.26,53.46,-2.21,53.50";
+
 const PAGES = [
   { name: "home", path: "/" },
   { name: "live", path: "/live" },
@@ -59,7 +69,25 @@ const PAGES = [
   { name: "search", path: "/search" },
   { name: "journey", path: "/journey" },
   { name: "disruptions", path: "/disruptions" },
+  { name: "saved", path: "/saved" },
+  { name: "methodology", path: "/methodology" },
+  /*
+   * Every Pro section, not just its front page.
+   *
+   * "all Pro sections" is the requirement and one screenshot of the control tower is not that:
+   * each of these reads different artifacts and degrades differently when one is missing, which
+   * is precisely the state a sweep exists to catch.
+   */
   { name: "pro", path: "/pro" },
+  { name: "pro-live", path: "/pro/live" },
+  { name: "pro-routes", path: "/pro/routes" },
+  { name: "pro-operators", path: "/pro/operators" },
+  { name: "pro-congestion", path: "/pro/congestion" },
+  { name: "pro-analytics", path: "/pro/analytics" },
+  { name: "pro-disruptions", path: "/pro/disruptions" },
+  { name: "pro-reports", path: "/pro/reports" },
+  { name: "pro-brief", path: "/pro/brief" },
+  { name: "pro-settings", path: "/pro/settings" },
 ];
 
 /**
@@ -116,27 +144,67 @@ async function clickPaintedBus(page) {
   await page.mouse.click(point.x, point.y);
 }
 
-async function findVehicleRef(apiUrl) {
+async function api(apiUrl, path) {
   if (!apiUrl) return null;
   try {
-    const response = await fetch(
-      `${apiUrl.replace(/\/$/, "")}/v1/map?bbox=-2.26,53.46,-2.21,53.50&zoom=15`,
-      { signal: AbortSignal.timeout(20_000) },
-    );
+    const response = await fetch(`${apiUrl.replace(/\/$/, "")}${path}`, {
+      signal: AbortSignal.timeout(20_000),
+    });
     if (!response.ok) return null;
-    const body = await response.json();
-    return body?.data?.vehicles?.[0]?.vehicleRef ?? null;
+    return await response.json();
   } catch {
     return null;
   }
 }
 
-const vehicleRef = await findVehicleRef(apiUrlArg);
+/*
+ * The real stop, route, operator and bus this deployment actually has.
+ *
+ * The sweep covered home, live, search, journey, disruptions and Pro, and the four pages a
+ * passenger spends most of their time on were not in it — because each needs a real identifier
+ * and inventing one would photograph a not-found page. So each is discovered from the one before
+ * it: a viewport names a stop, the stop names its routes, the route names its operator.
+ */
+const map = await api(apiUrlArg, `/v1/map?bbox=${MANCHESTER_BBOX}&zoom=15`);
+const vehicleRef = map?.data?.vehicles?.[0]?.vehicleRef ?? null;
 if (vehicleRef) {
-  PAGES.push({ name: "vehicle", path: `/vehicles/${encodeURIComponent(vehicleRef)}` });
+  PAGES.push({
+    name: "vehicle",
+    // With the viewport it was found in. Without one this page is "This link needs a map area".
+    path: `/vehicles/${encodeURIComponent(vehicleRef)}?bbox=${encodeURIComponent(MANCHESTER_BBOX)}`,
+  });
   console.log(`Following a real vehicle: ${vehicleRef}`);
 } else {
   console.log("No live vehicle to follow, so the vehicle page is not in this sweep.");
+}
+
+const stops = map?.data?.stops ?? [];
+// A stop with a service on it, so the board is photographed with something on it.
+const stop = stops.find((entry) => (entry.routePublicNames ?? []).length > 0) ?? stops[0] ?? null;
+if (stop) {
+  PAGES.push({ name: "stop", path: `/stops/${encodeURIComponent(stop.id)}` });
+  // And the same stop as a selected board on the map, which is a different layout entirely.
+  PAGES.push({ name: "live-stop-deeplink", path: `/live/stops/${encodeURIComponent(stop.id)}` });
+  console.log(`Looking at a real stop: ${stop.name}`);
+
+  const detail = await api(apiUrlArg, `/v1/stops/${encodeURIComponent(stop.id)}`);
+  const route = detail?.data?.routes?.[0] ?? null;
+  if (route?.id) {
+    PAGES.push({ name: "route", path: `/routes/${encodeURIComponent(route.id)}` });
+    console.log(`Looking at a real route: ${route.publicName ?? route.id}`);
+    const routeDetail = await api(apiUrlArg, `/v1/routes/${encodeURIComponent(route.id)}`);
+    const operatorId = routeDetail?.data?.operator?.id ?? null;
+    if (operatorId) {
+      PAGES.push({ name: "operator", path: `/operators/${encodeURIComponent(operatorId)}` });
+      console.log(`Looking at a real operator: ${routeDetail.data.operator.name}`);
+    } else {
+      console.log("The route named no operator, so the operator page is not in this sweep.");
+    }
+  } else {
+    console.log("No route calls at that stop, so the route page is not in this sweep.");
+  }
+} else {
+  console.log("No stop came back, so the stop, route and operator pages are not in this sweep.");
 }
 
 const results = [];

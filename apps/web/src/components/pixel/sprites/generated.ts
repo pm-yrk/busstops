@@ -14,338 +14,338 @@ export interface PixelImage {
 
 /** Cached under /art. Scale these by integers and render them with image-rendering: pixelated. */
 export const ART: Record<string, PixelImage> = {
-  "streetWide": {
-    "src": "/art/street-wide.png",
-    "w": 480,
-    "h": 200
+  streetWide: {
+    src: "/art/street-wide.png",
+    w: 480,
+    h: 200,
   },
-  "streetTall": {
-    "src": "/art/street-tall.png",
-    "w": 192,
-    "h": 264
+  streetTall: {
+    src: "/art/street-tall.png",
+    w: 192,
+    h: 264,
   },
-  "busNear": {
-    "src": "/art/bus-near.png",
-    "w": 150,
-    "h": 48
+  busNear: {
+    src: "/art/bus-near.png",
+    w: 150,
+    h: 48,
   },
-  "busNearB": {
-    "src": "/art/bus-near-b.png",
-    "w": 150,
-    "h": 48
+  busNearB: {
+    src: "/art/bus-near-b.png",
+    w: 150,
+    h: 48,
   },
-  "busFar": {
-    "src": "/art/bus-far.png",
-    "w": 96,
-    "h": 33
+  busFar: {
+    src: "/art/bus-far.png",
+    w: 96,
+    h: 33,
   },
-  "busFarB": {
-    "src": "/art/bus-far-b.png",
-    "w": 96,
-    "h": 33
+  busFarB: {
+    src: "/art/bus-far-b.png",
+    w: 96,
+    h: 33,
   },
-  "busMid": {
-    "src": "/art/bus-mid.png",
-    "w": 96,
-    "h": 33
+  busMid: {
+    src: "/art/bus-mid.png",
+    w: 96,
+    h: 33,
   },
-  "busMidB": {
-    "src": "/art/bus-mid-b.png",
-    "w": 96,
-    "h": 33
+  busMidB: {
+    src: "/art/bus-mid-b.png",
+    w: 96,
+    h: 33,
   },
-  "busFront": {
-    "src": "/art/bus-front.png",
-    "w": 40,
-    "h": 34
+  busFront: {
+    src: "/art/bus-front.png",
+    w: 40,
+    h: 34,
   },
-  "shelter": {
-    "src": "/art/shelter.png",
-    "w": 60,
-    "h": 48
+  shelter: {
+    src: "/art/shelter.png",
+    w: 60,
+    h: 48,
   },
-  "stopFlag": {
-    "src": "/art/stop-flag.png",
-    "w": 18,
-    "h": 52
+  stopFlag: {
+    src: "/art/stop-flag.png",
+    w: 18,
+    h: 52,
   },
-  "tree": {
-    "src": "/art/tree.png",
-    "w": 34,
-    "h": 46
+  tree: {
+    src: "/art/tree.png",
+    w: 34,
+    h: 46,
   },
-  "personWaiting": {
-    "src": "/art/person-waiting.png",
-    "w": 11,
-    "h": 21
+  personWaiting: {
+    src: "/art/person-waiting.png",
+    w: 11,
+    h: 21,
   },
-  "cloud": {
-    "src": "/art/cloud.png",
-    "w": 46,
-    "h": 14
+  cloud: {
+    src: "/art/cloud.png",
+    w: 46,
+    h: 14,
   },
-  "bin": {
-    "src": "/art/bin.png",
-    "w": 12,
-    "h": 18
+  bin: {
+    src: "/art/bin.png",
+    w: 12,
+    h: 18,
   },
-  "edgeWide": {
-    "src": "/art/street-wide-edge.png",
-    "w": 32,
-    "h": 200
+  edgeWide: {
+    src: "/art/street-wide-edge.png",
+    w: 32,
+    h: 200,
   },
-  "edgeTall": {
-    "src": "/art/street-tall-edge.png",
-    "w": 32,
-    "h": 264
+  edgeTall: {
+    src: "/art/street-tall-edge.png",
+    w: 32,
+    h: 264,
   },
-  "vignetteDay": {
-    "src": "/art/vignette-day.png",
-    "w": 176,
-    "h": 128
+  vignetteDay: {
+    src: "/art/vignette-day.png",
+    w: 176,
+    h: 128,
   },
-  "vignetteNight": {
-    "src": "/art/vignette-night.png",
-    "w": 176,
-    "h": 128
+  vignetteNight: {
+    src: "/art/vignette-night.png",
+    w: 176,
+    h: 128,
   },
-  "farBusDay": {
-    "src": "/art/far-bus-day.png",
-    "w": 46,
-    "h": 22
+  farBusDay: {
+    src: "/art/far-bus-day.png",
+    w: 46,
+    h: 22,
   },
-  "farBusNight": {
-    "src": "/art/far-bus-night.png",
-    "w": 46,
-    "h": 22
+  farBusNight: {
+    src: "/art/far-bus-night.png",
+    w: 46,
+    h: 22,
   },
-  "person_commuter_red_coat_plain": {
-    "src": "/art/person-commuter-red-coat-plain.png",
-    "w": 24,
-    "h": 44
+  person_commuter_red_coat_plain: {
+    src: "/art/person-commuter-red-coat-plain.png",
+    w: 24,
+    h: 44,
   },
-  "person_commuter_red_coat_holding": {
-    "src": "/art/person-commuter-red-coat-holding.png",
-    "w": 24,
-    "h": 44
+  person_commuter_red_coat_holding: {
+    src: "/art/person-commuter-red-coat-holding.png",
+    w: 24,
+    h: 44,
   },
-  "person_student_headphones_plain": {
-    "src": "/art/person-student-headphones-plain.png",
-    "w": 24,
-    "h": 44
+  person_student_headphones_plain: {
+    src: "/art/person-student-headphones-plain.png",
+    w: 24,
+    h: 44,
   },
-  "person_student_headphones_holding": {
-    "src": "/art/person-student-headphones-holding.png",
-    "w": 24,
-    "h": 44
+  person_student_headphones_holding: {
+    src: "/art/person-student-headphones-holding.png",
+    w: 24,
+    h: 44,
   },
-  "person_wheelchair_user_plain": {
-    "src": "/art/person-wheelchair-user-plain.png",
-    "w": 24,
-    "h": 44
+  person_wheelchair_user_plain: {
+    src: "/art/person-wheelchair-user-plain.png",
+    w: 24,
+    h: 44,
   },
-  "person_wheelchair_user_holding": {
-    "src": "/art/person-wheelchair-user-holding.png",
-    "w": 24,
-    "h": 44
+  person_wheelchair_user_holding: {
+    src: "/art/person-wheelchair-user-holding.png",
+    w: 24,
+    h: 44,
   },
-  "person_older_with_stick_plain": {
-    "src": "/art/person-older-with-stick-plain.png",
-    "w": 24,
-    "h": 44
+  person_older_with_stick_plain: {
+    src: "/art/person-older-with-stick-plain.png",
+    w: 24,
+    h: 44,
   },
-  "person_older_with_stick_holding": {
-    "src": "/art/person-older-with-stick-holding.png",
-    "w": 24,
-    "h": 44
+  person_older_with_stick_holding: {
+    src: "/art/person-older-with-stick-holding.png",
+    w: 24,
+    h: 44,
   },
-  "person_child_in_yellow_plain": {
-    "src": "/art/person-child-in-yellow-plain.png",
-    "w": 24,
-    "h": 44
+  person_child_in_yellow_plain: {
+    src: "/art/person-child-in-yellow-plain.png",
+    w: 24,
+    h: 44,
   },
-  "person_child_in_yellow_holding": {
-    "src": "/art/person-child-in-yellow-holding.png",
-    "w": 24,
-    "h": 44
+  person_child_in_yellow_holding: {
+    src: "/art/person-child-in-yellow-holding.png",
+    w: 24,
+    h: 44,
   },
-  "person_nurse_in_scrubs_plain": {
-    "src": "/art/person-nurse-in-scrubs-plain.png",
-    "w": 24,
-    "h": 44
+  person_nurse_in_scrubs_plain: {
+    src: "/art/person-nurse-in-scrubs-plain.png",
+    w: 24,
+    h: 44,
   },
-  "person_nurse_in_scrubs_holding": {
-    "src": "/art/person-nurse-in-scrubs-holding.png",
-    "w": 24,
-    "h": 44
+  person_nurse_in_scrubs_holding: {
+    src: "/art/person-nurse-in-scrubs-holding.png",
+    w: 24,
+    h: 44,
   },
-  "person_rollator_user_plain": {
-    "src": "/art/person-rollator-user-plain.png",
-    "w": 24,
-    "h": 44
+  person_rollator_user_plain: {
+    src: "/art/person-rollator-user-plain.png",
+    w: 24,
+    h: 44,
   },
-  "person_rollator_user_holding": {
-    "src": "/art/person-rollator-user-holding.png",
-    "w": 24,
-    "h": 44
+  person_rollator_user_holding: {
+    src: "/art/person-rollator-user-holding.png",
+    w: 24,
+    h: 44,
   },
-  "person_cyclist_waiting_plain": {
-    "src": "/art/person-cyclist-waiting-plain.png",
-    "w": 24,
-    "h": 44
+  person_cyclist_waiting_plain: {
+    src: "/art/person-cyclist-waiting-plain.png",
+    w: 24,
+    h: 44,
   },
-  "person_cyclist_waiting_holding": {
-    "src": "/art/person-cyclist-waiting-holding.png",
-    "w": 24,
-    "h": 44
+  person_cyclist_waiting_holding: {
+    src: "/art/person-cyclist-waiting-holding.png",
+    w: 24,
+    h: 44,
   },
-  "person_parent_with_buggy_plain": {
-    "src": "/art/person-parent-with-buggy-plain.png",
-    "w": 24,
-    "h": 44
+  person_parent_with_buggy_plain: {
+    src: "/art/person-parent-with-buggy-plain.png",
+    w: 24,
+    h: 44,
   },
-  "person_parent_with_buggy_holding": {
-    "src": "/art/person-parent-with-buggy-holding.png",
-    "w": 24,
-    "h": 44
+  person_parent_with_buggy_holding: {
+    src: "/art/person-parent-with-buggy-holding.png",
+    w: 24,
+    h: 44,
   },
-  "person_worker_with_flask_plain": {
-    "src": "/art/person-worker-with-flask-plain.png",
-    "w": 24,
-    "h": 44
+  person_worker_with_flask_plain: {
+    src: "/art/person-worker-with-flask-plain.png",
+    w: 24,
+    h: 44,
   },
-  "person_worker_with_flask_holding": {
-    "src": "/art/person-worker-with-flask-holding.png",
-    "w": 24,
-    "h": 44
+  person_worker_with_flask_holding: {
+    src: "/art/person-worker-with-flask-holding.png",
+    w: 24,
+    h: 44,
   },
-  "person_person_in_headscarf_plain": {
-    "src": "/art/person-person-in-headscarf-plain.png",
-    "w": 24,
-    "h": 44
+  person_person_in_headscarf_plain: {
+    src: "/art/person-person-in-headscarf-plain.png",
+    w: 24,
+    h: 44,
   },
-  "person_person_in_headscarf_holding": {
-    "src": "/art/person-person-in-headscarf-holding.png",
-    "w": 24,
-    "h": 44
+  person_person_in_headscarf_holding: {
+    src: "/art/person-person-in-headscarf-holding.png",
+    w: 24,
+    h: 44,
   },
-  "person_teen_with_skateboard_plain": {
-    "src": "/art/person-teen-with-skateboard-plain.png",
-    "w": 24,
-    "h": 44
+  person_teen_with_skateboard_plain: {
+    src: "/art/person-teen-with-skateboard-plain.png",
+    w: 24,
+    h: 44,
   },
-  "person_teen_with_skateboard_holding": {
-    "src": "/art/person-teen-with-skateboard-holding.png",
-    "w": 24,
-    "h": 44
+  person_teen_with_skateboard_holding: {
+    src: "/art/person-teen-with-skateboard-holding.png",
+    w: 24,
+    h: 44,
   },
-  "accessory_umbrella": {
-    "src": "/art/accessory-umbrella.png",
-    "w": 26,
-    "h": 24
+  accessory_umbrella: {
+    src: "/art/accessory-umbrella.png",
+    w: 26,
+    h: 24,
   },
-  "accessory_sunglasses": {
-    "src": "/art/accessory-sunglasses.png",
-    "w": 11,
-    "h": 4
+  accessory_sunglasses: {
+    src: "/art/accessory-sunglasses.png",
+    w: 11,
+    h: 4,
   },
-  "accessory_scarf": {
-    "src": "/art/accessory-scarf.png",
-    "w": 13,
-    "h": 11
+  accessory_scarf: {
+    src: "/art/accessory-scarf.png",
+    w: 13,
+    h: 11,
   },
-  "accessory_woollyHat": {
-    "src": "/art/accessory-woollyHat.png",
-    "w": 11,
-    "h": 8
+  accessory_woollyHat: {
+    src: "/art/accessory-woollyHat.png",
+    w: 11,
+    h: 8,
   },
-  "accessory_sunHat": {
-    "src": "/art/accessory-sunHat.png",
-    "w": 16,
-    "h": 8
+  accessory_sunHat: {
+    src: "/art/accessory-sunHat.png",
+    w: 16,
+    h: 8,
   },
-  "effect_rainNear": {
-    "src": "/art/effect-rain-near.png",
-    "w": 176,
-    "h": 128
+  effect_rainNear: {
+    src: "/art/effect-rain-near.png",
+    w: 176,
+    h: 128,
   },
-  "effect_rainFar": {
-    "src": "/art/effect-rain-far.png",
-    "w": 176,
-    "h": 128
+  effect_rainFar: {
+    src: "/art/effect-rain-far.png",
+    w: 176,
+    h: 128,
   },
-  "effect_rainReflections": {
-    "src": "/art/effect-rain-reflections.png",
-    "w": 176,
-    "h": 128
+  effect_rainReflections: {
+    src: "/art/effect-rain-reflections.png",
+    w: 176,
+    h: 128,
   },
-  "effect_snow": {
-    "src": "/art/effect-snow.png",
-    "w": 176,
-    "h": 128
+  effect_snow: {
+    src: "/art/effect-snow.png",
+    w: 176,
+    h: 128,
   },
-  "effect_sun": {
-    "src": "/art/effect-sun.png",
-    "w": 36,
-    "h": 36
+  effect_sun: {
+    src: "/art/effect-sun.png",
+    w: 36,
+    h: 36,
   },
-  "effect_fog": {
-    "src": "/art/effect-fog.png",
-    "w": 176,
-    "h": 128
+  effect_fog: {
+    src: "/art/effect-fog.png",
+    w: 176,
+    h: 128,
   },
-  "effect_wind": {
-    "src": "/art/effect-wind.png",
-    "w": 176,
-    "h": 128
+  effect_wind: {
+    src: "/art/effect-wind.png",
+    w: 176,
+    h: 128,
   },
-  "effect_heat": {
-    "src": "/art/effect-heat.png",
-    "w": 176,
-    "h": 128
-  }
+  effect_heat: {
+    src: "/art/effect-heat.png",
+    w: 176,
+    h: 128,
+  },
 };
 
 /** Small enough to inline, and MapLibre needs them without a round trip. */
 export const MARKERS: Record<string, PixelImage> = {
-  "busMarkerRed": {
-    "src": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAALCAYAAABlNU3NAAAAkUlEQVR42mNggAIRQf7/1MQMyAAk8CUsmmwMM/T/zSrsloA4yjoWKPipihZRfHRxGMawwDYwE4xrp68F0yCNxPBhNDJedfAibgtgGF0jLj42C0AYwwKQQmpiDAs2i0nDMTqfGIys59mDK5gWwBQgpwJ0PjaMTw8DOoBJhAV44lZEqR6cmYVSPbzcnP+piWHmAgBfHWWG5uovZQAAAABJRU5ErkJggg==",
-    "w": 24,
-    "h": 11
+  busMarkerRed: {
+    src: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAALCAYAAABlNU3NAAAAkUlEQVR42mNggAIRQf7/1MQMyAAk8CUsmmwMM/T/zSrsloA4yjoWKPipihZRfHRxGMawwDYwE4xrp68F0yCNxPBhNDJedfAibgtgGF0jLj42C0AYwwKQQmpiDAs2i0nDMTqfGIys59mDK5gWwBQgpwJ0PjaMTw8DOoBJhAV44lZEqR6cmYVSPbzcnP+piWHmAgBfHWWG5uovZQAAAABJRU5ErkJggg==",
+    w: 24,
+    h: 11,
   },
-  "busMarkerBlue": {
-    "src": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAALCAYAAABlNU3NAAAAkUlEQVR42mNggAIRQf7/1MQMyAAk4F/7n2wMM/T/zSrsloA4yjoWKFg0/D9RfHRxGMawwDYwE4xrp68F0yCNxPBhNDJedfAibgtgGF0jLj42C0AYwwKQQmpiDAuEbKbBMTqfGIys59mDK5gWwBQgpwJ0PjaMTw8DOoBJhAV44lZEqR6cmYVSPbzcnP+piWHmAgCzum7A8nwcuAAAAABJRU5ErkJggg==",
-    "w": 24,
-    "h": 11
+  busMarkerBlue: {
+    src: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAALCAYAAABlNU3NAAAAkUlEQVR42mNggAIRQf7/1MQMyAAk4F/7n2wMM/T/zSrsloA4yjoWKFg0/D9RfHRxGMawwDYwE4xrp68F0yCNxPBhNDJedfAibgtgGF0jLj42C0AYwwKQQmpiDAuEbKbBMTqfGIys59mDK5gWwBQgpwJ0PjaMTw8DOoBJhAV44lZEqR6cmYVSPbzcnP+piWHmAgCzum7A8nwcuAAAAABJRU5ErkJggg==",
+    w: 24,
+    h: 11,
   },
-  "busMarkerAmber": {
-    "src": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAALCAYAAABlNU3NAAAAj0lEQVR42mNggAIRQf7/1MQMyAAk8P9mFdkYZigyG8USEEdZxwIFf9poQhQfXRyGMSywDcwE49rpa8E0SCMxfBiNjFcdvIjbAhhG14iLj80CEMawAKSQmhjDgq4oBjhG5xODkfU8e3AF0wKYAuRUgM7HhvHpYUAHMImwAE/ciijVgzOzUKqHl5vzPzUxzFwA3/KEKR89AHUAAAAASUVORK5CYII=",
-    "w": 24,
-    "h": 11
+  busMarkerAmber: {
+    src: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAALCAYAAABlNU3NAAAAj0lEQVR42mNggAIRQf7/1MQMyAAk8P9mFdkYZigyG8USEEdZxwIFf9poQhQfXRyGMSywDcwE49rpa8E0SCMxfBiNjFcdvIjbAhhG14iLj80CEMawAKSQmhjDgq4oBjhG5xODkfU8e3AF0wKYAuRUgM7HhvHpYUAHMImwAE/ciijVgzOzUKqHl5vzPzUxzFwA3/KEKR89AHUAAAAASUVORK5CYII=",
+    w: 24,
+    h: 11,
   },
-  "stopMarker": {
-    "src": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAwAAAAOCAYAAAAbvf3sAAAAUUlEQVR42mNgYGBgEBHk//9URQsvBqlhgAH6aPj+7SNejFUDiL725B0KjSyHVQM2jFMDyU4iSQMxmAEXWDJ7wv+wAE/cCgaxBl5uzv/YMLIaABcO7QeEogPeAAAAAElFTkSuQmCC",
-    "w": 12,
-    "h": 14
-  }
+  stopMarker: {
+    src: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAwAAAAOCAYAAAAbvf3sAAAAUUlEQVR42mNgYGBgEBHk//9URQsvBqlhgAH6aPj+7SNejFUDiL725B0KjSyHVQM2jFMDyU4iSQMxmAEXWDJ7wv+wAE/cCgaxBl5uzv/YMLIaABcO7QeEogPeAAAAAElFTkSuQmCC",
+    w: 12,
+    h: 14,
+  },
 };
 
 /** Where the ground and the carriageway sit in each composition, so buses can be driven along it. */
 export const SCENE_GEOMETRY = {
-  "WIDE": {
-    "w": 480,
-    "h": 200,
-    "pavement": 132,
-    "kerb": 154,
-    "road": 160
+  WIDE: {
+    w: 480,
+    h: 200,
+    pavement: 132,
+    kerb: 154,
+    road: 160,
   },
-  "TALL": {
-    "w": 192,
-    "h": 264,
-    "pavement": 176,
-    "kerb": 196,
-    "road": 202
-  }
+  TALL: {
+    w: 192,
+    h: 264,
+    pavement: 176,
+    kerb: 196,
+    road: 202,
+  },
 } as const;
 
 /**
@@ -366,209 +366,209 @@ export interface PixelPerson {
 
 export const PEOPLE_META: readonly PixelPerson[] = [
   {
-    "id": "commuter-red-coat",
-    "description": "Adult in a red winter coat with a satchel",
-    "hand": {
-      "x": 18,
-      "y": 12
+    id: "commuter-red-coat",
+    description: "Adult in a red winter coat with a satchel",
+    hand: {
+      x: 18,
+      y: 12,
     },
-    "headTop": 3,
-    "eyes": {
-      "x": 8,
-      "y": 9
+    headTop: 3,
+    eyes: {
+      x: 8,
+      y: 9,
     },
-    "neck": {
-      "x": 10,
-      "y": 13
-    }
+    neck: {
+      x: 10,
+      y: 13,
+    },
   },
   {
-    "id": "student-headphones",
-    "description": "Young adult in a hoodie with over-ear headphones",
-    "hand": {
-      "x": 18,
-      "y": 13
+    id: "student-headphones",
+    description: "Young adult in a hoodie with over-ear headphones",
+    hand: {
+      x: 18,
+      y: 13,
     },
-    "headTop": 2,
-    "eyes": {
-      "x": 8,
-      "y": 10
+    headTop: 2,
+    eyes: {
+      x: 8,
+      y: 10,
     },
-    "neck": {
-      "x": 10,
-      "y": 14
-    }
+    neck: {
+      x: 10,
+      y: 14,
+    },
   },
   {
-    "id": "wheelchair-user",
-    "description": "Wheelchair user in a blue jacket",
-    "hand": {
-      "x": 19,
-      "y": 17
+    id: "wheelchair-user",
+    description: "Wheelchair user in a blue jacket",
+    hand: {
+      x: 19,
+      y: 17,
     },
-    "headTop": 8,
-    "eyes": {
-      "x": 9,
-      "y": 14
+    headTop: 8,
+    eyes: {
+      x: 9,
+      y: 14,
     },
-    "neck": {
-      "x": 11,
-      "y": 18
-    }
+    neck: {
+      x: 11,
+      y: 18,
+    },
   },
   {
-    "id": "older-with-stick",
-    "description": "Older person with a walking stick and a shopping bag",
-    "hand": {
-      "x": 4,
-      "y": 15
+    id: "older-with-stick",
+    description: "Older person with a walking stick and a shopping bag",
+    hand: {
+      x: 4,
+      y: 15,
     },
-    "headTop": 3,
-    "eyes": {
-      "x": 8,
-      "y": 9
+    headTop: 3,
+    eyes: {
+      x: 8,
+      y: 9,
     },
-    "neck": {
-      "x": 10,
-      "y": 13
-    }
+    neck: {
+      x: 10,
+      y: 13,
+    },
   },
   {
-    "id": "child-in-yellow",
-    "description": "Child in a bright yellow coat and red wellies",
-    "hand": {
-      "x": 17,
-      "y": 22
+    id: "child-in-yellow",
+    description: "Child in a bright yellow coat and red wellies",
+    hand: {
+      x: 17,
+      y: 22,
     },
-    "headTop": 12,
-    "eyes": {
-      "x": 9,
-      "y": 18
+    headTop: 12,
+    eyes: {
+      x: 9,
+      y: 18,
     },
-    "neck": {
-      "x": 11,
-      "y": 22
-    }
+    neck: {
+      x: 11,
+      y: 22,
+    },
   },
   {
-    "id": "nurse-in-scrubs",
-    "description": "Adult in scrubs with a lanyard, coming off shift",
-    "hand": {
-      "x": 18,
-      "y": 12
+    id: "nurse-in-scrubs",
+    description: "Adult in scrubs with a lanyard, coming off shift",
+    hand: {
+      x: 18,
+      y: 12,
     },
-    "headTop": 3,
-    "eyes": {
-      "x": 8,
-      "y": 9
+    headTop: 3,
+    eyes: {
+      x: 8,
+      y: 9,
     },
-    "neck": {
-      "x": 10,
-      "y": 13
-    }
+    neck: {
+      x: 10,
+      y: 13,
+    },
   },
   {
-    "id": "rollator-user",
-    "description": "Older person using a rollator",
-    "hand": {
-      "x": 3,
-      "y": 20
+    id: "rollator-user",
+    description: "Older person using a rollator",
+    hand: {
+      x: 3,
+      y: 20,
     },
-    "headTop": 4,
-    "eyes": {
-      "x": 10,
-      "y": 10
+    headTop: 4,
+    eyes: {
+      x: 10,
+      y: 10,
     },
-    "neck": {
-      "x": 12,
-      "y": 14
-    }
+    neck: {
+      x: 12,
+      y: 14,
+    },
   },
   {
-    "id": "cyclist-waiting",
-    "description": "Adult in a hi-vis jacket and helmet",
-    "hand": {
-      "x": 18,
-      "y": 13
+    id: "cyclist-waiting",
+    description: "Adult in a hi-vis jacket and helmet",
+    hand: {
+      x: 18,
+      y: 13,
     },
-    "headTop": 2,
-    "eyes": {
-      "x": 8,
-      "y": 10
+    headTop: 2,
+    eyes: {
+      x: 8,
+      y: 10,
     },
-    "neck": {
-      "x": 10,
-      "y": 14
-    }
+    neck: {
+      x: 10,
+      y: 14,
+    },
   },
   {
-    "id": "parent-with-buggy",
-    "description": "Adult pushing a pram",
-    "hand": {
-      "x": 4,
-      "y": 16
+    id: "parent-with-buggy",
+    description: "Adult pushing a pram",
+    hand: {
+      x: 4,
+      y: 16,
     },
-    "headTop": 3,
-    "eyes": {
-      "x": 11,
-      "y": 9
+    headTop: 3,
+    eyes: {
+      x: 11,
+      y: 9,
     },
-    "neck": {
-      "x": 13,
-      "y": 13
-    }
+    neck: {
+      x: 13,
+      y: 13,
+    },
   },
   {
-    "id": "worker-with-flask",
-    "description": "Adult in a heavy green jacket with a flask",
-    "hand": {
-      "x": 18,
-      "y": 13
+    id: "worker-with-flask",
+    description: "Adult in a heavy green jacket with a flask",
+    hand: {
+      x: 18,
+      y: 13,
     },
-    "headTop": 3,
-    "eyes": {
-      "x": 8,
-      "y": 9
+    headTop: 3,
+    eyes: {
+      x: 8,
+      y: 9,
     },
-    "neck": {
-      "x": 10,
-      "y": 13
-    }
+    neck: {
+      x: 10,
+      y: 13,
+    },
   },
   {
-    "id": "person-in-headscarf",
-    "description": "Adult in a headscarf and a long coat",
-    "hand": {
-      "x": 18,
-      "y": 12
+    id: "person-in-headscarf",
+    description: "Adult in a headscarf and a long coat",
+    hand: {
+      x: 18,
+      y: 12,
     },
-    "headTop": 3,
-    "eyes": {
-      "x": 8,
-      "y": 9
+    headTop: 3,
+    eyes: {
+      x: 8,
+      y: 9,
     },
-    "neck": {
-      "x": 10,
-      "y": 13
-    }
+    neck: {
+      x: 10,
+      y: 13,
+    },
   },
   {
-    "id": "teen-with-skateboard",
-    "description": "Teenager with a skateboard stood against their leg",
-    "hand": {
-      "x": 18,
-      "y": 13
+    id: "teen-with-skateboard",
+    description: "Teenager with a skateboard stood against their leg",
+    hand: {
+      x: 18,
+      y: 13,
     },
-    "headTop": 2,
-    "eyes": {
-      "x": 8,
-      "y": 9
+    headTop: 2,
+    eyes: {
+      x: 8,
+      y: 9,
     },
-    "neck": {
-      "x": 10,
-      "y": 13
-    }
-  }
+    neck: {
+      x: 10,
+      y: 13,
+    },
+  },
 ];
 
 export const PERSON_SIZE = { w: 24, h: 44 } as const;
@@ -580,10 +580,10 @@ export const PERSON_SIZE = { w: 24, h: 44 } as const;
  * face. A scarf placed at the crown reads as a flag, which is what the first composition did.
  */
 export const ACCESSORY_ANCHORS: Record<string, "hand" | "head" | "neck" | "eyes"> = {
-  "umbrella": "hand",
-  "sunglasses": "eyes",
-  "scarf": "neck",
-  "woollyHat": "head",
-  "sunHat": "head"
+  umbrella: "hand",
+  sunglasses: "eyes",
+  scarf: "neck",
+  woollyHat: "head",
+  sunHat: "head",
 };
 export const VIGNETTE_SIZE = { w: 176, h: 128, ground: 98 } as const;

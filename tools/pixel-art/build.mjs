@@ -211,8 +211,19 @@ export const ACCESSORY_ANCHORS: Record<string, "hand" | "head" | "neck" | "eyes"
 export const VIGNETTE_SIZE = { w: ${VIGNETTE_W}, h: ${VIGNETTE_H}, ground: ${VIGNETTE_GROUND} } as const;
 `;
 
+/*
+ * Formatted here rather than by hand afterwards.
+ *
+ * This wrote raw `JSON.stringify` output, which the repository's own format gate rejects — so
+ * every rebuild of the art left the tree failing `npm run format:check` until somebody remembered
+ * to run prettier, and one rebuild reached a commit without that having happened. A generator that
+ * emits source has to emit source the project accepts; prettier is already a pinned devDependency,
+ * so this is the same formatting the gate applies, applied once at the point it is written.
+ */
 const out = "apps/web/src/components/pixel/sprites/generated.ts";
-writeFileSync(out, ts);
+const { format, resolveConfig } = await import("prettier");
+const prettierOptions = (await resolveConfig(out)) ?? {};
+writeFileSync(out, await format(ts, { ...prettierOptions, filepath: out }));
 console.log(
   `${Object.keys(FILES).length} images -> ${ART_DIR} (${(totalBytes / 1024).toFixed(1)} KiB total)`,
 );
