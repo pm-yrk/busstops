@@ -240,7 +240,26 @@ export class LiveService {
       const cacheKey = `bods:${url}`;
       try {
         const fetchBegan = Date.now();
-        const xml = await client.coalesce(cacheKey, () => client.fetchText(url, { timeoutMs }));
+        /*
+         * A deadline is for the whole stage, so it gets one attempt.
+         *
+         * `fetchText` retries three times with exponential backoff, and `timeoutMs` bounds each
+         * attempt rather than the operation. Handing it a deadline of the request's remaining time
+         * therefore made the overrun worse, not better: the first attempt now times out where it
+         * would have finished, and the two retries and their backoff follow. Run 49 measured the
+         * result — 2,530ms from a stage given about 850ms, which is 3 x 850 plus jitter almost
+         * exactly, and the platform answered the request after it.
+         *
+         * A local benchmark says the parse is not where that time goes: 2.51 MiB of SIRI-VM
+         * normalises in 242ms and 7.53 MiB in 728ms, about a hundred milliseconds a mebibyte. So
+         * the retries are the whole of it. A caller with a deadline gets one attempt inside it;
+         * a caller without one keeps the three, because a scheduled collector genuinely should
+         * retry a flaky upstream and has no passenger waiting.
+         */
+        const bounded = timeoutMs !== MAP_QUERY_LIMITS.timeoutMs;
+        const xml = await client.coalesce(cacheKey, () =>
+          client.fetchText(url, { timeoutMs, ...(bounded ? { maxAttempts: 1 } : {}) }),
+        );
         const fetchMs = Date.now() - fetchBegan;
         const parseBegan = Date.now();
         const normalized = normalizeSiriVm(xml, {

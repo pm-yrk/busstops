@@ -227,6 +227,46 @@ describe("a live lookup cannot outlive the budget it entered with", () => {
     // The fetch was given an abort signal, which is what a deadline is made of.
     expect(sawTimeout).toBe(1);
   });
+
+  /*
+   * And the deadline bounds the stage, not each attempt.
+   *
+   * `fetchText` retries three times with backoff and `timeoutMs` bounds one attempt, so handing it
+   * the request's remaining time made the overrun worse: run 49 measured 2,530ms from a stage
+   * given about 850ms — three attempts plus jitter — and the platform answered the request after
+   * it. A caller with a deadline gets one attempt inside it.
+   */
+  it("does not retry inside a deadline, which is how one attempt became three", async () => {
+    let attempts = 0;
+    const service = new LiveService({
+      env: { BODS_API_KEY: "k", VEHICLE_SALT_SECRET: "s" } as never,
+      now: () => new Date("2026-09-04T08:00:00.000Z"),
+      fetchImpl: (async () => {
+        attempts += 1;
+        // A retryable failure: without the bound this is attempted three times.
+        return new Response("upstream busy", { status: 503 });
+      }) as unknown as typeof fetch,
+    });
+
+    await service.vehiclesInBoundingBox({ west: -1.6, south: 53.7, east: -1.5, north: 53.8 }, 500);
+    expect(attempts).toBe(1);
+  });
+
+  it("keeps its retries when nobody handed it a deadline", async () => {
+    let attempts = 0;
+    const service = new LiveService({
+      env: { BODS_API_KEY: "k", VEHICLE_SALT_SECRET: "s" } as never,
+      now: () => new Date("2026-09-04T08:00:00.000Z"),
+      fetchImpl: (async () => {
+        attempts += 1;
+        return new Response("upstream busy", { status: 503 });
+      }) as unknown as typeof fetch,
+    });
+
+    // A scheduled collector genuinely should retry a flaky upstream: nobody is waiting for it.
+    await service.vehiclesInBoundingBox({ west: -1.6, south: 53.7, east: -1.5, north: 53.8 });
+    expect(attempts).toBeGreaterThan(1);
+  });
 });
 
 describe("patterns arrive after the trips that name them", () => {
