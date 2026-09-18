@@ -1,8 +1,86 @@
 # Bus Stops. Build State
 
-Last updated: 2026-09-18 (run 53: the artifact bucket went over the R2 free tier; the 1102 is reduced but not gone)
+Last updated: 2026-09-18 (run 54: Leeds to LBA plans, Pro live again; the map viewport now filters at parse time)
 
 ## Current status
+
+### Run 54: the journey plans, Pro is live, and the 1102 is one request's own peak (2026-09-18)
+
+Run 54 ([35371821396](https://github.com/pm-yrk/busstops/actions/runs/35371821396), `651e766`) —
+no bootstrap, retention applied, places and weather collected. **300 sweep checks passed**, up from 202.
+
+#### Three things that were broken are now working
+
+**The geographic pattern index did what it was rebuilt for.** Leeds → Leeds Bradford Airport
+plans, and the numbers are the whole argument for the change:
+
+```
+patterns from the index-tiles (4 corridor pattern tile(s));
+pattern index 4 read / 0 missing, 1.93 MiB, in 760ms
+1 option(s): 3 legs (walk → bus → walk), 0 change(s), 9 min walking
+```
+
+Four tiles and 1.93 MiB, against the hashed layout's ~90 buckets and ~12 MiB for half the patterns
+wanted, measured identically across runs 47, 50 and 52. **P1's journey defect is closed.**
+
+**Pro is back on live intelligence** — `data mode live` — after reporting 503 in run 53. And **a
+journey to a place found by searching for it** works: `York Station → York Minster: 2 option(s)`.
+
+**The places gazetteer re-extracted and published 3,178 places**, including London.
+
+#### The 1102 is one request's own peak, not accumulation
+
+The map diagnostic is the measurement:
+
+```
+509ms of a 1800ms budget; 2 object(s) read, 5 cached; 7.00 MiB decoded; 23806 record(s);
+degraded false, isolate req#2: held 7 shard(s)/7.00 MiB/23806 record(s), trimmed 2,
+left 7 shard(s)/7.00 MiB/23806 record(s), national operators=0/services=0/places=0
+```
+
+**`req#2`, with no national singletons resident**, and the 1102s land immediately after it on
+`/v1/search`, the London viewport, `/v1/nearby`, `/v1/stops/:id/weather` and Leeds on attempt 1.
+Run 53 died at req#9 holding 636 operators, 13,593 services and 3,178 places. The two runs have
+almost nothing in common except the map request itself, which is identical in both: **7.00 MiB
+decoded into 23,806 records to answer with 400 stops.**
+
+So the fix is to stop building the 23,406 records that are thrown away. The bounding box now
+decides _before_ the record is built, through the same parse-time `LineFilter` the route path
+already uses; `numberAt` reads a JSON number in place because `valueAt` expects a quoted value and
+a coordinate is two numbers. A filtered parse is never cached, so a viewport read no longer fills
+the shard cache at all. `stopTilesForBoundingBox` is a quarter of a degree and a dense city fills
+one, so the ratio was a property of the grid rather than of that viewport.
+
+Two existing cache tests drove the cache through `stopsInBoundingBox` and would have silently
+stopped testing anything; they now read tiles unfiltered, and the trim test fills from two families
+so it still proves eviction against more than one shard rather than being loosened to fit.
+
+`sliceForBoundingBox` is deliberately left alone: a journey wants its corridor's stops, and that
+endpoint did not 1102.
+
+#### Two of the sweep's failures were the sweep again
+
+Said plainly because both would otherwise read as product defects:
+
+- `(no route) to (no destination) — no facts` at all three widths was the selected-bus panel's
+  **loading state**, photographed after a fixed three-second wait. The component renders
+  `LoadingBus` while its lookup is in flight and a real message when it fails. The check now waits
+  for it to settle and reports "still loading after 15s" as its own outcome.
+- `(no heading)` after following a route or vehicle link was the same fault: those pages refresh on
+  a ticker, so `networkidle` never arrives, the wait always expired, and the DOM was read before
+  anything had rendered. It now waits for a heading or an error state.
+
+#### What is genuinely still open
+
+- **`target-size` (serious) at phone**, on `.maplibregl-ctrl-zoom-out` and a stop link. Real, and
+  **not reproducible here**: this container cannot reach the basemap host, so MapLibre never draws
+  its controls. The sweep now carries axe's own `failureSummary`, which has the measured sizes, and
+  the live-map accessibility test has been given a map with stops on it — its mock served
+  `EMPTY_MAP`, so it was scanning a page with nothing on it to scan.
+- **`Bullring`** is still unanswered: the 1102 killed the place-search check on "Leeds Station"
+  before it reached the city diagnostic.
+- The live map not painting at desktop and tablet remains the honest error state after `/v1/map`
+  fails, not a separate rendering defect.
 
 ### Run 53: the bucket went over the free tier, and the 1102 is still there (2026-09-18)
 
