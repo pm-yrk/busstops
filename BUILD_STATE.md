@@ -4,6 +4,43 @@ Last updated: 2026-09-17 (live buses proved in the deployment; the national time
 
 ## Current status
 
+### Run 49: London proven in service hours, and 1102 has one common factor (2026-09-18)
+
+Run 49 ([35313671271](https://github.com/pm-yrk/busstops/actions/runs/35313671271), head
+`ce4ad55`) ran at 06:14 — the first verification inside service hours.
+
+**P11 is done.** `a London stop returns real TfL arrival predictions — Waterloo Station /
+Tenison Way: 12 departure(s), 12 live from TfL`. Every earlier run asked at three in the morning
+and could only show that the path worked. The passenger claim on the home page now rests on
+evidence.
+
+Service hours also fill the rest in: **128 live vehicles** where 3am showed seven, and the five
+cities return 20, 18, 20, 20 and 3 departures due.
+
+**Every 1102 this deployment has produced follows the largest `vehicles` stage in its own trail.**
+Run 49's route trail, against a 1,200ms budget:
+
+```
+188ms · 1379ms · 257ms · 1729ms · 332ms · 2530ms   → then 1102, this time on /v1/map
+```
+
+Every other stage in those requests is tens of milliseconds — `route-patterns=97ms stops=96ms
+disruptions=95ms`. The stage scales with the morning traffic, and the kill lands on whichever
+endpoint reads the feed when it is heaviest: route detail in runs 45 and 48, the map in run 49.
+
+The deadline handed to the fetch in the commit before did not shorten it, which points at the
+parse rather than the network — but "points at" is not a measurement, and the last sound-looking
+inference that went in without one cost three runs. So the stage reports its fetch and its parse
+separately now, with the bytes, and the route trail prints them. Run 50 says which half to fix.
+
+**A byte limit went up, stated plainly.** A journey corridor now gets six mebibytes of pattern
+where the map gets three. Three is the map's number and protects against a viewport, which can
+span ninety-six pattern tiles; run 48 measured a corridor at two tiles and 4.21 MiB holding 625
+patterns, where the index path spent 12.23 MiB across 91 buckets for 112. The cheap read was being
+stopped by a number chosen to protect against the expensive one. Every other bound is unchanged,
+the reader still refuses a caller's budget above the request's own ceiling, and a corridor past two
+tiles still goes to the index.
+
 ### Runs 47 and 48: London proven, and both journey paths named (2026-09-18)
 
 **P11 London passes on the deployment.** Run 47:
