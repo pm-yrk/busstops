@@ -224,6 +224,44 @@ describe("patterns arrive after the trips that name them", () => {
     if (!outcome.ok) expect(outcome.reason).toContain("could not read every route");
   });
 
+  /*
+   * Run 46: 190 patterns wanted, 92 index buckets read, the whole twelve-mebibyte request budget
+   * spent, and the read cut short with 114 of 190 resolved — so the planner refused a journey it
+   * had most of the material for. The corridor slice had already read patterns as geometry a
+   * moment earlier and this asked the index for them again.
+   */
+  it("does not ask the index for a pattern the corridor slice already read", async () => {
+    const { store } = await publish(20);
+    const asked: string[][] = [];
+
+    await new JourneyService(store).planJourney(slice(), {
+      ...request,
+      resolvePatterns: (ids) => {
+        asked.push([...ids]);
+        return Promise.resolve({ patterns: new Map(), complete: true, available: true });
+      },
+    });
+
+    expect(asked).toHaveLength(1);
+    for (const id of slice().patternsById.keys()) {
+      expect(asked[0]).not.toContain(id);
+    }
+  });
+
+  it("keeps the slice's own patterns when the index answers with fewer", async () => {
+    const { store } = await publish(20);
+    // An index that resolves nothing at all: the slice's patterns must survive it, because
+    // replacing rather than merging threw away records already in the isolate.
+    const outcome = await new JourneyService(store).planJourney(slice(), {
+      ...request,
+      resolvePatterns: () =>
+        Promise.resolve({ patterns: new Map(), complete: true, available: true }),
+    });
+
+    expect(outcome.diagnostics.patternsInSlice).toBe(slice().patternsById.size);
+    expect(outcome.ok).toBe(true);
+  });
+
   it("falls back to the corridor's own patterns when no index has been published", async () => {
     const { store } = await publish(5);
     // No resolver at all, which is an artifact published before the pattern index existed.

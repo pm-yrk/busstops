@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { FloodNotice, RoadEvent, VehicleObservation } from "@busstops/contracts";
+import type { FloodNotice, Incident, RoadEvent, VehicleObservation } from "@busstops/contracts";
 import {
   InMemoryObjectStore,
   ArtifactStore,
@@ -18,8 +18,13 @@ import {
   joinStreetWorks,
   weatherCacheKey,
 } from "./enrichment.js";
-import { incidentKey, reconcileIncidents, type IncidentObservation } from "./incidents.js";
-import { publishIntelligence, INTELLIGENCE_DATASETS } from "./publish.js";
+import {
+  incidentKey,
+  reconcileIncidents,
+  type IncidentObservation,
+  type TrackedIncident,
+} from "./incidents.js";
+import { publishIntelligence, INTELLIGENCE_DATASETS, MAX_PUBLISHED_INCIDENTS } from "./publish.js";
 import { runAnalyticsBatch } from "./run.js";
 
 const NOW = new Date("2026-09-03T09:00:00.000Z");
@@ -807,6 +812,59 @@ describe("atomic publication", () => {
     );
     expect(result.failed).toEqual([]);
     expect(result.published.map((m) => m.dataset)).toContain(INTELLIGENCE_DATASETS.incidents);
+  });
+
+  /*
+   * The edge reads this dataset whole to build the control tower, and how many incidents there
+   * are is a property of how disrupted England is rather than of this pipeline. Without a ceiling
+   * here the isolate has one nobody chose — the same shape as the disruption notices, which are
+   * capped at publish for exactly this reason.
+   */
+  it("caps what it publishes and drops the mildest first, not an arbitrary slice", async () => {
+    const store = new InMemoryObjectStore(() => NOW);
+    const tracked = (index: number, severity: Incident["severity"]): TrackedIncident => ({
+      incident: {
+        id: deterministicUuid("incident", `cap-${index}`),
+        provenance: { source: "derived", retrievedAt: NOW.toISOString(), externalIds: [] },
+        ingestedAt: NOW.toISOString(),
+        qualityFlags: ["ok"],
+        type: "congestion",
+        startedAt: NOW.toISOString(),
+        endedAt: null,
+        geometry: { corridorId: `corridor-${index}` },
+        affectedRouteIds: [],
+        affectedVehicleRefs: [],
+        severity,
+        confidence: { level: "medium", score: 0.6, reasons: ["test"] },
+        evidence: [],
+        officialStatus: "derived",
+        lifecycle: "active",
+        narrative: `incident ${index}`,
+      },
+      detectionCount: 1,
+      lastDetectedAt: NOW.toISOString(),
+    });
+
+    // One severe incident buried at the end of a list longer than the cap.
+    const many = [
+      ...Array.from({ length: MAX_PUBLISHED_INCIDENTS + 40 }, (_, i) => tracked(i, "typical")),
+      tracked(9999, "highly_abnormal"),
+    ];
+
+    const result = await publishIntelligence(
+      store,
+      { buckets: [bucket], incidents: many },
+      { version: "v1", coverage: 1, sources: ["bods"], now: () => NOW },
+    );
+
+    const artifacts = new ArtifactStore(store);
+    const manifest = await artifacts.readManifest(INTELLIGENCE_DATASETS.incidents);
+    expect(manifest?.recordCount).toBe(MAX_PUBLISHED_INCIDENTS);
+    expect(result.notes.join(" ")).toMatch(/41 of 1541 incidents were not published/);
+
+    // And the one that mattered survived the cut.
+    const published = await artifacts.readRecords<Incident>(manifest!);
+    expect(published.some((incident) => incident.severity === "highly_abnormal")).toBe(true);
   });
 });
 

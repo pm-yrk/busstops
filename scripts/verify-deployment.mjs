@@ -546,11 +546,19 @@ await check("London stops come back from a London viewport", async () => {
     "the map returned zero stops over central London, which means NaPTAN's London stops are " +
       "missing from the published artifact — not that Westminster has no bus stops",
   );
-  const londonStops = stops.filter((stop) => /^(490|940)/.test(stop.id ?? ""));
+  /*
+   * The ATCO code, not the id.
+   *
+   * A map stop carries both, and `id` is the internal UUID — so this matched nothing over
+   * Westminster and reported that the viewport was "not reaching TfL's stops", which was a
+   * statement about this line rather than about the deployment.
+   */
+  const londonStops = stops.filter((stop) => /^(490|940)/.test(stop.atcoCode ?? ""));
   assert(
     londonStops.length > 0,
     `${stops.length} stops came back over central London and none of them carries a London ` +
-      "ATCO prefix, so the viewport is not reaching TfL's stops",
+      `ATCO prefix — the first is ${stops[0]?.atcoCode ?? "(none)"} — so the viewport is not ` +
+      "reaching TfL's stops",
   );
   observed.londonStop =
     londonStops.find((stop) => (stop.routePublicNames ?? []).length > 0) ?? londonStops[0];
@@ -1055,8 +1063,11 @@ await check("a journey can be planned across real timetable data", async () => {
         : "") +
       (meta?.diagnostics?.families?.patterns
         ? `; pattern index ${meta.diagnostics.families.patterns.read} read/` +
-          `${meta.diagnostics.families.patterns.missing} missing in ` +
-          `${meta.diagnostics.families.patterns.ms}ms`
+          `${meta.diagnostics.families.patterns.missing} missing, ` +
+          // The bytes, which is what actually ended run 46's read: 92 buckets spent the whole
+          // twelve-mebibyte request budget, and the summed milliseconds hid that behind latency.
+          `${(meta.diagnostics.families.patterns.chars / 1048576).toFixed(2)} MiB, in ` +
+          `${meta.diagnostics.families.patterns.ms}ms of summed read time`
         : "") +
       // Where the time actually went, which is the whole point of asking after a 1102.
       (diagnostics.stageMs

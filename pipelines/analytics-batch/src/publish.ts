@@ -14,6 +14,20 @@ import type { TrackedIncident } from "./incidents.js";
 
 export const INTELLIGENCE_SCHEMA_VERSION = "1.0.0";
 
+/**
+ * How many incidents are published.
+ *
+ * `ProService` reads this dataset whole into a 128 MiB isolate, and the number of open incidents
+ * is a property of how disrupted England is rather than of this pipeline — so without a ceiling
+ * here the edge has one that nobody chose. The same reasoning and the same number as the
+ * disruption notices, which are capped at publish for exactly this reason. If this cap ever comes
+ * off, the Worker's read has to be sharded or scoped before it does.
+ */
+export const MAX_PUBLISHED_INCIDENTS = 1500;
+
+/** Worst first, so a cap drops the mildest abnormality rather than an arbitrary slice. */
+const SEVERITY_ORDER = ["typical", "elevated", "abnormal", "highly_abnormal"] as const;
+
 export const INTELLIGENCE_DATASETS = {
   segmentMetrics: "intelligence/segment-metrics",
   incidents: "intelligence/incidents",
@@ -69,7 +83,30 @@ export async function publishIntelligence(
     notes.push(`${openCount} buckets are still open and were not published`);
   }
 
-  const incidents: Incident[] = input.incidents.map((tracked) => tracked.incident);
+  /*
+   * Ordered worst-first and capped, because the edge reads this dataset whole.
+   *
+   * `ProService` loads every published incident into a 128 MiB isolate to build the control
+   * tower, and nothing bounded how many there could be: the count is a property of how disrupted
+   * England is today rather than of this pipeline. That is the same shape as the disruption
+   * notices, which are capped at publish for exactly this reason, and it gets the same answer —
+   * including the ordering, so that the cap drops the mildest abnormality rather than an
+   * arbitrary slice that happens to contain a route suspension. What is dropped is reported.
+   */
+  const ranked = [...input.incidents].sort(
+    (a, b) =>
+      SEVERITY_ORDER.indexOf(b.incident.severity) - SEVERITY_ORDER.indexOf(a.incident.severity) ||
+      Date.parse(b.incident.startedAt) - Date.parse(a.incident.startedAt),
+  );
+  const incidents: Incident[] = ranked
+    .slice(0, MAX_PUBLISHED_INCIDENTS)
+    .map((tracked) => tracked.incident);
+  if (ranked.length > MAX_PUBLISHED_INCIDENTS) {
+    notes.push(
+      `${ranked.length - MAX_PUBLISHED_INCIDENTS} of ${ranked.length} incidents were not ` +
+        `published: the edge reads this dataset whole and holds at most ${MAX_PUBLISHED_INCIDENTS}`,
+    );
+  }
 
   const publishDataset = async (
     dataset: string,

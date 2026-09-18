@@ -237,7 +237,14 @@ describe("national datasets the edge does still hold", () => {
      * which meant a new reader could add a whole-dataset read and never be asked about it — and
      * one promptly did.
      */
-    const readerSource = ["network-reader.ts", "disruption-reader.ts"]
+    /*
+     * Named "every reader" and listing two of them, which is how `pro-service.ts` came to read the
+     * whole national segment-metrics dataset into the isolate in order to test a manifest for
+     * null. The list is now derived rather than maintained: every non-test source in the Worker,
+     * so a new file cannot add a whole-dataset read without appearing here.
+     */
+    const readerSource = readdirSync(here)
+      .filter((name) => name.endsWith(".ts") && !name.endsWith(".test.ts"))
       .map((name) => readFileSync(join(here, name), "utf8"))
       .join("\n");
     /*
@@ -276,6 +283,21 @@ describe("national datasets the edge does still hold", () => {
        * gazetteer gets sharded the way the search index is.
        */
       "PLACES_DATASET",
+      /*
+       * The intelligence incidents are capped at publish — MAX_PUBLISHED_INCIDENTS, ordered
+       * worst-first — so their size is a property of the batch rather than of how disrupted
+       * England is today. Third time this reasoning has been needed and the third time it carries
+       * the same condition: if that ceiling comes off, this entry comes off with it and the
+       * Worker's read gets sharded or scoped before the cap does.
+       */
+      "INTELLIGENCE_INCIDENTS_DATASET",
+      /*
+       * One degree square of weather, which is a shard by construction: the grid is a degree, a
+       * square holds about a hundred cells and a few kilobytes, and a stop page reads exactly one.
+       * Same category as `journeyTileDataset(tile)` — the guard matches the call, not what it
+       * resolves to.
+       */
+      "weatherShardDataset(tile)",
     ]);
     for (const expression of wholeDatasetReads) {
       expect(allowedExpressions.has(expression), `${expression} is read whole`).toBe(true);

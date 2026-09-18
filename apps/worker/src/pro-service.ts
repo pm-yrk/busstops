@@ -166,11 +166,21 @@ export class ProService {
     const artifacts = new ArtifactStore(this.store);
     try {
       const incidents = await artifacts.readCurrent<Incident>(INTELLIGENCE_INCIDENTS_DATASET);
-      const segments = await artifacts.readCurrent<unknown>(INTELLIGENCE_SEGMENTS_DATASET);
+      /*
+       * The segment metrics are asked whether they exist, not what they say.
+       *
+       * Nothing here has ever read a field off them — the records were fetched so that a manifest
+       * could be tested for null — and `readCurrent` pulls the whole national dataset into the
+       * isolate to do it. That was harmless while the analytics batch was failing on
+       * `no_segments` and the artifact did not exist; it stops being harmless the moment the batch
+       * starts working, because this dataset grows with coverage and there is no publish-time
+       * ceiling on it. `readManifest` answers the same question for the cost of one small object.
+       */
+      const segmentsManifest = await artifacts.readManifest(INTELLIGENCE_SEGMENTS_DATASET);
       // A manifest is the signal that a run happened. Zero incidents with a manifest is a real
       // "nothing to report"; no manifest at all means nothing has ever run.
-      if (incidents.manifest === null && segments.manifest === null) return null;
-      return { incidents: incidents.records, segments: segments.records };
+      if (incidents.manifest === null && segmentsManifest === null) return null;
+      return { incidents: incidents.records, segments: [] };
     } catch {
       return null;
     }

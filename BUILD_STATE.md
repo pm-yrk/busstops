@@ -4,6 +4,73 @@ Last updated: 2026-09-17 (live buses proved in the deployment; the national time
 
 ## Current status
 
+### Run 46: Pro is live, and residency rules out the memory reading (2026-09-18)
+
+Run 46 ([35300783901](https://github.com/pm-yrk/busstops/actions/runs/35300783901), head
+`799592c`, no bootstrap) answered four of run 45's five open questions.
+
+**Three things now work that did not.**
+
+- **Pro reports `dataMode = live`.** The analytics batch fell from **960 seconds to 5 minutes**
+  and published: `1 of 6 headline metric(s) carry a figure over 0 observation(s)`. Thin, and
+  honestly thin — one figure over no observations is what a preview bucket with nineteen samples
+  should say. The batch also stopped itself where it was designed to:
+  `stopped after 2852 of 2927 traces to leave time for the stages after this one`.
+- **`/v1/sources/health` reports** — `2 sources, governor green`, after four runs of
+  "no sources reported". The lazy client map was the whole of it.
+- **Bristol Temple Meads resolves as itself** rather than as `Temple`. Four of five landmarks;
+  `Bullring` is still the one missing.
+
+**Residency: the memory reading is ruled out, by measurement.**
+
+The route trail now carries what the isolate held either side of every request:
+
+```
+req#13: held 5 shard(s)/7.37 MiB/15055 record(s), trimmed 3, left 5/7.49 MiB/12215
+req#14: held 5/7.49 MiB/12215,                    trimmed 4, left 1/2.15 MiB/3773
+req#16: held 4/4.95 MiB/10728,                    trimmed 2, left 3/4.75 MiB/7409
+req#17: held 3/4.75 MiB/7409,                     trimmed 2, left 2/2.94 MiB/5157
+                                            → 1102 on the next request
+```
+
+Residency is not climbing. It oscillates between 2.9 and 7.5 MiB, the trim does its job, and the
+request that was killed began against the **lowest** residency in the whole trail — two shards and
+5,157 records. The national singletons are small: 637 operators, 13,579 services, 3,178 places.
+**So the isolate was not full, and cross-request accumulation is not the cause.** That was one of
+the two readings that had been possible for four runs, and it is now closed. What remains possible
+is a CPU ceiling on parsing, and that is still not claimed: nothing measured says so either.
+
+**The journey's refusal has a cause, and it is bytes.**
+
+`114 of 190 pattern(s) resolved; pattern index 92 read/0 missing in 64574ms` — with the ledger's
+own stop reason **absent**, so the time budget did not end it. Sixty-four seconds of summed read
+time across a 96-wide batch is latency, not work; the wall clock was 1,724ms. What ended it is the
+other branch: the twelve-mebibyte request budget. Ninety-two buckets exhausted it, which means a
+pattern-index bucket is well over a hundred kilobytes rather than the "tens of kilobytes" the
+comment claimed — a bucket holds every pattern in England whose id hashes to it, and a corridor
+wants a handful from each.
+
+The fix is fewer buckets, not a larger budget. The planner was asking the index for **every**
+pattern its trips named — including the ones the corridor slice had just read as geometry — and
+then _replacing_ the slice's patterns with the index's answer, discarding what the index could not
+supply. It now asks only for what the slice lacks and merges rather than replaces: strictly less
+reading, strictly more patterns.
+
+**Two things run 46 could not answer, one of them my fault.** The London checks failed on
+`stop.id` where they should have read `stop.atcoCode` — a map stop carries both and `id` is the
+internal UUID, so the check reported that Westminster "is not reaching TfL's stops" when it was
+reporting on itself. Fixed; London is unproven either way until the next run.
+
+**Also in this milestone.** `ProService` was reading the whole national `intelligence/segment-metrics`
+dataset into the isolate in order to test a manifest for null — harmless while the batch was
+failing, and not harmless now that it works. It reads the manifest. The whole-dataset guard was
+named "every reader in the Worker" and listed two files; it now derives the list, which is how
+that read had gone unnoticed. `intelligence/incidents` is capped at publish, worst-first, on the
+same reasoning and with the same condition as the disruption notices and the gazetteer.
+
+**Gates.** 1,137 node tests, 163 web, 160 e2e; prettier, eslint `--max-warnings=0`, typecheck,
+preflight at `ci` and `deploy`, secret scan clean. Production untouched.
+
 ### Run 45: five real answers, one measurement that was missing (2026-09-18)
 
 Run 45 ([35294669787](https://github.com/pm-yrk/busstops/actions/runs/35294669787), head

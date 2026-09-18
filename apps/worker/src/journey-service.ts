@@ -396,14 +396,32 @@ export class JourneyService {
      */
     let planningSlice = slice;
     if (request.resolvePatterns) {
-      const wanted = [...new Set(loaded.rows.map((row) => row.p))];
+      /*
+       * Only the patterns the corridor slice does not already have.
+       *
+       * This asked the index for every pattern the trips named, including the ones already read
+       * as geometry a moment earlier — and then *replaced* the slice's patterns with the index's
+       * answer, throwing away the ones the index could not supply. Run 46 measured what that
+       * cost: 190 patterns wanted, 92 index objects read, 12 mebibytes of request budget spent,
+       * and the read cut short with 114 of 190 resolved, so the planner refused a journey it had
+       * most of the material for.
+       *
+       * The slice's patterns are the same records, already in the isolate and already paid for.
+       * Asking only for the remainder is strictly less reading, and merging rather than replacing
+       * is strictly more patterns.
+       */
+      const wanted = [
+        ...new Set(loaded.rows.map((row) => row.p).filter((id) => !slice.patternsById.has(id))),
+      ];
       const patternBegan = Date.now();
       const resolved = await request.resolvePatterns(wanted);
       diagnostics.stageMs.resolvePatterns = Date.now() - patternBegan;
       diagnostics.patternsRequested = wanted.length;
 
       if (resolved.available) {
-        diagnostics.patternsInSlice = resolved.patterns.size;
+        const merged = new Map(slice.patternsById);
+        for (const [id, pattern] of resolved.patterns) merged.set(id, pattern);
+        diagnostics.patternsInSlice = merged.size;
         if (!resolved.complete) {
           return {
             ok: false,
@@ -415,10 +433,10 @@ export class JourneyService {
             diagnostics: { ...diagnostics, code: "incomplete_read" },
           };
         }
-        planningSlice = { ...slice, patternsById: resolved.patterns };
+        planningSlice = { ...slice, patternsById: merged };
         // Rows on a pattern nothing could resolve cannot become trips; dropping them here keeps
         // them out of the graph builder's memory rather than out of its output.
-        loaded.rows = loaded.rows.filter((row) => resolved.patterns.has(row.p));
+        loaded.rows = loaded.rows.filter((row) => merged.has(row.p));
         diagnostics.tripsLoaded = loaded.rows.length;
       }
     }

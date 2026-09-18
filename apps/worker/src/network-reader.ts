@@ -162,11 +162,18 @@ const FIRST_TILE_BATCH = 2;
  * The pattern index reads wider, because its objects are a different size of thing.
  *
  * A tile is megabytes and the first round trip is the one no budget can undo. A pattern-index
- * bucket carries stop sequences and no geometry, so it is measured in tens of kilobytes — and a
- * corridor's ninety patterns hash across ninety buckets. Reading those two at a time is
- * forty-five round trips of pure latency: run 44 planned Leeds to Leeds Bradford Airport
- * correctly and spent 5,411ms of a 6,000ms budget doing exactly that. The byte budget still
- * decides when to stop; this decides how many small things are asked for at once.
+ * bucket carries stop sequences and no geometry, and a corridor's ninety patterns hash across
+ * ninety buckets. Reading those two at a time is forty-five round trips of pure latency: run 44
+ * planned Leeds to Leeds Bradford Airport correctly and spent 5,411ms of a 6,000ms budget doing
+ * exactly that. The byte budget still decides when to stop; this decides how many small things
+ * are asked for at once.
+ *
+ * "Small" was a guess and it was wrong. Run 46 read 92 of these buckets and spent the request's
+ * whole twelve-mebibyte budget doing it, then cut the read short — so a bucket is well over a
+ * hundred kilobytes, not tens of them. A bucket holds every pattern whose id hashes to it, from
+ * anywhere in England, and only a handful of those are ever wanted. That is the shape of the
+ * cost, and the answer to it is to ask for fewer buckets rather than to raise the budget: the
+ * journey planner now asks only for the patterns its corridor slice did not already read.
  */
 const FIRST_PATTERN_INDEX_BATCH = 12;
 /*
