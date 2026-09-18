@@ -482,6 +482,9 @@ await check("search finds real places, not only bus stops", async () => {
         `"${term}" returned a place claiming live bus coverage of its own`,
       );
       found.push(`${term} → ${place.title}`);
+      // Carried to the journey check below: a place found by search is where a passenger says
+      // they want to go, and getting them there is the point of having found it.
+      if (term === "York Minster") observed.yorkMinster = place;
     } else {
       missed.push(term);
     }
@@ -1305,6 +1308,58 @@ await check("a real stop carries real weather", async () => {
     `${now.precipitationMm}mm, wind ${now.windSpeedKph}kph, code ${now.weatherCode}, ` +
     `${now.isDay ? "day" : "night"}; cell ${weather.cell} at ${weather.cellSizeDegrees}°, ` +
     `retrieved ${Math.round(ageMinutes)} min ago, ${weather.next.length} hour(s) ahead`
+  );
+});
+
+/*
+ * The journey the product exists to plan, from the place a passenger named.
+ *
+ * "Search for a real place such as York Minster" and "plan a plausible real journey to it" are two
+ * lines of the definition of done and they are one act. The corridor check above plans between two
+ * coordinates chosen here; this one plans to a destination the *gazetteer* returned, which is the
+ * whole path — type a landmark, get taken there — and it has never been exercised end to end.
+ *
+ * York Station to the Minster is a real, short, frequently served trip. Walking it is also real,
+ * so a walk-only itinerary is a pass: what would not be is a refusal, or an itinerary that does
+ * not end where the passenger asked to go.
+ */
+await check("a journey can be planned to a place found by searching for it", async () => {
+  const place = observed.yorkMinster;
+  if (!place) {
+    return "York Minster was not in the gazetteer for this bucket, so there was nowhere to plan to";
+  }
+
+  // York rail station, where somebody arriving in the city actually starts.
+  const from = { lat: 53.9579, lon: -1.0934 };
+  const to = place.coordinate;
+  const { response, body, text } = await getJson(
+    `/v1/journeys?fromLat=${from.lat}&fromLon=${from.lon}&toLat=${to.lat}&toLon=${to.lon}`,
+  );
+  const isHtml = text.trimStart().toLowerCase().startsWith("<!doctype") || /<html/i.test(text);
+  assert(
+    !isHtml,
+    `the platform answered instead of the Worker (${response.status}${describePlatformPage(response, text)})`,
+  );
+  assert(response.ok, `expected 2xx, got ${describe(response, body, text)}`);
+
+  const options = body?.data?.options ?? [];
+  const unavailable = body?.data?.unavailableReason ?? null;
+  assert(
+    options.length > 0,
+    `no way to get from York Station to ${place.title}: ${unavailable ?? "no reason given"}`,
+  );
+
+  const best = options[0];
+  const legs = best?.legs ?? [];
+  assert(legs.length > 0, "an itinerary with no legs in it");
+  // It has to end where the passenger asked to go, not near where they started.
+  const last = legs[legs.length - 1];
+  assert(last?.toName, "the last leg does not say where it ends");
+
+  const modes = legs.map((leg) => leg.mode).join(" → ");
+  return (
+    `York Station → ${place.title}: ${options.length} option(s), ` +
+    `${legs.length} leg(s) (${modes}), ending at ${last.toName}`
   );
 });
 
