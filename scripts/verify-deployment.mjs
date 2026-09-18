@@ -29,6 +29,20 @@ let failures = 0;
 /** Facts carried between checks: a stop found by one check is the input to the next. */
 const observed = {};
 
+/** What an isolate was holding either side of one request, when the endpoint reports it. */
+function describeResidency(residency) {
+  if (!residency) return "";
+  return (
+    `, isolate req#${residency.requestsServed}: held ${residency.shardsBefore} shard(s)/` +
+    `${(residency.charsBefore / 1048576).toFixed(2)} MiB/${residency.recordsBefore} record(s), ` +
+    `trimmed ${residency.evicted}, left ${residency.shardsAfter} shard(s)/` +
+    `${(residency.charsAfter / 1048576).toFixed(2)} MiB/${residency.recordsAfter} record(s)` +
+    `, national ${Object.entries(residency.singletons ?? {})
+      .map(([name, count]) => `${name}=${count}`)
+      .join("/")}`
+  );
+}
+
 /**
  * Whether a passenger standing at a stop right now should expect a bus.
  *
@@ -509,6 +523,101 @@ await check("live vehicles are reported for a covered area", async () => {
  * ones that finish. This prints it rather than asserting a threshold: nobody outside Cloudflare
  * knows where the line is, and a made-up limit here would fail runs for no reason.
  */
+/*
+ * London, which is a different product behind the same map.
+ *
+ * Outside London a bus is an observation: BODS publishes where the vehicle is, and the board is
+ * composed from the timetable. Inside London it is the other way round — TfL publishes arrival
+ * predictions per stop and does not publish vehicle positions at all — so the live vehicle layer
+ * over London is empty by design, and the thing that has to work is the board.
+ *
+ * The home page has been claiming London coverage, and nothing here has ever checked it. These
+ * two checks are what that claim has to rest on: a real 490 stop returning real TfL predictions,
+ * and the map over London being honestly empty of vehicles rather than accidentally so.
+ */
+const LONDON_BBOX = "-0.14,51.49,-0.09,51.52";
+
+await check("London stops come back from a London viewport", async () => {
+  const { response, body, text } = await getJson(`/v1/map?bbox=${LONDON_BBOX}&zoom=15`);
+  assert(response.ok, `expected 2xx, got ${describe(response, body, text)}`);
+  const stops = body?.data?.stops ?? [];
+  assert(
+    stops.length > 0,
+    "the map returned zero stops over central London, which means NaPTAN's London stops are " +
+      "missing from the published artifact — not that Westminster has no bus stops",
+  );
+  const londonStops = stops.filter((stop) => /^(490|940)/.test(stop.id ?? ""));
+  assert(
+    londonStops.length > 0,
+    `${stops.length} stops came back over central London and none of them carries a London ` +
+      "ATCO prefix, so the viewport is not reaching TfL's stops",
+  );
+  observed.londonStop =
+    londonStops.find((stop) => (stop.routePublicNames ?? []).length > 0) ?? londonStops[0];
+
+  /*
+   * And the vehicle layer, which must be empty for the stated reason rather than by accident.
+   *
+   * A London-only viewport asks TfL and nothing else, so a vehicle here would mean the map had
+   * invented one. What is required is that TfL is named as a source: an empty layer with no
+   * source named would be indistinguishable from London simply not being wired up.
+   */
+  const vehicles = body?.data?.vehicles ?? [];
+  const sources = (body?.meta?.sources ?? []).map((source) => source.source ?? source);
+  assert(
+    sources.includes("tfl"),
+    `a London viewport reported sources [${sources.join(", ")}] and did not consult TfL`,
+  );
+  assert(
+    vehicles.length === 0,
+    `${vehicles.length} vehicle(s) came back over London, where TfL publishes no vehicle ` +
+      "positions — so these were invented somewhere",
+  );
+  observed.londonVehicleLayerEmpty = true;
+  return (
+    `${stops.length} stop(s), ${londonStops.length} with a London ATCO; ` +
+    `sources [${sources.join(", ")}]; vehicle layer empty, as TfL publishes no positions`
+  );
+});
+
+await check("a London stop returns real TfL arrival predictions", async () => {
+  assert(observed.londonStop, "no London stop was found by the previous check");
+  const target = observed.londonStop;
+  const { response, body, text } = await getJson(`/v1/stops/${encodeURIComponent(target.id)}`);
+  assert(response.ok, `expected 2xx, got ${describe(response, body, text)}`);
+  const stop = body?.data?.stop;
+  assert(stop, "the London stop response has no stop");
+  const departures = body?.data?.departures ?? [];
+  for (const departure of departures) {
+    assert(departure.serviceRoutePublicName, "a London departure has no route name to display");
+    assert(departure.destinationName, "a London departure has no destination to display");
+  }
+  /*
+   * TfL's predictions are live, so in service hours a central London stop with a service has
+   * something due. Out of hours the honest answer is an empty board, and asserting on it would
+   * fail the run for the time of day rather than for the deployment.
+   */
+  const live = departures.filter((departure) => departure.liveState === "live").length;
+  if (SERVICE_HOURS.daytime) {
+    assert(
+      departures.length > 0,
+      `${stop.name} is a London stop with nothing due at ${SERVICE_HOURS.hour}:00 ` +
+        `${SERVICE_HOURS.weekday} London time, so the TfL arrivals path is not working`,
+    );
+    assert(
+      live > 0,
+      `${stop.name} returned ${departures.length} departure(s) and none of them is live, ` +
+        "so these are timetable rows rather than TfL predictions",
+    );
+  }
+  observed.londonDepartures = departures.length;
+  observed.londonLiveDepartures = live;
+  return (
+    `${stop.name} (${stop.id}): ${departures.length} departure(s), ${live} live from TfL` +
+    (SERVICE_HOURS.daytime ? "" : " (outside service hours: departures not required)")
+  );
+});
+
 await check("the map says what it cost", async () => {
   const { response, body, text } = await getJson(`/v1/map?bbox=${BBOX}&zoom=15`);
   assert(response.ok, `expected 2xx, got ${describe(response, body, text)}`);
@@ -523,7 +632,8 @@ await check("the map says what it cost", async () => {
     `${d.objectsRead} object(s) read, ${d.objectsCached} cached, ${d.objectsMissing} missing, ` +
     `${d.objectsFailed} failed; ${(d.chars / 1048576).toFixed(2)} MiB decoded; ` +
     `${d.records} record(s); ${stages}; ` +
-    `degraded ${String(body.data.degraded)}${body.data.degradationReason ? ` (${body.data.degradationReason})` : ""}`
+    `degraded ${String(body.data.degraded)}${body.data.degradationReason ? ` (${body.data.degradationReason})` : ""}` +
+    describeResidency(d.residency)
   );
 });
 
@@ -779,7 +889,19 @@ await check("the pattern-heavy endpoints survive dense cities, repeatedly", asyn
             `${String(routeDiagnostics.stopsResolved ?? 0)}/${String(routeDiagnostics.stopsRequested ?? 0)} stop(s), ` +
             Object.entries(routeDiagnostics.stages ?? {})
               .map(([stage, ms]) => `${stage}=${ms}ms`)
-              .join(" "),
+              .join(" ") +
+            /*
+             * What the isolate was already holding, which is the half of the question that four
+             * runs of diagnostics could not answer.
+             *
+             * Run 45 answered six of these requests in 300–900ms, reading two or three mebibytes
+             * apiece, and the platform killed the seventh. On the per-request numbers alone
+             * "these requests are cheap" and "this isolate is full" are the same reading. This is
+             * the line that separates them: if the trail shows residency climbing request by
+             * request and the kill arrives at the top of it, that is a memory ceiling; if it
+             * shows the same figures throughout, it is not.
+             */
+            describeResidency(routeDiagnostics.residency),
         );
         routePeakMs = Math.max(routePeakMs, routeDiagnostics.elapsedMs ?? 0);
         routePeakChars = Math.max(routePeakChars, routeDiagnostics.chars ?? 0);
@@ -899,6 +1021,9 @@ await check("a journey can be planned across real timetable data", async () => {
    */
   const unavailable = body?.data?.unavailableReason ?? body?.error?.code ?? "none";
   const diagnostics = body?.data?.diagnostics ?? null;
+  // The planner's own counts live under data; the read ledger's live under meta, and the two
+  // together are what distinguish a missing row from an exhausted budget.
+  const meta = body?.meta ?? null;
   const explained = diagnostics
     ? `${diagnostics.code}: ${diagnostics.corridorTiles} corridor tile(s), ` +
       `windows [${diagnostics.windows.join(",")}], ` +
@@ -913,6 +1038,26 @@ await check("a journey can be planned across real timetable data", async () => {
       `candidate stop(s); ${diagnostics.roundsWithOption} of ${diagnostics.rounds} round(s) found ` +
       `an itinerary; slice held ${diagnostics.patternsInSlice} pattern(s) and ` +
       `${diagnostics.stopsInSlice} stop(s)` +
+      /*
+       * How many patterns the trips named, against how many were resolved.
+       *
+       * Run 45 refused this journey with `incomplete_read` after resolving 108 patterns in
+       * 4,184ms, and the line printed neither how many it had been asked for nor the ledger's own
+       * reason for stopping — so "the index is missing rows" and "the budget ran out part way
+       * through three hundred round trips" read identically. They are different defects with
+       * different fixes.
+       */
+      (typeof diagnostics.patternsRequested === "number"
+        ? `; ${diagnostics.patternsInSlice} of ${diagnostics.patternsRequested} pattern(s) resolved`
+        : "") +
+      (meta?.diagnostics?.degradationReason
+        ? `; the read stopped itself: ${meta.diagnostics.degradationReason}`
+        : "") +
+      (meta?.diagnostics?.families?.patterns
+        ? `; pattern index ${meta.diagnostics.families.patterns.read} read/` +
+          `${meta.diagnostics.families.patterns.missing} missing in ` +
+          `${meta.diagnostics.families.patterns.ms}ms`
+        : "") +
       // Where the time actually went, which is the whole point of asking after a 1102.
       (diagnostics.stageMs
         ? `; stages ${Object.entries(diagnostics.stageMs)

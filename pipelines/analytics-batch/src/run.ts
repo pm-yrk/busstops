@@ -3,7 +3,12 @@ import type { ObjectStore } from "@busstops/pipeline-core";
 import { toIso } from "@busstops/pipeline-core";
 import { activeDegradationSteps, isAtLeast } from "@busstops/governor";
 import { StageRunner, type Checkpoint, type RunReport } from "./stages.js";
-import { sampleSegmentsForTrace, type RoadSegment, type SegmentSample } from "./segments.js";
+import {
+  indexSegments,
+  sampleSegmentsForTrace,
+  type RoadSegment,
+  type SegmentSample,
+} from "./segments.js";
 import {
   aggregateSegmentSamples,
   type AggregationResult,
@@ -81,39 +86,77 @@ export async function runAnalyticsBatch(
     (await runner.run<BatchInput, SegmentSample[]>(
       {
         name: "segment_samples",
-        run: (batch) => {
+        /*
+         * Half the run, not all of it. Matching is the expensive stage and the only one that can
+         * usefully stop part way, so it takes the largest share and leaves the aggregation, the
+         * incident reconciliation and the publish the other half.
+         */
+        budgetShare: 0.5,
+        run: (batch, context) => {
           const collected: SegmentSample[] = [];
           let lowConfidence = 0;
           let implausible = 0;
           let unmatched = 0;
+          let processed = 0;
+          let ranOutOfTime = false;
+
+          /*
+           * The index is built once for the whole batch.
+           *
+           * This loop used to hand every trace the entire segment array, which rebuilt a
+           * seventy-six-thousand-entry candidate list per vehicle and matched each bus against
+           * every road in the country. Run 45 measured it at 960 seconds for 2,927 traces — the
+           * whole run's budget — with 2,184 of them rejected for low confidence, which is what a
+           * matcher offered the wrong city returns.
+           */
+          const index = indexSegments(batch.segments);
 
           for (const [vehicleRef, trace] of batch.traces) {
+            /*
+             * And a share of the clock, so this stage cannot starve the ones after it.
+             *
+             * When it overran, `interval_aggregates` and `incident_lifecycle` were both skipped
+             * for want of time and Pro published nothing — so a complete first stage bought a
+             * batch with no output at all. A sample is a sample: aggregating the traces that were
+             * processed is worth more than processing every trace and aggregating none.
+             */
+            if (context.remainingMs() <= 0) {
+              ranOutOfTime = true;
+              break;
+            }
             const result = sampleSegmentsForTrace(
               trace,
-              batch.segments,
+              index,
               batch.routeByVehicle.get(vehicleRef) ?? null,
             );
             collected.push(...result.samples);
             lowConfidence += result.discardedLowConfidence;
             implausible += result.discardedImplausible;
             unmatched += result.unmatchedTraces;
+            processed += 1;
           }
 
           return {
             value: collected,
             metrics: {
-              processed: batch.traces.size,
+              processed,
               emitted: collected.length,
               rejected: lowConfidence + implausible + unmatched,
               lowConfidenceTraces: lowConfidence,
               implausibleTraversals: implausible,
             },
-            notes:
-              lowConfidence > 0
+            notes: [
+              ...(lowConfidence > 0
                 ? [
                     `${lowConfidence} traces produced no samples because their map match was below the confidence floor`,
                   ]
-                : [],
+                : []),
+              ...(ranOutOfTime
+                ? [
+                    `stopped after ${processed} of ${batch.traces.size} traces to leave time for the stages after this one`,
+                  ]
+                : []),
+            ],
           };
         },
       },

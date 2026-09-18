@@ -215,6 +215,17 @@ export const VehicleDetailResponseSchema = apiEnvelope(
     recentTrace: z.array(z.object({ coordinate: CoordinateSchema, observedAt: IsoInstantSchema })),
     scheduledShape: z.array(CoordinateSchema),
     incidents: z.array(IncidentSchema),
+    /**
+     * Who runs this bus, when the observation matched a pattern and the pattern named a service.
+     *
+     * "Bus stopped?" offers to put the passenger in touch with the operator, and was passing null
+     * for both the name and the contact because nothing on this endpoint had ever looked one up.
+     * Null still happens — an unmatched observation is a number on the front and nothing else —
+     * and the panel says so rather than showing an empty row.
+     */
+    operator: OperatorSchema.nullable().default(null),
+    /** Published notices touching this bus's route, which is context the panel can act on. */
+    disruptions: z.array(DisruptionNoticeSchema).default([]),
   }),
 );
 export type VehicleDetailResponse = z.infer<typeof VehicleDetailResponseSchema>;
@@ -281,6 +292,14 @@ export const RouteDetailResponseSchema = apiEnvelope(
     headwaySummary: z.string().nullable(),
     reliability: z.array(PublishedMetricSchema),
     incidents: z.array(IncidentSchema),
+    /**
+     * What the operator and the highway authority have said about this route.
+     *
+     * `incidents` are derived from observation and stay empty until the intelligence pipeline has
+     * something to say; these are the published notices, which exist now. A route page that shows
+     * neither, on a route with a closure on it, is the site being quieter than its sources.
+     */
+    disruptions: z.array(DisruptionNoticeSchema).default([]),
     ticketUrl: z.string().url().nullable(),
   }),
 );

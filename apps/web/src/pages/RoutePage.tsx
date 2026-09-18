@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import type { RouteDetailResponse } from "@busstops/contracts";
+import { OfficialNotices } from "../components/OfficialNotices.js";
 import { LoadingBus } from "../components/LoadingBus.js";
 import { vehicleHref } from "../lib/geo.js";
 import {
@@ -89,8 +90,16 @@ export function RoutePage() {
     );
   }
 
-  const { route, operator, variants, activeVehicles, headwaySummary, reliability, incidents } =
-    response.data;
+  const {
+    route,
+    operator,
+    variants,
+    activeVehicles,
+    headwaySummary,
+    reliability,
+    incidents,
+    disruptions,
+  } = response.data;
   const variant = variants[Math.min(selectedVariant, Math.max(0, variants.length - 1))];
 
   return (
@@ -275,6 +284,22 @@ export function RoutePage() {
             ))}
           </ul>
         </section>
+      ) : null}
+
+      {/*
+        What the operator has actually announced about this route.
+
+        `incidents` above are derived from observation and the intelligence pipeline has published
+        none yet, so this section was the whole of what a route page could say about disruption —
+        which meant a route with a published closure on it showed nothing at all.
+      */}
+      {disruptions.length > 0 ? (
+        <OfficialNotices
+          notices={disruptions}
+          sourcesQueried={[]}
+          collectedAt={response.meta.observedAt}
+          headingId="route-official-now"
+        />
       ) : null}
     </article>
   );

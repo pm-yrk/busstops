@@ -1176,6 +1176,23 @@ describe("GET /v1/sources/health", () => {
     expect(body.data.governorState).toBe("green");
     expect(body.data.safeMode).toBe(false);
   });
+
+  /*
+   * Four deployment verifications in a row reported "no sources reported" against a deployment
+   * whose live vehicles were working. The clients are built lazily by whichever request first
+   * needs one, so a status request that arrived before any map request found an empty map and
+   * answered with an empty array — which reads as an outage and was a cold isolate.
+   */
+  it("names every source this deployment covers, before anything has asked one", async () => {
+    const store = await publishedStore();
+    const response = await worker.fetch(get("/v1/sources/health"), makeEnv(store), ctx);
+    const body = (await response.json()) as {
+      data: { sources: Array<{ source: string; coverageArea: string }> };
+    };
+    const named = body.data.sources.map((source) => source.source);
+    expect(named).toContain("bods");
+    expect(named).toContain("tfl");
+  });
 });
 
 describe("unknown routes", () => {

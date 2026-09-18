@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { MapStopSummary, MapVehicleSummary } from "@busstops/contracts";
-import { ZOOM, describeView, scaleForZoom, stopFeatures, vehicleFeatures } from "./mapLayers.js";
+import {
+  ZOOM,
+  describeEmptyVehicles,
+  describeView,
+  emptyVehicleReason,
+  scaleForZoom,
+  stopFeatures,
+  vehicleFeatures,
+} from "./mapLayers.js";
 
 /*
  * The live map's semantic zoom.
@@ -157,5 +165,32 @@ describe("what the map says it is showing", () => {
     const sentence = describeView("street", 1, 1, false);
     expect(sentence).toContain("1 stop ");
     expect(sentence).toContain("1 bus,");
+  });
+});
+
+describe("why a viewport has no buses on it", () => {
+  const tfl = { source: "tfl", coverageArea: "london" };
+  const bods = { source: "bods", coverageArea: "non_london" };
+
+  it("names London's actual reason rather than suggesting the passenger pans", () => {
+    expect(emptyVehicleReason([tfl], "none")).toBe("london_has_no_positions");
+    const sentence = describeEmptyVehicles("london_has_no_positions");
+    expect(sentence).toContain("when each bus will arrive rather than where it is now");
+    // The advice that is true elsewhere and false here.
+    expect(sentence).not.toContain("Try panning");
+  });
+
+  it("does not claim London when the viewport also reaches beyond it", () => {
+    expect(emptyVehicleReason([tfl, bods], "none")).toBe("none_reported");
+  });
+
+  it("still reports a failed feed as a failed feed", () => {
+    expect(emptyVehicleReason([bods], "scheduled_only")).toBe("feed_unavailable");
+    expect(describeEmptyVehicles("feed_unavailable")).toContain("unavailable right now");
+  });
+
+  it("falls back to the ordinary answer when no source is named", () => {
+    expect(emptyVehicleReason([], "none")).toBe("none_reported");
+    expect(describeEmptyVehicles("none_reported")).toContain("Try panning");
   });
 });

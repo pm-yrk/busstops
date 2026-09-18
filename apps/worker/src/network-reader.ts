@@ -169,7 +169,22 @@ const FIRST_TILE_BATCH = 2;
  * decides when to stop; this decides how many small things are asked for at once.
  */
 const FIRST_PATTERN_INDEX_BATCH = 12;
-const PATTERN_INDEX_BATCH = 24;
+/*
+ * Widened a second time, from a measurement rather than from hope.
+ *
+ * Run 44 planned Leeds to Leeds Bradford Airport over 164 trips and spent 5,411ms resolving their
+ * patterns. Run 45's corridor carried 455 trips — nearly three times the patterns — resolved 108
+ * of them in 4,184ms, ran past the six-second budget and refused the journey with
+ * `incomplete_read`. The refusal is right: a pattern that could not be read is a bus the plan
+ * cannot see, and a partial plan presented as complete is the one thing this endpoint must not do.
+ *
+ * What is wrong is the number of round trips. Pattern ids hash uniformly across 512 buckets, so
+ * three hundred patterns are three hundred separate small objects, and twenty-four at a time is
+ * thirteen rounds of pure latency. These rows carry stop sequences and no geometry, so ninety-six
+ * of them together is a few megabytes against a twelve-mebibyte request budget — and that budget,
+ * not this cap, is what should decide when to stop. A test holds that relationship.
+ */
+const PATTERN_INDEX_BATCH = 96;
 
 const INDEX_TTL_MS = 5 * 60 * 1000;
 
@@ -341,6 +356,65 @@ export class NetworkReader {
     let total = 0;
     for (const shard of this.shards.values()) total += shard.chars;
     return total;
+  }
+
+  /**
+   * What this isolate is still holding from the requests before this one.
+   *
+   * Run 45's route detail answered six requests in 300–900ms each, reading two or three
+   * mebibytes apiece, and the seventh was killed by the platform. Every figure the diagnostics
+   * carried described *one* request, so there was no way to tell an expensive request from a full
+   * isolate — and the numbers said the requests were cheap. This is the missing measurement: what
+   * is resident before a request starts, reported alongside what the request itself cost.
+   *
+   * `records` is the honest one. `chars` counts the text a shard was parsed from and the parsed
+   * objects are several times that, so a budget spent in characters is an estimate of memory
+   * while a record count is a count of the objects actually being retained.
+   */
+  residency(): {
+    shards: number;
+    chars: number;
+    records: number;
+    operators: number;
+    services: number;
+    places: number;
+    routeTiles: number;
+  } {
+    let records = 0;
+    for (const shard of this.shards.values()) records += shard.records.length;
+    return {
+      shards: this.shards.size,
+      chars: this.cachedShardChars,
+      records,
+      operators: this.operatorsCache?.size ?? 0,
+      services: this.servicesCache?.size ?? 0,
+      places: this.placesCache?.length ?? 0,
+      routeTiles: this.routeTilesCache?.size ?? 0,
+    };
+  }
+
+  /**
+   * Make room before a request starts, rather than after it has failed.
+   *
+   * The LRU bound is enforced *after* a read, so a request can begin against a cache sitting at
+   * its ceiling and then parse three more mebibytes on top of it. Trimming to a floor first costs
+   * nothing — the evicted shards are re-read if they are wanted, and R2 reads are the cheap part
+   * — and it means the peak is the floor plus one request instead of the ceiling plus one.
+   *
+   * Returns how many shards it let go, so the ledger can say whether it did anything.
+   */
+  trimTo(chars: number): number {
+    if (this.cachedShardChars <= chars) return 0;
+    const byAge = [...this.shards].sort((a, b) => a[1].usedAt - b[1].usedAt);
+    let resident = this.cachedShardChars;
+    let evicted = 0;
+    for (const [key, shard] of byAge) {
+      if (resident <= chars) break;
+      this.shards.delete(key);
+      resident -= shard.chars;
+      evicted += 1;
+    }
+    return evicted;
   }
 
   /**

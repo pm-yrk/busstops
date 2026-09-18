@@ -207,6 +207,59 @@ let weather: WeatherReader | null = null;
 let departures2: DepartureReader | null = null;
 const rateLimiter = new RateLimiter();
 
+/**
+ * How many requests this isolate has answered, and how much it was holding when each began.
+ *
+ * The readers are module-level on purpose — a warm cache is the whole point of an isolate — and
+ * that is also the thing the per-request diagnostics could never see. Run 45's route detail
+ * reported six requests of 300–900ms each, reading two or three mebibytes apiece, and the platform
+ * killed the seventh: on those numbers alone there is no way to tell an expensive request from a
+ * full isolate, and both readings have been possible for four runs.
+ *
+ * So every instrumented handler now trims the shard cache to a floor before it starts and reports
+ * what was resident either side. The floor is a third of the cache's own ceiling: enough that a
+ * repeat request still finds its tile, low enough that the peak is the floor plus one request's
+ * work rather than the ceiling plus it.
+ *
+ * This is not a claim that memory is the limit. Nothing measured says whether 1102 is CPU or
+ * memory, and this is the measurement that would show it if it is — or rule it out if the counts
+ * come back flat and the request that dies is no different from the five before it.
+ */
+const RESIDENT_FLOOR_CHARS = 4 * 1024 * 1024;
+let requestsServed = 0;
+
+/**
+ * Trim before the work, and report either side of it.
+ *
+ * Returns the "after" half as a callback so a handler reads as: open the ledger, begin, and stamp
+ * residency once the reads are done.
+ */
+function beginResidency(ledger: ReadLedger): () => void {
+  requestsServed += 1;
+  const served = requestsServed;
+  const before = network?.residency() ?? null;
+  const evicted = network?.trimTo(RESIDENT_FLOOR_CHARS) ?? 0;
+  return () => {
+    const after = network?.residency() ?? null;
+    ledger.residency({
+      requestsServed: served,
+      shardsBefore: before?.shards ?? 0,
+      charsBefore: before?.chars ?? 0,
+      recordsBefore: before?.records ?? 0,
+      evicted,
+      shardsAfter: after?.shards ?? 0,
+      charsAfter: after?.chars ?? 0,
+      recordsAfter: after?.records ?? 0,
+      singletons: {
+        operators: after?.operators ?? 0,
+        services: after?.services ?? 0,
+        places: after?.places ?? 0,
+        routeTiles: after?.routeTiles ?? 0,
+      },
+    });
+  };
+}
+
 interface RequestContext {
   waitUntil?: (promise: Promise<unknown>) => void;
 }
@@ -364,6 +417,7 @@ router.get("/v1/map", async (_request, { env, url }) => {
 
   const now = new Date();
   const ledger = new ReadLedger(MAP_ENRICHMENT_BUDGET_MS);
+  const endResidency = beginResidency(ledger);
 
   // Only the tiles this viewport covers are read. The national stop set is 198 MiB against a
   // 128 MiB isolate, so "load it and filter" is not an option that exists.
@@ -652,6 +706,8 @@ router.get("/v1/map", async (_request, { env, url }) => {
   };
 
   const coverage = index ? (liveAllowed && failedSources.length === 0 ? 1 : 0.5) : 0;
+
+  endResidency();
 
   return json(
     {
@@ -1029,6 +1085,7 @@ router.get("/v1/journeys", async (_request, { env, url }) => {
    * same five-mebibyte cap the map uses rather than the shared default.
    */
   const journeyLedger = new ReadLedger(JOURNEY_BUDGET_MS);
+  const endJourneyResidency = beginResidency(journeyLedger);
   const journeyIndexForSlice = await journeyLedger.stage("index", () => network!.networkIndex());
   /*
    * Skip the pattern tiles when the pattern index exists.
@@ -1070,6 +1127,7 @@ router.get("/v1/journeys", async (_request, { env, url }) => {
    * caused it rather than "no journeys found".
    */
   if (!slice.complete) {
+    endJourneyResidency();
     return json(
       {
         meta: buildMeta({
@@ -1140,6 +1198,7 @@ router.get("/v1/journeys", async (_request, { env, url }) => {
     }),
   );
 
+  endJourneyResidency();
   const meta = buildMeta({
     sources: [],
     observedAt: null,
@@ -1337,6 +1396,24 @@ router.get("/v1/vehicles/:ref", async (_request, { env, params, url }) => {
           .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
       : [];
 
+  /*
+   * Who runs it, and what has been said about its route.
+   *
+   * Both were literal nulls and an empty array, and "Bus stopped?" was rendering them as though
+   * it had looked: no operator to contact, no notice to read. The operator comes free with the
+   * service the match already resolved; the notices come from the disruption snapshot the map
+   * endpoint already reads, matched on this bus's route name.
+   */
+  const operator =
+    service && network ? ((await network.operators()).get(service.operatorId) ?? null) : null;
+  const vehicleRouteName = service?.publicName ?? context?.publishedLineName ?? null;
+  const vehicleNotices = vehicleRouteName
+    ? ((await disruptions?.snapshot())?.notices ?? [])
+    : /* Nothing identifies the service, so nothing can be matched to it without guessing. */ [];
+  const vehicleDisruptions = vehicleRouteName
+    ? noticesFor(vehicleNotices, { atcoCodes: [], routeNames: [vehicleRouteName] }, 5)
+    : [];
+
   return json(
     {
       meta: buildMeta({
@@ -1350,6 +1427,8 @@ router.get("/v1/vehicles/:ref", async (_request, { env, params, url }) => {
       }),
       data: {
         vehicle,
+        operator,
+        disruptions: vehicleDisruptions,
         routePublicName: service
           ? routeBadgeName(service.publicName)
           : context?.publishedLineName
@@ -1400,6 +1479,7 @@ router.get("/v1/routes/:id", async (_request, { env, params }) => {
    * `stopsForGeometries`, not in a larger budget.
    */
   const routeLedger = new ReadLedger(ROUTE_DETAIL_BUDGET_MS);
+  const endRouteResidency = beginResidency(routeLedger);
 
   const index = await routeLedger.stage("index", async () =>
     network ? await network.networkIndex() : null,
@@ -1549,9 +1629,26 @@ router.get("/v1/routes/:id", async (_request, { env, params }) => {
    * reading, they are already on the clock.
    */
   const incidents = await routeLedger.stage("incidents", async () => []);
+  /*
+   * Published notices for this route, which are a read and are therefore on the clock.
+   *
+   * The snapshot is one small object and the reader caches it, so this is cheap — but it is the
+   * first thing on this handler that touches R2 outside the network artifact, and an unmeasured
+   * read is how the last 1102 hid.
+   */
+  const routeDisruptions = await routeLedger.stage("disruptions", async () => {
+    const snapshot = await disruptions?.snapshot();
+    if (!snapshot) return [];
+    return noticesFor(
+      snapshot.notices,
+      { atcoCodes: [], routeNames: [route.publicName] },
+      MAP_QUERY_LIMITS.maxIncidents,
+    );
+  });
   const reliability = await routeLedger.stage("reliability", async () => []);
 
   routeLedger.count({ patterns: geometries.length, stops: stopsResult.resolved });
+  endRouteResidency();
 
   const degradationReason =
     routeLedger.reason ??
@@ -1613,6 +1710,7 @@ router.get("/v1/routes/:id", async (_request, { env, params }) => {
         headwaySummary: null,
         reliability,
         incidents,
+        disruptions: routeDisruptions,
         ticketUrl: null,
       },
     },
@@ -1784,6 +1882,7 @@ router.get("/v1/nearby", async (_request, { env, url }) => {
   // Read from the search tiles around the point, not from a national index, and on a ledger —
   // this was the last read on the reader with no budget on it, and run 44 answered 1102 for it.
   const nearbyLedger = new ReadLedger(NEARBY_BUDGET_MS);
+  const endNearbyResidency = beginResidency(nearbyLedger);
   const found = network
     ? await nearbyLedger.stage("search-tiles", () =>
         network!.nearby({ lat, lon }, { radiusMetres, limit: 25 }, Date.now(), nearbyLedger),
@@ -1799,6 +1898,7 @@ router.get("/v1/nearby", async (_request, { env, url }) => {
   }
 
   const hits = found.hits;
+  endNearbyResidency();
 
   return json(
     {

@@ -349,6 +349,50 @@ describe("the shard cache stays bounded", () => {
     }
     expect(reader.cachedShardCount).toBeLessThanOrEqual(24);
   });
+
+  /*
+   * What the isolate is holding, which is the measurement four runs of diagnostics did not have.
+   *
+   * Run 45's route detail answered six requests of 300–900ms each, reading two or three
+   * mebibytes apiece, and the platform killed the seventh with error 1102. Every number in those
+   * diagnostics described one request, so "the requests were cheap" and "the isolate was full"
+   * were indistinguishable. These are the two things that make them distinguishable.
+   */
+  it("says what it is still holding from the requests before this one", async () => {
+    const { reader } = await publishedReader();
+    expect(reader.residency()).toMatchObject({ shards: 0, chars: 0, records: 0 });
+
+    await reader.stopsInBoundingBox({ west: -1.6, south: 53.7, east: -1.5, north: 53.8 }, 10);
+    const after = reader.residency();
+    expect(after.shards).toBeGreaterThan(0);
+    expect(after.chars).toBeGreaterThan(0);
+    // Records rather than characters: the parsed objects are what occupy the isolate.
+    expect(after.records).toBeGreaterThan(0);
+  });
+
+  it("can be trimmed to a floor before a request starts, rather than after it has failed", async () => {
+    const { reader } = await publishedReader();
+    for (let lat = 50; lat < 56; lat += 0.25) {
+      for (let lon = -6; lon < 1; lon += 0.25) {
+        await reader.stopsInBoundingBox(
+          { west: lon, south: lat, east: lon + 0.1, north: lat + 0.1 },
+          10,
+        );
+      }
+    }
+    const before = reader.residency();
+    expect(before.shards).toBeGreaterThan(1);
+
+    const evicted = reader.trimTo(0);
+    expect(evicted).toBe(before.shards);
+    expect(reader.residency()).toMatchObject({ shards: 0, chars: 0, records: 0 });
+
+    // And a floor above what is resident is a no-op, so a warm isolate keeps its working set.
+    await reader.stopsInBoundingBox({ west: -1.6, south: 53.7, east: -1.5, north: 53.8 }, 10);
+    const warm = reader.residency();
+    expect(reader.trimTo(warm.chars)).toBe(0);
+    expect(reader.residency().shards).toBe(warm.shards);
+  });
 });
 
 describe("worker source", () => {

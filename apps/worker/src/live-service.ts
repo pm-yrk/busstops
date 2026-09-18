@@ -314,8 +314,22 @@ export class LiveService {
     return { departures: [], health: [client.health(now)], failed: false, observedAt: null };
   }
 
+  /**
+   * Health for every source this deployment covers, used or not.
+   *
+   * This returned the clients that happened to have been constructed, and the clients are built
+   * lazily by whichever request first needs one — so on a cold isolate `/v1/sources/health`
+   * answered with an empty array and four deployment verifications in a row reported "no sources
+   * reported". That read as an outage and was a lazy map: the sources were fine and nobody had
+   * asked them anything yet.
+   *
+   * Naming both sources makes the answer a property of the deployment rather than of what it has
+   * been asked so far. A source that has never been called reports its own never-fetched state,
+   * which is the truth and is what a status page should show.
+   */
   health(): SourceHealth[] {
     const now = this.deps.now();
+    for (const source of ["bods", "tfl"] as const) this.client(source);
     return [...this.clients.values()].map((client) => client.health(now));
   }
 }

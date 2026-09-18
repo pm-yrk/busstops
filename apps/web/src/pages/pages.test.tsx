@@ -98,6 +98,7 @@ describe("RoutePage", () => {
       headwaySummary: null,
       reliability: [],
       incidents: [],
+      disruptions: [],
       ticketUrl: null,
     },
   };

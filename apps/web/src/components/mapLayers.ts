@@ -214,3 +214,43 @@ export function describeView(
     : "";
   return `${stops} ${stops === 1 ? "stop" : "stops"} and ${buses}, ${where}.${caveat}`;
 }
+
+/**
+ * Why this viewport has no buses on it, when it has none.
+ *
+ * "There are no live buses here at the moment, try panning" is true over Leeds at four in the
+ * morning and false over London at any hour: TfL publishes arrival predictions and does not
+ * publish vehicle positions at all, so panning around Westminster will never produce a bus. The
+ * map knowing that is the difference between an empty screen that is working and one that looks
+ * broken.
+ *
+ * The viewport is identified as London from the sources the response actually consulted rather
+ * than from a bounding box held twice — the Worker already decided which feeds cover this screen,
+ * and it is the only thing that knows.
+ */
+export type EmptyVehicleReason = "london_has_no_positions" | "feed_unavailable" | "none_reported";
+
+export function emptyVehicleReason(
+  sources: readonly { source: string; coverageArea: string }[],
+  degradation: string,
+): EmptyVehicleReason {
+  if (sources.length > 0 && sources.every((source) => source.coverageArea === "london")) {
+    return "london_has_no_positions";
+  }
+  return degradation === "scheduled_only" ? "feed_unavailable" : "none_reported";
+}
+
+export function describeEmptyVehicles(reason: EmptyVehicleReason): string {
+  switch (reason) {
+    case "london_has_no_positions":
+      return (
+        "This is London, where Transport for London publishes when each bus will arrive rather " +
+        "than where it is now. There is nothing to draw on the map, and the stops below carry " +
+        "live arrival predictions rather than a timetable."
+      );
+    case "feed_unavailable":
+      return "Live vehicle positions are unavailable right now. Stops and timetables below still work.";
+    case "none_reported":
+      return "There are no live buses in this area at the moment. Try panning, or check the stops below.";
+  }
+}

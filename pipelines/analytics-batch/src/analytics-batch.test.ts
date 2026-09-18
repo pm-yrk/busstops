@@ -7,7 +7,7 @@ import {
 } from "@busstops/pipeline-core";
 import { deterministicUuid } from "@busstops/adapters";
 import { StageRunner } from "./stages.js";
-import { sampleSegmentsForTrace, type RoadSegment } from "./segments.js";
+import { indexSegments, sampleSegmentsForTrace, type RoadSegment } from "./segments.js";
 import { aggregateSegmentSamples, bucketKey, type SegmentIntervalBucket } from "./aggregates.js";
 import { rollUpBuckets, planPruning, rollUpChain, type PruneCandidate } from "./rollup.js";
 import { takeInventory, projectStorage } from "./inventory.js";
@@ -158,6 +158,122 @@ describe("segment sampling", () => {
     const result = sampleSegmentsForTrace(stationary, [SEGMENT], null);
     expect(result.samples).toHaveLength(0);
     expect(result.discardedImplausible).toBe(1);
+  });
+
+  /*
+   * Locality, which run 45 showed is both the speed problem and the accuracy problem.
+   *
+   * Every trace was handed all 76,298 segments: 2,927 vehicles took 960 seconds and 2,184 of them
+   * were rejected for low confidence. A bus in Leeds offered a road in Bristol has nothing to
+   * reason from.
+   */
+  it("offers a trace the roads near it rather than the roads in the country", () => {
+    const elsewhere: RoadSegment = {
+      ...SEGMENT,
+      id: "seg-far",
+      // Cornwall, three hundred miles from the fixture trace.
+      path: SEGMENT.path.map((point) => ({ lat: 50.26, lon: point.lon - 5.05 })),
+    };
+    const index = indexSegments([SEGMENT, elsewhere]);
+    const near = index.near(traversal("veh-1", 0));
+    expect(near.map((candidate) => candidate.id)).toEqual(["seg-a"]);
+    expect(index.size).toBe(2);
+
+    // And the answer through the index is the answer without it.
+    const viaIndex = sampleSegmentsForTrace(traversal("veh-1", 0), index, "route-1");
+    const viaArray = sampleSegmentsForTrace(traversal("veh-1", 0), [SEGMENT, elsewhere], "route-1");
+    expect(viaIndex.samples).toEqual(viaArray.samples);
+  });
+
+  it("files a segment under every cell its path crosses, so a road is found from either side", () => {
+    // A segment spanning a grid boundary: found whichever side the trace is on.
+    const crossing: RoadSegment = {
+      ...SEGMENT,
+      id: "seg-crossing",
+      path: [
+        { lat: 53.74, lon: -1.5 },
+        { lat: 53.76, lon: -1.5 },
+      ],
+    };
+    const index = indexSegments([crossing]);
+    const south = index.near([{ coordinate: { lat: 53.7401, lon: -1.5 } }]);
+    const north = index.near([{ coordinate: { lat: 53.7599, lon: -1.5 } }]);
+    expect(south.map((candidate) => candidate.id)).toEqual(["seg-crossing"]);
+    expect(north.map((candidate) => candidate.id)).toEqual(["seg-crossing"]);
+  });
+
+  it("counts a trace with no road near it as unmatched rather than as a bad match", () => {
+    const index = indexSegments([SEGMENT]);
+    const atSea = [observation("veh-1", 50.0, 0), observation("veh-1", 50.001, 60)].map((o) => ({
+      ...o,
+      coordinate: { lat: o.coordinate.lat, lon: -8.5 },
+    }));
+    const result = sampleSegmentsForTrace(atSea, index, null);
+    expect(result.unmatchedTraces).toBe(1);
+    expect(result.discardedLowConfidence).toBe(0);
+  });
+});
+
+describe("a stage that cannot starve the ones after it", () => {
+  /*
+   * Run 45's `segment_samples` reported `completed` after 960 seconds and both stages after it
+   * were skipped for want of time, so the batch published nothing and Pro fell back to its demo
+   * snapshot. A complete first stage that leaves the run with no output is not a success.
+   */
+  it("gives a stage its declared share of the budget, not the whole of it", async () => {
+    let clock = 0;
+    const runner = new StageRunner("run-share", {
+      now: () => new Date(clock),
+      budgetMs: 1000,
+    });
+
+    let sawAtStart = 0;
+    let sawAfterHalf = 0;
+    await runner.run(
+      {
+        name: "greedy",
+        budgetShare: 0.5,
+        run: (_input, context) => {
+          sawAtStart = context.remainingMs();
+          clock += 400;
+          sawAfterHalf = context.remainingMs();
+          return { value: null, metrics: {} };
+        },
+      },
+      null,
+    );
+
+    expect(sawAtStart).toBe(500);
+    // 500 of its own share minus the 400 it spent, not 600 of the run's.
+    expect(sawAfterHalf).toBe(100);
+  });
+
+  it("still hands a stage with no declared share whatever the run has left", async () => {
+    let clock = 0;
+    const runner = new StageRunner("run-rest", { now: () => new Date(clock), budgetMs: 1000 });
+    let seen = 0;
+    await runner.run(
+      {
+        name: "first",
+        budgetShare: 0.5,
+        run: () => {
+          clock += 300;
+          return { value: null, metrics: {} };
+        },
+      },
+      null,
+    );
+    await runner.run(
+      {
+        name: "second",
+        run: (_input, context) => {
+          seen = context.remainingMs();
+          return { value: null, metrics: {} };
+        },
+      },
+      null,
+    );
+    expect(seen).toBe(700);
   });
 });
 

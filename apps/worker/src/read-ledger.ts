@@ -64,6 +64,33 @@ export interface LedgerCounts {
   graphEdges?: number;
 }
 
+/**
+ * What the isolate was already holding when this request began, and what it holds now.
+ *
+ * A request's own cost is only half the question 1102 asks. The readers are module-level
+ * singletons, so the twentieth request in an isolate starts against whatever the nineteen before
+ * it left resident — and run 45's route detail was killed after six requests that each reported
+ * three cheap mebibytes. Without this, "the requests were cheap" and "the isolate was full" are
+ * the same measurement.
+ */
+export interface IsolateResidency {
+  /** How many requests this isolate has served, this one included. */
+  requestsServed: number;
+  /** Resident shards and their source-text size before this request did any work. */
+  shardsBefore: number;
+  charsBefore: number;
+  /** Parsed records still held from earlier requests. This is the memory, not the characters. */
+  recordsBefore: number;
+  /** Shards let go at the start of this request to make room. */
+  evicted: number;
+  /** Resident shards and size once this request had finished. */
+  shardsAfter: number;
+  charsAfter: number;
+  recordsAfter: number;
+  /** Whole national datasets the isolate keeps: operators, services, places, route tiles. */
+  singletons: Record<string, number>;
+}
+
 export interface ReadDiagnostics {
   elapsedMs: number;
   budgetMs: number;
@@ -80,6 +107,8 @@ export interface ReadDiagnostics {
   budgetStopped: boolean;
   degradationReason: string | null;
   stages: Record<string, number>;
+  /** Absent on endpoints that read nothing cached across requests. */
+  residency?: IsolateResidency;
 }
 
 /**
@@ -94,6 +123,7 @@ export class ReadLedger {
   private readonly stageMs = new Map<string, number>();
   private readonly counts: LedgerCounts = {};
   private stoppedReason: string | null = null;
+  private residencyReport: IsolateResidency | null = null;
 
   constructor(
     readonly budgetMs: number,
@@ -153,6 +183,11 @@ export class ReadLedger {
     this.families.set(family, cost);
   }
 
+  /** What the isolate was holding, recorded once the request has finished its reads. */
+  residency(report: IsolateResidency): void {
+    this.residencyReport = report;
+  }
+
   /** A derived count the reads do not describe: patterns assembled, graph size, and so on. */
   count(counts: LedgerCounts): void {
     Object.assign(this.counts, counts);
@@ -202,6 +237,7 @@ export class ReadLedger {
       budgetStopped: this.stopped,
       degradationReason: this.stoppedReason,
       stages: Object.fromEntries(this.stageMs),
+      ...(this.residencyReport === null ? {} : { residency: this.residencyReport }),
     };
   }
 

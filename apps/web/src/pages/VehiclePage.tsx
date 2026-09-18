@@ -3,6 +3,7 @@ import { Link, useParams, useSearchParams } from "react-router-dom";
 import type { VehicleDetailResponse } from "@busstops/contracts";
 import { LoadingBus } from "../components/LoadingBus.js";
 import { BusStoppedPanel } from "../components/BusStoppedPanel.js";
+import { OfficialNotices } from "../components/OfficialNotices.js";
 import {
   ConfidenceChip,
   DataAge,
@@ -332,6 +333,23 @@ export function VehiclePage() {
         </p>
       </section>
 
+      {/*
+        What has been announced about this bus's route.
+
+        The panel below reasons from what can be observed — where the bus is, whether its peers
+        are moving — and an operator's own notice is the one thing that can explain it outright.
+        It was not being read at all on this endpoint, so a diverted route looked like a stationary
+        bus with no explanation.
+      */}
+      {response.data.disruptions.length > 0 ? (
+        <OfficialNotices
+          notices={response.data.disruptions}
+          sourcesQueried={[]}
+          collectedAt={response.meta.observedAt}
+          headingId="vehicle-official-now"
+        />
+      ) : null}
+
       <section aria-labelledby="vehicle-help-heading" className="vehicle-page__section">
         <h2 id="vehicle-help-heading">Not moving?</h2>
         {showStoppedPanel ? (
@@ -359,8 +377,13 @@ export function VehiclePage() {
                 : null
             }
             walkingUrl={alternativeWalkingUrl}
-            operatorContactUrl={null}
-            operatorName={null}
+            /*
+             * Who to contact, when the observation matched a service and the service named an
+             * operator. Both of these were literal nulls: the panel offered to put somebody in
+             * touch with an operator it had never looked up.
+             */
+            operatorContactUrl={response.data.operator?.contactUrl ?? null}
+            operatorName={response.data.operator?.name ?? null}
             onDismiss={() => setShowStoppedPanel(false)}
           />
         ) : (

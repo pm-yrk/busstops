@@ -9,6 +9,7 @@ import { LoadingBus } from "../components/LoadingBus.js";
 import { MapView } from "../components/MapView.js";
 import { SelectedStopBoard } from "../components/SelectedStopBoard.js";
 import { SelectedVehicleBoard } from "../components/SelectedVehicleBoard.js";
+import { describeEmptyVehicles, emptyVehicleReason } from "../components/mapLayers.js";
 import {
   DataAge,
   EmptyState,
@@ -307,12 +308,15 @@ export function LiveMapPage() {
                 {vehicles.length === 0 ? (
                   <EmptyState
                     art="bus"
-                    title="No buses in view"
-                    description={
-                      response.meta.degradation === "scheduled_only"
-                        ? "Live vehicle positions are unavailable right now. Stops and timetables below still work."
-                        : "There are no live buses in this area at the moment. Try panning, or check the stops below."
+                    title={
+                      emptyVehicleReason(response.meta.sources, response.meta.degradation) ===
+                      "london_has_no_positions"
+                        ? "London does not put buses on the map"
+                        : "No buses in view"
                     }
+                    description={describeEmptyVehicles(
+                      emptyVehicleReason(response.meta.sources, response.meta.degradation),
+                    )}
                   />
                 ) : (
                   <ul className="live-map__list">

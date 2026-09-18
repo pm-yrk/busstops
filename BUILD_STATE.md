@@ -4,6 +4,87 @@ Last updated: 2026-09-17 (live buses proved in the deployment; the national time
 
 ## Current status
 
+### Run 45: five real answers, one measurement that was missing (2026-09-18)
+
+Run 45 ([35294669787](https://github.com/pm-yrk/busstops/actions/runs/35294669787), head
+`51842005`, `bootstrap_data:false`) was the cheap proof of run 44's four fixes. Five things it
+settled, and two it did not.
+
+**What now works, measured.**
+
+- **Overpass answers us.** Both extractions succeeded with the descriptive User-Agent: 76,298 road
+  segments across six areas with `"failed": []`, and 2,872 gazetteer places. The `406` was the
+  missing agent and nothing else.
+- **Place search finds real landmarks.** Four of five: York Minster, Leeds Station (as
+  `Leeds City Bus & Coach Station`), Manchester Arndale and Bristol Temple Meads (as `Temple`).
+  Bullring is still missing, and Bristol's places extraction failed on its own with
+  `osm server error 504` — so one of the five gaps has a cause and one does not yet.
+- **The map is comfortable.** `325ms of a 1800ms budget; 0 object(s) read, 7 cached; 7.01 MiB
+decoded; 23823 record(s); degraded false`, with `297 of the returned stops have a service`.
+- **Five cities return real routes and departures** at 02:23 on a Friday, including live rows in
+  Manchester and Bristol.
+- **The analytics batch ran for the first time**, where it had previously reported `no_segments`
+  in two seconds.
+
+**What is still broken, and why.**
+
+1. **Route detail answered 1102 on Leeds attempt 4.** The six requests before it cost 303–934ms
+   each and decoded 2.37–3.23 MiB, and every stage was measured: `route-patterns=43ms stops=0ms
+vehicles=891ms`. On those numbers "these requests are cheap" and "this isolate is full" are the
+   same reading, because **every figure in the diagnostics described one request**. That is the
+   measurement that was missing, and it is the one this milestone adds: `residency()` on the
+   reader, `IsolateResidency` on the ledger, and a trim to a four-mebibyte floor before each
+   instrumented request rather than an eviction after it. The next run's route trail says what the
+   isolate held before and after each request, how much was trimmed, and which request number it
+   was. **This is not a claim that memory is the limit.** Nothing measured says whether 1102 is CPU
+   or memory. This is the measurement that would show it if it is, and rule it out if it is not.
+2. **The journey refused with `incomplete_read`, correctly.** 455 trips loaded, 1 of 1 shard read,
+   0 missing, 0 unopened — and then `resolvePatterns=4184ms` resolved 108 patterns and reported
+   incomplete, so the planner refused rather than plan around the patterns it could not see. Run
+   44's corridor carried 164 trips and took 5,411ms; run 45's carried 455 and ran past the
+   six-second budget. The cause is round trips, not bytes: pattern ids hash across 512 buckets, so
+   three hundred patterns are three hundred small objects and 24 at a time is thirteen rounds of
+   latency. The batch cap is now 96 — the rows carry no geometry, so ninety-six of them is a few
+   mebibytes against a twelve-mebibyte request budget, and that budget, not the cap, decides when
+   to stop. The verification line now prints `N of M pattern(s) resolved`, the ledger's own stop
+   reason and the pattern-index read count, so the next run distinguishes "rows are missing" from
+   "the budget ran out part way through".
+3. **`/v1/sources/health` reported "no sources reported" for the fourth run running, and the cause
+   is certain.** `LiveService.health()` returned the clients that happened to have been
+   constructed, and clients are built lazily by whichever request first needs one — so a status
+   request arriving before any map request found an empty map. It now names both sources whether
+   or not either has been asked anything. A source that has never been called reports its own
+   never-fetched state, which is the truth.
+4. **Pro is still `demo_snapshot`, and the batch report says exactly why.** `segment_samples`
+   completed in **960 seconds** over 2,927 traces and emitted 19 samples; `interval_aggregates` and
+   `incident_lifecycle` were then both `skipped because the run exhausted its time budget`. Two
+   defects, both fixed here:
+   - `sampleSegmentsForTrace` was handed **every segment in the batch for every trace** and rebuilt
+     a 76,298-entry candidate array per vehicle — matching a bus in Leeds against a road in
+     Bristol. That is the 960 seconds and it is also why 2,184 of 2,927 traces came back below the
+     confidence floor: a matcher with no locality has nothing to reason from. There is now a
+     quarter-degree grid index, built once per batch, filing each segment under every cell its path
+     crosses and returning a cell's neighbours too.
+   - A stage could spend the whole run's budget. `StageDefinition.budgetShare` gives
+     `segment_samples` half of it and the loop stops itself at the boundary, reporting how many
+     traces it got through. Aggregating the traces that were processed is worth more than
+     processing every trace and aggregating none.
+5. **London has never been checked at all.** The home page carries a London claim and no
+   verification has ever asked a 490 stop anything. Two checks now do: London stops come back from
+   a London viewport with TfL named as the source and the vehicle layer empty (TfL publishes
+   arrival predictions, not positions, so a vehicle there would have been invented), and a real
+   London stop returns real TfL predictions with `liveState: "live"`. Until that passes on a
+   deployment the claim stays as it is. The live map also now says _why_ London has no buses
+   instead of advising the passenger to pan, which over Westminster is advice that can never work.
+
+**Also in this milestone.** The vehicle endpoint resolves its operator and its route's published
+notices — `operatorContactUrl` and `operatorName` were literal `null`s, so "Bus stopped?" offered
+to put somebody in touch with an operator it had never looked up. Route detail carries its notices
+too, on the clock like every other read.
+
+**Gates.** 1,134 node tests, 163 web; prettier, eslint `--max-warnings=0`, typecheck, preflight at
+`ci` and `deploy`, secret scan clean across 510 tracked files. Production untouched.
+
 ### Run 44 named four causes; the weather art is second generation (2026-09-18)
 
 **Run 44 rebuilt the nation and proved two things.** Leeds → Leeds Bradford Airport plans:
