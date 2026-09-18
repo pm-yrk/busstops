@@ -28,7 +28,7 @@ import { chromium } from "@playwright/test";
  * The bodies passed to page.evaluate are serialised and run inside the browser, not here, so the
  * DOM globals they use are legitimately undefined in this file's own scope.
  */
-/* global document, window, getComputedStyle */
+/* global document, window, getComputedStyle, NodeFilter */
 
 const [, , baseUrl, screenshotDir = "visual-qa", apiUrlArg] = process.argv;
 
@@ -325,6 +325,38 @@ for (const size of WIDTHS) {
         `${size.name}/${target.name} does not scroll sideways`,
         overflow.px <= 0,
         overflow.px <= 0 ? "0px" : `${overflow.px}px — ${overflow.culprit}`,
+      );
+
+      /*
+       * Raw identifiers, on the page, where a passenger would read them.
+       *
+       * `White_Rose_Shopping_Centre` and `Easterly_Road_Hollin_Park_Mount` reached the live map
+       * and the arrival boards, and they were found by a person looking at a screenshot. The
+       * humanising happens at the read boundary in the Worker, so a new endpoint or a new field
+       * can reintroduce them anywhere — which makes this a sweep rather than a unit test.
+       *
+       * An underscore between two letters is the shape of a NaPTAN or headsign identifier and is
+       * not something English writes. The legitimate punctuation this must never flag —
+       * `King's Cross`, `Stratford-upon-Avon`, `Park & Ride` — has no underscore in it at all.
+       */
+      const rawIdentifiers = await page.evaluate(() => {
+        const found = new Set();
+        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          const parent = node.parentElement;
+          if (!parent) continue;
+          // Code samples and the methodology page legitimately show identifiers as identifiers.
+          if (parent.closest("code, pre, [data-raw-identifier-ok]")) continue;
+          for (const match of String(node.nodeValue ?? "").matchAll(/[A-Za-z]+_[A-Za-z]+\w*/g)) {
+            found.add(match[0]);
+          }
+        }
+        return [...found].slice(0, 5);
+      });
+      record(
+        `${size.name}/${target.name} shows no raw identifiers`,
+        rawIdentifiers.length === 0,
+        rawIdentifiers.length === 0 ? "none" : rawIdentifiers.join(", "),
       );
 
       if (sink.consoleErrors.length > 0) {
