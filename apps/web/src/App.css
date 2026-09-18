@@ -137,8 +137,27 @@
     flex-wrap: nowrap;
     /* Horizontal scroll rather than wrapping keeps the header compact at 320px. */
     scrollbar-width: none;
+    /*
+     * Say that there is more nav to the right.
+     *
+     * The strip scrolls and its scrollbar is hidden, so at 390px the last item was cut off
+     * mid-word against a hard edge with nothing to suggest why — which reads as a layout fault
+     * rather than as an invitation to swipe. Fading the last few pixels is the difference between
+     * "this is broken" and "there is more". The fade is on the right only, and it ends as soon as
+     * the strip is scrolled to its end because there is then nothing left to hint at.
+     */
+    mask-image: linear-gradient(to right, black calc(100% - 24px), transparent 100%);
+    /* Room for the fade, so the last item is faded rather than half-hidden under it. */
+    padding-right: var(--space-md);
   }
   .app__nav::-webkit-scrollbar {
     display: none;
+  }
+  /*
+   * Tighter items, so six of them fit on an ordinary phone without scrolling at all. The strip
+   * stays for 320px, where they genuinely do not fit.
+   */
+  .app__nav-link {
+    padding: 0 var(--space-xs);
   }
 }
