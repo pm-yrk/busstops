@@ -56,16 +56,19 @@ export function HomePage() {
         {/*
           What the deployment actually does, not what the architecture allows.
 
-          This said "inside and outside London", and London live vehicles have never been proven
-          on a deployment — the source health endpoint reports one source, and it is BODS. A claim
-          the product does not keep is the one thing a page about being checkable cannot make, so
-          the sentence says where the buses are real and the methodology page carries the rest.
+          This said "inside and outside London", and then said London's live vehicle feed was "not
+          yet proven" — which frames a permanent property of the source as a temporary gap. TfL's
+          Unified API does not publish vehicle positions at all; `deriveLondonVehiclePosition` in
+          the adapter says so in as many words, and the live service leaves the London vehicle
+          layer deliberately empty. There will never be a bus on the map in London, and waiting for
+          one to be "proven" is waiting for something that is not coming. What London does have is
+          live arrival predictions at every stop, which is the thing a passenger actually wanted.
         */}
         <p className="home__lede">
           Live vehicle positions, real arrivals and the reasoning behind them, across England
-          outside London. London runs on published timetables and disruption notices; its live
-          vehicle feed is not yet proven on a deployment, and the site says so where it matters
-          rather than here.
+          outside London. In London it is the other way round: Transport for London publishes when
+          each bus will arrive rather than where it is now, so there are live arrivals at the stops
+          and no buses on the map — and the map says so instead of looking empty.
         </p>
 
         <div className="grid-cards">
@@ -128,8 +131,10 @@ export function HomePage() {
         </ul>
         <p className="muted small">
           Written and not yet running against this deployment: National Highways and Street Manager
-          road context, Environment Agency flood warnings, and London live vehicle positions. They
-          are listed on the methodology page with what has and has not been observed.
+          road context, and Environment Agency flood warnings. They are listed on the methodology
+          page with what has and has not been observed. London vehicle positions are not on that
+          list and never will be — TfL does not publish them, so no amount of work here produces
+          one.
         </p>
         <Link to="/methodology">Read the data and methodology</Link>
       </section>
