@@ -208,7 +208,15 @@ export function RoutePage() {
             <ol className="route-page__stops">
               {variant.stops.map((stop) => (
                 <li key={stop.stopId}>
-                  <Link to={`/stops/${stop.stopId}`}>{stop.name}</Link>
+                  {/*
+                    By ATCO code, like every other stop link on the site.
+
+                    This used the internal UUID. Both resolve, which is why it went unnoticed —
+                    and it meant one page produced a different URL for the same stop than every
+                    other page did, so a link shared from a route page looked nothing like a link
+                    shared from the map.
+                  */}
+                  <Link to={`/stops/${encodeURIComponent(stop.atcoCode)}`}>{stop.name}</Link>
                   {stop.locality ? <span className="muted small">{stop.locality}</span> : null}
                 </li>
               ))}

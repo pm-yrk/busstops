@@ -128,6 +128,26 @@ describe("RoutePage", () => {
     expect(await screen.findByText(/Live vehicle data is not available/)).toBeTruthy();
     expect(screen.getByText(/timetable below is unaffected/)).toBeTruthy();
   });
+
+  /*
+   * One stop, one URL.
+   *
+   * This page linked to a stop by its internal UUID while everywhere else linked by ATCO code.
+   * Both resolve, which is why it went unnoticed — and it meant a link shared from a route page
+   * looked nothing like the same link shared from the map or from a departure board.
+   */
+  it("links to stops by the code on the pole, not by an internal identifier", async () => {
+    vi.spyOn(apiClient, "route").mockResolvedValue(response);
+    renderAt("/routes/r1", "/routes/:routeId", <RoutePage />);
+
+    const link = await screen.findByRole("link", { name: "Leeds City Bus Station" });
+    expect(link).toHaveAttribute("href", "/stops/450010001");
+
+    for (const anchor of screen.getAllByRole("link")) {
+      // No stop link may carry a UUID: that is the shape the bug had.
+      expect(anchor.getAttribute("href") ?? "").not.toMatch(/^\/stops\/[0-9a-f]{8}-/);
+    }
+  });
 });
 
 describe("OperatorPage", () => {

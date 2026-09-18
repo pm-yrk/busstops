@@ -292,7 +292,7 @@ export function VehiclePage() {
             <ol className="vehicle-page__stops">
               {visibleStops.map((stop) => (
                 <li key={stop.stopId} className={stop.passed ? "is-passed" : ""}>
-                  <Link to={`/stops/${stop.stopId}`}>{stop.name}</Link>
+                  <Link to={`/stops/${encodeURIComponent(stop.atcoCode)}`}>{stop.name}</Link>
                   <span className="muted small">
                     {stop.expectedTimeLow && stop.expectedTimeHigh
                       ? `between ${new Date(stop.expectedTimeLow).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })} and ${new Date(stop.expectedTimeHigh).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}`
