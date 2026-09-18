@@ -195,6 +195,31 @@ const PATTERN_INDEX_BATCH = 96;
 
 const INDEX_TTL_MS = 5 * 60 * 1000;
 
+/**
+ * Whether a raw stop line is one of the ones being looked for, without parsing it.
+ *
+ * Testing every wanted id against every line would be a hundred substring searches per line over
+ * tens of thousands of lines — more work than the parse it replaces. So the line's own keys are
+ * pulled out once by position and tested against a set: two scans and two lookups, whatever the
+ * size of the request.
+ *
+ * Matching on `"id":"` rather than on `id` is what keeps `"stopAreaId":"…"` out of it.
+ */
+function valueOf(line: string, field: string): string | null {
+  const at = line.indexOf(`"${field}":"`);
+  if (at < 0) return null;
+  const from = at + field.length + 4;
+  const to = line.indexOf('"', from);
+  return to < 0 ? null : line.slice(from, to);
+}
+
+function hasWantedKey(line: string, wanted: ReadonlySet<string>): boolean {
+  const id = valueOf(line, "id");
+  if (id !== null && wanted.has(id)) return true;
+  const atco = valueOf(line, "atcoCode");
+  return atco !== null && wanted.has(atco);
+}
+
 interface CachedShard {
   records: unknown[];
   /** Length of the text this shard was parsed from, which is what the budget is spent in. */
@@ -291,6 +316,20 @@ export class NetworkReader {
     version: string,
     now: number,
     track?: ReadTrack,
+    /**
+     * Which records to build, tested against the raw line before it is parsed.
+     *
+     * A route's stops are a hundred specific ids, and resolving them read three four-megabyte
+     * tiles and turned every record in them into an object — some tens of thousands of
+     * allocations to keep a hundred. The bytes arrive either way; what this saves is the parse,
+     * which is the part that runs on the isolate's CPU.
+     *
+     * A filtered read deliberately does not populate the shard cache. The cache is shared by every
+     * request in the isolate and an entry holding one request's hundred stops would answer the
+     * next request's question with a tile that is missing almost all of it — a wrong answer, not a
+     * slow one. It will still *use* a full entry that is already there.
+     */
+    keep?: (line: string) => boolean,
   ): Promise<{ records: T[]; chars: number }> {
     const key = `${version}:${dataset}`;
     const cached = this.shards.get(key);
@@ -313,13 +352,14 @@ export class NetworkReader {
       throw error;
     }
 
-    const records: T[] =
-      raw === null
-        ? []
-        : raw
-            .split("\n")
-            .filter((line) => line.length > 0)
-            .map((line) => JSON.parse(line) as T);
+    const records: T[] = [];
+    if (raw !== null) {
+      for (const line of raw.split("\n")) {
+        if (line.length === 0) continue;
+        if (keep && !keep(line)) continue;
+        records.push(JSON.parse(line) as T);
+      }
+    }
 
     const chars = raw?.length ?? 0;
     track?.ledger.record(track.family, {
@@ -328,7 +368,8 @@ export class NetworkReader {
       records: records.length,
       ms: Date.now() - began,
     });
-    this.shards.set(key, { records, chars, usedAt: now });
+    // See `keep`: a partial parse must never be cached as though it were the whole tile.
+    if (!keep) this.shards.set(key, { records, chars, usedAt: now });
     this.evictShards();
     return { records, chars };
   }
@@ -438,6 +479,8 @@ export class NetworkReader {
     now: number,
     budgetChars = this.requestChars,
     track?: ReadTrack,
+    /** Passed through to the parse; see `readShardSized`. */
+    keep?: (line: string) => boolean,
   ): Promise<{ records: T[]; truncated: boolean }> {
     // Only tiles the publish actually wrote are requested: asking for the rest would be a read
     // operation per empty tile, metered, for a guaranteed miss.
@@ -467,7 +510,7 @@ export class NetworkReader {
     while (start < wanted.length) {
       const batch = wanted.slice(start, start + batchSize);
       const results = await Promise.all(
-        batch.map((tile) => this.readShardSized<T>(dataset(tile), version, now, track)),
+        batch.map((tile) => this.readShardSized<T>(dataset(tile), version, now, track, keep)),
       );
       for (const result of results) {
         records.push(...result.records);
@@ -525,6 +568,7 @@ export class NetworkReader {
     now: number,
     budgetChars?: number,
     track?: ReadTrack,
+    keep?: (line: string) => boolean,
   ): Promise<{ records: Stop[]; truncated: boolean }> {
     const result = await this.readTiles<Stop>(
       stopTileDataset,
@@ -534,6 +578,7 @@ export class NetworkReader {
       now,
       budgetChars ?? this.requestChars,
       track,
+      keep,
     );
     return {
       records: result.records.map((stop) => ({ ...stop, name: passengerName(stop.name) })),
@@ -803,6 +848,23 @@ export class NetworkReader {
       };
     }
 
+    /*
+     * Only the stops this route calls at are built into objects.
+     *
+     * The tile arrives whole either way — R2 serves an object, not a query — but turning every
+     * record in three four-megabyte tiles into a Stop to keep a hundred of them is tens of
+     * thousands of allocations and parses on a shared isolate's CPU, per request. Run 46 ruled out
+     * memory as the cause of the 1102s on this endpoint: residency was flat and the request that
+     * died began against the lowest figure in the trail. What is left is the work, and this is the
+     * largest piece of it that buys nothing.
+     *
+     * The test is on the raw line, before `JSON.parse` sees it. A stop is matched by its id or its
+     * ATCO code, the same two keys the lookup below uses, so a line that would have been discarded
+     * is never built.
+     */
+    const wanted = new Set(keys);
+    const keep = (line: string) => hasWantedKey(line, wanted);
+
     const result = await this.readStopTiles(
       tiles,
       index.stopTiles,
@@ -810,6 +872,7 @@ export class NetworkReader {
       now,
       budgetChars ?? this.requestChars,
       ledger ? { ledger, family: "stops", budgetReason: "route_stop_read_budget" } : undefined,
+      keep,
     );
 
     const byId = new Map<string, Stop>();

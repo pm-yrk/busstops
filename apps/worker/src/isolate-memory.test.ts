@@ -808,8 +808,64 @@ describe("a route's stops", () => {
       reader: new NetworkReader(recording.store),
       reads: recording.reads,
       serviceId: pattern.serviceRouteId,
+      store: recording.store,
     };
   }
+
+  /*
+   * Run 46 ruled out memory as the cause of the 1102s on route detail: residency was flat and the
+   * request the platform killed began against the lowest figure in the trail. What is left is the
+   * work, and turning every record in a tile into an object to keep the route's own hundred is
+   * the largest piece of it that buys nothing.
+   */
+  it("builds only the stops the route calls at, not every stop in the tile", async () => {
+    const { reader, serviceId } = await publishedSprawl();
+    const patterns = await reader.patternsForService(serviceId);
+    const wanted = new Set(
+      patterns.geometries.flatMap((geometry) => geometry.pattern.stopSequence),
+    );
+
+    const ledger = new ReadLedger(5_000);
+    const result = await reader.stopsForGeometries(patterns.geometries, Date.now(), ledger);
+
+    // Every stop the route calls at came back.
+    expect(result.resolved).toBe(result.requested);
+
+    const stops = ledger.toJSON().families.stops!;
+    // And no more records than the route asked for were ever built, though the tiles hold more.
+    expect(stops.records).toBeLessThanOrEqual(wanted.size);
+    // The bytes still arrive - R2 serves objects, not queries - so this is about the parse.
+    expect(stops.chars).toBeGreaterThan(0);
+  });
+
+  it("does not poison the shared cache with one request's filtered slice", async () => {
+    /*
+     * The cache is shared by every request in the isolate. An entry holding one route's stops
+     * would answer the next viewport's question with a tile missing almost all of it - a wrong
+     * answer rather than a slow one, and the worst kind of caching bug because it looks exactly
+     * like missing data.
+     *
+     * So the same viewport is asked twice over the same published store: once through a reader
+     * that has just done a filtered route read, and once through one that has not. They have to
+     * agree.
+     */
+    const { reader, serviceId, store } = await publishedSprawl();
+    const patterns = await reader.patternsForService(serviceId);
+    // A route that wants only two of the tile's stops, so a poisoned entry would be obvious.
+    const narrowed = patterns.geometries.map((geometry) => ({
+      ...geometry,
+      pattern: { ...geometry.pattern, stopSequence: geometry.pattern.stopSequence.slice(0, 2) },
+    }));
+    const routeStops = await reader.stopsForGeometries(narrowed);
+    expect(routeStops.resolved).toBe(2);
+
+    const box = { west: -1.7, south: 53.6, east: -1.4, north: 53.9 };
+    const afterFiltering = await reader.stopsInBoundingBox(box, Date.now());
+    const untouched = await new NetworkReader(store).stopsInBoundingBox(box, Date.now());
+
+    expect(afterFiltering.stops.length).toBe(untouched.stops.length);
+    expect(afterFiltering.stops.length).toBeGreaterThan(2);
+  });
 
   it("are read from the tiles the route runs through, never from the locator index", async () => {
     const { reader, reads, serviceId } = await publishedSprawl();
