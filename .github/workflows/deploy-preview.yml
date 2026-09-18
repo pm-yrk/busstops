@@ -593,13 +593,6 @@ jobs:
       # mattered most. Run 38 added the Cloudflare error code to every failing check and then put
       # it forty lines above the visual pass's two hundred, where the log is only retrievable from
       # the tail — so the run that was dispatched to name the limit could not be read for it.
-      - name: What the verification actually said
-        if: ${{ always() && steps.verify.outcome != 'skipped' }}
-        run: |
-          echo "--- verification failures (repeated at end of job) ---"
-          grep -E "^\s*(FAIL|pass)" verify.log 2>/dev/null || echo "no verify.log was written"
-          echo "--- end verification failures ---"
-
       # The sweep runs two hundred lines before the end of the job, which is the only part of the
       # log that can be retrieved — so what it found about the stop, route, operator, Saved and Pro
       # pages has been written and never read. Failures first, then the count, so a clean sweep is
@@ -612,6 +605,13 @@ jobs:
           echo "--- visual sweep totals ---"
           grep -cE "^\s*pass" visual.log 2>/dev/null || echo "no visual.log was written"
           echo "--- end visual sweep ---"
+
+      - name: What the verification actually said
+        if: ${{ always() && steps.verify.outcome != 'skipped' }}
+        run: |
+          echo "--- verification failures (repeated at end of job) ---"
+          grep -E "^\s*(FAIL|pass)" verify.log 2>/dev/null || echo "no verify.log was written"
+          echo "--- end verification failures ---"
 
       - name: Summary
         if: always()
