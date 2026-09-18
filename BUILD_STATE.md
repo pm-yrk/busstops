@@ -1,8 +1,60 @@
 # Bus Stops. Build State
 
-Last updated: 2026-09-18 (the 1102 is the free plan's 10ms CPU limit, not memory; every Worker budget is wall clock)
+Last updated: 2026-09-18 (run 55: viewport filter cuts records 23,806 to 13,285; 1102 halves; the Bullring was a space)
 
 ## Current status
+
+### Run 55: the filter works, the 1102 halves, and the Bullring was a space (2026-09-18)
+
+Run 55 ([35403959643](https://github.com/pm-yrk/busstops/actions/runs/35403959643), `67127fb`)
+carried the viewport parse-filter and nothing else, so it measures that one change.
+
+**The filter works.** The map's record count, same viewport, same 7.00 MiB of text:
+
+```
+run 54   7.00 MiB decoded; 23806 record(s)
+run 55   7.00 MiB decoded; 13285 record(s)
+```
+
+The remainder is not stops. The same run reports `degraded: stop_routes_budget` and
+`enrichment was skipped (stop_routes_budget)` — the ~12,900 records left are the **stop-routes**
+family, which run 55 predates the filter for. That is `aa27d6a`, already committed, and it is the
+next thing the numbers should move.
+
+**The 1102 more than halved.** Run 54 answered the platform's error page on `/v1/search`, the
+London viewport, `/v1/nearby`, `/v1/stops/:id/weather` and `/v1/map` on **attempt 1 of the first
+city**. Run 55 loses only `/v1/map` — on **attempt 3, at the third city** — and the weather
+endpoint. Everything else passed: search, London stops, Waterloo's 7 live TfL arrivals, nearby,
+route detail, both journeys, Pro on `data mode live`.
+
+Isolates now reach **req#19 through req#26**, against req#2 in run 54, and the residency trail
+shows trimming doing real work: `held 15 shard(s)/11.31 MiB/44499 record(s), trimmed 13, left 6
+shard(s)/4.37 MiB/14489 record(s)`.
+
+**`bods fetch=0ms parse=0ms 0.00 MiB → FAILED`** on every route-detail live lookup is the breaker
+open at 00:21 local, outside service hours, which is the honest answer rather than a fault.
+
+### The Bullring was never missing; OpenStreetMap spells it "Bull Ring"
+
+Run 54's places report lists Birmingham's twelve shopping centres in full:
+
+```
+Bull Ring (shopping)
+```
+
+Birmingham extracted **290 places**. The bounding box contained it. The ranker was measured and
+correct. Tokenised, `"Bull Ring"` is `["bull","ring"]` and `"Bullring"` is `["bullring"]`, which
+share no token — so it scored zero and was never returned.
+
+Five runs looked for that in the extraction, the bbox and the scorer in turn, because **the
+diagnostic I wrote for it asked the wrong question**: it searched the city, and a name search finds
+names, so it returned eight places all beginning "Birmingham" and said nothing about the landmark.
+It now probes the landmark's own words, each alone.
+
+The ranker fix is general: where the spaced comparison finds nothing, query and title are compared
+with spacing and punctuation removed. A match that disagrees only about a space scores as an exact
+match; a query that already matched never reaches the branch, so ordinary scoring is untouched and
+a test pins "Grand Central" at exactly 92.
 
 ### The 1102 is CPU, the plan allows 10 ms of it, and every budget here is wall clock (2026-09-18)
 
