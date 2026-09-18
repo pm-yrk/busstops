@@ -4,6 +4,42 @@ Last updated: 2026-09-17 (live buses proved in the deployment; the national time
 
 ## Current status
 
+### Run 50 names the 1102: BODS times out and is retried three times (2026-09-18)
+
+The fetch/parse split answered it on the first run that carried it
+([35315151386](https://github.com/pm-yrk/busstops/actions/runs/35315151386)):
+
+```
+Leeds#2 3:   vehicles=192ms   fetch=192ms   parse=0ms  0.46 MiB → 301 accepted
+Leeds#2 3A:  vehicles=3746ms  fetch=?       parse=?    0.00 MiB → 0 accepted
+Leeds#3 3A:  vehicles=3710ms  fetch=?       parse=?    0.00 MiB → 0 accepted
+Leeds#3 24:  vehicles=3548ms  fetch=?       parse=?    0.00 MiB → 0 accepted
+Leeds#4 24:  vehicles=1640ms  fetch=1640ms  parse=0ms  0.47 MiB → 304 accepted
+Leeds#4 116: vehicles=4367ms  fetch=?       parse=?    0.00 MiB → 0 accepted
+                                                          → 1102 on attempt 5
+```
+
+**The parse is 0ms.** A local benchmark had put it at about a hundred milliseconds a mebibyte —
+2.51 MiB in 242ms, 7.53 MiB in 728ms — and the real feed is under half a mebibyte, so the parse was
+never the cost. The stages that take three to four seconds report `?` because the fetch **threw**:
+they took the catch branch, and `fetchMs` was assigned after the call rather than before it.
+
+Three to four seconds from a call bounded at 1,200ms is the retry chain. `SourceClient.fetchText`
+retries three times with exponential backoff and its `timeoutMs` bounds **one attempt**, not the
+operation — so handing it the request's remaining time, as the previous commit did, made the
+overrun worse rather than better: the first attempt now times out where it would have finished, and
+two retries and their backoff follow.
+
+So a caller that passes a deadline gets one attempt inside it; a scheduled collector with no
+passenger waiting keeps its three. And the failure path now records how long it spent failing,
+which is the number that went missing exactly where it was needed.
+
+**This also explains the shape of the whole defect.** The 1102 never landed on a particular
+endpoint — route detail in runs 45 and 48, `/v1/map` in runs 49 and 50 — because it was never
+about what an endpoint reads. It followed whichever request was holding a four-second upstream
+retry when the isolate ran out, which is why it looked intermittent and why residency, bytes and
+record counts all came back innocent.
+
 ### Run 49: London proven in service hours, and 1102 has one common factor (2026-09-18)
 
 Run 49 ([35313671271](https://github.com/pm-yrk/busstops/actions/runs/35313671271), head

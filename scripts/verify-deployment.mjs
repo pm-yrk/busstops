@@ -937,7 +937,8 @@ await check("the pattern-heavy endpoints survive dense cities, repeatedly", asyn
                   (entry) =>
                     `, ${entry.source} fetch=${entry.fetchMs ?? "?"}ms ` +
                     `parse=${entry.parseMs ?? "?"}ms ` +
-                    `${((entry.chars ?? 0) / 1048576).toFixed(2)} MiB → ${entry.accepted} accepted`,
+                    `${((entry.chars ?? 0) / 1048576).toFixed(2)} MiB → ` +
+                    `${entry.outcome === "request_failed" ? "FAILED" : `${entry.accepted} accepted`}`,
                 )
                 .join("") +
               describeResidency(routeDiagnostics.residency),

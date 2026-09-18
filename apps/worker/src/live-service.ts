@@ -238,8 +238,11 @@ export class LiveService {
       const client = this.client("bods");
       const url = bodsDatafeedUrl(bbox, this.deps.env.BODS_API_KEY);
       const cacheKey = `bods:${url}`;
+      // Outside the try, so a failure can say how long it spent failing. Run 50's longest stages
+      // reported "fetch=?ms parse=?ms" — the throw skipped the assignment, and the one number
+      // that would have named the retry chain was the one that went missing.
+      const fetchBegan = Date.now();
       try {
-        const fetchBegan = Date.now();
         /*
          * A deadline is for the whole stage, so it gets one attempt.
          *
@@ -301,6 +304,9 @@ export class LiveService {
           rejectedBy: {},
           newestRecordAgeSeconds: null,
           oldestRecordAgeSeconds: null,
+          fetchMs: Date.now() - fetchBegan,
+          parseMs: 0,
+          chars: 0,
           error: describeFetchFailure(error),
         });
       }
