@@ -512,8 +512,36 @@ await check("live vehicles are reported for a covered area", async () => {
     assert(Number.isFinite(vehicle.freshnessSeconds), "a vehicle does not state its age");
     assert(vehicle.motionState !== undefined, "a vehicle does not say whether it is moving");
   }
-  const sources = (body?.meta?.sources ?? []).map((source) => source.source ?? source).join(", ");
-  return `${vehicles.length} vehicles from [${sources}] at ${new Date().toISOString()}`;
+  /*
+   * An empty viewport and a failed feed are different facts and must read differently.
+   *
+   * "0 vehicles" is the honest answer at four in the morning and a lie when BODS timed out —
+   * which, with the retry chain bounded and the breaker sized for an isolate, is now a thing that
+   * happens and is *supposed* to happen: the request gives up cheaply and says so rather than
+   * taking the isolate with it. So the line names the state of every source it consulted, and a
+   * zero with a failed source reads as an outage rather than as a quiet street.
+   */
+  const health = body?.meta?.sources ?? [];
+  const described = health
+    .map(
+      (source) =>
+        `${source.source ?? source}: ${source.status ?? "?"}` +
+        (source.consecutiveFailures ? ` after ${source.consecutiveFailures} failure(s)` : "") +
+        (source.message ? ` (${String(source.message).slice(0, 80)})` : ""),
+    )
+    .join("; ");
+  const failed = body?.meta?.failedSources ?? [];
+  assert(
+    vehicles.length > 0 || failed.length > 0 || !SERVICE_HOURS.daytime,
+    `no buses and no failed source at ${SERVICE_HOURS.hour}:00 ${SERVICE_HOURS.weekday} London ` +
+      `time — a viewport over a city centre in service hours is either moving or broken, and ` +
+      `this says neither. Sources: ${described}`,
+  );
+  return (
+    `${vehicles.length} vehicles at ${new Date().toISOString()}; ${described}` +
+    (failed.length > 0 ? `; failed: ${failed.join(", ")}` : "") +
+    (body?.meta?.degradation ? `; ${body.meta.degradation}` : "")
+  );
 });
 
 /*
