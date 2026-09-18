@@ -4,6 +4,34 @@ Last updated: 2026-09-18 (run 56: map records 23,806 to 788; all five landmarks 
 
 ## Current status
 
+### Measured: the filters cannot finish the job, because the scan is the floor (2026-09-18)
+
+The parse-time filters took `/v1/map` from 23,806 objects to 788. They cannot take it under the
+limit, and here is the number that says so — same 7.00 MiB of text the deployment reads, same
+viewport, measured in Node:
+
+```
+parse everything:        39.3 ms   (14,098 records)
+scan + filter + parse:   21.2 ms   (364 kept)
+Workers Free budget:     10.0 ms
+```
+
+**Walking the text costs about three milliseconds a mebibyte whatever is kept.** Finding line
+boundaries and reading two numbers out of each line is unavoidable once the bytes are in hand, so
+a 45% saving is the most this approach can give, and 21 ms is still twice the budget.
+
+So the remaining fix is **fewer bytes**, not fewer records, and there are two ways to get them:
+
+- **A finer stop grid.** Tiles are `STOP_TILE_DEGREES = 0.25`. The verification's Leeds viewport is
+  0.11° by 0.05° — a fraction of one tile — and reads seven of them, because a viewport that
+  straddles a boundary takes the whole of every tile it touches.
+- **A narrower record.** A published `Stop` carries `provenance`, `qualityFlags`, `localityId`,
+  `amenities`, `naptanStatus` and `supersededByStopId`; a map marker uses none of them. A per-tile
+  projection holding only what a marker draws would be a fraction of the bytes.
+
+Both need a national republish, which is the decision already put to Paul rather than taken here.
+The code can be written and tested without running one, and that is the order it will be done in.
+
 ### Run 56: 23,806 records become 788, and every landmark resolves (2026-09-18)
 
 Run 56 ([35406254385](https://github.com/pm-yrk/busstops/actions/runs/35406254385)) carried the
