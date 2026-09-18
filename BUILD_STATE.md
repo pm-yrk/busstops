@@ -62,6 +62,15 @@ the viewport filter and the stop-routes filter both stand, and their value is la
 not smaller. What does not stand is any budget that counts milliseconds of wall clock and reports
 `degraded false` while the request is over its compute limit.
 
+**The next candidate, measured but not yet changed.** `NetworkReader.services()` reads the national
+services dataset through `ArtifactStore.readCurrent` and parses **13,593 records**, and it is
+reached by the departure board, the route page, the operator page and the vehicle page — four of
+the busiest passenger endpoints. It is cached per isolate, which sounds like it makes the cost
+rare; it does the opposite while the 1102 persists, because every kill produces a cold isolate and
+the next request pays the parse again. That is a feedback loop: over the limit, isolate destroyed,
+next request cold, over the limit. It is deliberately left for the run after this one, so that the
+three CPU reductions already made can be attributed before a fourth is stacked on them.
+
 **The direction this implies** is that the edge should parse almost nothing: the artifacts want to
 be shaped so `/v1/map` is a read and a concatenate rather than a read, a parse, a filter and a
 rank. That is a larger change than the filters and it is put to Paul rather than started, because
