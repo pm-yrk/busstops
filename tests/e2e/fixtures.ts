@@ -452,6 +452,63 @@ export const PRO_EMPTY_SECTION = {
   },
 };
 
+/**
+ * A disruptions board with both layers present and neither claiming the other's authority.
+ *
+ * An empty `{ data: {} }` fallback would have rendered a page that had crashed on a missing array,
+ * and an accessibility pass over a crashed page proves nothing. This gives the page one official
+ * notice, one ranked item, a source that answered and a source that did not, and an uncovered
+ * area — every branch the page draws differently.
+ */
+export const DISRUPTIONS_RESPONSE = {
+  meta: META,
+  data: {
+    official: [
+      {
+        id: "00000000-0000-5000-8000-0000000000f1",
+        provenance: {
+          source: "national_highways",
+          retrievedAt: "2026-09-03T08:00:00.000Z",
+          externalIds: [],
+        },
+        ingestedAt: "2026-09-03T08:00:00.000Z",
+        qualityFlags: [],
+        source: "national_highways",
+        reference: "NH-1",
+        headline: "A64 eastbound closed for resurfacing",
+        detail: "One carriageway is closed between junctions overnight.",
+        severity: "elevated",
+        officialStatus: "official",
+        lifecycle: "active",
+        startedAt: "2026-09-03T07:00:00.000Z",
+        endedAt: null,
+        publishedAt: "2026-09-03T07:05:00.000Z",
+        affectedRoutes: [],
+        affectedStops: [],
+        url: null,
+      },
+    ],
+    sourcesQueried: [
+      {
+        source: "national_highways",
+        outcome: "ok",
+        records: 1,
+        queriedAt: "2026-09-03T08:00:00.000Z",
+      },
+      {
+        source: "street_manager",
+        outcome: "not_configured",
+        records: 0,
+        queriedAt: "2026-09-03T08:00:00.000Z",
+      },
+    ],
+    officialCollectedAt: "2026-09-03T08:00:00.000Z",
+    byDelayBurden: [],
+    byAbnormality: [],
+    uncoveredAreas: ["Cornwall", "Cumbria"],
+  },
+};
+
 /** Routes every API call to a fixture, so no test depends on an upstream being reachable. */
 export async function mockApi(page: Page, overrides: Record<string, unknown> = {}): Promise<void> {
   await page.route("**/api/**", async (route) => {
@@ -513,11 +570,13 @@ export async function mockApi(page: Page, overrides: Record<string, unknown> = {
                             coverageCaveats: ["No live analysis has been published."],
                           },
                         }
-                      : path === "/v1/map"
-                        ? EMPTY_MAP
-                        : path === "/v1/search" || path === "/v1/nearby"
-                          ? { meta: META, data: { results: [] } }
-                          : { meta: META, data: {} });
+                      : path === "/v1/disruptions"
+                        ? DISRUPTIONS_RESPONSE
+                        : path === "/v1/map"
+                          ? EMPTY_MAP
+                          : path === "/v1/search" || path === "/v1/nearby"
+                            ? { meta: META, data: { results: [] } }
+                            : { meta: META, data: {} });
 
     await route.fulfill({
       status: 200,

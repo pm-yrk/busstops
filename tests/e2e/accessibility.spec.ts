@@ -17,7 +17,24 @@ const PAGES = [
   { path: "/journey", name: "journey planner" },
   { path: "/saved", name: "saved" },
   { path: "/methodology", name: "methodology" },
+  /*
+   * The two passenger surfaces this list had been missing.
+   *
+   * "Accessibility regressions" is asked of every surface, and the live map and the disruptions
+   * board were the two a passenger is most likely to be sent to and the two with the most
+   * conditional rendering — a map with a list equivalent beside it, and a board with two layers
+   * that must not be mistaken for each other.
+   */
+  { path: "/live", name: "live map" },
+  { path: "/disruptions", name: "disruptions" },
   { path: "/pro", name: "Pro control tower" },
+  /* And the Pro sections that were left out: each reads different artifacts and draws differently. */
+  { path: "/pro/live", name: "Pro live operations" },
+  { path: "/pro/routes", name: "Pro routes" },
+  { path: "/pro/operators", name: "Pro operators" },
+  { path: "/pro/congestion", name: "Pro congestion" },
+  { path: "/pro/analytics", name: "Pro analytics" },
+  { path: "/pro/reports", name: "Pro reports" },
   { path: "/pro/disruptions", name: "Pro disruptions" },
   { path: "/pro/settings", name: "Pro settings" },
 ];
