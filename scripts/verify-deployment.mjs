@@ -490,12 +490,47 @@ await check("search finds real places, not only bus stops", async () => {
     }
   }
 
+  /*
+   * What the gazetteer does hold where a landmark is missing.
+   *
+   * "Bullring: still missing" has been true for several runs and says nothing about why — a
+   * missing landmark could be a gap in the Overpass query, an area that failed extraction, or a
+   * name this product spells differently from OpenStreetMap. Overpass cannot be reached from the
+   * machine that writes this script, so the deployment is asked instead: searching the city name
+   * and listing the places it returns distinguishes "this city was never extracted" from "it was,
+   * and the landmark is filed under another name" in one line.
+   */
+  const cityFor = {
+    "Manchester Arndale": "Manchester",
+    Bullring: "Birmingham",
+    "Bristol Temple Meads": "Bristol",
+    "Leeds Station": "Leeds",
+    "York Minster": "York",
+  };
+  const around = [];
+  for (const term of missed) {
+    const city = cityFor[term];
+    if (!city) continue;
+    const { body } = await getJson(`/v1/search?q=${encodeURIComponent(city)}`);
+    const places = (body?.data?.results ?? []).filter((result) => result.kind === "place");
+    around.push(
+      places.length === 0
+        ? `${city}: no places at all in the gazetteer`
+        : `${city} has ${places.length} place(s): ${places
+            .slice(0, 8)
+            .map((place) => place.title)
+            .join(", ")}`,
+    );
+  }
+
   observed.placesFound = found.length;
+  observed.placesMissed = missed;
   return found.length === 0
     ? `no gazetteer in this bucket yet: none of ${wanted.length} landmarks matched ` +
         "(run the preview with run_places to extract one)"
     : `${found.length} of ${wanted.length} landmarks found — ${found.join("; ")}` +
-        (missed.length > 0 ? `; still missing: ${missed.join(", ")}` : "");
+        (missed.length > 0 ? `; still missing: ${missed.join(", ")}` : "") +
+        (around.length > 0 ? ` | what those cities do have: ${around.join(" | ")}` : "");
 });
 
 await check("live vehicles are reported for a covered area", async () => {
