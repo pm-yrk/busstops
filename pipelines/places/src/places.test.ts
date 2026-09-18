@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { searchIndex } from "@busstops/pipeline-static-network";
+import type { PlaceRecord } from "./places.js";
 import {
   MAX_GAZETTEER_RECORDS,
   PLACES_DATASET,
@@ -153,5 +155,67 @@ describe("the gazetteer stays something the edge can hold", () => {
     // Same order as the 1,043 services the isolate already holds nationally. Outgrowing this
     // means sharding it, not raising it.
     expect(MAX_GAZETTEER_RECORDS).toBeLessThanOrEqual(50_000);
+  });
+});
+
+describe("what people call a station, not what OSM files it under", () => {
+  function place(overrides: Partial<PlaceRecord> = {}): PlaceRecord {
+    return {
+      id: "00000000-0000-5000-8000-0000000000e1",
+      name: "Leeds",
+      kind: "rail_station",
+      coordinate: { lat: 53.7955, lon: -1.5491 },
+      subtitle: "Railway station",
+      prominence: 9,
+      osmId: "node/1",
+      ...overrides,
+    };
+  }
+
+  it("lets a rail station be found by the name people type", () => {
+    const entry = placeAsSearchEntry(place());
+    expect(entry.title).toBe("Leeds");
+    expect(entry.codes).toContain("leeds station");
+    expect(entry.codes).toContain("leeds railway station");
+    expect(entry.tokens).toContain("station");
+  });
+
+  it("beats a differently-named bus station on the query that names neither", () => {
+    const index = {
+      builtAt: "2026-01-01T00:00:00.000Z",
+      entries: [
+        placeAsSearchEntry(place()),
+        placeAsSearchEntry(
+          place({
+            id: "00000000-0000-5000-8000-0000000000e2",
+            name: "Leeds City Bus & Coach Station",
+            kind: "bus_station",
+            subtitle: "Bus station",
+          }),
+        ),
+      ],
+    };
+    const [top] = searchIndex(index, "Leeds Station", { limit: 3 });
+    expect(top?.entry.title).toBe("Leeds");
+  });
+
+  it("adds nothing to a name that already says it, so it cannot collide with itself", () => {
+    const meads = placeAsSearchEntry(
+      place({ name: "Bristol Temple Meads Station", subtitle: "Railway station" }),
+    );
+    expect(meads.codes).toEqual([]);
+
+    const coach = placeAsSearchEntry(
+      place({ name: "Victoria Coach Station", kind: "bus_station", subtitle: "Bus station" }),
+    );
+    expect(coach.codes).toEqual([]);
+  });
+
+  it("leaves places that are not transport alone", () => {
+    const minster = placeAsSearchEntry(
+      place({ name: "York Minster", kind: "attraction", subtitle: "Landmark" }),
+    );
+    expect(minster.codes).toEqual([]);
+    expect(minster.tokens).toEqual(["york", "minster"]);
   });
 });

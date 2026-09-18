@@ -581,9 +581,21 @@ for (const size of WIDTHS) {
             .first()
             .isVisible()
             .catch(() => false);
+          /*
+           * Bounded, because this one read cost a whole page.
+           *
+           * `textContent()` waits for its element with the default thirty-second timeout, and in
+           * run 54 the board was open while its heading had not rendered yet. The throw escaped
+           * into the per-page catch, so `tablet/live-stop-deeplink` reported only "could be
+           * inspected at all — Timeout 30000ms exceeded" and every other check on that page was
+           * lost. A heading that is not there yet is a fact to report, not a reason to stop.
+           */
           const heading = board
-            ? ((await page.locator(".selected-stop h2, .selected-stop h3").first().textContent()) ??
-              "")
+            ? ((await page
+                .locator(".selected-stop h2, .selected-stop h3")
+                .first()
+                .textContent({ timeout: 5_000 })
+                .catch(() => null)) ?? "(no heading yet)")
             : "";
           record(
             `${size.name}/${target.name} opens the stop board it was linked to`,
