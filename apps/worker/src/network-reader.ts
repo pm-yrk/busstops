@@ -1037,6 +1037,15 @@ export class NetworkReader {
     now: number = Date.now(),
     ledger?: ReadLedger,
     budgetChars?: number,
+    /*
+     * The stops the answer is actually for.
+     *
+     * One row per stop in the tile, and the map wants names for the four hundred it is returning
+     * rather than for every stop in a quarter of a degree — the same ratio the stop read itself
+     * had. Given the ids, the rows are filtered where they lie and the rest are never built.
+     * Omitted, every row is kept, which is what a caller wanting the whole tile means.
+     */
+    wantedStopIds?: ReadonlySet<string>,
   ): Promise<{ byStopId: Map<string, string[]>; complete: boolean; available: boolean }> {
     const index = await this.networkIndex(now);
     // An artifact published before this family existed has no such tiles. Saying so lets the
@@ -1053,6 +1062,12 @@ export class NetworkReader {
       now,
       budgetChars ?? this.requestChars,
       ledger ? { ledger, family: "route-patterns", budgetReason: "stop_routes_budget" } : undefined,
+      wantedStopIds && wantedStopIds.size > 0
+        ? (body, start, end) => {
+            const id = valueAt(body, start, end, "s");
+            return id === null || wantedStopIds.has(id);
+          }
+        : undefined,
     );
 
     const byStopId = new Map<string, string[]>();

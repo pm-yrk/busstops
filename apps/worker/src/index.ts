@@ -549,6 +549,9 @@ router.get("/v1/map", async (_request, { env, url }) => {
           Date.now(),
           ledger,
           MAP_STOP_ROUTES_CHARS,
+          // The stops this response carries, so the parse builds four hundred rows rather than
+          // every row in a quarter of a degree. They are already resolved by the stage above.
+          new Set(stopsResult.stops.map((stop) => stop.id)),
         ),
       )
     : { byStopId: new Map<string, string[]>(), complete: true, available: true };

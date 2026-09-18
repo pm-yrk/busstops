@@ -1134,6 +1134,46 @@ describe("answering without reading geometry", () => {
     expect(reads.filter((key) => key.includes(SHARDED.patternTile))).toEqual([]);
   });
 
+  it("labels only the stops it was asked about, and gives the same answer for them", async () => {
+    const { reader } = await publishedReader();
+    const tiles = stopTilesForBoundingBox({ west: -1.7, south: 53.7, east: -1.4, north: 53.9 });
+
+    const everything = await reader.routeNamesForStopTiles(tiles);
+    expect(everything.byStopId.size).toBeGreaterThan(0);
+
+    /*
+     * One row per stop in the tile, and a map answers with four hundred of them. Asking for a
+     * subset must build that subset and give it exactly the names the whole-tile read did.
+     */
+    const [wantedId] = [...everything.byStopId.keys()];
+
+    /*
+     * A fresh reader, because `readShardSized` deliberately uses a whole-tile cache entry when one
+     * is already there — the memory is spent either way by then, and re-reading would be pure
+     * cost. The saving this is about happens on the parse, so it has to be a parse.
+     */
+    const fresh = await publishedReader();
+    const subset = await fresh.reader.routeNamesForStopTiles(
+      tiles,
+      Date.now(),
+      undefined,
+      undefined,
+      new Set([wantedId!]),
+    );
+
+    expect([...subset.byStopId.keys()]).toEqual([wantedId]);
+    expect(subset.byStopId.get(wantedId!)).toEqual(everything.byStopId.get(wantedId!));
+    expect(subset.available).toBe(true);
+    expect(subset.complete).toBe(true);
+
+    // An empty set means "no filter", not "no stops": a caller with nothing to ask about would
+    // otherwise silently get an empty answer that reads like a network with no services on it.
+    const unfiltered = await (
+      await publishedReader()
+    ).reader.routeNamesForStopTiles(tiles, Date.now(), undefined, undefined, new Set<string>());
+    expect(unfiltered.byStopId.size).toBe(everything.byStopId.size);
+  });
+
   it("finds a pattern by its id, from one bucket rather than a geographic scan", async () => {
     const { reader, reads } = await publishedReader();
     const built = network();
