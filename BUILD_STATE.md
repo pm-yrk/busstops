@@ -1,8 +1,71 @@
 # Bus Stops. Build State
 
-Last updated: 2026-09-18 (run 54: Leeds to LBA plans, Pro live again; the map viewport now filters at parse time)
+Last updated: 2026-09-18 (the 1102 is the free plan's 10ms CPU limit, not memory; every Worker budget is wall clock)
 
 ## Current status
+
+### The 1102 is CPU, the plan allows 10 ms of it, and every budget here is wall clock (2026-09-18)
+
+**This corrects the explanation I gave for the viewport fix earlier today.** I said the isolate was
+running out of memory. It is not, and the measurement says so.
+
+**What 23,806 parsed stop records actually cost**, measured in Node against records of the same
+shape:
+
+```
+source text: 12.79 MiB
+heap for the parsed objects: 17.3 MiB
+ratio to source text: 1.3x
+```
+
+Parsed objects cost **1.3× their text**, not the five-to-ten I had assumed. The real map request
+decodes 7.00 MiB, so its records are about 9 MiB, and the peak including the source text is under
+20 MiB — against a **128 MB** isolate. Memory was never close.
+
+**The limit being exceeded is CPU, and it is 10 milliseconds.** From Cloudflare's own limits table:
+
+| Feature  | Workers Free | Workers Paid |
+| -------- | ------------ | ------------ |
+| CPU time | **10 ms**    | 5 min        |
+| Memory   | 128 MB       | 128 MB       |
+
+and, in the same document: _"CPU time measures how long the CPU spends executing your Worker code.
+Waiting on network requests (such as `fetch()` calls, KV reads, or database queries) does **not**
+count toward CPU time."_ `apps/worker/wrangler.toml` says in as many words: _"Keep the Worker on
+the free plan explicitly: no usage-based pricing path."_
+
+**Every budget in the Worker is denominated in the wrong unit.** `MAP_ENRICHMENT_BUDGET_MS = 1800`,
+`ROUTE_DETAIL_BUDGET_MS = 1200`, `JOURNEY_BUDGET_MS = 6000`, `NEARBY_BUDGET_MS = 1500`,
+`LIVE_LOOKUP_BUDGET_MS = 2500` — all wall clock, all hundreds or thousands of milliseconds, against
+a real ceiling of ten milliseconds of compute. Which is why run 54's map request reported
+
+```
+509ms of a 1800ms budget ... degraded false
+```
+
+and was killed anyway. It was measuring the one resource that was never scarce. R2 reads and the
+BODS fetch, which those budgets mostly bound, cost **no CPU at all**.
+
+This accounts for every observation the last dozen runs produced:
+
+- Isolates dying at req#2 and at req#9 indifferently — the limit is per invocation, not cumulative,
+  so isolate age was never going to predict it.
+- The retry bound helping and not fixing it: retries are network wait, which is free.
+- `/v1/search`, `/v1/nearby` and the weather endpoint dying alongside the map — each parses shards
+  of its own.
+- The SIRI-VM parse measured at ~100 ms per MiB: that one parse is ten times the entire budget.
+- Route detail, which reads least, surviving most.
+
+**So the parse-time filters are the right fix for the wrong stated reason.** They remove
+`JSON.parse` and object construction, which is pure CPU, and that is exactly the scarce resource —
+the viewport filter and the stop-routes filter both stand, and their value is larger than I claimed,
+not smaller. What does not stand is any budget that counts milliseconds of wall clock and reports
+`degraded false` while the request is over its compute limit.
+
+**The direction this implies** is that the edge should parse almost nothing: the artifacts want to
+be shaped so `/v1/map` is a read and a concatenate rather than a read, a parse, a filter and a
+rank. That is a larger change than the filters and it is put to Paul rather than started, because
+the alternative — Workers Paid — is a £5/month path that `CLAUDE.md` forbids.
 
 ### Run 54: the journey plans, Pro is live, and the 1102 is one request's own peak (2026-09-18)
 
