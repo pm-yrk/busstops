@@ -21,6 +21,7 @@
 
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import AxeBuilder from "@axe-core/playwright";
 // From @playwright/test rather than `playwright`, which is only a transitive dependency.
 import { chromium } from "@playwright/test";
 
@@ -788,6 +789,39 @@ for (const size of WIDTHS) {
        * about a board it never managed to read. So the check waits for the lookup to settle and
        * then insists the panel says which of the three it is.
        */
+      /*
+       * Axe, against the deployed page rather than a fixture.
+       *
+       * The e2e accessibility suite runs eighteen pages against mocked responses, and the four a
+       * passenger spends most of their time on are not among them because each needs a real
+       * identifier. Those are exactly the pages this sweep has already discovered, with real data
+       * in them — a departure board with real destinations, a route with a real operator — and
+       * real data is where the contrast failures and the unlabelled controls actually appear. At
+       * every width, because a barrier introduced by a phone layout is invisible at desktop.
+       */
+      const axe = await new AxeBuilder({ page })
+        .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"])
+        .analyze()
+        .catch((error) => ({ error: error instanceof Error ? error.message : String(error) }));
+
+      if (axe.error) {
+        record(`${size.name}/${target.name} could be scanned for accessibility`, false, axe.error);
+      } else {
+        const violations = axe.violations.map(
+          (violation) =>
+            `${violation.id} (${violation.impact ?? "unrated"}) on ` +
+            violation.nodes
+              .slice(0, 2)
+              .map((node) => node.target.join(" "))
+              .join(", "),
+        );
+        record(
+          `${size.name}/${target.name} has no automatically detectable accessibility violations`,
+          violations.length === 0,
+          violations.length === 0 ? "none" : violations.join("; "),
+        );
+      }
+
       if (target.name === "search-results") {
         const results = await page.evaluate(() => {
           const items = [...document.querySelectorAll(".search-page__result")];
