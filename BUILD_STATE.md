@@ -1,8 +1,86 @@
 # Bus Stops. Build State
 
-Last updated: 2026-09-18 (Bus stopped? no longer claims an unread board is empty; run 53 bootstrapping)
+Last updated: 2026-09-18 (run 53: the artifact bucket went over the R2 free tier; the 1102 is reduced but not gone)
 
 ## Current status
+
+### Run 53: the bucket went over the free tier, and the 1102 is still there (2026-09-18)
+
+Run 53 ([35359663871](https://github.com/pm-yrk/busstops/actions/runs/35359663871), `bd7d219`).
+The bootstrap **succeeded** in 88 minutes — I had expected it to hit its 110-minute limit and it
+did not — and both the verification and the sweep ran. **202 sweep checks passed.**
+
+#### The finding that matters most is not the 1102
+
+```
+objectsBefore  32,000        bytesBefore  11,343,998,119   withinFreeStorageBefore  false
+objectsAfter   22,455        bytesAfter    8,614,826,531   withinFreeStorageAfter   true
+deleted 5,304   removable 9,545   remainingAfterRun 4,241
+deletesPerSecond 4.01        stoppedBecause "time budget spent"
+```
+
+**The artifact bucket was over R2's 10 GB free storage before retention ran**, and retention could
+not finish: it cleared 5,304 objects of 9,545 and ran out of its 35-minute budget with 4,241 still
+removable. Then the bootstrap wrote a whole new national artifact on top. `CLAUDE.md` makes £0 a
+non-negotiable, so this is ahead of the 1102 in priority.
+
+**The 4.01 deletes per second is an account limit, not a slow loop.** `R2ObjectStore` addresses
+objects through Cloudflare's REST API (`api.cloudflare.com/client/v4/…/r2/buckets/…/objects/<key>`),
+one request per object, and that API is rate-limited per account at roughly this rate — which is
+why a comment in `publish.ts` already records "about 4.35 objects a second whatever concurrency it
+used". Concurrency 16 cannot beat it. R2's **S3-compatible** API is not on that limiter and takes
+up to 1,000 keys in one `DeleteObjects` call, which would turn 9,545 deletes into ten requests —
+but it signs with an R2 access key ID and secret, which this deployment does not have. **That is a
+credential decision for Paul**, recorded rather than assumed.
+
+Without it, two things keep the bucket inside the tier: run retention often enough that the
+backlog never builds (one more pass clears the present one), and write fewer objects per
+bootstrap.
+
+#### The 1102 is better and not gone
+
+```
+FAIL  the pattern-heavy endpoints survive dense cities, repeatedly — Leeds: /v1/map answered
+      the platform's error page ... on attempt 2
+FAIL  a journey can be planned across real timetable data — 503, error 1102
+FAIL  Pro is reachable with no credential and states its data mode — expected 2xx, got 503
+```
+
+The bound did work, and the diagnostics say so plainly:
+
+```
+Leeds#1 3: vehicles=839ms, bods fetch=839ms parse=0ms 0.00 MiB -> FAILED
+```
+
+One attempt, 839 ms, failed inside the deadline — against the 3.5–4.6 s retry chains of runs 50–52.
+And isolates now reach **req#13 and req#14** before dying, against **req#2** in run 52. Neither of
+those is the finish line: `/v1/map`, `/v1/journeys` and `/v1/pro/control-tower` still return 1102
+under load, so **P1 is not done and P10 has regressed** (Pro was `dataMode = live` in run 46).
+
+What the same lines now show, which no earlier run did, is what an isolate is holding while it
+happens: `national operators=636/services=13593/places=3178` resident, plus up to 11.80 MiB of
+shards before trimming, and a single map request decoding 7.00 MiB into 23,806 records. That is the
+next thing to measure rather than the next thing to assert.
+
+#### What is genuinely working
+
+Five cities with full boards (Leeds 20 due, Manchester 17, Birmingham 17, Bristol 20, York 1 —
+York at 17:54 local is honest), 191 live BODS vehicles, London proven again (400 of 400 stops with
+London ATCO codes; Waterloo Station / Tenison Way 12 departures, 12 live from TfL), the map inside
+its budget at 1,338 ms of 1,800 with `degraded false`, CSP and CORS exact.
+
+#### Still open from this run
+
+- `Bullring` remains the one landmark of five not found. My city-listing diagnostic was committed
+  after `bd7d219`, so run 53 could not print it.
+- `Leeds Station` resolves to `Leeds City Bus & Coach Station`, not the rail station.
+- The vehicle page logs a **404** at all three widths.
+- The live map fails to paint at desktop and tablet — which is the honest error state following the
+  `/v1/map` 1102, not a separate rendering defect.
+
+Run 54 is dispatched with **no bootstrap**, retention applied, and places and weather on: it clears
+the storage backlog, answers `Bullring`, collects weather, and is the first run to exercise the new
+Bus stopped?, search-results, cross-navigation and deployed-axe checks.
 
 ### Waiting on run 53: three honesty defects fixed, one hypothesis disproved (2026-09-18)
 
