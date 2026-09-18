@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import type { VehicleDetailResponse } from "@busstops/contracts";
 import { LoadingBus } from "../components/LoadingBus.js";
@@ -15,6 +15,9 @@ import {
 import { apiClient } from "../lib/api.js";
 import { useFetch, useTicker } from "../lib/use-fetch.js";
 import { delayLabel } from "../lib/format.js";
+import { haversineMetresBrowser } from "../lib/geo.js";
+import { savedPlatform, suggestPlatform, walkingUrlFor } from "../lib/navigation-handoff.js";
+import type { MapResponse, StopDeparturesResponse } from "@busstops/contracts";
 import "./VehiclePage.css";
 
 /**
@@ -66,6 +69,135 @@ export function VehiclePage() {
 
   const now = useTicker();
 
+  /*
+   * What "Bus Stopped?" actually knows, fetched only when someone asks.
+   *
+   * The panel was given `otherVehiclesMoving={null}`, `otherVehiclesObserved={0}`,
+   * `nextServices={[]}` and `alternativeStop={null}` — hard-coded, so its reasoning could never
+   * fire and a passenger was told "we cannot tell why" by construction. Every one of those facts
+   * is available from endpoints this page can already reach: the viewport it was found in has the
+   * other buses and the nearby stops, and the stop it is heading for has a departure board.
+   *
+   * Behind the button, because none of it is worth fetching for somebody whose bus is fine.
+   */
+  const [context, setContext] = useState<{
+    peers: number;
+    peersMoving: boolean | null;
+    alternative: {
+      id: string;
+      name: string;
+      walkingMinutes: number;
+      lat: number;
+      lon: number;
+    } | null;
+    nextServices: Array<{
+      routeName: string;
+      destination: string;
+      expectedTime: string;
+      live: boolean;
+    }>;
+  } | null>(null);
+
+  const vehicleState = response?.data.vehicle ?? null;
+  const nextStops = useMemo(() => response?.data.nextStops ?? [], [response]);
+
+  useEffect(() => {
+    if (!showStoppedPanel || !bbox || !vehicleState) return;
+    const controller = new AbortController();
+
+    void (async () => {
+      try {
+        const map = (await apiClient.map(bbox, 15, controller.signal)) as MapResponse;
+
+        /*
+         * Other buses near this one, which is the fact that separates a jam from a breakdown.
+         *
+         * Eight hundred metres: close enough to be on the same road, far enough to contain more
+         * than one vehicle. Anything further is a different street and tells you nothing.
+         */
+        const here = vehicleState.position;
+        const peers = map.data.vehicles.filter(
+          (other) =>
+            other.vehicleRef !== vehicleState.vehicleRef &&
+            haversineMetresBrowser(here, other.coordinate) <= 800,
+        );
+        const moving = peers.filter((other) => other.motionState === "moving").length;
+
+        // The nearest stop that is not the one this bus is heading to.
+        const upcoming = new Set(nextStops.filter((stop) => !stop.passed).map((s) => s.atcoCode));
+        const nearest = map.data.stops
+          .filter((stop) => !upcoming.has(stop.atcoCode))
+          .map((stop) => ({ stop, metres: haversineMetresBrowser(here, stop.coordinate) }))
+          .sort((a, b) => a.metres - b.metres)[0];
+
+        let nextServices: Array<{
+          routeName: string;
+          destination: string;
+          expectedTime: string;
+          live: boolean;
+        }> = [];
+        const heading = nextStops.find((stop) => !stop.passed);
+        if (heading) {
+          const board = (await apiClient.stop(
+            heading.atcoCode,
+            controller.signal,
+          )) as StopDeparturesResponse;
+          nextServices = board.data.departures
+            .filter((departure) => departure.expectedTime !== null)
+            .slice(0, 4)
+            .map((departure) => ({
+              routeName: departure.serviceRoutePublicName,
+              destination: departure.destinationName,
+              expectedTime: departure.expectedTime!,
+              live: departure.liveState === "live" || departure.liveState === "estimated",
+            }));
+        }
+
+        setContext({
+          peers: peers.length,
+          // Null when there is nothing nearby to compare against: zero buses is not evidence that
+          // nothing is moving, and the panel reasons differently about the two.
+          peersMoving: peers.length === 0 ? null : moving > 0,
+          alternative: nearest
+            ? {
+                id: nearest.stop.atcoCode,
+                name: nearest.stop.name,
+                // A brisk 1.3 m/s, the same pace the journey planner walks at.
+                walkingMinutes: Math.max(1, Math.round(nearest.metres / 1.3 / 60)),
+                lat: nearest.stop.coordinate.lat,
+                lon: nearest.stop.coordinate.lon,
+              }
+            : null,
+          nextServices,
+        });
+      } catch {
+        // The panel is help, not a promise. Failing to gather context leaves it saying what it
+        // does know rather than showing an error over a page that is working.
+        if (!controller.signal.aborted) setContext(null);
+      }
+    })();
+
+    return () => controller.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    showStoppedPanel,
+    vehicleState?.vehicleRef,
+    bbox?.west,
+    bbox?.south,
+    bbox?.east,
+    bbox?.north,
+  ]);
+
+  const alternativeWalkingUrl = useMemo(() => {
+    if (!context?.alternative) return null;
+    const platform = savedPlatform() ?? suggestPlatform(globalThis.navigator?.userAgent ?? "");
+    return walkingUrlFor(platform, {
+      lat: context.alternative.lat,
+      lon: context.alternative.lon,
+      label: context.alternative.name,
+    });
+  }, [context]);
+
   if (!bbox) {
     return (
       <EmptyState
@@ -94,8 +226,7 @@ export function VehiclePage() {
     );
   }
 
-  const { vehicle, routePublicName, routeId, destinationName, nextStops, scheduledShape } =
-    response.data;
+  const { vehicle, routePublicName, routeId, destinationName, scheduledShape } = response.data;
   const visibleStops = showAllStops ? nextStops : nextStops.slice(0, NEXT_STOPS_VISIBLE);
 
   return (
@@ -206,14 +337,28 @@ export function VehiclePage() {
         {showStoppedPanel ? (
           <BusStoppedPanel
             vehicle={vehicle}
-            otherVehiclesMoving={null}
-            otherVehiclesObserved={0}
+            otherVehiclesMoving={context?.peersMoving ?? null}
+            otherVehiclesObserved={context?.peers ?? 0}
             incidents={response.data.incidents}
-            nearEndOfRoute={false}
+            /*
+             * Near the end when two or fewer calls remain. A bus that has finished its run and is
+             * standing at the terminus is the commonest reason a vehicle stops moving, and it is
+             * not a fault — saying so stops the panel offering alternatives to somebody whose bus
+             * has simply arrived.
+             */
+            nearEndOfRoute={nextStops.filter((stop) => !stop.passed).length <= 2}
             now={now}
-            nextServices={[]}
-            alternativeStop={null}
-            walkingUrl={null}
+            nextServices={context?.nextServices ?? []}
+            alternativeStop={
+              context?.alternative
+                ? {
+                    id: context.alternative.id,
+                    name: context.alternative.name,
+                    walkingMinutes: context.alternative.walkingMinutes,
+                  }
+                : null
+            }
+            walkingUrl={alternativeWalkingUrl}
             operatorContactUrl={null}
             operatorName={null}
             onDismiss={() => setShowStoppedPanel(false)}

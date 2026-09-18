@@ -469,3 +469,69 @@ describe("bus stopped?", () => {
     expect(assessment.plausibleStates[0]?.explanation).toBe("gps_problem");
   });
 });
+
+/*
+ * "Bus Stopped?" could not reason, by construction.
+ *
+ * The vehicle page passed `otherVehiclesMoving={null}`, `otherVehiclesObserved={0}`,
+ * `nextServices={[]}` and `alternativeStop={null}` — hard-coded — so every branch that
+ * distinguishes a jam from a breakdown was unreachable and a passenger was always told "we cannot
+ * tell why from the data available". These are the branches the real context unlocks.
+ */
+describe("bus stopped, with the context it was never given", () => {
+  const stationary = {
+    vehicleRef: "v1",
+    motionState: "stationary" as const,
+    freshnessSeconds: 30,
+    delaySeconds: 600,
+    position: { lat: 53.8, lon: -1.55 },
+    matchedRoutePatternId: null,
+    matchedScheduledJourneyId: null,
+    nextStopId: null,
+    matchConfidence: { level: "high" as const, reasons: [] },
+  };
+  const base = {
+    vehicle: stationary as never,
+    incidents: [],
+    nearEndOfRoute: false,
+    now: new Date("2026-09-18T09:00:00.000Z"),
+  };
+
+  it("calls a street full of stopped buses congestion rather than one stopped bus", () => {
+    const assessment = assessBusStopped({
+      ...base,
+      otherVehiclesMoving: false,
+      otherVehiclesObserved: 4,
+    });
+    expect(assessment.plausibleStates.map((state) => state.explanation)).toContain("congestion");
+    expect(assessment.plausibleStates.some((state) => state.supportedBy.includes("4"))).toBe(true);
+  });
+
+  it("says a stop looks specific to this bus when the others around it are moving", () => {
+    const assessment = assessBusStopped({
+      ...base,
+      otherVehiclesMoving: true,
+      otherVehiclesObserved: 4,
+    });
+    expect(assessment.summary.length).toBeGreaterThan(0);
+    expect(assessment.plausibleStates.map((state) => state.explanation)).not.toContain(
+      "congestion",
+    );
+  });
+
+  /*
+   * Zero buses nearby is not evidence that nothing is moving, which is why the page sends null
+   * rather than false when it found no peers. Reading an empty street as a jam would invent a
+   * cause out of an absence of data.
+   */
+  it("does not read an empty street as congestion", () => {
+    const assessment = assessBusStopped({
+      ...base,
+      otherVehiclesMoving: null,
+      otherVehiclesObserved: 0,
+    });
+    expect(assessment.plausibleStates.map((state) => state.explanation)).not.toContain(
+      "congestion",
+    );
+  });
+});

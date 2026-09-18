@@ -53,9 +53,19 @@ export function HomePage() {
 
       <section className="home__section page" aria-labelledby="home-live-heading">
         <h2 id="home-live-heading">Bus Stops Live</h2>
+        {/*
+          What the deployment actually does, not what the architecture allows.
+
+          This said "inside and outside London", and London live vehicles have never been proven
+          on a deployment — the source health endpoint reports one source, and it is BODS. A claim
+          the product does not keep is the one thing a page about being checkable cannot make, so
+          the sentence says where the buses are real and the methodology page carries the rest.
+        */}
         <p className="home__lede">
-          Live vehicle positions, real arrivals and the reasoning behind them — for every supported
-          local bus service in England, inside and outside London.
+          Live vehicle positions, real arrivals and the reasoning behind them, across England
+          outside London. London runs on published timetables and disruption notices; its live
+          vehicle feed is not yet proven on a deployment, and the site says so where it matters
+          rather than here.
         </p>
 
         <div className="grid-cards">
@@ -77,8 +87,8 @@ export function HomePage() {
             <h3>When something goes wrong</h3>
             <p className="muted">
               <strong>Bus Stopped?</strong> gathers what is actually known — the last reliable
-              position, whether other buses are moving, and any official incident — then offers real
-              alternatives.
+              position, whether other buses nearby are moving, and any official notice — and lists
+              candidates rather than picking a reason. Where it knows nothing, it says that.
             </p>
           </article>
         </div>
@@ -101,15 +111,26 @@ export function HomePage() {
           Every number carries its source, its freshness and its confidence. Where coverage is
           incomplete, the product leads with that fact rather than hiding it.
         </p>
+        {/*
+          Split, because a list of sources reads as a list of things that are running.
+
+          National Highways and Street Manager are implemented and contract-tested and no job
+          calls them; TfL's live vehicle path is written and unproven. Listing those beside BODS
+          and NaPTAN claimed a breadth of live coverage the deployment does not have — on the one
+          page whose subject is that every number carries its provenance.
+        */}
         <ul className="home__sources">
           <li>Bus Open Data Service — timetables and vehicle locations outside London</li>
-          <li>Transport for London Unified API — London arrivals and disruptions</li>
           <li>NaPTAN — the canonical identity of every stop</li>
-          <li>National Highways and Street Manager — official road context</li>
-          <li>Environment Agency — official flood alerts and warnings</li>
           <li>Open-Meteo — observed and forecast weather</li>
-          <li>OpenStreetMap — road and walking network</li>
+          <li>OpenStreetMap — road network, walking network and named places</li>
+          <li>Transport for London Unified API — London arrivals and disruption notices</li>
         </ul>
+        <p className="muted small">
+          Written and not yet running against this deployment: National Highways and Street Manager
+          road context, Environment Agency flood warnings, and London live vehicle positions. They
+          are listed on the methodology page with what has and has not been observed.
+        </p>
         <Link to="/methodology">Read the data and methodology</Link>
       </section>
     </div>

@@ -14,6 +14,7 @@ import {
 import { apiClient } from "../lib/api.js";
 import { useFetch, useTicker } from "../lib/use-fetch.js";
 import { formatLondonTime } from "../lib/format.js";
+import { isFavourited, toggleFavourite } from "../lib/favourites.js";
 import "./RoutePage.css";
 
 /**
@@ -45,6 +46,29 @@ export function RoutePage() {
 
   const now = useTicker();
   const [selectedVariant, setSelectedVariant] = useState(0);
+  /*
+   * A route you can actually save.
+   *
+   * The Saved page said "Saved stops and routes" and only a stop could ever be saved — and a
+   * saved route, had one existed, linked to `/search`. A promise the product cannot keep is worse
+   * than a missing feature, so this is the feature rather than the removal of the sentence.
+   */
+  const [savedState, setSavedState] = useState<{ routeId: string | null; saved: boolean }>({
+    routeId: null,
+    saved: false,
+  });
+  const [storageBlocked, setStorageBlocked] = useState(false);
+  /*
+   * Adjusted during render rather than in an effect, the way the stop page does it.
+   *
+   * Local storage is not an external system to synchronise with — it is read synchronously and
+   * the answer is known before the first paint. An effect would render "Save this route" for a
+   * frame and then correct itself, which is a flicker on a route the reader has already saved.
+   */
+  if (routeId.length > 0 && savedState.routeId !== routeId) {
+    setSavedState({ routeId, saved: isFavourited("route", routeId) });
+  }
+  const saved = savedState.saved;
 
   const ageSeconds = useMemo(() => {
     if (!response?.meta.observedAt) return null;
@@ -87,6 +111,35 @@ export function RoutePage() {
         </div>
         <DataAge seconds={ageSeconds} />
       </header>
+
+      <div className="route-page__actions">
+        <button
+          type="button"
+          aria-pressed={saved}
+          className={saved ? "button-primary" : ""}
+          onClick={() => {
+            const stored = toggleFavourite({
+              kind: "route",
+              // The published service id, so the Saved page can open the route rather than
+              // searching for its number and hoping.
+              id: route.id,
+              title: `Route ${route.publicName}`,
+              ...(operator ? { subtitle: operator.name } : {}),
+            });
+            setStorageBlocked(!stored);
+            setSavedState({ routeId: route.id, saved: isFavourited("route", route.id) });
+          }}
+        >
+          {saved ? "Saved" : "Save this route"}
+        </button>
+      </div>
+
+      {storageBlocked && (
+        <p className="route-page__storage-note small muted" role="status">
+          We could not save this route on this device. Saving needs site data to be allowed, and
+          nothing is sent to us either way.
+        </p>
+      )}
 
       <section aria-labelledby="route-live-heading" className="route-page__section">
         <h2 id="route-live-heading">Buses running now</h2>
