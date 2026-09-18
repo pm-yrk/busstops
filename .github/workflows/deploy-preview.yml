@@ -473,15 +473,18 @@ jobs:
           if-no-files-found: ignore
 
       # -------------------------------------------------------------- verify
-      # Stop at a failed bootstrap rather than carrying on.
+      # Carry on past a failed bootstrap, having fixed the reason not to.
       #
-      # This used to continue so a failed bootstrap did not throw away the evidence that the
-      # deployment itself was sound. It cost more than it gave: the later steps' output pushed the
-      # bootstrap's own error out of the retrievable end of the log, and diagnosing it took an
-      # extra fifteen-minute cycle each time. The deployment evidence is worth less than knowing
-      # why the data did not publish, and a passing smoke test is available from any green run.
+      # These steps were gated on the bootstrap because the later steps' output pushed the
+      # bootstrap's own error out of the retrievable end of the log, and diagnosing it cost an
+      # extra fifteen-minute cycle each time. That reason was real, and the answer is to reprint
+      # the bootstrap's outcome at the end of the job with the other reprints, not to throw the
+      # rest of the evidence away: the index is written last and atomically, so a bootstrap that
+      # dies leaves the previous artifact current and the deployment in a known-good state. A
+      # two-hour run that produced nothing at all, about a deployment that was working, is the
+      # more expensive mistake.
       - name: Wait for the Pages deployment to serve
-        if: ${{ !cancelled() && steps.bootstrap.outcome != 'failure' && steps.pages.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.pages.outcome == 'success' }}
         run: |
           for attempt in 1 2 3 4 5 6 7 8 9 10; do
             CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 \
@@ -497,20 +500,27 @@ jobs:
           exit 1
 
       - name: Smoke test the real deployment
-        if: ${{ !cancelled() && steps.bootstrap.outcome != 'failure' && steps.pages.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.pages.outcome == 'success' }}
         run: node scripts/smoke-test.mjs "${{ steps.pages.outputs.url }}" "${{ steps.worker.outputs.url }}"
 
       # Separate from the smoke test on purpose. The smoke test asserts the deployment is sound
       # whatever the upstreams are doing; this asserts there is real national data behind it and
       # that a passenger can reach it.
       #
-      # It runs whenever the bootstrap did not fail, not only when it ran. The question is whether
-      # real data is reachable through this deployment, and a bucket filled by an earlier run
-      # answers it just as well — skipping the check on a re-deploy only meant the run that
-      # changed the frontend was the one run with no evidence behind it.
+      # It runs whenever the Pages deploy worked, including when the bootstrap failed. The question
+      # is whether real data is reachable through this deployment, and a bucket filled by an
+      # earlier run answers it just as well — skipping the check on a re-deploy only meant the run
+      # that changed the frontend was the one run with no evidence behind it.
+      #
+      # A failed bootstrap used to skip this and the visual sweep both, which is the same mistake
+      # in a more expensive form: the index is written last and atomically, so a bootstrap that
+      # dies leaves the *previous* artifact current and the deployment in a known-good state. The
+      # cost of skipping was a two-hour run that produced no evidence whatever, about a deployment
+      # that was working. The bootstrap's own outcome is printed alongside, so an older artifact is
+      # never mistaken for a new one.
       - name: Verify real data through the deployed API
         id: verify
-        if: ${{ !cancelled() && steps.bootstrap.outcome != 'failure' && steps.pages.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.pages.outcome == 'success' }}
         run: |
           set -o pipefail
           node scripts/verify-deployment.mjs \
@@ -533,7 +543,7 @@ jobs:
       # whose entire purpose was to photograph the deployed map produced no photographs of it.
       - name: Look at the deployed preview
         id: visual
-        if: ${{ always() && steps.bootstrap.outcome != 'failure' && steps.pages.outcome == 'success' }}
+        if: ${{ always() && steps.pages.outcome == 'success' }}
         # The API URL as well, so the sweep can find a real vehicle to follow: a bus on the map is
         # a picture with a label rather than a link, so the vehicle page needs a reference, and
         # inventing one would look at the not-found state instead of the page.
@@ -558,6 +568,23 @@ jobs:
       # browser install whose progress bars are a hundred lines, and the log is only retrievable
       # from the tail. The artifact carries the same JSON and its storage host is refused by the
       # egress proxy. A report nobody can read is not a report.
+      # First of the reprints, because a failed bootstrap is the thing most likely to explain
+      # everything below it — and because the gate that used to keep it readable is gone.
+      - name: Bootstrap report, where the log can reach it
+        if: ${{ always() && inputs.bootstrap_data }}
+        run: |
+          echo "--- bootstrap outcome (repeated at end of job) ---"
+          echo "step outcome: ${{ steps.bootstrap.outcome }}"
+          cat build-report.json 2>/dev/null || echo "no build-report.json was written"
+          if [ "${{ steps.bootstrap.outcome }}" != "success" ]; then
+            echo "--- last 40 lines from the pipeline ---"
+            tail -40 bootstrap.log 2>/dev/null || echo "no bootstrap.log was written"
+            echo "Everything below this line was measured against the PREVIOUS artifact:"
+            echo "the index is written last, so a bootstrap that did not publish leaves the"
+            echo "previous one current. Do not read it as evidence about this build's data."
+          fi
+          echo "--- end bootstrap outcome ---"
+
       - name: Retention report, where the log can reach it
         if: ${{ always() && inputs.prune_artifacts != 'skip' }}
         run: |
