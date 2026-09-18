@@ -538,8 +538,10 @@ jobs:
         # a picture with a label rather than a link, so the vehicle page needs a reference, and
         # inventing one would look at the not-found state instead of the page.
         run: |
+          set -o pipefail
           node scripts/visual-qa.mjs \
-            "${{ steps.pages.outputs.url }}" visual-qa "${{ steps.worker.outputs.url }}"
+            "${{ steps.pages.outputs.url }}" visual-qa "${{ steps.worker.outputs.url }}" \
+            2>&1 | tee visual.log
 
       - name: Upload what it saw
         if: ${{ !cancelled() && steps.visual.outcome != 'skipped' }}
@@ -597,6 +599,19 @@ jobs:
           echo "--- verification failures (repeated at end of job) ---"
           grep -E "^\s*(FAIL|pass)" verify.log 2>/dev/null || echo "no verify.log was written"
           echo "--- end verification failures ---"
+
+      # The sweep runs two hundred lines before the end of the job, which is the only part of the
+      # log that can be retrieved — so what it found about the stop, route, operator, Saved and Pro
+      # pages has been written and never read. Failures first, then the count, so a clean sweep is
+      # one line and a bad one is the list.
+      - name: What the sweep actually saw
+        if: ${{ always() && steps.visual.outcome != 'skipped' }}
+        run: |
+          echo "--- visual sweep failures (repeated at end of job) ---"
+          grep -E "^\s*FAIL" visual.log 2>/dev/null || echo "no FAIL lines"
+          echo "--- visual sweep totals ---"
+          grep -cE "^\s*pass" visual.log 2>/dev/null || echo "no visual.log was written"
+          echo "--- end visual sweep ---"
 
       - name: Summary
         if: always()
