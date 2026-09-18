@@ -78,6 +78,18 @@ function gib(bytes: number): string {
 }
 
 async function main(): Promise<number> {
+  /*
+   * The clock starts here, not after the inventory.
+   *
+   * The budget was measured from the start of the *delete loop*, and the listing that precedes it
+   * is unbounded: `listDetailed` follows the cursor over every object under the prefix, which
+   * after a national rebuild is tens of thousands across dozens of paginated calls. Run 45 spent
+   * over forty minutes in this step against a thirty-five minute budget and was killed by the
+   * workflow's own cap — which is the failure this budget exists to replace, arrived at through
+   * the one phase it did not cover.
+   */
+  const startedAt = Date.now();
+  const deadline = startedAt + TIME_BUDGET_MS;
   const configured = r2StoreFromEnv(process.env);
   if (!configured.ok) {
     report({ outcome: "not_configured", missing: configured.missing, deleted: 0 });
@@ -138,6 +150,7 @@ async function main(): Promise<number> {
    * answer, which would make a live version look absent.
    */
   let inventory: StoredObject[];
+  const listBegan = Date.now();
   try {
     inventory = await store.listDetailed!(PREFIX);
   } catch (error) {
@@ -149,6 +162,8 @@ async function main(): Promise<number> {
     console.error("::error::The bucket could not be listed completely, so nothing is deleted.");
     return 1;
   }
+
+  const listMs = Date.now() - listBegan;
 
   const plan = planNetworkPrune(inventory, {
     liveVersion: manifest.version,
@@ -181,6 +196,8 @@ async function main(): Promise<number> {
     bytesBefore: plan.bytesBefore,
     bytesAfter: plan.bytesAfter,
     freeStorageBytes: FREE_STORAGE_BYTES,
+    /** How long the inventory took, which is the phase the budget used not to cover. */
+    listMs,
     withinFreeStorageBefore: plan.bytesBefore <= FREE_STORAGE_BYTES,
     withinFreeStorageAfter: plan.bytesAfter <= FREE_STORAGE_BYTES,
     deleted: 0,
@@ -205,12 +222,30 @@ async function main(): Promise<number> {
     return 0;
   }
 
+  /*
+   * If the listing took the whole budget, the plan is reported and nothing is deleted.
+   *
+   * Housekeeping must never be the reason a deploy run has no verification, so this exits zero:
+   * the next pass resumes from the oldest version left, and the report says where the time went
+   * rather than leaving a step that was killed mid-loop with nothing to show for it.
+   */
+  if (Date.now() >= deadline) {
+    summary.outcome = "time_spent_listing";
+    summary.deleted = 0;
+    summary.removableObjects = doomed.length;
+    summary.remainingAfterRun = doomed.length;
+    console.error(
+      `::warning::Listing ${inventory.length} object(s) took ${Math.round(listMs / 1000)}s of a ` +
+        `${Math.round(TIME_BUDGET_MS / 1000)}s budget, so nothing was deleted this pass.`,
+    );
+    report(summary);
+    return 0;
+  }
+
   const batch = doomed.slice(0, MAX_DELETES_PER_RUN);
   const failures: string[] = [];
   let deleted = 0;
-  const startedAt = Date.now();
-
-  const deadline = startedAt + TIME_BUDGET_MS;
+  const deletingFrom = Date.now();
   let ranOutOfTime = false;
 
   await mapWithConcurrency(batch, DELETE_CONCURRENCY, async (key) => {
@@ -226,7 +261,7 @@ async function main(): Promise<number> {
     }
   });
 
-  const seconds = Math.max(0.001, (Date.now() - startedAt) / 1000);
+  const seconds = Math.max(0.001, (Date.now() - deletingFrom) / 1000);
   summary.deleted = deleted;
   summary.deletionFailures = failures.slice(0, 10);
   summary.removableObjects = doomed.length;
