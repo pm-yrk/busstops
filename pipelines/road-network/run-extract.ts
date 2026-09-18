@@ -17,7 +17,7 @@
  */
 
 import { writeFileSync } from "node:fs";
-import { OVERPASS_URL, OSM_ATTRIBUTION, overpassQuery } from "@busstops/adapters";
+import { OVERPASS_HEADERS, OVERPASS_URL, OSM_ATTRIBUTION, overpassQuery } from "@busstops/adapters";
 import { ArtifactStore, SourceClient, r2StoreFromEnv } from "@busstops/pipeline-core";
 import {
   ROAD_AREAS,
@@ -74,7 +74,7 @@ async function main(): Promise<number> {
        */
       const payload = await client.fetchJson<unknown>(
         `${OVERPASS_URL}?data=${encodeURIComponent(query)}`,
-        { timeoutMs: QUERY_TIMEOUT_MS, maxAttempts: 3 },
+        { timeoutMs: QUERY_TIMEOUT_MS, maxAttempts: 3, headers: OVERPASS_HEADERS },
       );
       const extracted = segmentsFromOverpass(payload, {
         retrievedAt: startedAt.toISOString(),

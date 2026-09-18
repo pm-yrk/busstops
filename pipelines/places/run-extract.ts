@@ -14,7 +14,7 @@
  */
 
 import { writeFileSync } from "node:fs";
-import { OVERPASS_URL, OSM_ATTRIBUTION } from "@busstops/adapters";
+import { OVERPASS_HEADERS, OVERPASS_URL, OSM_ATTRIBUTION } from "@busstops/adapters";
 import { ArtifactStore, SourceClient, r2StoreFromEnv } from "@busstops/pipeline-core";
 import { ROAD_AREAS } from "@busstops/pipeline-road-network";
 import {
@@ -56,7 +56,7 @@ async function main(): Promise<number> {
     try {
       const payload = await client.fetchJson<unknown>(
         `${OVERPASS_URL}?data=${encodeURIComponent(placesQuery(area.bbox))}`,
-        { timeoutMs: QUERY_TIMEOUT_MS, maxAttempts: 3 },
+        { timeoutMs: QUERY_TIMEOUT_MS, maxAttempts: 3, headers: OVERPASS_HEADERS },
       );
       const extracted = placesFromOverpass(payload);
       // Areas overlap; the id is derived from the OSM element, so a second sighting is the same

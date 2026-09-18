@@ -117,6 +117,9 @@ const ROUTE_STOP_READ_CHARS = 4 * 1024 * 1024;
 const JOURNEY_BUDGET_MS = 6_000;
 const JOURNEY_STOP_READ_CHARS = 5 * 1024 * 1024;
 
+/** The same clock every other read has. "Stops near me" is one tile's worth of question. */
+const NEARBY_BUDGET_MS = 1_500;
+
 const LIVE_BBOX_SNAP_DEGREES = 0.25;
 
 /** Snapped outward, so the box still contains everything it contained before. */
@@ -450,7 +453,25 @@ router.get("/v1/map", async (_request, { env, url }) => {
    * before the stop-routes family existed. Neither is worth a four-megabyte read when there is
    * nothing to match — a viewport with no live vehicles skips it entirely.
    */
-  const needsGeometry = !stopRoutes.available || (liveObservations?.observations.length ?? 0) > 0;
+  /*
+   * Geometry only for a bus we cannot otherwise name.
+   *
+   * This was "are there any vehicles", which in a city is always yes — so the map went on reading
+   * three mebibytes of pattern tiles on top of its stops and its stop-routes, and run 44 answered
+   * error 1102 on the request either side of the one that reported `12.01 MiB decoded, 26445
+   * record(s)`. More was being decoded than before the index existed, which is the opposite of
+   * what it was for.
+   *
+   * A SIRI-VM record carries the line name on the front of the bus, and that is enough to draw a
+   * marker and — through this viewport's own services — to identify the route. Matching against
+   * shapes is the fallback for a feed that publishes no line name, so it is read when there is a
+   * bus in that state and not otherwise.
+   */
+  const unnamedVehicles = (liveObservations?.observations ?? []).filter(
+    (observation) =>
+      !liveObservations?.journeyContext.get(observation.vehicleRef)?.publishedLineName,
+  ).length;
+  const needsGeometry = !stopRoutes.available || unnamedVehicles > 0;
   const enrichment =
     network && needsGeometry
       ? await ledger.stage("patterns", () =>
@@ -1760,8 +1781,14 @@ router.get("/v1/nearby", async (_request, { env, url }) => {
     Math.max(100, Number(url.searchParams.get("radius") ?? "800")),
   );
 
-  // Read from the search tiles around the point, not from a national index.
-  const found = network ? await network.nearby({ lat, lon }, { radiusMetres, limit: 25 }) : null;
+  // Read from the search tiles around the point, not from a national index, and on a ledger —
+  // this was the last read on the reader with no budget on it, and run 44 answered 1102 for it.
+  const nearbyLedger = new ReadLedger(NEARBY_BUDGET_MS);
+  const found = network
+    ? await nearbyLedger.stage("search-tiles", () =>
+        network!.nearby({ lat, lon }, { radiusMetres, limit: 25 }, Date.now(), nearbyLedger),
+      )
+    : null;
   if (!found) {
     return errorResponse(
       "upstream_unavailable",
@@ -1780,6 +1807,7 @@ router.get("/v1/nearby", async (_request, { env, url }) => {
         observedAt: found.builtAt,
         coverage: 1,
         governorState: state,
+        diagnostics: { ...nearbyLedger.toJSON() },
         now: new Date(),
         safeMode: safeModeActive(state),
       }),

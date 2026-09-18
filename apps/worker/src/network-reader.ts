@@ -136,6 +136,16 @@ const MAX_PATTERN_REQUEST_CHARS = 3 * 1024 * 1024;
  */
 const MAX_SEARCH_BUCKETS_PER_QUERY = 12;
 
+/**
+ * How much search-tile text a "stops near me" answers from.
+ *
+ * Search entries are filed on the stop grid, so a quarter-degree tile in a city holds tens of
+ * thousands of them — all decoded to answer a question about eight hundred metres, which is what
+ * put `nearby` over the limit in run 44. Five mebibytes is the same cap the map's stops get,
+ * because it is the same shape of question asked of the same grid.
+ */
+const NEARBY_READ_CHARS = 5 * 1024 * 1024;
+
 /** The most tiles read at once, once their size is known. */
 const TILE_READ_BATCH = 6;
 
@@ -147,6 +157,19 @@ const TILE_READ_BATCH = 6;
  * the first check runs.
  */
 const FIRST_TILE_BATCH = 2;
+
+/**
+ * The pattern index reads wider, because its objects are a different size of thing.
+ *
+ * A tile is megabytes and the first round trip is the one no budget can undo. A pattern-index
+ * bucket carries stop sequences and no geometry, so it is measured in tens of kilobytes — and a
+ * corridor's ninety patterns hash across ninety buckets. Reading those two at a time is
+ * forty-five round trips of pure latency: run 44 planned Leeds to Leeds Bradford Airport
+ * correctly and spent 5,411ms of a 6,000ms budget doing exactly that. The byte budget still
+ * decides when to stop; this decides how many small things are asked for at once.
+ */
+const FIRST_PATTERN_INDEX_BATCH = 12;
+const PATTERN_INDEX_BATCH = 24;
 
 const INDEX_TTL_MS = 5 * 60 * 1000;
 
@@ -814,7 +837,7 @@ export class NetworkReader {
      * can touch a lot of them, and "small times many" is how the last two limits were reached.
      */
     let start = 0;
-    let batchSize = FIRST_TILE_BATCH;
+    let batchSize = FIRST_PATTERN_INDEX_BATCH;
     let chars = 0;
     let read = 0;
 
@@ -868,7 +891,7 @@ export class NetworkReader {
         complete = false;
         break;
       }
-      batchSize = Math.max(1, Math.min(TILE_READ_BATCH, affordable));
+      batchSize = Math.max(1, Math.min(PATTERN_INDEX_BATCH, affordable));
     }
 
     ledger?.count({ patterns: patterns.size });
@@ -1148,16 +1171,27 @@ export class NetworkReader {
     coordinate: Coordinate,
     options: { radiusMetres: number; limit: number },
     now: number = Date.now(),
+    ledger?: ReadLedger,
   ): Promise<{ hits: SearchHit[]; builtAt: string } | null> {
     const index = await this.networkIndex(now);
     if (!index) return null;
 
+    /*
+     * Bounded, like every other read on this class.
+     *
+     * This was the last one that was not, and it is on the stop grid: a quarter-degree tile in a
+     * city holds tens of thousands of entries, all of which had to be decoded to answer a question
+     * about eight hundred metres. Run 44 answered error 1102 on `nearby` for a real point. The cap
+     * is the same one the map's stops get, because it is the same shape of question.
+     */
     const entries = await this.readTiles<SearchIndexEntry>(
       searchTileDataset,
       searchTilesForBoundingBox(boxAround(coordinate, options.radiusMetres)),
       index.searchTiles,
       index.version,
       now,
+      NEARBY_READ_CHARS,
+      ledger ? { ledger, family: "search", budgetReason: "nearby_read_budget" } : undefined,
     );
 
     const hits = nearbyStops(
