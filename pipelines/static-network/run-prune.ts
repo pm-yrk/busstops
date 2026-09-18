@@ -83,10 +83,10 @@ async function main(): Promise<number> {
    *
    * The budget was measured from the start of the *delete loop*, and the listing that precedes it
    * is unbounded: `listDetailed` follows the cursor over every object under the prefix, which
-   * after a national rebuild is tens of thousands across dozens of paginated calls. Run 45 spent
-   * over forty minutes in this step against a thirty-five minute budget and was killed by the
-   * workflow's own cap — which is the failure this budget exists to replace, arrived at through
-   * the one phase it did not cover.
+   * after a national rebuild is tens of thousands across dozens of paginated calls. So the step's
+   * wall time is the listing plus the budget rather than the budget — which in run 45 was heading
+   * for the workflow's own forty-five minute cap instead of stopping at thirty-five, and being
+   * killed by that cap is the failure this budget exists to replace.
    */
   const startedAt = Date.now();
   const deadline = startedAt + TIME_BUDGET_MS;

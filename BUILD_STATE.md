@@ -39,10 +39,13 @@ which helps under either reading.
 
 **The retention budget did not cover the phase that was slow.** The deadline was measured from the
 start of the delete loop; the listing before it follows the cursor over every object under the
-prefix, which after a national rebuild is tens of thousands. Run 45 spent over forty minutes there
-against a thirty-five minute budget and was killed by the workflow's cap — the exact failure the
-budget exists to replace, reached through the one phase it did not cover. The clock starts at the
-process now, and a listing that spends the budget reports the plan and deletes nothing.
+prefix, which after a national rebuild is tens of thousands. So the step's wall time is the listing
+_plus_ the budget, and in run 45 that was heading for the workflow's forty-five minute cap rather
+than stopping at thirty-five — the failure the budget exists to prevent, reached through the one
+phase it did not cover. (The first version of this note said the step had already passed forty
+minutes. It had not: it was thirty-four minutes in when I wrote it, and I had misread the clock.
+The defect is real; the number was wrong.) The clock starts at the process now, and a listing that
+spends the budget reports the plan and deletes nothing.
 
 ### The weather vignette, redrawn (2026-09-18)
 
