@@ -67,6 +67,15 @@ const PAGES = [
   { name: "live", path: "/live" },
   { name: "live-york", path: `/live?bbox=${encodeURIComponent(YORK_BBOX)}` },
   { name: "search", path: "/search" },
+  /*
+   * A search with something in it, which no sweep had ever run.
+   *
+   * `/search` on its own photographs a form. The defect this product actually had was in the
+   * results: a route or an operator linked to `/search?q=<its own title>` — back to the same page
+   * with the same query, a loop that read as a broken link. That is only visible with results on
+   * the screen, so the sweep now puts some there and follows one.
+   */
+  { name: "search-results", path: `/search?q=${encodeURIComponent("Leeds")}` },
   { name: "journey", path: "/journey" },
   { name: "disruptions", path: "/disruptions" },
   { name: "saved", path: "/saved" },
@@ -779,6 +788,58 @@ for (const size of WIDTHS) {
        * about a board it never managed to read. So the check waits for the lookup to settle and
        * then insists the panel says which of the three it is.
        */
+      if (target.name === "search-results") {
+        const results = await page.evaluate(() => {
+          const items = [...document.querySelectorAll(".search-page__result")];
+          return items.map((item) => ({
+            title: item.querySelector(".search-page__result-title")?.textContent?.trim() ?? "",
+            kind: item.querySelector(".lozenge")?.textContent?.trim() ?? "",
+            href: item.querySelector("a.search-page__result-link")?.getAttribute("href") ?? "",
+          }));
+        });
+
+        record(
+          `${size.name}/search-results finds something for a real place name`,
+          results.length > 0,
+          results.length === 0
+            ? "no results for Leeds"
+            : `${results.length} result(s): ${results
+                .slice(0, 4)
+                .map((result) => `${result.title} [${result.kind}]`)
+                .join(", ")}`,
+        );
+
+        /*
+         * The loop, as a check. A result whose link is a search for its own title is the exact
+         * shape of the defect, and it is cheaper to assert than to photograph.
+         */
+        const loops = results.filter((result) => result.href.startsWith("/search"));
+        record(
+          `${size.name}/search-results never links a result back to the search page`,
+          loops.length === 0,
+          loops.length === 0
+            ? "every result links to its own page"
+            : loops.map((result) => `${result.title} -> ${result.href}`).join(", "),
+        );
+
+        if (results.length > 0) {
+          const first = results[0];
+          await page.locator("a.search-page__result-link").first().click();
+          await page.waitForLoadState("networkidle", { timeout: 15_000 }).catch(() => {});
+          const landed = await page.evaluate(() => ({
+            path: window.location.pathname,
+            heading: document.querySelector("h1")?.textContent?.trim() ?? "",
+            notFound: document.body.textContent?.includes("We could not find that page") ?? false,
+          }));
+          record(
+            `${size.name}/search-results opens the thing it found`,
+            !landed.path.startsWith("/search") && !landed.notFound && landed.heading.length > 0,
+            `${first.title} [${first.kind}] -> ${landed.path} (${landed.heading || "no heading"})`,
+          );
+          await page.goBack().catch(() => {});
+        }
+      }
+
       if (target.name === "vehicle") {
         const trigger = page.locator(".vehicle-page__stopped-trigger");
         if ((await trigger.count()) > 0) {
