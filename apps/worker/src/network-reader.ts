@@ -196,27 +196,41 @@ const PATTERN_INDEX_BATCH = 96;
 const INDEX_TTL_MS = 5 * 60 * 1000;
 
 /**
- * Whether a raw stop line is one of the ones being looked for, without parsing it.
+ * Whether one record in a shard is wanted, decided without building the line it sits on.
  *
- * Testing every wanted id against every line would be a hundred substring searches per line over
- * tens of thousands of lines — more work than the parse it replaces. So the line's own keys are
- * pulled out once by position and tested against a set: two scans and two lookups, whatever the
- * size of the request.
+ * Deliberately takes the whole body and a window into it rather than a string. Splitting a
+ * four-megabyte tile on newlines allocates forty thousand substrings and copies the entire body
+ * to do it — before a single one has been looked at — so a filter handed finished lines has
+ * already paid most of the cost it exists to avoid. This reads inside the original string and
+ * slices only the short values it compares.
  *
- * Matching on `"id":"` rather than on `id` is what keeps `"stopAreaId":"…"` out of it.
+ * Testing every wanted id against every line would be the other mistake: a hundred substring
+ * searches per line over forty thousand lines is more work than the parse it replaces. So the
+ * record's own keys are pulled out by position and tested against a set — two bounded scans and
+ * two lookups, whatever the size of the request.
  */
-function valueOf(line: string, field: string): string | null {
-  const at = line.indexOf(`"${field}":"`);
-  if (at < 0) return null;
-  const from = at + field.length + 4;
-  const to = line.indexOf('"', from);
-  return to < 0 ? null : line.slice(from, to);
+type LineFilter = (body: string, start: number, end: number) => boolean;
+
+function valueAt(body: string, start: number, end: number, field: string): string | null {
+  const needle = `"${field}":"`;
+  const at = body.indexOf(needle, start);
+  // Bounded to this record: without the check, a field absent here is found in the next one.
+  if (at < 0 || at >= end) return null;
+  const from = at + needle.length;
+  const to = body.indexOf('"', from);
+  return to < 0 || to > end ? null : body.slice(from, to);
 }
 
-function hasWantedKey(line: string, wanted: ReadonlySet<string>): boolean {
-  const id = valueOf(line, "id");
+/** Matching on `"id":"` rather than on `id` is what keeps `"stopAreaId":"…"` out of it. */
+function hasWantedKey(
+  body: string,
+  start: number,
+  end: number,
+  wanted: ReadonlySet<string>,
+): boolean {
+  const id = valueAt(body, start, end, "id");
   if (id !== null && wanted.has(id)) return true;
-  const atco = valueOf(line, "atcoCode");
+  const atco = valueAt(body, start, end, "atcoCode");
   return atco !== null && wanted.has(atco);
 }
 
@@ -329,7 +343,7 @@ export class NetworkReader {
      * next request's question with a tile that is missing almost all of it — a wrong answer, not a
      * slow one. It will still *use* a full entry that is already there.
      */
-    keep?: (line: string) => boolean,
+    keep?: LineFilter,
   ): Promise<{ records: T[]; chars: number }> {
     const key = `${version}:${dataset}`;
     const cached = this.shards.get(key);
@@ -353,11 +367,25 @@ export class NetworkReader {
     }
 
     const records: T[] = [];
-    if (raw !== null) {
+    if (raw !== null && keep) {
+      /*
+       * Walked rather than split. `split` would copy the whole body into forty thousand
+       * substrings before the filter saw any of them, which is the allocation this path exists to
+       * avoid; only the records that survive the test are ever built.
+       */
+      for (let start = 0; start < raw.length;) {
+        const newline = raw.indexOf("\n", start);
+        const end = newline < 0 ? raw.length : newline;
+        if (end > start && keep(raw, start, end)) {
+          records.push(JSON.parse(raw.slice(start, end)) as T);
+        }
+        if (newline < 0) break;
+        start = newline + 1;
+      }
+    } else if (raw !== null) {
+      // No filter: every record is wanted, so the split costs nothing that is not needed anyway.
       for (const line of raw.split("\n")) {
-        if (line.length === 0) continue;
-        if (keep && !keep(line)) continue;
-        records.push(JSON.parse(line) as T);
+        if (line.length > 0) records.push(JSON.parse(line) as T);
       }
     }
 
@@ -480,7 +508,7 @@ export class NetworkReader {
     budgetChars = this.requestChars,
     track?: ReadTrack,
     /** Passed through to the parse; see `readShardSized`. */
-    keep?: (line: string) => boolean,
+    keep?: LineFilter,
   ): Promise<{ records: T[]; truncated: boolean }> {
     // Only tiles the publish actually wrote are requested: asking for the rest would be a read
     // operation per empty tile, metered, for a guaranteed miss.
@@ -568,7 +596,7 @@ export class NetworkReader {
     now: number,
     budgetChars?: number,
     track?: ReadTrack,
-    keep?: (line: string) => boolean,
+    keep?: LineFilter,
   ): Promise<{ records: Stop[]; truncated: boolean }> {
     const result = await this.readTiles<Stop>(
       stopTileDataset,
@@ -863,7 +891,7 @@ export class NetworkReader {
      * is never built.
      */
     const wanted = new Set(keys);
-    const keep = (line: string) => hasWantedKey(line, wanted);
+    const keep: LineFilter = (body, start, end) => hasWantedKey(body, start, end, wanted);
 
     const result = await this.readStopTiles(
       tiles,

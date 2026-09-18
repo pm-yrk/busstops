@@ -838,6 +838,27 @@ describe("a route's stops", () => {
     expect(stops.chars).toBeGreaterThan(0);
   });
 
+  it("finds a record whose keys sit in a different order, and stops at the record's end", async () => {
+    /*
+     * The filter reads inside the tile's body rather than inside a finished line, so its window
+     * has to be the record's own. Without the bound, a record missing `atcoCode` finds the next
+     * record's — and the sequence would quietly acquire a stop that is not on the route.
+     */
+    const { reader, serviceId } = await publishedSprawl();
+    const patterns = await reader.patternsForService(serviceId);
+    const sequence = patterns.geometries[0]!.pattern.stopSequence;
+    // One stop in the middle, so there are records either side of it to be confused with.
+    const one = sequence[Math.floor(sequence.length / 2)]!;
+    const narrowed = patterns.geometries.map((geometry) => ({
+      ...geometry,
+      pattern: { ...geometry.pattern, stopSequence: [one] },
+    }));
+
+    const result = await reader.stopsForGeometries(narrowed);
+    expect(result.resolved).toBe(1);
+    expect([...result.stopsById.keys()]).toEqual([one]);
+  });
+
   it("does not poison the shared cache with one request's filtered slice", async () => {
     /*
      * The cache is shared by every request in the isolate. An entry holding one route's stops
