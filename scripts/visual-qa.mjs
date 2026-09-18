@@ -395,7 +395,26 @@ for (const size of WIDTHS) {
                 drawn: `${Math.round(box.width)}x${Math.round(box.height)}`,
                 scale: ground.naturalWidth ? box.width / ground.naturalWidth : 0,
                 complete: ground.complete && ground.naturalWidth > 0,
-                buses: shown.querySelectorAll(".street-scene__vehicle img").length,
+                /*
+                 * The traffic, wherever it is — which is not inside the composition.
+                 *
+                 * This counted `.street-scene__vehicle img` within `.street-scene__street`, and
+                 * the lanes are deliberately a *sibling* of it: the composition is exactly as
+                 * wide as the artwork and clips what overflows, so a bus confined to it drove
+                 * two thirds of the way across a desktop window and vanished. Moving the traffic
+                 * out is what lets a bus enter beyond one edge and leave beyond the other, and
+                 * this check had been reporting that fix as "0 vehicle frames" ever since.
+                 *
+                 * Scoped to the shown variant by its own suffix, so the hidden composition's
+                 * traffic is not counted instead.
+                 */
+                buses: (() => {
+                  const variant = shown.className.includes("--wide") ? "wide" : "tall";
+                  const traffic = document.querySelector(`.street-scene__traffic--${variant}`);
+                  return traffic
+                    ? traffic.querySelectorAll(".street-scene__vehicle img").length
+                    : 0;
+                })(),
               };
             })(),
           };
@@ -483,6 +502,8 @@ for (const size of WIDTHS) {
           return {
             hasCanvas: !!canvas,
             unavailable: !!unavailable,
+            // The page's own error state, which is a different thing from a missing map.
+            apiError: !!document.querySelector(".state-block--error"),
             zoom: instance ? Math.round(instance.getZoom() * 10) / 10 : null,
             scale: document.querySelector(".map-view")?.getAttribute("data-scale") ?? null,
             busesDrawn: painted(["vehicle-buses", "vehicle-pips"]),
@@ -526,12 +547,24 @@ for (const size of WIDTHS) {
         const tileHits = sink.tileResponses.filter((r) => r.status === 200).length;
         const tileErrors = sink.tileResponses.filter((r) => r.status >= 400);
 
+        /*
+         * Three outcomes, not two.
+         *
+         * This asked whether there was a canvas and no list-only fallback, and reported anything
+         * else as "canvas absent, list-only fallback not shown" — which run 51 produced when the
+         * API itself had failed and the page was showing its error state with a retry button.
+         * That reads as a blank screen and is not one; the page was being honest and the check
+         * could not see it. An API failure is a real failure, but it is the API's, and calling it
+         * a missing fallback sends the next person looking in the wrong place.
+         */
         record(
           `${size.name}/${target.name} renders a map rather than the fallback`,
-          map.hasCanvas && !map.unavailable,
-          `canvas ${map.hasCanvas ? "present" : "absent"}, list-only fallback ${
-            map.unavailable ? "shown" : "not shown"
-          }`,
+          map.hasCanvas ? !map.unavailable : map.apiError,
+          map.hasCanvas
+            ? `canvas present, list-only fallback ${map.unavailable ? "shown" : "not shown"}`
+            : map.apiError
+              ? "no canvas: the API failed and the page says so, with a retry"
+              : "canvas absent and nothing said about why",
         );
         record(
           `${size.name}/${target.name} basemap actually paints`,

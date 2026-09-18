@@ -168,6 +168,10 @@ export function MapView({
           // answer than a map that fails to load because one texture could not be made.
           if (data && !map.hasImage(icon.name)) map.addImage(icon.name, data, { pixelRatio: 1 });
         }
+        // Built here rather than fetched: the directional mark must not depend on a font.
+        if (!map.hasImage("direction-pip")) {
+          map.addImage("direction-pip", trianglePip(), { pixelRatio: 1, sdf: true });
+        }
         addSourcesAndLayers(map);
         setReady(true);
         setScale(scaleForZoom(map.getZoom()));
@@ -304,7 +308,85 @@ export function MapView({
  * Clustering is MapLibre's, so the counts are computed from the features actually present rather
  * than estimated: a cluster that says 34 is 34 buses. Nothing here invents a number.
  */
+/**
+ * A triangle, drawn as an image rather than as a character.
+ *
+ * `vehicle-pips` used `"text-field": "▲"`, and a symbol layer's text needs glyphs: the basemap has
+ * to serve a font, and MapLibre asks for its default stack unless told otherwise. On the
+ * deployment those requests 404 and the layer draws nothing — which is why the neighbourhood band
+ * showed no buses at all while the list beside it said a hundred and fifty-five. A local
+ * reproduction against a style with no glyphs shows the same: stops draw, buses do not.
+ *
+ * An icon needs no font. This is a 9x9 pixel triangle pointing up, built here so the map depends
+ * on nothing it did not bring with it, and rotated by `icon-rotate` exactly as the character was.
+ */
+const PIP_SIZE = 9;
+
+function trianglePip(): { width: number; height: number; data: Uint8Array } {
+  const data = new Uint8Array(PIP_SIZE * PIP_SIZE * 4);
+  for (let y = 0; y < PIP_SIZE; y += 1) {
+    // A solid triangle: the row's half-width grows with its distance from the apex.
+    const half = Math.floor((y * (PIP_SIZE - 1)) / (2 * (PIP_SIZE - 1)) + y / 2);
+    for (let x = 0; x < PIP_SIZE; x += 1) {
+      const middle = (PIP_SIZE - 1) / 2;
+      if (Math.abs(x - middle) > half) continue;
+      const at = (y * PIP_SIZE + x) * 4;
+      // White, so `icon-color` can tint it per feature the way the text colour used to.
+      data[at] = 255;
+      data[at + 1] = 255;
+      data[at + 2] = 255;
+      data[at + 3] = 255;
+    }
+  }
+  return { width: PIP_SIZE, height: PIP_SIZE, data };
+}
+
+/**
+ * The font the basemap itself uses, or none.
+ *
+ * Cluster counts and the route number on a bus are genuinely text, so they genuinely need glyphs
+ * — and the mistake was not asking for text, it was asking for it in MapLibre's default font,
+ * which the style does not serve. Rather than hard-coding a font name and hoping (the same guess
+ * in a different place), the layers borrow whatever stack the style's own labels already use.
+ * That is self-correcting: change the basemap and this follows it.
+ *
+ * Null when the style has no symbol layers at all, which is what a blank test style is. The
+ * layers then draw their icons and circles and skip their text, rather than failing to draw.
+ */
+export function basemapFontStack(map: MapLibreMap): string[] | null {
+  try {
+    for (const layer of map.getStyle()?.layers ?? []) {
+      if (layer.type !== "symbol") continue;
+      const font = (layer.layout as { "text-font"?: unknown } | undefined)?.["text-font"];
+      if (Array.isArray(font) && font.every((entry) => typeof entry === "string")) {
+        return font as string[];
+      }
+    }
+  } catch {
+    // A style that cannot be read is a style with no font to borrow.
+  }
+  return null;
+}
+
 function addSourcesAndLayers(map: MapLibreMap): void {
+  const font = basemapFontStack(map);
+  /**
+   * A cluster's number, only when there is a font to draw it with.
+   *
+   * Asking for text without a font is not a smaller version of asking for it — MapLibre requests
+   * its default stack, the basemap 404s, and the layer draws nothing. Where there is no font the
+   * count is simply omitted and the cluster circle stands alone, which is a legible map rather
+   * than a missing one.
+   */
+  const countLayout = (): Record<string, unknown> =>
+    font === null
+      ? {}
+      : {
+          "text-font": font,
+          "text-field": ["get", "point_count_abbreviated"],
+          "text-size": 12,
+          "text-allow-overlap": true,
+        };
   const empty = { type: "FeatureCollection" as const, features: [] };
 
   map.addSource(SOURCES.stops, {
@@ -344,11 +426,7 @@ function addSourcesAndLayers(map: MapLibreMap): void {
     type: "symbol",
     source: SOURCES.stops,
     filter: ["has", "point_count"],
-    layout: {
-      "text-field": ["get", "point_count_abbreviated"],
-      "text-size": 12,
-      "text-allow-overlap": true,
-    },
+    layout: countLayout(),
     paint: { "text-color": "#14110f" },
   });
 
@@ -369,11 +447,7 @@ function addSourcesAndLayers(map: MapLibreMap): void {
     type: "symbol",
     source: SOURCES.vehicles,
     filter: ["has", "point_count"],
-    layout: {
-      "text-field": ["get", "point_count_abbreviated"],
-      "text-size": 12,
-      "text-allow-overlap": true,
-    },
+    layout: countLayout(),
     paint: { "text-color": "#ffffff" },
   });
 
@@ -398,17 +472,16 @@ function addSourcesAndLayers(map: MapLibreMap): void {
     filter: ["!", ["has", "point_count"]],
     maxzoom: ZOOM.street,
     layout: {
-      // A triangle from the base style's own glyphs would need a font; a rotated square reads as
-      // a direction at this size and needs nothing.
-      "text-field": "▲",
-      "text-size": 11,
-      "text-rotate": ["coalesce", ["get", "bearing"], 0],
-      "text-allow-overlap": true,
-      "text-rotation-alignment": "map",
+      // An image, not a character: a symbol layer's text needs glyphs the basemap does not serve,
+      // and this layer drew nothing at all on the deployment because of it.
+      "icon-image": "direction-pip",
+      "icon-rotate": ["coalesce", ["get", "bearing"], 0],
+      "icon-allow-overlap": true,
+      "icon-rotation-alignment": "map",
     },
     paint: {
-      "text-color": ["case", ["get", "stale"], "#a49b90", "#e5242a"],
-      "text-opacity": ["case", ["==", ["get", "emphasis"], 1], 1, 0.35],
+      "icon-color": ["case", ["get", "stale"], "#a49b90", "#e5242a"],
+      "icon-opacity": ["case", ["==", ["get", "emphasis"], 1], 1, 0.35],
     },
   });
 
@@ -456,11 +529,18 @@ function addSourcesAndLayers(map: MapLibreMap): void {
     layout: {
       "icon-image": ["case", ["get", "stale"], "bus-amber", "bus-red"],
       "icon-allow-overlap": true,
-      "text-field": ["get", "route"],
-      "text-size": 11,
-      "text-offset": [0, -1.4],
-      "text-allow-overlap": false,
-      "text-optional": true,
+      ...(font === null
+        ? {}
+        : {
+            "text-font": font,
+            "text-field": ["get", "route"],
+            "text-size": 11,
+            "text-offset": [0, -1.4],
+            "text-allow-overlap": false,
+            // Optional already, so the bus draws with or without its number — but without a font
+            // the whole text is skipped rather than requested and 404ed.
+            "text-optional": true,
+          }),
     },
     paint: {
       "text-color": "#14110f",

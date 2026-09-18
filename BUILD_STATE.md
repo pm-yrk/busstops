@@ -4,6 +4,45 @@ Last updated: 2026-09-17 (live buses proved in the deployment; the national time
 
 ## Current status
 
+### Run 51's sweep: one real defect, two faults in the checking (2026-09-18)
+
+The extended sweep became readable for the first time in run 51
+([35315999539](https://github.com/pm-yrk/busstops/actions/runs/35315999539)) — 193 checks passing
+and a list of failures. Three of them were investigated locally. **One was the product and two
+were the sweep**, which is worth recording as plainly as the defect itself, because both wrong ones
+were reported as product failures first.
+
+**Real, and the cause is one line.** `0 bus(es) painted ... the list says 155`, at every width.
+`vehicle-pips` drew its directional mark with `"text-field": "▲"`, and a symbol layer's text needs
+glyphs: the basemap must serve a font, and MapLibre asks for its **default** stack unless told
+otherwise. The deployment's two unexplained 404s are those glyph requests. Reproduced locally
+against a style with no glyphs at all — stops drew, buses did not — and fixed by making the mark an
+image built in code (`addImage`, `icon-rotate`) so it depends on no font at all. Desktop went from
+`busesDrawn: 0` to `busesDrawn: 3` against a list of 3.
+
+The same fault was in three more layers, all of them P3 requirements: the two cluster counts
+("clustered live vehicle counts") and the route number on a bus at street zoom ("route numbers
+where known"). Those are genuinely text, so they genuinely need a font — and rather than hard-code
+a name and hope, which is the same guess in a different place, the layers now **borrow whatever
+stack the basemap's own labels use**. Change the basemap and the map follows it. Where a style has
+no symbol layers at all, the text is omitted and the circles and icons still draw.
+
+`tests/e2e/map-paints.spec.ts` holds it: every bus the list counts is on the map, at three widths,
+against a style with no glyphs.
+
+**Not real: "the passenger gets a blank screen."** The sweep reported `canvas absent, list-only
+fallback not shown` and that was read here as a blank page. The page was showing its error state
+with a retry, which is honest; the check knew two outcomes and there are three. It now separates a
+missing map from an API that failed and said so — a real failure either way, but the API's, and
+calling it a missing fallback sends the next person looking in the wrong place.
+
+**Not real: "the mobile hero shows no buses."** The check counted `.street-scene__vehicle img`
+inside `.street-scene__street`, and the traffic is deliberately a **sibling** of the composition —
+the composition is as wide as the artwork and clips what overflows, which is why a bus used to
+vanish two thirds of the way across a desktop window. The check had been reporting that fix as
+"0 vehicle frames" ever since. Measured locally after correcting it: **4 vehicle frames at
+desktop, tablet and phone.**
+
 ### Run 50 names the 1102: BODS times out and is retried three times (2026-09-18)
 
 The fetch/parse split answered it on the first run that carried it
