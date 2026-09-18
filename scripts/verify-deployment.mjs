@@ -1256,6 +1256,58 @@ await check("a journey can be planned across real timetable data", async () => {
   );
 });
 
+/*
+ * Real weather for a real stop, which is a promise the home page makes and nothing has checked.
+ *
+ * "See real weather artwork for the selected stop" is in the definition of done, and the only
+ * thing standing behind it so far is a component test against a fixture. The weather job
+ * publishes one answer per degree square, so a null here is a legitimate and common state — a
+ * square the job has not reached — and that is exactly why it has to be reported rather than
+ * asserted into existence. What is asserted is that a published answer is a usable one: the
+ * vignette needs a temperature, a condition and an attribution to draw anything at all.
+ */
+await check("a real stop carries real weather", async () => {
+  assert(observed.stop, "no stop was found by the earlier checks");
+  const { response, body, text } = await getJson(
+    `/v1/stops/${encodeURIComponent(observed.stop.id)}`,
+  );
+  assert(response.ok, `expected 2xx, got ${describe(response, body, text)}`);
+  const weather = body?.data?.weather ?? null;
+  if (weather === null) {
+    return (
+      `${observed.stop.name} has no weather published — the collector has not reached this ` +
+      "degree square, which is a coverage gap rather than a broken endpoint"
+    );
+  }
+
+  const now = weather.current;
+  assert(now, "the weather answer carries no current hour, so the vignette has nothing to draw");
+  for (const [field, value] of [
+    ["temperatureCelsius", now.temperatureCelsius],
+    ["apparentTemperatureCelsius", now.apparentTemperatureCelsius],
+    ["precipitationMm", now.precipitationMm],
+    ["windSpeedKph", now.windSpeedKph],
+  ]) {
+    assert(Number.isFinite(value), `the current hour has no ${field} to show`);
+  }
+  assert(typeof now.isDay === "boolean", "the weather does not say whether it is daylight");
+  assert(Number.isInteger(now.weatherCode), "the weather carries no condition code");
+  assert(
+    typeof weather.attribution === "string" && weather.attribution.length > 0,
+    "the weather is unattributed, which Open-Meteo's licence requires it not to be",
+  );
+  // The answer's own age, so a month-old reading cannot be shown as the weather now.
+  const ageMinutes = (Date.now() - Date.parse(weather.retrievedAt)) / 60_000;
+  assert(Number.isFinite(ageMinutes), "the weather does not say when it was retrieved");
+
+  return (
+    `${observed.stop.name}: ${now.temperatureCelsius}°C (feels ${now.apparentTemperatureCelsius}°C), ` +
+    `${now.precipitationMm}mm, wind ${now.windSpeedKph}kph, code ${now.weatherCode}, ` +
+    `${now.isDay ? "day" : "night"}; cell ${weather.cell} at ${weather.cellSizeDegrees}°, ` +
+    `retrieved ${Math.round(ageMinutes)} min ago, ${weather.next.length} hour(s) ahead`
+  );
+});
+
 await check("the source health endpoint reports on real sources", async () => {
   const { response, body } = await getJson("/v1/sources/health");
   assert(response.ok, `expected 2xx, got ${response.status}`);
