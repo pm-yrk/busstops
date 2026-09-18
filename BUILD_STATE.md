@@ -4,6 +4,44 @@ Last updated: 2026-09-17 (live buses proved in the deployment; the national time
 
 ## Current status
 
+### Run 52: bounding one caller bought nothing, and the index moves grid (2026-09-18)
+
+Run 52 ([35357930168](https://github.com/pm-yrk/busstops/actions/runs/35357930168)) ran in the
+afternoon peak and was **worse** than run 51, on a Worker that had not changed between them. The
+platform answered `/v1/map` on the first attempt of the first city, and took `/v1/search`,
+`/v1/nearby` and the London viewport down with it.
+
+**The reason is that the previous commit bounded route detail's live lookup and nothing else.**
+The map, the vehicle page and the live endpoint still called `vehiclesInBoundingBox` with no
+deadline, so they still got three attempts and two backoffs against a slow upstream. A request
+holding a four-second retry chain does not fail alone: `/v1/search` reads no live feed at all and
+died anyway, on the same isolate. **A fix that covers one caller covers none.** All four call sites
+are bounded now, and a test reads `index.ts` and fails on any call site that passes no deadline.
+
+The surviving map request corroborates the mechanism: `isolate req#2`, where earlier runs reported
+req#9 to req#20 by the same point in the verification. Isolates are being destroyed and replaced,
+which is what 1102 does.
+
+**The pattern index moves to the grid it is queried on.** Four runs measured the same ceiling:
+
+```
+run 47   112 of 197 patterns   91 buckets   12.23 MiB
+run 50   113 of 229 patterns   89 buckets   11.91 MiB
+run 52   116 of 231 patterns   90 buckets   11.96 MiB
+```
+
+The hashed buckets were the right idea aimed at the wrong question. A corridor wants the patterns
+along one strip of the country, and a hash scatters them across all 512 buckets — so the planner
+read a bucket per pattern and discarded almost all of each. The same rows filed by **where the
+pattern runs** put a corridor's patterns in the two or three tiles it crosses, where almost
+everything is wanted; run 48 measured the geometry version of that read at 4.21 MiB for 625
+patterns, and these are those patterns without their polylines.
+
+The hashed layout stays published and readable, because an artifact built before this existed has
+to keep working until it is rebuilt. **This is the one change that has genuinely required a
+national republish**, which is why run 53 carries `bootstrap_data: true` with retention applied
+first.
+
 ### Run 51's sweep: one real defect, two faults in the checking (2026-09-18)
 
 The extended sweep became readable for the first time in run 51
