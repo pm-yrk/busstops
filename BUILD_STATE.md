@@ -1,8 +1,50 @@
 # Bus Stops. Build State
 
-Last updated: 2026-09-18 (run 55: viewport filter cuts records 23,806 to 13,285; 1102 halves; the Bullring was a space)
+Last updated: 2026-09-18 (run 56: map records 23,806 to 788; all five landmarks resolve; 1102 now a cold-isolate failure)
 
 ## Current status
+
+### Run 56: 23,806 records become 788, and every landmark resolves (2026-09-18)
+
+Run 56 ([35406254385](https://github.com/pm-yrk/busstops/actions/runs/35406254385)) carried the
+stop-routes filter, the live-feed parse cache, the Bullring spacing fix and the station aliases.
+**321 sweep checks passed**, up from 300 and 202.
+
+**The parse-time filters, measured across three runs on the same viewport:**
+
+```
+run 54   7.00 MiB decoded;  23806 record(s)
+run 55   7.00 MiB decoded;  13285 record(s)   (stops filtered)
+run 56   7.00 MiB decoded;    788 record(s)   (stop-routes filtered too)
+```
+
+**Thirty times fewer objects built to answer the same question**, and `degraded: stop_routes_budget`
+is gone — the enrichment now completes instead of being cut off, so the stops carry their services
+without the budget talking it out of it.
+
+**Every landmark P7 names now resolves**, including the two that did not:
+
+```
+5 of 5 landmarks found — York Minster → York Minster; Leeds Station → Leeds;
+Manchester Arndale → Manchester Arndale; Bullring → Bull Ring;
+Bristol Temple Meads → Bristol Temple Meads
+```
+
+**The remaining 1102s are cold-isolate failures.** The map line reports `isolate req#1` and
+`national operators=0/services=0/places=0` — a fresh isolate, dying on its first request. Four
+endpoints lose: the London departure board, `/v1/nearby`, `/v1/map` at Leeds, and weather. That is
+a different failure from the warm-isolate one that has now gone, and it points at what a cold
+isolate has to build before it can answer anything.
+
+**Which is the national tables.** `readCurrent` hashes a whole multi-megabyte object and parses
+every record in it: services 13,593, places 3,178, operators 636. `servicesByIds` and
+`servicesForOperator` now make one pass over the text and parse only what is wanted, and the
+departure board, route, vehicle and operator pages all move across.
+
+**And `/v1/nearby` had the same shape in plain sight.** Its own comment says a quarter-degree tile
+"holds tens of thousands of entries, all of which had to be decoded to answer a question about
+eight hundred metres" — and the cap added in response bounds the _bytes_, not the parse. The radius
+box was already being computed to pick the tiles; it is now handed to the parse as well.
 
 ### Run 55: the filter works, the 1102 halves, and the Bullring was a space (2026-09-18)
 
