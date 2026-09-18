@@ -940,6 +940,56 @@ for (const size of WIDTHS) {
         }
       }
 
+      /*
+       * The two navigation paths nothing had ever followed.
+       *
+       * P4 names three: Map to Vehicle, Route to Vehicle, Vehicle to Route. The first is checked
+       * where the bus panel is opened, and its route link is checked for being an identifier
+       * rather than the number on the front. The other two had only ever been checked as markup —
+       * that a link was rendered — and the failure they actually had was the link resolving to
+       * "This link needs a map area", which is a page that renders perfectly and helps nobody. So
+       * both are clicked, and what they land on is read.
+       */
+      if (target.name === "vehicle" || target.name === "route") {
+        const selector =
+          target.name === "vehicle"
+            ? "a[href^='/routes/']"
+            : ".route-page__vehicles a[href^='/vehicles/']";
+        const link = page.locator(selector).first();
+        if ((await link.count()) > 0) {
+          const href = await link.getAttribute("href");
+          await link.click();
+          await page.waitForLoadState("networkidle", { timeout: 15_000 }).catch(() => {});
+          const landed = await page.evaluate(() => {
+            const body = document.body.textContent ?? "";
+            return {
+              path: window.location.pathname,
+              heading: document.querySelector("h1")?.textContent?.trim() ?? "",
+              needsViewport: body.includes("needs a map area"),
+              notFound: body.includes("could not find"),
+              errored: document.querySelector(".state-block--error") !== null,
+            };
+          });
+          record(
+            `${size.name}/${target.name} follows its ${target.name === "vehicle" ? "route" : "vehicle"} link to a real page`,
+            landed.heading.length > 0 &&
+              !landed.needsViewport &&
+              !landed.notFound &&
+              !landed.errored,
+            `${href} -> ${landed.path} (${landed.heading || "no heading"})` +
+              (landed.needsViewport ? "; asked for a map area" : "") +
+              (landed.notFound ? "; not found" : "") +
+              (landed.errored ? "; error state" : ""),
+          );
+          await page.goBack().catch(() => {});
+          await page.waitForLoadState("networkidle", { timeout: 15_000 }).catch(() => {});
+        } else {
+          console.log(
+            `        no ${target.name === "vehicle" ? "route" : "live vehicle"} link on this page right now`,
+          );
+        }
+      }
+
       if (sink.failedRequests.length > 0) {
         console.log(`        failed requests: ${sink.failedRequests.slice(0, 3).join(" | ")}`);
       }
