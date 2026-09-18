@@ -769,6 +769,82 @@ for (const size of WIDTHS) {
         }
       }
 
+      /*
+       * "Bus stopped?", which no sweep had ever opened.
+       *
+       * The panel is behind a button and gathers its own context — the other buses in the
+       * viewport, the board at the stop this one is heading for — so nothing about it is exercised
+       * by loading the page. Its whole purpose is to be honest about what it does not know, and
+       * the specific failure it is capable of is telling somebody "no other departures to suggest"
+       * about a board it never managed to read. So the check waits for the lookup to settle and
+       * then insists the panel says which of the three it is.
+       */
+      if (target.name === "vehicle") {
+        const trigger = page.locator(".vehicle-page__stopped-trigger");
+        if ((await trigger.count()) > 0) {
+          await trigger.first().click();
+          await page.locator(".bus-stopped").waitFor({ state: "visible", timeout: 10_000 });
+          // The lookup is two API calls; give it room, then read whatever it settled on.
+          await page
+            .locator(".bus-stopped__pending")
+            .waitFor({ state: "detached", timeout: 20_000 })
+            .catch(() => {
+              /* Still pending is itself a readable outcome, reported below. */
+            });
+
+          const stopped = await page.evaluate(() => {
+            const panel = document.querySelector(".bus-stopped");
+            if (!panel) return null;
+            const text = panel.textContent ?? "";
+            return {
+              pending: panel.querySelector(".bus-stopped__pending")?.textContent?.trim() ?? "",
+              retry: panel.querySelector(".bus-stopped__retry") !== null,
+              states: panel.querySelectorAll(".bus-stopped__states li").length,
+              services: panel.querySelectorAll(".bus-stopped__services li").length,
+              claimsNothingDue: /no other departures to suggest/i.test(text),
+              claimsBreakdown: /broken down|breakdown|cancelled|cancellation/i.test(text),
+              emergency: /999/.test(text),
+            };
+          });
+
+          const looking = stopped !== null && stopped.pending.length > 0;
+          record(
+            `${size.name}/vehicle opens Bus stopped? and lists what it can see`,
+            stopped !== null && stopped.states > 0 && stopped.emergency,
+            stopped === null
+              ? "the panel did not render"
+              : `${stopped.states} explanation(s), ${stopped.services} onward service(s)` +
+                  (looking ? `; still looking: ${stopped.pending}` : "") +
+                  (stopped.retry ? "; retry offered" : ""),
+          );
+          /*
+           * The empty-state lie, stated as its own check because it is the one this panel is
+           * capable of: "nothing is due" is a claim about a departure board, and it may only be
+           * made once the board has actually been read.
+           */
+          record(
+            `${size.name}/vehicle never says nothing is due about a board it could not read`,
+            stopped !== null && !(looking && stopped.claimsNothingDue),
+            stopped === null
+              ? "the panel did not render"
+              : looking
+                ? `pending (${stopped.pending}) and claimsNothingDue=${stopped.claimsNothingDue}`
+                : "the lookup settled before any claim was made",
+          );
+          record(
+            `${size.name}/vehicle never asserts a breakdown`,
+            stopped !== null && !stopped.claimsBreakdown,
+            stopped === null ? "the panel did not render" : "no breakdown or cancellation claimed",
+          );
+          await page.screenshot({
+            path: `${screenshotDir}/${size.name}-vehicle-bus-stopped.png`,
+            fullPage: true,
+          });
+        } else {
+          console.log("        no Bus stopped? trigger on this vehicle page");
+        }
+      }
+
       if (sink.failedRequests.length > 0) {
         console.log(`        failed requests: ${sink.failedRequests.slice(0, 3).join(" | ")}`);
       }

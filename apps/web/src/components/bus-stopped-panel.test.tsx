@@ -2,7 +2,7 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
-import type { VehicleState } from "@busstops/contracts";
+import type { Incident, VehicleState } from "@busstops/contracts";
 import { BusStoppedPanel } from "./BusStoppedPanel.js";
 
 const now = new Date("2026-09-03T09:00:00.000Z");
@@ -46,6 +46,74 @@ function renderPanel(props: Partial<Parameters<typeof BusStoppedPanel>[0]> = {})
     </MemoryRouter>,
   );
 }
+
+function officialIncident(): Incident {
+  return {
+    id: "00000000-0000-5000-8000-00000000dddd",
+    provenance: { source: "national_highways", retrievedAt: now.toISOString(), externalIds: [] },
+    ingestedAt: now.toISOString(),
+    qualityFlags: [],
+    type: "road_closure",
+    startedAt: now.toISOString(),
+    endedAt: null,
+    geometry: { corridorId: "corridor-1" },
+    affectedRouteIds: [],
+    affectedVehicleRefs: [],
+    severity: "elevated",
+    confidence: { level: "high", score: 0.9, reasons: [] },
+    evidence: [],
+    officialStatus: "official",
+    lifecycle: "active",
+    narrative: "A96 closed northbound for emergency repairs.",
+  };
+}
+
+describe("a lookup that has not landed is not an empty answer", () => {
+  it("does not say there are no departures while it is still looking", () => {
+    renderPanel({ contextState: "loading" });
+    expect(screen.queryByText(/no other departures to suggest/i)).toBeNull();
+    expect(screen.getByText(/looking for another way on/i)).toBeTruthy();
+  });
+
+  it("says the lookup failed rather than reporting nothing nearby", () => {
+    renderPanel({ contextState: "unavailable" });
+    expect(screen.queryByText(/no other departures to suggest/i)).toBeNull();
+    expect(screen.getByText(/could not look up other departures/i)).toBeTruthy();
+    expect(screen.getByText(/could not check what else is moving nearby/i)).toBeTruthy();
+  });
+
+  it("offers a retry only when the lookup actually failed", async () => {
+    const onRetryContext = vi.fn();
+    const { unmount } = renderPanel({ contextState: "unavailable", onRetryContext });
+    await userEvent.click(screen.getByRole("button", { name: /try again/i }));
+    expect(onRetryContext).toHaveBeenCalledTimes(1);
+    unmount();
+
+    renderPanel({ contextState: "loading", onRetryContext });
+    expect(screen.queryByRole("button", { name: /try again/i })).toBeNull();
+  });
+
+  it("withholds a claim about the traffic it has not looked at", () => {
+    // `otherVehiclesMoving: false` with nothing observed would otherwise read as congestion.
+    renderPanel({ contextState: "loading", otherVehiclesMoving: false, otherVehiclesObserved: 0 });
+    const text = document.body.textContent ?? "";
+    expect(text).not.toMatch(/also stationary/i);
+    expect(text).not.toMatch(/traffic in the area/i);
+  });
+
+  it("still shows an official incident, which arrives with the vehicle and not the lookup", () => {
+    renderPanel({
+      contextState: "loading",
+      incidents: [officialIncident()],
+    });
+    expect(screen.getByText(/A96 closed northbound/i)).toBeTruthy();
+  });
+
+  it("keeps saying nothing is due when it genuinely looked and found nothing", () => {
+    renderPanel({ contextState: "ready" });
+    expect(screen.getByText(/no other departures to suggest/i)).toBeTruthy();
+  });
+});
 
 describe("BusStoppedPanel", () => {
   it("never claims a breakdown or a cancellation", () => {

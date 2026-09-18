@@ -81,7 +81,7 @@ export function VehiclePage() {
    *
    * Behind the button, because none of it is worth fetching for somebody whose bus is fine.
    */
-  const [context, setContext] = useState<{
+  interface StoppedContext {
     peers: number;
     peersMoving: boolean | null;
     alternative: {
@@ -97,10 +97,33 @@ export function VehiclePage() {
       expectedTime: string;
       live: boolean;
     }>;
-  } | null>(null);
+  }
+
+  /** Bumped by "Try again", which is the only thing that re-runs a lookup that failed. */
+  const [contextAttempt, setContextAttempt] = useState(0);
+  /*
+   * The result carries the lookup it belongs to.
+   *
+   * "Still looking" has to be distinguishable from "looked and found nothing", and the obvious way
+   * — setting a loading flag as the effect starts — is a second render for a fact already on hand.
+   * Stamping the answer with its key means the three states are read off what is stored rather
+   * than tracked alongside it, and a stale answer from the previous viewport cannot be mistaken
+   * for this one's.
+   */
+  const [stored, setStored] = useState<{ key: string; context: StoppedContext | null } | null>(
+    null,
+  );
 
   const vehicleState = response?.data.vehicle ?? null;
   const nextStops = useMemo(() => response?.data.nextStops ?? [], [response]);
+
+  const contextKey = `${vehicleState?.vehicleRef ?? ""}|${
+    bbox ? `${bbox.west},${bbox.south},${bbox.east},${bbox.north}` : ""
+  }|${contextAttempt}`;
+  const settled = stored?.key === contextKey ? stored : null;
+  const context = settled?.context ?? null;
+  const contextState: "loading" | "ready" | "unavailable" =
+    settled === null ? "loading" : settled.context === null ? "unavailable" : "ready";
 
   useEffect(() => {
     if (!showStoppedPanel || !bbox || !vehicleState) return;
@@ -154,7 +177,7 @@ export function VehiclePage() {
             }));
         }
 
-        setContext({
+        const gathered: StoppedContext = {
           peers: peers.length,
           // Null when there is nothing nearby to compare against: zero buses is not evidence that
           // nothing is moving, and the panel reasons differently about the two.
@@ -170,11 +193,16 @@ export function VehiclePage() {
               }
             : null,
           nextServices,
-        });
+        };
+        setStored({ key: contextKey, context: gathered });
       } catch {
-        // The panel is help, not a promise. Failing to gather context leaves it saying what it
-        // does know rather than showing an error over a page that is working.
-        if (!controller.signal.aborted) setContext(null);
+        /*
+         * The panel is help, not a promise, so a failed lookup does not put an error over a page
+         * that is working. It does have to be distinguishable from an empty answer: clearing the
+         * context alone left the panel saying "no other departures to suggest" about a board it
+         * had never managed to read.
+         */
+        if (!controller.signal.aborted) setStored({ key: contextKey, context: null });
       }
     })();
 
@@ -187,6 +215,8 @@ export function VehiclePage() {
     bbox?.south,
     bbox?.east,
     bbox?.north,
+    contextAttempt,
+    contextKey,
   ]);
 
   const alternativeWalkingUrl = useMemo(() => {
@@ -355,6 +385,8 @@ export function VehiclePage() {
         {showStoppedPanel ? (
           <BusStoppedPanel
             vehicle={vehicle}
+            contextState={contextState}
+            onRetryContext={() => setContextAttempt((attempt) => attempt + 1)}
             otherVehiclesMoving={context?.peersMoving ?? null}
             otherVehiclesObserved={context?.peers ?? 0}
             incidents={response.data.incidents}
