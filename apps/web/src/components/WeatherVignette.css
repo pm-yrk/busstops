@@ -187,3 +187,27 @@
 .vignette__source {
   margin: 0;
 }
+
+/*
+ * The approaching bus sits on the road with everything else in the scene, and moves only if
+ * motion is welcome. Drawn only when one is truthfully due, so its absence is information too.
+ */
+.vignette__bus {
+  position: absolute;
+  image-rendering: pixelated;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .vignette__bus {
+    animation: vignette-bus-approach 9s linear infinite;
+  }
+}
+
+@keyframes vignette-bus-approach {
+  from {
+    transform: translateX(-30%);
+  }
+  to {
+    transform: translateX(40%);
+  }
+}

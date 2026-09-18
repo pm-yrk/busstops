@@ -101,13 +101,23 @@ export const ART: Record<string, PixelImage> = {
   },
   vignetteDay: {
     src: "/art/vignette-day.png",
-    w: 96,
-    h: 72,
+    w: 176,
+    h: 128,
   },
   vignetteNight: {
     src: "/art/vignette-night.png",
-    w: 96,
-    h: 72,
+    w: 176,
+    h: 128,
+  },
+  farBusDay: {
+    src: "/art/far-bus-day.png",
+    w: 46,
+    h: 22,
+  },
+  farBusNight: {
+    src: "/art/far-bus-night.png",
+    w: 46,
+    h: 22,
   },
   person_commuter_red_coat_plain: {
     src: "/art/person-commuter-red-coat-plain.png",
@@ -256,38 +266,43 @@ export const ART: Record<string, PixelImage> = {
   },
   effect_rainNear: {
     src: "/art/effect-rain-near.png",
-    w: 96,
-    h: 72,
+    w: 176,
+    h: 128,
   },
   effect_rainFar: {
     src: "/art/effect-rain-far.png",
-    w: 96,
-    h: 72,
+    w: 176,
+    h: 128,
+  },
+  effect_rainReflections: {
+    src: "/art/effect-rain-reflections.png",
+    w: 176,
+    h: 128,
   },
   effect_snow: {
     src: "/art/effect-snow.png",
-    w: 96,
-    h: 72,
+    w: 176,
+    h: 128,
   },
   effect_sun: {
     src: "/art/effect-sun.png",
-    w: 28,
-    h: 28,
+    w: 36,
+    h: 36,
   },
   effect_fog: {
     src: "/art/effect-fog.png",
-    w: 96,
-    h: 72,
+    w: 176,
+    h: 128,
   },
   effect_wind: {
     src: "/art/effect-wind.png",
-    w: 96,
-    h: 72,
+    w: 176,
+    h: 128,
   },
   effect_heat: {
     src: "/art/effect-heat.png",
-    w: 96,
-    h: 72,
+    w: 176,
+    h: 128,
   },
 };
 
@@ -571,4 +586,4 @@ export const ACCESSORY_ANCHORS: Record<string, "hand" | "head" | "neck" | "eyes"
   woollyHat: "head",
   sunHat: "head",
 };
-export const VIGNETTE_SIZE = { w: 96, h: 72, ground: 60 } as const;
+export const VIGNETTE_SIZE = { w: 176, h: 128, ground: 98 } as const;

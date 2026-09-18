@@ -6,7 +6,14 @@ import { busSide2, busMid2 } from "./bus2.mjs";
 import { wideScene, tallScene, edgeStrip, GEOMETRY } from "./scene.mjs";
 import { shelter, stopFlag, tree, person, cloud, bin } from "./street.mjs";
 import { PEOPLE, ACCESSORIES, drawPerson, drawAccessory, PERSON_W, PERSON_H } from "./people.mjs";
-import { vignetteScene, EFFECTS, VIGNETTE_W, VIGNETTE_H, VIGNETTE_GROUND } from "./vignette.mjs";
+import {
+  vignetteScene,
+  farBus,
+  EFFECTS,
+  VIGNETTE_W,
+  VIGNETTE_H,
+  VIGNETTE_GROUND,
+} from "./vignette.mjs";
 
 /**
  * Emits the finished artwork into the web app.
@@ -72,6 +79,19 @@ for (const night of [false, true]) {
   FILES[`vignette${night ? "Night" : "Day"}`] = [
     `vignette-${night ? "night" : "day"}`,
     vignetteScene({ night }),
+  ];
+}
+/*
+ * A bus approaching, drawn only where one truthfully is.
+ *
+ * Separate from the backdrop because it is conditional: the caller knows whether a departure is
+ * due, and a bus painted into a scene where none is coming would be the picture telling a lie the
+ * rest of the product is careful not to.
+ */
+for (const night of [false, true]) {
+  FILES[`farBus${night ? "Night" : "Day"}`] = [
+    `far-bus-${night ? "night" : "day"}`,
+    farBus({ night }),
   ];
 }
 for (const person of PEOPLE) {

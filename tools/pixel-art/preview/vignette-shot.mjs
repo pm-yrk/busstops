@@ -99,8 +99,10 @@ const P = { w: 24, h: 44 };
 function scene(s, person, scale) {
   const backdrop = s.day ? ART.vignetteDay : ART.vignetteNight;
   const personArt = ART[`person_${person.id.replace(/-/g, "_")}_${s.pose}`];
-  const left = 62 * scale;
-  const top = (V.ground - P.h + 3) * scale;
+  // The same placement the component uses. These were 62 and +3 for a 96-wide scene; the scene
+  // is 176 wide now and the old numbers stood everybody against the left-hand wall.
+  const left = 96 * scale;
+  const top = (V.ground - P.h + 2) * scale;
   const acc = s.acc ? ART[s.acc] : null;
   let accStyle = "";
   if (acc) {
@@ -123,7 +125,7 @@ function scene(s, person, scale) {
     ${s.effects
       .map((n) => {
         const a = ART[n];
-        const pos = n === "effect_sun" ? `left:${4 * scale}px;top:${2 * scale}px` : "left:0;top:0";
+        const pos = n === "effect_sun" ? `left:${6 * scale}px;top:${4 * scale}px` : "left:0;top:0";
         return `<img src="${a.src}" width="${a.w * scale}" height="${a.h * scale}" style="position:absolute;${pos};image-rendering:pixelated;z-index:${n === "effect_rainNear" ? 3 : 1}">`;
       })
       .join("")}
@@ -134,13 +136,13 @@ function scene(s, person, scale) {
 </figure>`;
 }
 
-const desktop = SCENES.map((s, i) => scene(s, PEOPLE[i % PEOPLE.length], 4)).join("");
-const phone = SCENES.map((s, i) => scene(s, PEOPLE[(i + 5) % PEOPLE.length], 3)).join("");
+const desktop = SCENES.map((s, i) => scene(s, PEOPLE[i % PEOPLE.length], 3)).join("");
+const phone = SCENES.map((s, i) => scene(s, PEOPLE[(i + 5) % PEOPLE.length], 2)).join("");
 
 const html = `<!doctype html><meta charset=utf-8><body style="background:#f7f6f1;margin:16px;font:12px system-ui">
-<h2 style="font:600 13px system-ui">Weather vignette — desktop, 4x</h2>
+<h2 style="font:600 13px system-ui">Weather vignette — desktop, 3x</h2>
 <div style="display:flex;flex-wrap:wrap;gap:20px">${desktop}</div>
-<h2 style="font:600 13px system-ui;margin-top:24px">Weather vignette — phone, 3x</h2>
+<h2 style="font:600 13px system-ui;margin-top:24px">Weather vignette — phone, 2x</h2>
 <div style="display:flex;flex-wrap:wrap;gap:16px">${phone}</div>`;
 
 import { writeFileSync } from "node:fs";

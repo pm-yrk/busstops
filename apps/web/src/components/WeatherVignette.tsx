@@ -37,7 +37,7 @@ const ACCESSORY_FOR: Record<WeatherAdviceKind, { name: string; pose: "plain" | "
 
 /** Which effect layers the sky gets. Order matters: far behind near. */
 const EFFECTS_FOR: Record<WeatherAdviceKind, Array<keyof typeof ART>> = {
-  rain: ["effect_rainFar", "effect_rainNear"],
+  rain: ["effect_rainFar", "effect_rainNear", "effect_rainReflections"],
   snow: ["effect_snow"],
   fog: ["effect_fog"],
   wind: ["effect_wind"],
@@ -64,13 +64,13 @@ export interface WeatherVignetteProps {
   /**
    * The largest number of CSS pixels per art pixel this may be drawn at.
    *
-   * A maximum rather than a setting: the scene is 96 art pixels wide, so four of them is 384 CSS
-   * pixels and does not fit a 375-pixel phone, let alone a 320-pixel one. The component drops to
-   * the largest whole number that fits the space it is actually in. Whole numbers only — a
-   * vignette scaled by 3.6 to fill the column would not be pixel art any more, it would be a
+   * A maximum rather than a setting: the scene is 176 art pixels wide, so three of them is 528
+   * CSS pixels — which fits a 560-pixel stop panel and does not fit a phone. The component drops
+   * to the largest whole number that fits the space it is actually in. Whole numbers only: a
+   * vignette scaled by 1.8 to fill the column would not be pixel art any more, it would be a
    * blurred photograph of some.
    */
-  scale?: 3 | 4;
+  scale?: 2 | 3;
   now?: Date;
   /**
    * The panel version: the same picture and the same numbers, fewer of them.
@@ -82,6 +82,14 @@ export interface WeatherVignetteProps {
    * stop page, where there is room for them.
    */
   compact?: boolean;
+  /**
+   * Whether a bus is actually due, which is the only condition under which one is drawn.
+   *
+   * The caller knows — the stop page and the map panel both hold the departures. A bus painted
+   * into a scene where none is coming would be the picture telling a lie the rest of the product
+   * is careful not to, and "there is a bus on the way" is worth saying when it is true.
+   */
+  busApproaching?: boolean;
 }
 
 /**
@@ -99,13 +107,14 @@ function useFittingScale(available: number | null, maximum: number): number {
 export function WeatherVignette({
   weather,
   atcoCode,
-  scale: maximumScale = 4,
+  scale: maximumScale = 3,
   now = new Date(),
   compact = false,
+  busApproaching = false,
 }: WeatherVignetteProps) {
   const holder = useRef<HTMLDivElement>(null);
   const [available, setAvailable] = useState<number | null>(null);
-  const scale = useFittingScale(available, compact ? Math.min(3, maximumScale) : maximumScale);
+  const scale = useFittingScale(available, compact ? Math.min(2, maximumScale) : maximumScale);
 
   useEffect(() => {
     const element = holder.current;
@@ -139,9 +148,14 @@ export function WeatherVignette({
   const width = VIGNETTE_SIZE.w * scale;
   const height = VIGNETTE_SIZE.h * scale;
 
-  // The person stands on the pavement, a little right of the shelter's near post.
-  const personLeft = 62 * scale;
-  const personTop = (VIGNETTE_SIZE.ground - PERSON_SIZE.h + 3) * scale;
+  /*
+   * The person stands on the pavement in the shelter's open side, under the roof's overhang.
+   *
+   * These were 62 and ground-minus-height in a 96-wide picture. The scene is 176 wide now, and
+   * carrying the old numbers over would have stood everybody against the left-hand wall.
+   */
+  const personLeft = 96 * scale;
+  const personTop = (VIGNETTE_SIZE.ground - PERSON_SIZE.h + 2) * scale;
 
   const accessoryArt = accessory ? ART[`accessory_${accessory.name}`]! : null;
 
@@ -212,6 +226,18 @@ export function WeatherVignette({
               />
             );
           })}
+
+          {busApproaching ? (
+            <img
+              className="vignette__bus"
+              src={(hour.isDay ? ART.farBusDay! : ART.farBusNight!).src}
+              width={(hour.isDay ? ART.farBusDay! : ART.farBusNight!).w * scale}
+              height={(hour.isDay ? ART.farBusDay! : ART.farBusNight!).h * scale}
+              /* On the road, at the left, coming towards the stop. */
+              style={{ left: 6 * scale, top: (VIGNETTE_SIZE.h - 26) * scale }}
+              alt=""
+            />
+          ) : null}
 
           <img
             className="vignette__person"
