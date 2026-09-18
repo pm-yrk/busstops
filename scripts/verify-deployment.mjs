@@ -932,6 +932,7 @@ await check("the pattern-heavy endpoints survive dense cities, repeatedly", asyn
                * and every 1102 has followed the largest one in its own; fetch and parse apart is
                * what says whether that is the network or the isolate's CPU.
                */
+              (routeDiagnostics.liveLookupSkipped ? ", live skipped (no budget left)" : "") +
               (routeDiagnostics.liveSources ?? [])
                 .map(
                   (entry) =>
