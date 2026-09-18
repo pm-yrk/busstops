@@ -811,7 +811,16 @@ router.get("/v1/stops/:id", async (_request, { env, params }) => {
     : { departures: [], health: [], failed: true, observedAt: null };
 
   const patterns = await network.patternsServingStop(stop);
-  const services = await network.services();
+  /*
+   * The services these patterns belong to, not all 13,593 of them.
+   *
+   * `services()` reads the national object and parses every record, after hashing the whole thing
+   * — all pure computation, against the ten milliseconds a Workers Free invocation gets. A board
+   * names about ten services, and asking for those is one pass over the text instead.
+   */
+  const services = await network.servicesByIds(
+    new Set(patterns.map((geometry) => geometry.pattern.serviceRouteId)),
+  );
 
   /*
    * Outside London the timetable is the board.
@@ -1440,7 +1449,9 @@ router.get("/v1/vehicles/:ref", async (_request, { env, params, url }) => {
     ? geometries.find((geometry) => geometry.pattern.id === match.best!.patternId)?.pattern
     : undefined;
   const service =
-    pattern && network ? (await network.services()).get(pattern.serviceRouteId) : undefined;
+    pattern && network
+      ? (await network.servicesByIds(new Set([pattern.serviceRouteId]))).get(pattern.serviceRouteId)
+      : undefined;
 
   const vehicle = {
     id: observation.id,
@@ -1596,7 +1607,7 @@ router.get("/v1/routes/:id", async (_request, { env, params }) => {
   }
 
   const route = await routeLedger.stage("services", async () =>
-    (await network!.services()).get(params.id ?? ""),
+    (await network!.servicesByIds(new Set([params.id ?? ""]))).get(params.id ?? ""),
   );
   if (!route) return errorResponse("not_found", "Route not found", 404);
 
@@ -1867,7 +1878,8 @@ router.get("/v1/operators/:id", async (_request, { env, params }) => {
   const operator = (await network.operators()).get(params.id ?? "");
   if (!operator) return errorResponse("not_found", "Operator not found", 404);
 
-  const routes = routesForOperator(await network.services(), operator.id);
+  // By operator, in one pass, for the same reason the departure board asks by id.
+  const routes = routesForOperator(await network.servicesForOperator(operator.id), operator.id);
 
   return json(
     {

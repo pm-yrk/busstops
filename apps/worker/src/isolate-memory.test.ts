@@ -1174,6 +1174,77 @@ describe("answering without reading geometry", () => {
     expect(unfiltered.byStopId.size).toBe(everything.byStopId.size);
   });
 
+  /*
+   * `publishNetworkShards` writes the sharded families; the national services object is published
+   * separately by the daily run, so a reader built from shards alone has no services table at all.
+   * These tests are about the national object, so they publish one.
+   */
+  async function readerWithNationalServices() {
+    const recording = recordingStore();
+    const built = network();
+    await publishNetworkShards(recording.store, built, { version: "v1" });
+    await new ArtifactStore(recording.store).publish({
+      dataset: DATASETS.services,
+      version: "v1",
+      records: built.services,
+      schemaVersion: "1.0.0",
+      sources: ["bods"],
+    });
+    return { reader: new NetworkReader(recording.store), reads: recording.reads };
+  }
+
+  it("names a few services without parsing all 13,593 of them", async () => {
+    const { reader } = await readerWithNationalServices();
+    const everything = await (await readerWithNationalServices()).reader.services();
+    expect(everything.size).toBeGreaterThan(0);
+
+    const [wantedId] = [...everything.keys()];
+    const some = await reader.servicesByIds(new Set([wantedId!]));
+
+    expect([...some.keys()]).toEqual([wantedId]);
+    expect(some.get(wantedId!)).toEqual(everything.get(wantedId!));
+    /*
+     * And the national map was never built. `services()` hashes the whole object and parses every
+     * record before a caller sees one; that is the cost this exists to avoid, so a filtered read
+     * that quietly populated the same cache would have saved nothing.
+     */
+    expect(reader.residency().services).toBe(0);
+  });
+
+  it("asks for nothing and reads nothing", async () => {
+    const { reader, reads } = await readerWithNationalServices();
+    reads.length = 0;
+    expect((await reader.servicesByIds(new Set())).size).toBe(0);
+    expect(reads).toEqual([]);
+  });
+
+  it("gives an operator its own services, and agrees with the whole table", async () => {
+    const { reader } = await readerWithNationalServices();
+    const everything = await (await readerWithNationalServices()).reader.services();
+    const [anyService] = [...everything.values()];
+    const operatorId = anyService!.operatorId;
+
+    const mine = await reader.servicesForOperator(operatorId);
+    const expected = [...everything.values()]
+      .filter((service) => service.operatorId === operatorId)
+      .map((service) => service.id)
+      .sort();
+
+    expect([...mine.keys()].sort()).toEqual(expected);
+    expect(mine.size).toBeGreaterThan(0);
+    expect(reader.residency().services).toBe(0);
+  });
+
+  it("uses the national table when some other request has already paid for it", async () => {
+    const { reader } = await readerWithNationalServices();
+    const everything = await reader.services();
+    const [wantedId] = [...everything.keys()];
+
+    // Already parsed, already resident: re-scanning the text would be spending twice.
+    const some = await reader.servicesByIds(new Set([wantedId!]));
+    expect(some.get(wantedId!)).toEqual(everything.get(wantedId!));
+  });
+
   it("finds a pattern by its id, from one bucket rather than a geographic scan", async () => {
     const { reader, reads } = await publishedReader();
     const built = network();

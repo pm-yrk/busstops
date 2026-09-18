@@ -1419,6 +1419,103 @@ export class NetworkReader {
     return this.servicesCache;
   }
 
+  /**
+   * The national services text, held without being parsed.
+   *
+   * `readCurrent` does two expensive things before a caller sees a record: it runs an FNV-1a hash
+   * over the whole multi-megabyte object, and it `JSON.parse`s all 13,593 services. Both are pure
+   * computation, which is the one resource a Workers Free invocation is short of — ten
+   * milliseconds of it — and a departure board wants about ten of those services.
+   *
+   * So the bytes are fetched once per isolate and kept as text. Text is nearly free to hold and
+   * free to keep: the cost being avoided is the parse, not the transfer.
+   */
+  private servicesTextCache: string | null = null;
+
+  private async servicesText(): Promise<string | null> {
+    if (this.servicesTextCache !== null) return this.servicesTextCache;
+    const artifacts = new ArtifactStore(this.store);
+    const manifest = await artifacts.readManifest(DATASETS.services);
+    if (!manifest) return null;
+    const raw = await this.store.get(manifest.objectKey);
+    if (raw === null) return null;
+    this.servicesTextCache = raw;
+    return raw;
+  }
+
+  /**
+   * Only the services asked for, built by one pass over the text.
+   *
+   * No offset index is kept: building a map of 13,593 keys is itself several milliseconds of
+   * allocation, and one bounded scan per request costs less than that once. A line is parsed only
+   * when its id is wanted.
+   */
+  async servicesByIds(ids: ReadonlySet<string>): Promise<Map<string, ServiceRoute>> {
+    const found = new Map<string, ServiceRoute>();
+    if (ids.size === 0) return found;
+
+    // A warm isolate that has already read them all for some other reason should use that.
+    if (this.servicesCache) {
+      for (const id of ids) {
+        const service = this.servicesCache.get(id);
+        if (service) found.set(id, service);
+      }
+      return found;
+    }
+
+    const text = await this.servicesText();
+    if (text === null) return found;
+
+    let start = 0;
+    while (start < text.length && found.size < ids.size) {
+      let end = text.indexOf("\n", start);
+      if (end < 0) end = text.length;
+      if (end > start) {
+        const id = valueAt(text, start, end, "id");
+        if (id !== null && ids.has(id)) {
+          try {
+            found.set(id, JSON.parse(text.slice(start, end)) as ServiceRoute);
+          } catch {
+            // A line that will not parse is a line this reader has no service for; the caller
+            // already copes with a service it cannot name.
+          }
+        }
+      }
+      start = end + 1;
+    }
+    return found;
+  }
+
+  /** Every service an operator runs, by the same single pass. */
+  async servicesForOperator(operatorId: string): Promise<Map<string, ServiceRoute>> {
+    const found = new Map<string, ServiceRoute>();
+    if (this.servicesCache) {
+      for (const [id, service] of this.servicesCache) {
+        if (service.operatorId === operatorId) found.set(id, service);
+      }
+      return found;
+    }
+
+    const text = await this.servicesText();
+    if (text === null) return found;
+
+    let start = 0;
+    while (start < text.length) {
+      let end = text.indexOf("\n", start);
+      if (end < 0) end = text.length;
+      if (end > start && valueAt(text, start, end, "operatorId") === operatorId) {
+        try {
+          const service = JSON.parse(text.slice(start, end)) as ServiceRoute;
+          found.set(service.id, service);
+        } catch {
+          // As above: an unparseable line is not a service.
+        }
+      }
+      start = end + 1;
+    }
+    return found;
+  }
+
   private async routeTiles(now: number): Promise<Map<string, string[]>> {
     if (this.routeTilesCache) return this.routeTilesCache;
     const index = await this.networkIndex(now);
