@@ -269,6 +269,36 @@ describe("a live lookup cannot outlive the budget it entered with", () => {
     }
   });
 
+  it("stops asking a failing upstream before the isolate pays for it three times", async () => {
+    /*
+     * The default breaker opens after five failed *calls*, which is calibrated for a job making
+     * hundreds of them over minutes. An isolate does not live that long: run 52 was killed on the
+     * first attempt of the first city, so the counter reset before it ever reached five and the
+     * breaker was defeated by the very failure it exists to prevent.
+     */
+    let attempts = 0;
+    const service = new LiveService({
+      env: { BODS_API_KEY: "k", VEHICLE_SALT_SECRET: "s" } as never,
+      now: () => new Date("2026-09-04T08:00:00.000Z"),
+      fetchImpl: (async () => {
+        attempts += 1;
+        return new Response("upstream busy", { status: 503 });
+      }) as unknown as typeof fetch,
+    });
+
+    const bbox = { west: -1.6, south: 53.7, east: -1.5, north: 53.8 };
+    // Two bounded calls, each one attempt, is enough to open it.
+    await service.vehiclesInBoundingBox(bbox, 500);
+    await service.vehiclesInBoundingBox(bbox, 500);
+    const spentSoFar = attempts;
+
+    // The third asks nothing at all: it fails fast off the open breaker.
+    const third = await service.vehiclesInBoundingBox(bbox, 500);
+    expect(attempts).toBe(spentSoFar);
+    // And says so, rather than reporting an empty viewport as though London had no buses.
+    expect(third.failedSources).toContain("bods");
+  });
+
   it("keeps its retries when nobody handed it a deadline", async () => {
     let attempts = 0;
     const service = new LiveService({

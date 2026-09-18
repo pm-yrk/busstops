@@ -195,6 +195,23 @@ export class LiveService {
       source === "tfl" ? "london" : "non_london",
       entry.freshnessSlaSeconds,
       this.deps.fetchImpl ? { fetchImpl: this.deps.fetchImpl } : {},
+      /*
+       * A tighter breaker than a scheduled collector's, because an isolate does not live as long
+       * as one.
+       *
+       * The default opens after five failed calls, which is calibrated for a job that makes
+       * hundreds over minutes. Here a failure costs a passenger's request its budget, and the
+       * isolate carrying the breaker is destroyed after a handful of them — so the counter resets
+       * before it ever reaches five, and the breaker is defeated by exactly the failure it exists
+       * to prevent. Run 52 is what that looks like: `/v1/map` killed on the first attempt of the
+       * first city, taking `/v1/search` and `/v1/nearby` with it.
+       *
+       * Two, so the third request in a struggling isolate fails fast and cheaply instead of
+       * spending its whole deadline finding out. Thirty seconds, because a passenger refreshing a
+       * map should get live buses back quickly once the upstream recovers, and the half-open
+       * probe means one request pays to find out rather than all of them.
+       */
+      { failureThreshold: 2, openDurationMs: 30_000 },
     );
     this.clients.set(source, client);
     return client;
