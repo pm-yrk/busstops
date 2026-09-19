@@ -92,8 +92,24 @@
   font-size: var(--font-size-small);
 }
 
+/*
+ * A stop in this list is a tap target, not a line of text.
+ *
+ * Measured on the deployment at phone and tablet width: 74.3px by 15px, against WCAG 2.2's 24 by
+ * 24 minimum, with two pixels between one row and the next — so axe reported both the size and the
+ * spacing. Fifteen pixels is the line box and nothing else; the link had no height of its own.
+ *
+ * Centring the text in a 24px row fixes the target without moving the type, and the gap between
+ * rows goes up with it so neighbouring targets are distinguishable by thumb as well as by eye.
+ */
+.selected-vehicle__stops a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+}
+
 .selected-vehicle__stops li + li {
-  margin-top: 2px;
+  margin-top: var(--space-xs);
 }
 
 .selected-vehicle__links {

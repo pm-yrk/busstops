@@ -13,8 +13,19 @@
   position: absolute;
   z-index: 2;
   inset: auto var(--space-md) var(--space-md) var(--space-md);
-  /* A phone gets the full width of the map: a bottom sheet, not a card floating in a corner. */
-  max-height: 62vh;
+  /*
+   * A phone gets the full width of the map: a bottom sheet, not a card floating in a corner.
+   *
+   * Bounded by the map as well as by the viewport, because 62vh of a short map is nearly all of
+   * it. Axe found the consequence on the deployment: `.maplibregl-ctrl-zoom-out` reported "target
+   * has insufficient size because it is partially obscured (smallest space is 29px by 16px)" —
+   * the sheet had risen far enough to cover the controls in the opposite corner, which also means
+   * a passenger could not zoom or pan while a board was open.
+   *
+   * Six rems of map are kept clear above it: the zoom pair is two 29px buttons and a ten-pixel
+   * offset, so that clears them with room rather than exactly.
+   */
+  max-height: min(62vh, calc(100% - 6rem));
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: var(--space-md);

@@ -149,6 +149,17 @@
   gap: var(--space-xs) var(--space-sm);
 }
 
+/*
+ * The same 24px floor the vehicle board's stop list gets, and for the same measured reason: these
+ * are separate targets in a wrapping row rather than links inside a sentence, so the inline
+ * exception does not cover them and a fifteen-pixel line box is the whole tap area.
+ */
+.notice__stops a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+}
+
 .notice__route {
   font-variant-numeric: tabular-nums;
   font-weight: 600;
