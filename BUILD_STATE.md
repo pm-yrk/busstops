@@ -1,8 +1,44 @@
 # Bus Stops. Build State
 
-Last updated: 2026-09-18 (run 56: map records 23,806 to 788; all five landmarks resolve; 1102 now a cold-isolate failure)
+Last updated: 2026-09-19 (run 57: services table no longer built; 1102 down to map and weather; the projection awaits a republish)
 
 ## Current status
+
+### Run 57: two more endpoints cleared, and what is left needs a republish (2026-09-19)
+
+Run 57 ([35406889069](https://github.com/pm-yrk/busstops/actions/runs/35406889069)) carried the
+national-services fix and the `nearby` radius filter.
+
+**The services fix is visible in every residency line:**
+
+```
+before   national operators=636/services=13593/places=3178
+after    national operators=636/services=0/places=3178
+```
+
+The national services table is no longer built at all. **Both endpoints it was targeting now
+pass**: London's departure board (`Waterloo Station / Tenison Way: 5 departure(s), 5 live from
+TfL`) and `/v1/nearby` (`25 within 800m of Piccadilly`), each a 1102 in run 56.
+
+The 1102 count across the last four runs: **5 → 2 → 4 → 2**, and the two remaining are `/v1/map`
+under repeated dense-city load, and the weather field on a non-London stop page.
+
+### What is left is bytes, and bytes need a republish
+
+Both remaining failures are endpoints that scan a 0.25-degree stop tile, and the measurement above
+prices that at about three milliseconds a mebibyte before an object is built. Two things were
+checked and ruled out rather than assumed:
+
+- **The departure read is already optimal.** `decodeDepartureShardForStop` finds its stop's line
+  with one native `indexOf` and parses that single line. It is not what costs.
+- **The scan, not the parse, is the floor.** 39.3 ms to parse everything, 21.2 ms to scan and
+  filter and parse 364, against a 10 ms budget.
+
+So `network/map-stops` is built, tested and pushed: the stop and stop-route families projected to
+what a marker actually draws, in one read instead of two, with the reader returning null and
+falling back when an artifact has no projection tiles. **It needs a national republish to take
+effect, and no bootstrap has been dispatched** — that is Paul's call, and it is the same call as
+the finer stop grid, which is what the _stop page_ would need for the same reason.
 
 ### Measured: the filters cannot finish the job, because the scan is the floor (2026-09-18)
 
