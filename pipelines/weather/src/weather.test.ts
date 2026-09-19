@@ -101,6 +101,44 @@ describe("collecting the weather", () => {
     return store;
   }
 
+  /*
+   * Run 60 lost every batch to `429` and published nothing; run 59 got six through in 1.8 seconds
+   * and then lost three the same way. That is a burst limit, and the job was asking nine
+   * questions as fast as the network would carry them. The gap is what makes it a trickle.
+   */
+  it("spaces its batches instead of firing them all at once", async () => {
+    // The same forty tiles the batching test uses: 303 cells, so four batches and three gaps.
+    const store = await storeWithTiles(
+      Array.from({ length: 40 }, (_, index) => `${215 + index}_-7`),
+    );
+    const waits: number[] = [];
+
+    const result = await collectStopWeather({
+      store,
+      refreshMinutes: 30,
+      now: new Date("2026-09-05T09:30:00.000Z"),
+      sleep: async (ms) => {
+        waits.push(ms);
+      },
+      fetchImpl: async (input) => {
+        const count = new URL(String(input)).searchParams.get("latitude")!.split(",").length;
+        return new Response(
+          JSON.stringify(
+            Array.from({ length: count }, (_, index) =>
+              location(53.75 + index * 0.1, -1.55, HOURS),
+            ),
+          ),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      },
+    });
+
+    expect(result.batches).toHaveLength(4);
+    // Three gaps, not four: the first batch waits for nothing.
+    expect(waits).toEqual([2_000, 2_000, 2_000]);
+    expect(result.outcome).toBe("published");
+  });
+
   it("publishes one shard per degree square, with a cell for every answer", async () => {
     const store = await storeWithTiles(["215_-7"]);
     const requested: string[] = [];
@@ -153,6 +191,8 @@ describe("collecting the weather", () => {
       refreshMinutes: 30,
       now: new Date("2026-09-05T09:30:00.000Z"),
       publish: false,
+      // This one is about how the cells are grouped, not about the pause between groups.
+      sleep: async () => {},
       fetchImpl: async (input) => {
         const count = new URL(String(input)).searchParams.get("latitude")!.split(",").length;
         batchSizes.push(count);

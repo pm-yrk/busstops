@@ -120,6 +120,9 @@ export function stopTileNamesFromKeys(keys: readonly string[]): string[] {
   return [...tiles].sort();
 }
 
+/** Seconds between batches, as a burst limit rather than a daily one requires. */
+const BETWEEN_BATCHES_MS = 2_000;
+
 export type CollectWeatherOutcome =
   "published" | "network_not_published" | "budget_exceeded" | "too_many_cells" | "no_answer";
 
@@ -156,6 +159,20 @@ export interface CollectStopWeatherOptions {
   /** Publish the shards, or only report what would be asked and written. */
   publish?: boolean;
   maxCells?: number;
+  /**
+   * Wait between batches, so a refresh is a trickle rather than a burst.
+   *
+   * Open-Meteo's free tier is generous per day and strict per moment, and this job asks nine
+   * questions as fast as the network will carry them. Run 59 measured exactly where that lands:
+   * six batches answered in 1.8 seconds and then three came back `429`, having each already
+   * retried three times. Run 60, from a GitHub runner sharing its egress address with everyone
+   * else doing the same thing, lost all nine and published nothing.
+   *
+   * Nine requests spaced two seconds apart is sixteen seconds added to a job that runs every
+   * thirty minutes, against a daily allowance we use four per cent of. The cost of being a
+   * well-behaved client here is nothing at all.
+   */
+  betweenBatchesMs?: number;
 }
 
 export async function collectStopWeather(
@@ -198,11 +215,28 @@ export async function collectStopWeather(
   const batches: WeatherBatchOutcome[] = [];
   let missing = 0;
 
+  const pauseMs = options.betweenBatchesMs ?? BETWEEN_BATCHES_MS;
+  const pause =
+    options.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
+  let first = true;
+
   for (const group of batchesOf(cells, MAX_LOCATIONS_PER_REQUEST)) {
+    // Spaced, not throttled after the fact: the first batch pays nothing and the rest queue.
+    if (!first && pauseMs > 0) await pause(pauseMs);
+    first = false;
+
     const startedAt = Date.now();
     try {
       const payload = await client.fetchJson<unknown>(openMeteoBatchUrl(group), {
         timeoutMs: 20_000,
+        /*
+         * Patient rather than persistent. The default three attempts half a second apart is
+         * tuned for a server having a bad moment; a rate limit is a server telling us to come
+         * back later, and half a second is not later. Open-Meteo sends `Retry-After` when it
+         * knows, and the client honours it in preference to this.
+         */
+        maxAttempts: 4,
+        baseDelayMs: 2_000,
       });
       const result = normalizeStopWeatherBatch(payload, {
         cells: group,
