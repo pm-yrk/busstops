@@ -4,7 +4,13 @@ import { LoadingBus } from "../components/LoadingBus.js";
 import { EmptyState, ErrorState, StateLozenge } from "../components/primitives.js";
 import { apiClient } from "../lib/api.js";
 import { useFetch } from "../lib/use-fetch.js";
-import { CoverageWarning, DataModeBanner, ProMetricTile, ScopeFilters } from "./ProPrimitives.js";
+import {
+  BandStrip,
+  CoverageWarning,
+  DataModeBanner,
+  ProMetricTile,
+  ScopeFilters,
+} from "./ProPrimitives.js";
 
 /**
  * Control Tower (docs/10_BUS_STOPS_PRO.md).
@@ -58,10 +64,22 @@ export function ControlTowerPage() {
 
       <section className="pro-section" aria-labelledby="ct-sources">
         <h2 id="ct-sources">Source health</h2>
+        {/*
+          The same strip the exception inbox uses for severity, because this is the same kind of
+          question: what is this total made of. Four sources down out of six and four out of
+          forty were the same sentence before, read at the same speed.
+        */}
+        <BandStrip
+          label="Sources by health"
+          bands={[
+            { tone: "healthy", label: "healthy", count: tower.sourceHealth.healthy },
+            { tone: "elevated", label: "degraded", count: tower.sourceHealth.degraded },
+            { tone: "abnormal", label: "stale", count: tower.sourceHealth.stale },
+            { tone: "highly_abnormal", label: "down", count: tower.sourceHealth.down },
+          ]}
+        />
         <p className="pro-note">
-          {tower.sourceHealth.healthy} healthy, {tower.sourceHealth.degraded} degraded,{" "}
-          {tower.sourceHealth.stale} stale, {tower.sourceHealth.down} down. Where a source is not
-          reporting, the network is unmeasured rather than clear.
+          Where a source is not reporting, the network is unmeasured rather than clear.
         </p>
         {tower.sourceHealth.problems.length > 0 ? (
           <ul className="pro-list">

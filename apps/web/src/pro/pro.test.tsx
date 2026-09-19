@@ -11,7 +11,7 @@ import type {
 import { ControlTowerPage } from "./ControlTowerPage.js";
 import { OperatorsPage } from "./OperatorsPage.js";
 import { ProLayout } from "./ProLayout.js";
-import { DataModeBanner, ProMetricTile } from "./ProPrimitives.js";
+import { BandStrip, DataModeBanner, ProMetricTile } from "./ProPrimitives.js";
 import { apiClient } from "../lib/api.js";
 
 afterEach(() => {
@@ -279,5 +279,40 @@ describe("OperatorsPage", () => {
     // The section heading and the lozenge both say it; both are intentional.
     expect(screen.getByText(/Only 12 comparable observations/)).toBeTruthy();
     expect(screen.getAllByText("Not comparable").length).toBeGreaterThan(0);
+  });
+});
+
+describe("BandStrip", () => {
+  /*
+   * The zero band is the point of the component. A legend that lists "0 down" beside "4 healthy"
+   * makes a reader check a thing that is not there, and on a strip it draws a band of no width
+   * with a border, which reads as one more source.
+   */
+  it("leaves out a band nothing falls into", () => {
+    const { container } = render(
+      <BandStrip
+        label="Sources by health"
+        bands={[
+          { tone: "healthy", label: "healthy", count: 4 },
+          { tone: "abnormal", label: "stale", count: 0 },
+          { tone: "highly_abnormal", label: "down", count: 1 },
+        ]}
+      />,
+    );
+
+    expect(container.querySelectorAll(".pro-severity__band--healthy").length).toBe(2);
+    expect(container.querySelector(".pro-severity__band--abnormal")).toBeNull();
+    expect(screen.queryByText("stale")).toBeNull();
+    expect(screen.getByText("down")).toBeTruthy();
+  });
+
+  it("draws nothing at all rather than an empty frame when every band is zero", () => {
+    const { container } = render(
+      <BandStrip
+        label="Sources by health"
+        bands={[{ tone: "healthy", label: "healthy", count: 0 }]}
+      />,
+    );
+    expect(container.querySelector(".pro-severity")).toBeNull();
   });
 });

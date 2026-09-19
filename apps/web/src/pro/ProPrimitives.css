@@ -435,3 +435,14 @@
   color: var(--colour-muted);
   font-size: var(--font-size-small);
 }
+
+/*
+ * The one band the severity ramp does not cover: something that is fine.
+ *
+ * Health runs good-to-bad where severity runs bad-to-mild, so the strip needs a step at the good
+ * end. Ink rather than green: green here would be a status colour doing the work of a legend, and
+ * the band is named and counted beside it anyway.
+ */
+.pro-severity__band--healthy {
+  background: color-mix(in srgb, var(--colour-ink) 55%, transparent);
+}

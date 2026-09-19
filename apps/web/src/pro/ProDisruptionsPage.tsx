@@ -4,7 +4,7 @@ import { LoadingBus } from "../components/LoadingBus.js";
 import { EmptyState, ErrorState, StateLozenge } from "../components/primitives.js";
 import { apiClient } from "../lib/api.js";
 import { useFetch, useTicker } from "../lib/use-fetch.js";
-import { DataModeBanner, ScopeFilters } from "./ProPrimitives.js";
+import { BandStrip, DataModeBanner, ScopeFilters } from "./ProPrimitives.js";
 
 /**
  * The priority exception inbox (docs/10_BUS_STOPS_PRO.md "Disruptions and reports").
@@ -213,51 +213,17 @@ function elapsedLabel(startedAt: string, now: number): string | null {
 
 const SEVERITY_ORDER = ["highly_abnormal", "abnormal", "elevated", "typical"] as const;
 
-/**
- * What the inbox is made of, before anybody reads a row of it.
- *
- * "Fourteen exceptions" and "fourteen exceptions, nine of them highly abnormal" are different
- * pieces of news, and the table could only give the second by being counted by hand. One
- * proportional bar, one hue in four steps because this is a severity ordering rather than four
- * unrelated things, with every band named and counted beside it so identity is never colour alone.
- *
- * A band is omitted entirely when its count is zero: a legend entry for a severity that is not
- * present is a reader's time spent on nothing.
- */
+/** What the inbox is made of, before anybody reads a row of it. */
 function SeveritySummary({ items }: { items: readonly LiveOperationsItem[] }) {
-  if (items.length === 0) return null;
-
-  const counts = SEVERITY_ORDER.map((severity) => ({
-    severity,
-    label: severity.replace(/_/g, " "),
-    count: items.filter((item) => item.incident.severity === severity).length,
-  })).filter((band) => band.count > 0);
-
-  if (counts.length === 0) return null;
-
   return (
-    <figure className="pro-severity" aria-label="Exceptions by severity">
-      <div className="pro-severity__bar" aria-hidden="true">
-        {counts.map((band) => (
-          <span
-            key={band.severity}
-            className={`pro-severity__band pro-severity__band--${band.severity}`}
-            style={{ flexGrow: band.count }}
-          />
-        ))}
-      </div>
-      <figcaption className="pro-severity__legend">
-        {counts.map((band) => (
-          <span className="pro-severity__key" key={band.severity}>
-            <span
-              className={`pro-severity__swatch pro-severity__band--${band.severity}`}
-              aria-hidden="true"
-            />
-            <strong>{band.count}</strong> {band.label}
-          </span>
-        ))}
-      </figcaption>
-    </figure>
+    <BandStrip
+      label="Exceptions by severity"
+      bands={SEVERITY_ORDER.map((severity) => ({
+        tone: severity,
+        label: severity.replace(/_/g, " "),
+        count: items.filter((item) => item.incident.severity === severity).length,
+      }))}
+    />
   );
 }
 

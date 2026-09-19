@@ -320,3 +320,52 @@ export function RankBar({ value, max, label }: { value: number; max: number; lab
     </div>
   );
 }
+
+/**
+ * A count broken into named bands, drawn as one proportional bar.
+ *
+ * "Fourteen exceptions" and "fourteen exceptions, nine of them highly abnormal" are different
+ * pieces of news, and a sentence of counts can only give the second by being read carefully. One
+ * bar gives it at a glance — and because every band is named and counted in the legend beneath,
+ * identity is never carried by colour alone.
+ *
+ * `tone` names the band's step in the CSS rather than carrying a colour, so severity and source
+ * health look like the same product rather than two people's charts. A band with a count of zero
+ * is left out entirely: a legend entry for something that is not there is a reader's time spent
+ * on nothing.
+ */
+export interface Band {
+  tone: string;
+  label: string;
+  count: number;
+}
+
+export function BandStrip({ bands, label }: { bands: readonly Band[]; label: string }) {
+  const present = bands.filter((band) => band.count > 0);
+  if (present.length === 0) return null;
+
+  return (
+    <figure className="pro-severity" aria-label={label}>
+      <div className="pro-severity__bar" aria-hidden="true">
+        {present.map((band) => (
+          <span
+            key={band.tone}
+            className={`pro-severity__band pro-severity__band--${band.tone}`}
+            style={{ flexGrow: band.count }}
+          />
+        ))}
+      </div>
+      <figcaption className="pro-severity__legend">
+        {present.map((band) => (
+          <span className="pro-severity__key" key={band.tone}>
+            <span
+              className={`pro-severity__swatch pro-severity__band--${band.tone}`}
+              aria-hidden="true"
+            />
+            <strong>{band.count}</strong> {band.label}
+          </span>
+        ))}
+      </figcaption>
+    </figure>
+  );
+}
