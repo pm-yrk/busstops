@@ -1,8 +1,73 @@
 # Bus Stops. Build State
 
-Last updated: 2026-09-19 (runs 59-62: the national republish landed; the map projection is live and reads 1.97 MiB where it read 7.00)
+Last updated: 2026-09-19 (runs 63-64: the collectors ran at last; eight places across England prove real; route detail's cost is named)
 
 ## Current status
+
+### Runs 63-64: the collectors ran, and the remaining cost is named
+
+**Nothing had ever collected.** `run_intelligence` was false in runs 59-62, so
+Pro's empty sections were not a broken pipeline but a job nobody had asked for.
+Worse, disruptions was _unaskable_: `disruptions.yml` exists only on this branch,
+so its schedule has never fired and dispatching it answers 404, and the deploy
+workflow had no step for it. "No disruption source has been queried yet on this
+deployment" was exactly true and could never have become false. It has a step
+now.
+
+Run 63, the first collection in this project's history:
+
+```
+live collection  22,882 fetched, 21,495 accepted, coverage 1, "collected"
+disruptions      ran, 57s, success
+weather          42s successful, where run 60 lost all nine batches to rate limits
+analytics batch  "outcome": "no_segments"
+```
+
+The chain breaks one link further on than I had found: the batch needs
+`network/segments` from the OSM road extraction, which had never run either.
+
+### Geographic parity, proven (run 64)
+
+All eight places return real routes and departures, and not one needed the
+`sparseOk` escape the three new ones carry:
+
+```
+Newcastle    Percy Street — 3 routes, 5 due, next X63 to Newcastle Monument
+Brighton     Port Hall Road — 2 routes, 6 due, next 27 to Whitethorn Drive
+Shrewsbury   Belvidere Lane Jct — 1 route, 1 due, next 23 to Bus Station
+```
+
+### The 1102's cost, measured rather than guessed
+
+Per-family accounting was in the ledger all along and nothing printed it. It
+now does, and it names the culprit on the first run:
+
+```
+Leeds#4 874: 4.83 MiB — route-patterns 0.27MiB/8rec, stops 4.56MiB/237rec/3read
+Birmingham#1 35: 2.95 MiB — stops 2.65MiB/106rec/1read
+```
+
+**Route detail spends 94% of its bytes resolving stops through 0.25-degree
+geographic tiles** — full `Stop` records at ~4 KB each, to get a name and a
+coordinate. This is the same read the map replaced with `network/map-stops`.
+
+The obvious substitution is wrong and worth writing down: `stop-detail` is 1024
+hashed buckets, so a route's 237 stops land in ~200 of them and cost 200 object
+reads. It is the right shape for one stop and the wrong shape for a route. The
+right target is `map-stops`, whose rows are a quarter the size — **except that
+its rows carry no `locality`**, which the route variant contract publishes. That
+is the decision to make next: add `locality` to the projection (a republish), or
+accept its loss, or narrow the read to the selected variant.
+
+### Still failing
+
+- Route detail, journeys and `/v1/stops/:id` still reach 1102 on a warm isolate.
+  The cause above is the measured one.
+- `phone/live` 1102s where desktop and tablet pass; the phone is the last width
+  swept, so it lands on the most-used isolate.
+- The weather scene reached scale 2 on a phone and was still **OFF SCREEN**: the
+  arrival board fills a 62vh sheet and the picture starts past its bottom edge.
+  Raised to 80vh; run 65 says whether that is enough.
 
 ### Runs 59-62: the republish landed, and the projection was working before I believed it
 
