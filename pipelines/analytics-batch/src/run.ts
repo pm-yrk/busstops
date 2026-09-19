@@ -231,7 +231,7 @@ export async function runAnalyticsBatch(
         run: async () => {
           const result = await publishIntelligence(
             options.store!,
-            { buckets: aggregation.buckets, incidents },
+            { buckets: aggregation.buckets, incidents, samples },
             {
               version: options.version ?? toIso(startedAt).replace(/[:.]/g, "-"),
               coverage: input.coverage,

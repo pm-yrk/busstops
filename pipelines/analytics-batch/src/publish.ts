@@ -1,7 +1,9 @@
 import { ArtifactStore, type ArtifactManifest, type ObjectStore } from "@busstops/pipeline-core";
+import type { SegmentSample } from "./segments.js";
 import type { Incident } from "@busstops/contracts";
 import type { SegmentIntervalBucket } from "./aggregates.js";
 import type { TrackedIncident } from "./incidents.js";
+import { buildNetworkSummary, type NetworkSummaryRecord } from "./summary.js";
 
 /**
  * Atomic publication of intelligence artifacts (docs/07_DATA_PIPELINES.md, docs/04_ARCHITECTURE.md).
@@ -30,6 +32,12 @@ const SEVERITY_ORDER = ["typical", "elevated", "abnormal", "highly_abnormal"] as
 
 export const INTELLIGENCE_DATASETS = {
   segmentMetrics: "intelligence/segment-metrics",
+  /**
+   * The national picture in one record, for a reader that cannot afford the whole of
+   * `segmentMetrics`. See `summary.ts` for why this exists rather than the edge reading the
+   * segment dataset and filtering it.
+   */
+  networkSummary: "intelligence/network-summary",
   incidents: "intelligence/incidents",
   runReports: "intelligence/run-reports",
 } as const;
@@ -52,6 +60,8 @@ export interface IntelligencePublishResult {
   failed: Array<{ dataset: string; reason: string }>;
   complete: boolean;
   notes: string[];
+  /** What the edge will read as the newest closed window, or null when none closed. */
+  summary: NetworkSummaryRecord | null;
 }
 
 export async function publishIntelligence(
@@ -59,6 +69,8 @@ export async function publishIntelligence(
   input: {
     buckets: readonly SegmentIntervalBucket[];
     incidents: readonly TrackedIncident[];
+    /** The samples the buckets were built from, for counts a bucket cannot carry. */
+    samples?: readonly SegmentSample[];
   },
   options: IntelligencePublishOptions,
 ): Promise<IntelligencePublishResult> {
@@ -155,7 +167,26 @@ export async function publishIntelligence(
   // data, and an incident count genuinely does fall from fifty to zero when the roads clear.
   await publishDataset(INTELLIGENCE_DATASETS.incidents, incidents, 0, true, 1);
 
-  return { published, failed, complete: failed.length === 0, notes };
+  /*
+   * The national summary, published only when a window actually closed.
+   *
+   * It is derived from the same `settled` buckets that produced the metrics dataset, so the two
+   * can never disagree, and it is one record — the edge reads it for the cost of one object
+   * rather than pulling an unbounded national dataset into a 128 MiB isolate. When nothing
+   * closed there is nothing to publish and the previous summary stays live, which is the same
+   * "degrade freshness, never correctness" rule the rest of this file follows.
+   */
+  const summary = buildNetworkSummary(
+    { buckets: input.buckets, samples: input.samples ?? [], coverage: options.coverage },
+    now(),
+  );
+  if (summary !== null) {
+    await publishDataset(INTELLIGENCE_DATASETS.networkSummary, [summary], 1, false);
+  } else {
+    notes.push("no bucket had closed, so no network summary was published");
+  }
+
+  return { published, failed, complete: failed.length === 0, notes, summary };
 }
 
 /** Rolls the intelligence datasets back to their previous good versions. */

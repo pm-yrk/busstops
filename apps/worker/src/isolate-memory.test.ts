@@ -299,6 +299,16 @@ describe("national datasets the edge does still hold", () => {
        * resolves to.
        */
       "weatherShardDataset(tile)",
+      /*
+       * The national summary is one record, and one record is what the pipeline writes: the
+       * batch builds a single `NetworkSummaryRecord` from the closed buckets and publishes it as
+       * a one-element array. Its size is a property of the format rather than of the network, so
+       * it cannot grow with coverage the way the segment metrics it is derived from do — which is
+       * the entire reason it exists. It is on this list for the same condition as the others: if
+       * this dataset is ever made to hold a record per segment, area or operator, this entry
+       * comes off and the edge reads a shard instead.
+       */
+      "INTELLIGENCE_SUMMARY_DATASET",
     ]);
     for (const expression of wholeDatasetReads) {
       expect(allowedExpressions.has(expression), `${expression} is read whole`).toBe(true);

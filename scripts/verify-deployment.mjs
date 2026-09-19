@@ -1662,11 +1662,41 @@ await check("Pro is reachable with no credential and states its data mode", asyn
   }
 
   observed.proHeadlineWithValue = withValue.length;
+
+  /*
+   * What each figure was measured over, and when that measurement ended.
+   *
+   * A segment metric comes from a five-minute bucket that closes ten minutes after it ends, so
+   * the newest figure Pro can honestly publish is always a quarter of an hour old. The endpoint
+   * used to label every live figure with the reader's scope — "last 60 minutes" — which claimed a
+   * currency the pipeline does not have. This prints the window each populated metric names, so a
+   * regression to the old wording is visible in the run log rather than only in a test.
+   */
+  const windows = [...new Set(withValue.map((metric) => metric?.window).filter(Boolean))];
+  const oldestFreshness = withValue.reduce(
+    (worst, metric) => Math.max(worst, metric?.freshnessSeconds ?? 0),
+    0,
+  );
+  for (const metric of withValue) {
+    assert(
+      mode !== "live" || !/^last \d+ minutes$/.test(metric.window ?? ""),
+      `Pro published "${metric.key}" over "${metric.window}", which is the scope the reader asked ` +
+        "for rather than the period the figure was measured over",
+    );
+  }
+
   return (
     `data mode ${mode}` +
     (mode === "demo_snapshot" ? ` (${body.data.provenance.snapshotDate})` : "") +
     `; ${withValue.length} of ${headline.length} headline metric(s) carry a figure ` +
     `over ${denominator} observation(s)` +
+    (windows.length > 0 ? `; measured over ${windows.join(" / ")}` : "") +
+    (oldestFreshness > 0
+      ? `; oldest contributing window closed ${Math.round(oldestFreshness / 60)} minute(s) ago`
+      : "") +
+    // Named rather than counted: which figures are populated is the question, and "3 of 8" hides
+    // whether the three are real measurements or the incident count three times over.
+    (withValue.length > 0 ? `; populated: ${withValue.map((m) => m.key).join(", ")}` : "") +
     (mode === "live" && withValue.length === 0
       ? " — live, and not yet enough observations to publish a single figure"
       : "")

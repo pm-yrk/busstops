@@ -38,6 +38,61 @@ import {
 
 export const INTELLIGENCE_INCIDENTS_DATASET = "intelligence/incidents";
 export const INTELLIGENCE_SEGMENTS_DATASET = "intelligence/segment-metrics";
+/** One record describing the newest closed measurement window. See the pipeline's `summary.ts`. */
+export const INTELLIGENCE_SUMMARY_DATASET = "intelligence/network-summary";
+
+/**
+ * The national summary as the edge reads it.
+ *
+ * Declared here rather than imported from the pipeline package: the Worker bundle must not pull
+ * the analytics batch in, and this is a wire format between two deployables, so it is written out
+ * on both sides and asserted by a contract test.
+ */
+export interface NetworkSummary {
+  generatedAt: string;
+  windowStart: string;
+  windowEnd: string;
+  bucketSeconds: number;
+  latenessGraceSeconds: number;
+  segmentsMeasured: number;
+  closedBuckets: number;
+  suppressedBuckets: number;
+  sampleCount: number;
+  distinctVehicles: number;
+  distinctRoutes: number;
+  medianTraversalSeconds: number | null;
+  p90TraversalSeconds: number | null;
+  medianSpeedMetresPerSecond: number | null;
+  meanMatchConfidence: number | null;
+  coverage: number;
+}
+
+/**
+ * How the window is described to a reader, in the window's own terms.
+ *
+ * Pro used to label every live figure "last 60 minutes", which was the scope the reader had
+ * asked for and not the period the number was measured over. A segment metric is computed from a
+ * five-minute bucket that closes ten minutes after it ends, so the newest figure available is
+ * always at least a quarter of an hour old — and saying "last 60 minutes" over it claims a
+ * currency the pipeline cannot provide. This says what was actually measured and when it ended.
+ */
+export function describeMeasuredWindow(summary: NetworkSummary, now: Date): string {
+  const minutes = Math.round(summary.bucketSeconds / 60);
+  const endedMinutesAgo = Math.max(
+    0,
+    Math.round((now.getTime() - Date.parse(summary.windowEnd)) / 60_000),
+  );
+  const ended = new Date(summary.windowEnd).toISOString().slice(11, 16);
+  return (
+    `${minutes}-minute measurement windows ending ${ended} UTC` +
+    `, ${endedMinutesAgo === 0 ? "just closed" : `closed ${endedMinutesAgo} minutes ago`}`
+  );
+}
+
+/** Seconds since the newest measured window ended. Never negative, never the batch's own age. */
+export function measuredFreshnessSeconds(summary: NetworkSummary, now: Date): number {
+  return Math.max(0, (now.getTime() - Date.parse(summary.windowEnd)) / 1000);
+}
 
 /** Below this, a metric is published as suppressed with its reason rather than as a figure. */
 export const PRO_MINIMUM_DENOMINATOR = 20;
@@ -160,7 +215,7 @@ export class ProService {
   /** Live intelligence artifacts, or null when none has been published. */
   private async liveIntelligence(): Promise<{
     incidents: Incident[];
-    segments: unknown[];
+    summary: NetworkSummary | null;
   } | null> {
     if (!this.store) return null;
     const artifacts = new ArtifactStore(this.store);
@@ -177,10 +232,20 @@ export class ProService {
        * ceiling on it. `readManifest` answers the same question for the cost of one small object.
        */
       const segmentsManifest = await artifacts.readManifest(INTELLIGENCE_SEGMENTS_DATASET);
+      /*
+       * And the national summary, which is one record and therefore safe to read whole.
+       *
+       * This is where Pro's headline figures come from. Reading it costs one object; reading the
+       * segment metrics it was derived from would cost the whole national dataset, which is the
+       * reason the summary exists at all.
+       */
+      const summary = await artifacts
+        .readCurrent<NetworkSummary>(INTELLIGENCE_SUMMARY_DATASET)
+        .catch(() => null);
       // A manifest is the signal that a run happened. Zero incidents with a manifest is a real
       // "nothing to report"; no manifest at all means nothing has ever run.
       if (incidents.manifest === null && segmentsManifest === null) return null;
-      return { incidents: incidents.records, segments: [] };
+      return { incidents: incidents.records, summary: summary?.records[0] ?? null };
     } catch {
       return null;
     }
@@ -203,8 +268,19 @@ export class ProService {
         }));
 
     const healthSummary = summariseSourceHealth(health);
-    const coverage = usingDemo ? 1 : coverageFrom(healthSummary);
-    const window = `last ${scope.windowMinutes} minutes`;
+    const summary = usingDemo ? null : live.summary;
+    const coverage = usingDemo ? 1 : (summary?.coverage ?? coverageFrom(healthSummary));
+    /*
+     * The window a figure was measured over, not the window the reader asked for.
+     *
+     * Those are different things and Pro used to print the second over the first. A scope of
+     * "last 60 minutes" is a filter; a segment metric is computed from a five-minute bucket that
+     * closed a quarter of an hour ago, and labelling it "last 60 minutes" claims a currency the
+     * pipeline does not have.
+     */
+    const window = summary
+      ? describeMeasuredWindow(summary, now)
+      : `last ${scope.windowMinutes} minutes`;
 
     const exceptions = incidents.map((incident) => toException(incident, usingDemo, "abnormality"));
     const burden = [...exceptions]
@@ -221,6 +297,7 @@ export class ProService {
       window,
       coverage,
       incidents,
+      summary,
       now,
     });
 
@@ -671,18 +748,82 @@ function buildIntelligenceSummary(
   return summary;
 }
 
+/**
+ * What this pipeline measures and what it does not.
+ *
+ * Punctuality, reliability and delay are all comparisons against a schedule. The intelligence
+ * batch matches vehicle traces to road segments and times the traversals; it never reads a
+ * timetable, so it cannot produce any of the three. They stayed on this page as permanently null
+ * tiles whose suppression text read "No observations have been published for this scope and
+ * window" — which is false, and worse than false: it tells the reader that more data would fill
+ * the tile, when what is missing is a stage of the pipeline.
+ *
+ * They keep their place, because a control tower that quietly drops the figures it cannot produce
+ * is how a reader comes to believe the ones it shows are the whole picture. But they say what is
+ * actually true about them.
+ */
+const NOT_YET_MEASURED =
+  "Not measured yet. This figure compares actual against scheduled time, and the intelligence " +
+  "pipeline currently measures road-segment traversals only — it does not read the timetable. " +
+  "No amount of further observation will populate it until that stage exists.";
+
 function buildHeadlineMetrics(input: {
   usingDemo: boolean;
   window: string;
   coverage: number;
   incidents: readonly Incident[];
+  summary?: NetworkSummary | null;
   now: Date;
 }): ProMetric[] {
-  const { usingDemo, window, coverage, incidents } = input;
+  const { usingDemo, window, coverage, incidents, now } = input;
+  const summary = input.summary ?? null;
+  const freshness = summary ? measuredFreshnessSeconds(summary, now) : null;
 
   const abnormalCount = incidents.filter(
     (incident) => incident.severity === "abnormal" || incident.severity === "highly_abnormal",
   ).length;
+
+  /*
+   * Two figures the pipeline genuinely produces, published only on the live path.
+   *
+   * Both come from the closed-window summary, so both describe a settled measurement rather than
+   * a bucket still open to revision, and both carry the age of that window rather than the age of
+   * the batch that wrote it.
+   */
+  const measured: ProMetric[] = summary
+    ? [
+        metric({
+          key: "segments_measured",
+          label: "Road segments measured",
+          definition:
+            "Distinct road segments with at least one closed, unsuppressed measurement window. " +
+            "A segment appears once it has carried enough matched traversals to publish a figure.",
+          value: summary.segmentsMeasured,
+          unit: "count",
+          denominator: summary.sampleCount,
+          window,
+          coverage,
+          freshnessSeconds: freshness,
+          minimumDenominator: 1,
+          evidence: ["segment_metrics"],
+        }),
+        metric({
+          key: "median_segment_traversal",
+          label: "Median segment time",
+          definition:
+            "The middle traversal time across every matched segment crossing in the window. It " +
+            "describes how long a segment takes to drive, not whether a bus was on time.",
+          value: summary.medianTraversalSeconds,
+          unit: "seconds",
+          denominator: summary.sampleCount,
+          window,
+          coverage,
+          freshnessSeconds: freshness,
+          minimumDenominator: 1,
+          evidence: ["segment_metrics"],
+        }),
+      ]
+    : [];
 
   return [
     metric({
@@ -700,18 +841,24 @@ function buildHeadlineMetrics(input: {
         : null,
       baselineValue: usingDemo ? 76 : null,
       evidence: ["punctuality", "reliability", "excess_delay", "coverage"],
+      // A composite of four figures, three of which this pipeline does not yet produce.
+      ...(usingDemo ? {} : { suppressionReason: NOT_YET_MEASURED }),
     }),
     metric({
       key: "active_vehicles",
       label: "Buses observed",
       definition:
         "Distinct vehicles that reported a usable position in the window. Not the number running: buses whose operator does not publish positions are invisible here.",
-      value: usingDemo ? 1642 : null,
+      // Counted across samples rather than summed across buckets, so a bus crossing four
+      // segments is one bus. See the pipeline's `summary.ts`.
+      value: usingDemo ? 1642 : (summary?.distinctVehicles ?? null),
       unit: "count",
-      denominator: usingDemo ? 1642 : 0,
+      denominator: usingDemo ? 1642 : (summary?.sampleCount ?? 0),
       window,
       coverage,
+      freshnessSeconds: usingDemo ? null : freshness,
       minimumDenominator: 1,
+      evidence: usingDemo ? [] : ["segment_metrics"],
     }),
     metric({
       key: "punctuality",
@@ -723,6 +870,7 @@ function buildHeadlineMetrics(input: {
       window,
       coverage,
       baselineValue: usingDemo ? 0.75 : null,
+      ...(usingDemo ? {} : { suppressionReason: NOT_YET_MEASURED }),
     }),
     metric({
       key: "reliability",
@@ -734,6 +882,7 @@ function buildHeadlineMetrics(input: {
       window,
       coverage,
       baselineValue: usingDemo ? 0.95 : null,
+      ...(usingDemo ? {} : { suppressionReason: NOT_YET_MEASURED }),
     }),
     metric({
       key: "median_delay",
@@ -746,7 +895,9 @@ function buildHeadlineMetrics(input: {
       window,
       coverage,
       baselineValue: usingDemo ? 132 : null,
+      ...(usingDemo ? {} : { suppressionReason: NOT_YET_MEASURED }),
     }),
+    ...measured,
     metric({
       key: "abnormal_disruptions",
       label: "Abnormal disruptions",

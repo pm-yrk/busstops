@@ -828,6 +828,106 @@ describe("Bus Stops Pro", () => {
     expect(body.data.provenance.dataMode).toBe("live");
   });
 
+  it("publishes the figures the closed window actually measured", async () => {
+    /*
+     * The other half of the run-67 finding. The pipeline was publishing nothing because no bucket
+     * had closed; the edge was showing nothing because `ProService` never read a segment figure
+     * at all — it asked the segment-metrics manifest whether it existed and threw the records
+     * away, deliberately, because that dataset is national and unbounded. Five of six headline
+     * figures were hardcoded `null` on the live path, so fixing the pipeline alone would have
+     * changed nothing on screen.
+     *
+     * The national summary is the small artifact that closes that gap, and this is the assertion
+     * that the edge reads it.
+     */
+    const store = await publishedStore();
+    const artifacts = new ArtifactStore(store);
+    await artifacts.publish({
+      dataset: "intelligence/incidents",
+      version: "v1",
+      records: [],
+      schemaVersion: "1.0.0",
+      minimumRecordCount: 0,
+      allowEmpty: true,
+    });
+    await artifacts.publish({
+      dataset: "intelligence/network-summary",
+      version: "v1",
+      records: [
+        {
+          generatedAt: "2026-09-19T12:20:00.000Z",
+          windowStart: "2026-09-19T11:55:00.000Z",
+          windowEnd: "2026-09-19T12:05:00.000Z",
+          bucketSeconds: 300,
+          latenessGraceSeconds: 600,
+          segmentsMeasured: 214,
+          closedBuckets: 380,
+          suppressedBuckets: 166,
+          sampleCount: 1840,
+          distinctVehicles: 613,
+          distinctRoutes: 88,
+          medianTraversalSeconds: 44,
+          p90TraversalSeconds: 121,
+          medianSpeedMetresPerSecond: 6.4,
+          meanMatchConfidence: 0.71,
+          coverage: 0.82,
+        },
+      ],
+      schemaVersion: "1.0.0",
+      minimumRecordCount: 1,
+    });
+
+    const response = await worker.fetch(get("/v1/pro/control-tower"), makeEnv(store), ctx);
+    const parsed = ControlTowerResponseSchema.parse(
+      ((await response.json()) as { data: unknown }).data,
+    );
+    expect(parsed.provenance.dataMode).toBe("live");
+
+    const byKey = new Map(parsed.headline.map((entry) => [entry.key, entry]));
+    expect(byKey.get("active_vehicles")?.value).toBe(613);
+    expect(byKey.get("segments_measured")?.value).toBe(214);
+    expect(byKey.get("median_segment_traversal")?.value).toBe(44);
+
+    /*
+     * And the window each of them names is the one that was measured, not the one the reader
+     * asked for. "last 60 minutes" over a figure from a bucket that closed a quarter of an hour
+     * ago claims a currency the pipeline does not have.
+     */
+    expect(byKey.get("active_vehicles")?.window).toContain("12:05");
+    expect(byKey.get("active_vehicles")?.window).not.toContain("last 60 minutes");
+    expect(byKey.get("active_vehicles")?.freshnessSeconds).toBeGreaterThan(0);
+  });
+
+  it("says a figure is unmeasured rather than starved of observations", async () => {
+    /*
+     * Punctuality, reliability and delay are comparisons against a schedule, and this pipeline
+     * never reads a timetable. They used to carry the default suppression text — "No observations
+     * have been published for this scope and window" — which tells a reader that more data would
+     * fill the tile. It would not. Only a stage that does not exist yet would.
+     */
+    const store = await publishedStore();
+    const artifacts = new ArtifactStore(store);
+    await artifacts.publish({
+      dataset: "intelligence/incidents",
+      version: "v1",
+      records: [],
+      schemaVersion: "1.0.0",
+      minimumRecordCount: 0,
+      allowEmpty: true,
+    });
+
+    const response = await worker.fetch(get("/v1/pro/control-tower"), makeEnv(store), ctx);
+    const parsed = ControlTowerResponseSchema.parse(
+      ((await response.json()) as { data: unknown }).data,
+    );
+    for (const key of ["punctuality", "reliability", "median_delay", "network_health"]) {
+      const found = parsed.headline.find((entry) => entry.key === key);
+      expect(found?.suppressed, key).toBe(true);
+      expect(found?.suppressionReason, key).toMatch(/does not read the timetable/);
+      expect(found?.suppressionReason, key).not.toMatch(/No observations have been published/);
+    }
+  });
+
   it("never publishes a figure without its denominator, window and coverage", async () => {
     const store = await publishedStore();
     const response = await worker.fetch(get("/v1/pro/control-tower"), makeEnv(store), ctx);
