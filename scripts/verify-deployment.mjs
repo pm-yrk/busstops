@@ -30,6 +30,27 @@ let failures = 0;
 const observed = {};
 
 /** What an isolate was holding either side of one request, when the endpoint reports it. */
+/**
+ * What each artifact family cost, which is the question "where did the bytes go".
+ *
+ * The ledger has tracked this per family all along and nothing printed it, so every diagnosis of
+ * a heavy request has been a guess at which read was heavy. A total of "1.97 MiB, 490 records" is
+ * a fact about the request; "map-stops 1.94 MiB / 476, vehicles 0.03 MiB / 14" is a fact about
+ * what to fix.
+ */
+function describeFamilies(families) {
+  const entries = Object.entries(families ?? {}).filter(([, cost]) => cost && cost.requested > 0);
+  if (entries.length === 0) return "";
+  return `; families ${entries
+    .map(
+      ([name, cost]) =>
+        `${name} ${(cost.chars / 1048576).toFixed(2)}MiB/${cost.records}rec` +
+        `/${cost.read}read${cost.cached ? `+${cost.cached}cached` : ""}` +
+        `${cost.missing ? `/${cost.missing}missing` : ""}${cost.failed ? `/${cost.failed}failed` : ""}`,
+    )
+    .join(", ")}`;
+}
+
 function describeResidency(residency) {
   if (!residency) return "";
   return (
@@ -728,6 +749,7 @@ await check("the map says what it cost", async () => {
           .map(([key, value]) => `${key}=${String(value)}`)
           .join(" ")}`
       : "; the map named no artifact") +
+    describeFamilies(d.families) +
     describeResidency(d.residency)
   );
 });
@@ -1003,6 +1025,9 @@ await check("the pattern-heavy endpoints survive dense cities, repeatedly", asyn
               Object.entries(routeDiagnostics.stages ?? {})
                 .map(([stage, ms]) => `${stage}=${ms}ms`)
                 .join(" ") +
+              // Stages say where the *time* went; families say where the *bytes* did, and on a
+              // CPU ceiling the bytes are the thing that has to come down.
+              describeFamilies(routeDiagnostics.families) +
               /*
                * What the isolate was already holding, which is the half of the question that four
                * runs of diagnostics could not answer.

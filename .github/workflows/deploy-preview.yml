@@ -49,6 +49,10 @@ on:
         description: "Collect live observations and run the analytics batch, so Pro reports live"
         type: boolean
         default: false
+      run_disruptions:
+        description: "Ask the official disruption sources, so the page stops saying none was queried"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -306,6 +310,36 @@ jobs:
           path: |
             weather-report.json
             weather.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+      # ---------------------------------------------------------- disruptions
+      # `disruptions.yml` is in the same position as weather and retention: it exists only on this
+      # branch, so its schedule has never fired and dispatching it answers 404. That is the whole
+      # reason the deployed Disruptions page says "No disruption source has been queried yet on
+      # this deployment" — not a bug in the ingestion, but a job that has never once been asked to
+      # run against the preview bucket. Routed through here so it can be.
+      - name: Ask the official disruption sources
+        if: ${{ !cancelled() && inputs.run_disruptions }}
+        timeout-minutes: 10
+        continue-on-error: true
+        env:
+          BODS_API_KEY: ${{ secrets.BODS_API_KEY }}
+          TFL_APP_KEY: ${{ secrets.TFL_APP_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -o pipefail
+          npx tsx pipelines/disruptions/run-collect.ts 2>&1 | tee disruptions.log
+
+      - name: Upload the disruption report
+        if: ${{ always() && inputs.run_disruptions }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: preview-disruption-report
+          path: |
+            disruptions-report.json
+            disruptions.log
           retention-days: 7
           if-no-files-found: ignore
 
@@ -600,6 +634,15 @@ jobs:
           echo "--- weather report (repeated at end of job) ---"
           cat weather-report.json 2>/dev/null || echo "no weather-report.json was written"
           echo "--- end weather report ---"
+
+      - name: Disruption report, where the log can reach it
+        if: ${{ always() && inputs.run_disruptions }}
+        run: |
+          echo "--- disruption report (repeated at end of job) ---"
+          cat disruptions-report.json 2>/dev/null || echo "no disruptions-report.json was written"
+          echo "--- last 30 lines of the disruption log ---"
+          tail -30 disruptions.log 2>/dev/null || echo "no disruptions.log was written"
+          echo "--- end disruption report ---"
 
       # Same again for the intelligence path. These are the reports that say whether Pro has any
       # live figures at all, and they run before a two-hundred-line visual pass.
