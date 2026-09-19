@@ -143,7 +143,19 @@ export function MapView({
       return;
     }
 
-    map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
+    /*
+     * Top left, because every panel this map shows is on the right.
+     *
+     * The selected-stop board is a right-hand side panel from 700px up and a bottom sheet below
+     * it, and MapLibre's default corner is the top right — so the zoom buttons sat underneath the
+     * board. Axe measured it on the deployment twice: first "29px by 16px" when the phone sheet
+     * rose over them, then "10px by 44px" once that was capped and the tablet side panel was left
+     * covering all but a sliver of their width. Both are the same mistake, which is putting the
+     * controls in the corner the product uses.
+     *
+     * Nothing is drawn in the top left at any width.
+     */
+    map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-left");
     map.on("error", () => setFailed(true));
 
     map.on("moveend", () => {

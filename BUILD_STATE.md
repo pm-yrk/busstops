@@ -1,8 +1,45 @@
 # Bus Stops. Build State
 
-Last updated: 2026-09-19 (run 57: services table no longer built; 1102 down to map and weather; the projection awaits a republish)
+Last updated: 2026-09-19 (run 58: stop-link target sizes fixed; map controls move off the panel corner; 1102 tracks isolate warmth)
 
 ## Current status
+
+### Run 58: the link targets are fixed, and the failure count tracks isolate warmth (2026-09-19)
+
+Run 58 ([35408531339](https://github.com/pm-yrk/busstops/actions/runs/35408531339)) carried the
+three `target-size` fixes.
+
+**The stop-link violations are gone.** Run 57 reported three — `74.3px by 15px`, `126px by 15px`,
+each with two pixels to its neighbour. Run 58 reports none.
+
+**The obscured control moved rather than cleared**, and the new measurement says why:
+
+```
+run 57   .maplibregl-ctrl-zoom-out   partially obscured, smallest space 29px by 16px
+run 58   .maplibregl-ctrl-zoom-in    partially obscured, smallest space 10px by 44px
+```
+
+Capping the phone sheet gave the buttons their full 44px of height. What was left is the _other_
+axis: from 700px up the selected-stop board is a right-hand side panel running the full height of
+the map, and MapLibre's default corner is the top right, so the panel covered all but ten pixels of
+the buttons' width. Both measurements are the same mistake — putting the controls in the corner the
+product uses — so they now go top left, where nothing is drawn at any width.
+
+### The 1102 count tracks isolate warmth, not the last change
+
+Worth stating plainly, because the run-to-run numbers look like progress and regression and are
+neither:
+
+```
+run 56   4 failures   isolate req#1    (cold)
+run 57   2 failures   isolate req#9    (warm)
+run 58   4 failures   isolate req#1    (cold)
+```
+
+A cold isolate pays for the index as well — `index=142ms` against `index=0ms` warm — on top of the
+same 7.00 MiB the viewport always reads. The CPU cost per request has not changed between these
+runs because the bytes have not, and **that is exactly what the map projection is for**. Until it
+is published, the honest summary is that the warm path is fixed and the cold path is not.
 
 ### Run 57: two more endpoints cleared, and what is left needs a republish (2026-09-19)
 
