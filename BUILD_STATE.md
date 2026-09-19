@@ -91,6 +91,22 @@ for the deployed visual pass, and `map-paints` sets it in an init script with th
 glyphless style right there in the file. No route, no fetch, no 404, nothing
 shipped to `public/`, and every other spec sees exactly what it saw before.
 
+All twelve cases pass. They had never passed anywhere but a real deployment.
+
+One thing worth writing down, because it cost a wrong conclusion. The first run
+after the seam landed still reported three buses listed and none painted, and I
+reported that as a possible live defect of the same class as run 51's glyph bug.
+It was not. Playwright's `reuseExistingServer` had handed the run a preview
+server left over from an earlier, killed run — serving a build made _before_ the
+seam existed, so the injected style was ignored, `/style.json` 404ed, and the map
+errored. A probe on a clean build showed the map entirely healthy:
+`vehicle-pips` rendering 3 at zoom 12.4, `vehicle-clusters` summing to 3 at 11.9,
+every icon registered, no console errors.
+
+The lesson is narrow and practical: `reuseExistingServer` is true outside CI, so
+a stale server silently invalidates any measurement taken after a source change.
+Rebuild, or kill the server, before believing a number.
+
 `art-bench`'s dead marker assertions are noted and left alone: that is a separate
 change, and reaching into it while fixing something else is how a green suite
 becomes an unreviewable diff.
