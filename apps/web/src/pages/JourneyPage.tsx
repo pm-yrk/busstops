@@ -4,6 +4,7 @@ import type { JourneyPlanOption, JourneyPlanResponse, SearchResult } from "@buss
 import { JourneyStrip } from "../components/JourneyStrip.js";
 import { ART } from "../components/pixel/sprites/generated.js";
 import { PixelVista } from "../components/pixel/PixelVista.js";
+import { PixelMargins } from "../components/pixel/PixelMargins.js";
 import { LoadingBus } from "../components/LoadingBus.js";
 import {
   ConfidenceChip,
@@ -133,6 +134,8 @@ export function JourneyPage() {
 
   return (
     <article className="page journey-page">
+      {/* Restrained side decoration, per the approved direction: quiet walls, never a scene. */}
+      <PixelMargins feature="lantern" />
       {plan ? <ServiceBanner meta={plan.meta} /> : null}
 
       <PixelVista

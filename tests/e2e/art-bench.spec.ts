@@ -51,10 +51,18 @@ test("art bench", async ({ page }, testInfo) => {
      * because the map fixture here was not updated when official disruptions were added to the
      * response contract, and a schema the client rejects looks exactly like a failed request.
      * Looking at the picture caught it; the assertion is here so the next one does not need to.
+     *
+     * And then it happened again, for the same reason and with the same outcome. The disruptions
+     * fixture drifted from its contract, the board rejected it, and the error *boundary* caught
+     * the throw — which renders "This part of the page could not be shown", not the heading this
+     * looked for. The bench screenshotted a crashed page and passed.
+     *
+     * So it no longer matches on words. Every error state on this site is the same component,
+     * and that component carries a class and an alert role whatever title it is given.
      */
     await expect(
-      page.getByRole("heading", { name: "Something went wrong" }),
-      `${name}: rendered its error state`,
+      page.locator(".state-block--error"),
+      `${name}: rendered an error state`,
     ).toHaveCount(0);
 
     // Every sprite on the page decoded. `complete` alone is true for a 404, so the size is what

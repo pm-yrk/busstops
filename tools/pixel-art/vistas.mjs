@@ -510,3 +510,129 @@ export function journeyMini({ w = 184, h = 48 } = {}) {
   c.hline(0, h - 1, w, "=");
   return c;
 }
+
+/**
+ * A narrow vertical strip for the outside edge of a page column.
+ *
+ * The approved mockups keep quiet artwork down the margins, so the text column sits in a street
+ * rather than on a white field. This is that, and the emphasis is on *restrained*: nothing here
+ * is a scene and nothing competes with the page's own artwork.
+ *
+ * It is a wall, seen face-on, and the first attempt was not. That one drew the pavement from
+ * above and then stood a lamp post and a pigeon on it in elevation — two projections in one
+ * strip, which reads as a lamp floating in a corridor. A wall is the one piece of street that
+ * survives being cropped to a hand's width: the courses run horizontally so the strip tiles down
+ * a column of any height, and everything on it — ivy, a drainpipe, a bracket lantern — is
+ * attached to the wall rather than standing in front of it.
+ */
+export function marginStrip({ w = 28, h = 240, feature = "ivy", side = "left" } = {}) {
+  const c = new Canvas(w, h, ".");
+
+  /*
+   * Brickwork, kept pale.
+   *
+   * The first wall was a course darker and, beside warm white paper, read as a solid band down
+   * the page rather than as a margin. Restraint here is a colour decision before it is a content
+   * one: the lighter brick and the lighter mortar keep the strip inside the paper's own family.
+   */
+  const courseH = 6;
+  const unit = 13;
+  c.rect(0, 0, w, h, "8");
+  c.speckle(0, 0, w, h, "7", 0.06, 5);
+  for (let y = 0; y < h; y += courseH) {
+    c.hline(0, y, w, "9");
+    // Every other course offset by half a brick, which is what a stretcher bond looks like.
+    const offset = ((y / courseH) % 2) * Math.round(unit / 2);
+    for (let x = offset - unit; x < w + unit; x += unit) {
+      if (x >= 0 && x < w) c.vline(x, y + 1, courseH - 1, "9");
+    }
+  }
+
+  /*
+   * A coping course and a shadow on whichever side faces the text.
+   *
+   * The shadow is what stops the strip reading as a flat panel of texture: it says the wall has a
+   * face and the page is in front of it.
+   */
+  const innerX = side === "left" ? w - 1 : 0;
+  c.vline(innerX, 0, h, "-");
+  c.vline(side === "left" ? w - 2 : 1, 0, h, "=");
+  const outerX = side === "left" ? 0 : w - 1;
+  c.vline(outerX, 0, h, "7");
+
+  /*
+   * A cast-iron downpipe, on the outer side, with its fixing bands.
+   *
+   * Grey rather than the near-black it was first drawn in. A black bar down the margin is the
+   * loudest thing on a page of warm white and 2px ink rules, and it was pulling the eye off the
+   * text the strip is supposed to sit quietly beside.
+   */
+  const pipeX = side === "left" ? 3 : w - 6;
+  c.vline(pipeX, 0, h, "O");
+  c.vline(pipeX + 1, 0, h, "P");
+  c.vline(pipeX + 2, 0, h, "N");
+  for (let y = 18; y < h; y += 46) {
+    c.hline(pipeX - 1, y, 5, "N");
+    c.hline(pipeX - 1, y + 1, 5, "O");
+  }
+
+  const mid = Math.round(h / 2);
+  if (feature === "ivy") {
+    /*
+     * Ivy, climbing. Drawn as a wandering stem with leaves either side of it rather than as a
+     * column of discs, which is what the first attempt's "planting" looked like: a string of
+     * beads. The wander is deterministic, so the art does not change between builds.
+     */
+    const baseX = side === "left" ? w - 9 : 8;
+    let x = baseX;
+    /*
+     * Foliage from the middle of the ramp, not the bottom of it.
+     *
+     * The first pass used steps 1 and 2 — #161c16 and #243024 — which against pale brick read as
+     * soot rather than as leaves. Ivy on a wall in daylight is a mid green; the dark steps are
+     * for a tree's core, where there is something lighter in front of them.
+     */
+    for (let y = h - 4; y > 24; y -= 3) {
+      x += ((y * 7) % 5) - 2;
+      x = Math.max(4, Math.min(w - 5, x));
+      c.px(x, y, "3");
+      // Leaves in threes, so each one is a shape rather than a speck.
+      const leaf = (y * 11) % 4;
+      if (leaf === 0 || leaf === 3) {
+        c.px(x - 1, y, "4");
+        c.px(x - 2, y, "3");
+        c.px(x - 1, y - 1, "5");
+      }
+      if (leaf === 2 || leaf === 3) {
+        c.px(x + 1, y, "4");
+        c.px(x + 2, y, "3");
+        c.px(x + 1, y - 1, "5");
+      }
+      if (leaf === 1) {
+        c.px(x, y - 1, "4");
+        c.px(x - 1, y - 1, "3");
+      }
+    }
+  } else if (feature === "lantern") {
+    /*
+     * A bracket lantern, the kind fixed to a wall rather than standing on a pavement. Its arm
+     * comes out of the brickwork, so it belongs to the wall the way the downpipe does.
+     */
+    const armX = side === "left" ? w - 4 : 3;
+    const dir = side === "left" ? -1 : 1;
+    c.hline(Math.min(armX, armX + dir * 6), mid - 40, 7, "M");
+    // A short stay back to the wall, which is what stops the arm reading as a floating line.
+    c.px(armX + dir * 2, mid - 39, "N");
+    c.px(armX + dir * 3, mid - 38, "N");
+    c.px(armX + dir * 6, mid - 39, "M");
+    c.px(armX + dir * 6, mid - 38, "M");
+    const lx = armX + dir * 8;
+    c.rect(Math.min(lx, lx + 5), mid - 37, 6, 8, "L");
+    c.rect(Math.min(lx + 1, lx + 4), mid - 36, 4, 6, "z");
+    c.px(armX + dir * 6, mid - 36, "y");
+    c.hline(Math.min(lx, lx + 5), mid - 38, 6, "M");
+    c.hline(Math.min(lx, lx + 5), mid - 29, 6, "M");
+  }
+
+  return c;
+}

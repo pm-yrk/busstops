@@ -16,6 +16,7 @@ import { useFetch } from "../lib/use-fetch.js";
 import { minutesLabel, percentLabel } from "../lib/format.js";
 import "./DisruptionsPage.css";
 import { PixelSectionHeading } from "../components/pixel/PixelSectionHeading.js";
+import { PixelMargins } from "../components/pixel/PixelMargins.js";
 
 /**
  * Disruptions (docs/03_SITE_MAP_AND_UX.md "Disruptions/detail").
@@ -62,6 +63,8 @@ export function DisruptionsPage() {
 
   return (
     <article className="page disruptions-page">
+      {/* Supporting street, at the edges only: the notices themselves must not be competed with. */}
+      <PixelMargins feature="ivy" />
       <ServiceBanner meta={response.meta} />
 
       <PixelVista

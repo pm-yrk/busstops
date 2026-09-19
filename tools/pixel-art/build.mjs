@@ -14,6 +14,7 @@ import {
   skylineStrip,
   busRow,
   journeyMini,
+  marginStrip,
 } from "./vistas.mjs";
 import { PEOPLE, ACCESSORIES, drawPerson, drawAccessory, PERSON_W, PERSON_H } from "./people.mjs";
 import { GEOMETRIES } from "./vignette2.mjs";
@@ -56,6 +57,28 @@ const FILES = {
   skylineStrip: ["skyline-strip", skylineStrip()],
   busRow: ["bus-row", busRow({ route: "" })],
   journeyMini: ["journey-mini", journeyMini()],
+  /*
+   * Page margins. Two features and two sides, because a strip drawn for the left of a column has
+   * its downpipe and its shadow on the wrong side when mirrored by CSS — the wall would be lit
+   * from the page rather than from the street.
+   */
+  marginIvyLeft: ["margin-ivy-left", marginStrip({ feature: "ivy", side: "left" })],
+  marginIvyRight: ["margin-ivy-right", marginStrip({ feature: "ivy", side: "right" })],
+  /*
+   * The lantern tile is twice as tall as the ivy one, and carries one lantern.
+   *
+   * At 240 art pixels it repeated every 480 screen pixels, which put three lanterns down a
+   * single window — and a wall lamp every half-screen reads as wallpaper rather than as a
+   * detail. One per 960 is about one a screen, which is how often you actually pass one.
+   */
+  marginLanternLeft: [
+    "margin-lantern-left",
+    marginStrip({ feature: "lantern", side: "left", h: 480 }),
+  ],
+  marginLanternRight: [
+    "margin-lantern-right",
+    marginStrip({ feature: "lantern", side: "right", h: 480 }),
+  ],
 
   /* The stop page's world: the same street, composed wide, with a skyline behind it. */
   vignetteWorldDay: ["vignette-world-day", vignetteScene({ geometry: "world" })],

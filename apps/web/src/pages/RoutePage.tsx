@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import type { RouteDetailResponse } from "@busstops/contracts";
 import { OfficialNotices } from "../components/OfficialNotices.js";
 import { PixelVista } from "../components/pixel/PixelVista.js";
+import { PixelMargins } from "../components/pixel/PixelMargins.js";
 import { RouteStrip } from "../components/RouteStrip.js";
 import { ART } from "../components/pixel/sprites/generated.js";
 import { LoadingBus } from "../components/LoadingBus.js";
@@ -108,6 +109,8 @@ export function RoutePage() {
 
   return (
     <article className="page route-page">
+      {/* Restrained edge decoration: a wall either side of the column, on wide windows only. */}
+      <PixelMargins feature="ivy" />
       <ServiceBanner meta={response.meta} />
 
       {/*

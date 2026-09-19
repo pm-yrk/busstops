@@ -59,6 +59,26 @@ export const ART: Record<string, PixelImage> = {
     w: 184,
     h: 48,
   },
+  marginIvyLeft: {
+    src: "/art/margin-ivy-left.png",
+    w: 28,
+    h: 240,
+  },
+  marginIvyRight: {
+    src: "/art/margin-ivy-right.png",
+    w: 28,
+    h: 240,
+  },
+  marginLanternLeft: {
+    src: "/art/margin-lantern-left.png",
+    w: 28,
+    h: 480,
+  },
+  marginLanternRight: {
+    src: "/art/margin-lantern-right.png",
+    w: 28,
+    h: 480,
+  },
   vignetteWorldDay: {
     src: "/art/vignette-world-day.png",
     w: 320,
