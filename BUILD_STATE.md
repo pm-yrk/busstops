@@ -1,8 +1,49 @@
 # Bus Stops. Build State
 
-Last updated: 2026-09-19 (runs 63-64: the collectors ran at last; eight places across England prove real; route detail's cost is named)
+Last updated: 2026-09-19 (run 65: route detail's stop read cut 4x and measured; the live XML parse is what is left)
 
 ## Current status
+
+### Run 65: the stop read is a quarter of what it was, and the ceiling is still there
+
+Route detail now resolves its stops from `network/map-stops` rather than the
+general 0.25-degree tiles. Same routes, run 64 against run 65:
+
+```
+Leeds#4 874   stops 4.56MiB/237rec/3read  ->  stops 1.17MiB/278rec/5read
+Leeds#3 28    stops 2.15MiB/49rec/1read   ->  stops 0.54MiB/49rec/1read
+whole request      4.83 MiB               ->       1.44 MiB
+```
+
+A quarter of the bytes, and it resolves **more** stops than before — 278 of 281
+against 237 — because the smaller rows fit inside the same budget. No republish
+was needed: the projection was already published.
+
+**And the 1102 is still there**, on Leeds attempt 5, with journeys and
+`/v1/stops/:id` failing alongside it on the same isolate.
+
+### What the trail now points at
+
+With the stop read down to 1.17 MiB, the largest single thing a route request
+parses is no longer JSON:
+
+```
+bods fetch=324ms parse=0ms 0.93 MiB -> 485 accepted
+```
+
+**0.93 MiB of SIRI-VM XML, parsed per route request**, to keep the handful of
+vehicles whose published line matches this route. XML costs considerably more
+per byte than scanning JSON lines, and `parse=0ms` is the Worker's clock being
+unable to see its own CPU rather than evidence that it is free.
+
+The bounded fix is a product change rather than a parser change: the route page
+does not need its live buses in the same response. Fetching them separately, the
+way the stop board already treats its live layer, takes that 0.93 MiB off the
+critical path and lets the page render first. That is the next step, and it is
+measurable the same way this one was.
+
+Not attempted yet, and worth saying: filtering the XML at parse time would save
+allocations and not bytes, and bytes have been the floor throughout.
 
 ### Runs 63-64: the collectors ran, and the remaining cost is named
 
