@@ -1,5 +1,6 @@
 import { NavLink, Outlet } from "react-router-dom";
 import { PixelRouteMark } from "../components/pixel/PixelArt.js";
+import { PixelKerb } from "../components/pixel/PixelMasthead.js";
 import "./ProLayout.css";
 
 /**
@@ -44,6 +45,12 @@ export function ProLayout() {
           Public, read-only, and open without an account. Every figure states how it was measured,
           how much it rests on, and how much of the network it can actually see.
         </p>
+        {/*
+          The same pavement the passenger side stands on, so Pro reads as part of the product
+          rather than as an admin tool bolted to the side of it. One band, nothing standing on it
+          but a stop flag: this is the calmer half of the family.
+        */}
+        <PixelKerb props={["stopFlag"]} className="pro-layout__kerb" />
       </header>
 
       <nav className="pro-layout__nav" aria-label="Pro sections">

@@ -141,16 +141,28 @@ test.describe("degraded and stale states", () => {
   });
 
   /*
-   * The weather belongs in the panel a passenger actually opens, not only on the full stop page.
+   * The map's panel is a board; the picture is on the page the board links to.
+   *
+   * This asserted the opposite — that the vignette was in the panel — and the panel grew to 80vh
+   * of viewport to hold it, which put the artwork above the fold and the next bus underneath it.
+   * Somebody who taps a stop on a map wants the next bus. "Everything about this stop" is where
+   * there is room to be generous, and it is what that link promises.
    */
-  test("the stop board over the map carries real weather for that stop", async ({ page }) => {
+  test("the stop board over the map is a board, and the picture is on the stop page", async ({
+    page,
+  }) => {
     await mockApi(page, { "/v1/map": MAP_WITH_TRAFFIC });
     await page.goto("/live/stops/450010001");
 
     const panel = page.locator(".selected-stop");
-    await expect(panel.locator(".vignette")).toBeVisible();
-    await expect(panel.getByText(/feels like/i)).toBeVisible();
-    await expect(panel.getByText(/Open-Meteo/i)).toBeVisible();
+    await expect(panel).toBeVisible();
+    await expect(panel.locator(".vignette")).toHaveCount(0);
+    // The board keeps what a board is for.
+    await expect(panel.getByText(/next bus/i).first()).toBeVisible();
+
+    await panel.getByRole("link", { name: /everything about this stop/i }).click();
+    await expect(page.locator(".stop-page__weather .vignette")).toBeVisible();
+    await expect(page.locator(".stop-page__weather").getByText(/Open-Meteo/i)).toBeVisible();
   });
 });
 

@@ -1,0 +1,95 @@
+/*
+ * A section heading: a mark, the words, and a rule under the whole line.
+ *
+ * This is not a new treatment. The route and operator pages already headed their sections with
+ * the pixel face, set small and uppercase over a two-pixel rule, and it was the best-looking thing
+ * on either page; every other page opened its sections with a bare `h2` on white, which is most of
+ * why they read as a spreadsheet with headings. So the good one is the one that wins, with a mark
+ * added to it, and it is now the only one — the per-page copies below it have been deleted rather
+ * than left to drift.
+ *
+ * The rule runs the width of the section rather than the width of the words, because a rule that
+ * stops where the text stops is an underline, and an underline on a heading is a link.
+ */
+.pixel-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin: 0;
+  padding-bottom: var(--space-sm);
+  border-bottom: 2px solid var(--colour-ink);
+}
+
+.pixel-heading__mark {
+  flex: none;
+}
+
+/*
+ * Small, uppercase, and in the pixel face — a label for the section rather than a title competing
+ * with the page's own. The `h1` is the page; these are its parts.
+ */
+.pixel-heading__text {
+  margin: 0;
+  /*
+   * Shrinkable, so a long heading wraps its own words rather than pushing the mark onto a line
+   * by itself. At 390px "Accessibility at this stop" did exactly that, and a mark alone above a
+   * heading reads as a stray image.
+   */
+  flex: 0 1 auto;
+  min-width: 0;
+  font-family: var(--font-pixel);
+  font-size: var(--font-size-small);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  /* `normal` because the pixel face has one weight; bolding it is the browser faking a second. */
+  font-weight: normal;
+}
+
+/*
+ * Air between the heading and whatever sits at the end of its line, so a count or an age is at
+ * the far end of the rule rather than trailing the words.
+ */
+.pixel-heading__rule {
+  flex: 1 1 auto;
+  min-width: var(--space-sm);
+}
+
+.pixel-heading__aside {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+/*
+ * A sub-heading gets a hairline, not the full two pixels of ink.
+ *
+ * "Live" and "Timetable only" are parts of "All departures"; giving all three the same rule makes
+ * three sections where there is one with two halves.
+ */
+.pixel-heading:has(.pixel-heading__text:is(h3)) {
+  border-bottom-width: 1px;
+  border-bottom-color: var(--colour-hairline);
+}
+
+.pixel-heading:has(.pixel-heading__text:is(h3)) .pixel-heading__mark {
+  /* Half scale: a sub-heading's mark should be found, not announced. */
+  width: 16px;
+  height: 16px;
+}
+
+/*
+ * A phone keeps the mark and the words on one line and lets the aside drop.
+ *
+ * At 390px "Frequency and reliability" plus a lozenge is already two lines; forcing the rule
+ * between them as well leaves it about eight pixels long, which reads as a rendering fault.
+ */
+@media (max-width: 599px) {
+  .pixel-heading {
+    flex-wrap: wrap;
+  }
+
+  .pixel-heading__rule {
+    min-width: 0;
+  }
+}

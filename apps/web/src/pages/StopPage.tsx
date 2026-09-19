@@ -13,6 +13,7 @@ import {
   ServiceBanner,
   StateLozenge,
 } from "../components/primitives.js";
+import { PixelSectionHeading } from "../components/pixel/PixelSectionHeading.js";
 import { WeatherVignette } from "../components/WeatherVignette.js";
 import { WillIMakeItPanel } from "../components/WillIMakeItPanel.js";
 import { apiClient, ApiError } from "../lib/api.js";
@@ -212,7 +213,9 @@ export function StopPage() {
       <WillIMakeItPanel departures={departures} stop={stop} now={now} />
 
       <section className="stop-page__departures" aria-labelledby="all-departures-heading">
-        <h2 id="all-departures-heading">All departures</h2>
+        <PixelSectionHeading mark="clock" id="all-departures-heading">
+          All departures
+        </PixelSectionHeading>
 
         {departures.length === 0 ? (
           <EmptyState
@@ -247,23 +250,47 @@ export function StopPage() {
       </section>
 
       {/*
-       * What it is like standing here.
+       * What it is like standing here — the stop page's picture, and this is where it belongs.
        *
-       * Absent rather than empty when there is no answer: the weather job publishes a degree
-       * square at a time, and a square it has not reached has none. A placeholder sky would make
-       * the one drawing on the page also the one thing on it that is not measured.
+       * It was briefly in the map's click panel as well. That panel is a board: somebody who taps
+       * a stop on a map wants the next bus, and a 384-pixel illustration above the fold pushes
+       * the one thing they came for underneath it. The full page is where there is room to be
+       * generous, and it is what "Everything about this stop" promises.
+       *
+       * Always drawn, never gated on there being a reading. The weather job publishes a degree
+       * square at a time and a square it has not reached has none — but hiding the section then
+       * leaves a hole where the page's only illustration should be, which reads as broken rather
+       * than as unmeasured. The vignette draws the shelter and the person in a neutral state and
+       * says so in words. Nothing about the sky is invented.
        */}
-      {response.data.weather && (
-        <section className="stop-page__weather" aria-labelledby="stop-weather-heading">
-          <h2 id="stop-weather-heading">At the stop</h2>
-          <WeatherVignette weather={response.data.weather} atcoCode={stop.atcoCode} now={now} />
-        </section>
-      )}
+      <section className="stop-page__weather" aria-labelledby="stop-weather-heading">
+        <PixelSectionHeading mark="weather" id="stop-weather-heading">
+          At the stop
+        </PixelSectionHeading>
+        <WeatherVignette
+          weather={response.data.weather ?? null}
+          atcoCode={stop.atcoCode}
+          now={now}
+          /*
+           * Drawn only when a bus genuinely is due. `expectedTime` is the live or estimated time,
+           * so a bus inside the quarter hour is one a passenger can expect to see — and a bus in
+           * the picture when none is coming would be the artwork telling a lie the rest of the
+           * page is careful not to.
+           */
+          busApproaching={departures.some((departure) => {
+            if (!departure.expectedTime) return false;
+            const minutes = (Date.parse(departure.expectedTime) - now.getTime()) / 60_000;
+            return minutes >= 0 && minutes <= 15;
+          })}
+        />
+      </section>
 
       <AccessibilityCard accessibility={response.data.accessibility} />
 
       <section className="stop-page__details" aria-labelledby="stop-details-heading">
-        <h2 id="stop-details-heading">About this stop</h2>
+        <PixelSectionHeading mark="stop" id="stop-details-heading">
+          About this stop
+        </PixelSectionHeading>
         <dl className="stop-page__facts">
           <div>
             <dt>NaPTAN code</dt>
@@ -311,12 +338,18 @@ function DepartureList({
 }) {
   return (
     <div className="departure-list">
-      <h3 className="departure-list__heading">
-        {heading}{" "}
-        <StateLozenge tone={heading === "Live" ? "live" : "neutral"}>
-          {departures.length}
-        </StateLozenge>
-      </h3>
+      <PixelSectionHeading
+        level={3}
+        mark={heading === "Live" ? "bus" : "clock"}
+        className="departure-list__heading"
+        aside={
+          <StateLozenge tone={heading === "Live" ? "live" : "neutral"}>
+            {departures.length}
+          </StateLozenge>
+        }
+      >
+        {heading}
+      </PixelSectionHeading>
       <p className="muted small">{description}</p>
 
       <ul className="departure-list__items">

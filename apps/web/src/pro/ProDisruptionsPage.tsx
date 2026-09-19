@@ -5,6 +5,7 @@ import { EmptyState, ErrorState, StateLozenge } from "../components/primitives.j
 import { apiClient } from "../lib/api.js";
 import { useFetch, useTicker } from "../lib/use-fetch.js";
 import { BandStrip, DataModeBanner, ScopeFilters } from "./ProPrimitives.js";
+import { PixelSectionHeading } from "../components/pixel/PixelSectionHeading.js";
 
 /**
  * The priority exception inbox (docs/10_BUS_STOPS_PRO.md "Disruptions and reports").
@@ -123,7 +124,9 @@ export function ProDisruptionsPage() {
       </div>
 
       <section className="pro-section" aria-labelledby="disruptions-heading">
-        <h2 id="disruptions-heading">Exception inbox</h2>
+        <PixelSectionHeading mark="works" id="disruptions-heading">
+          Exception inbox
+        </PixelSectionHeading>
         <p className="muted small">
           {items.length} of {operations.items.length} shown. An item marked <em>emerging</em> has
           been detected once and is not yet confirmed; it is shown rather than hidden so nothing
@@ -168,7 +171,9 @@ export function ProDisruptionsPage() {
 
       {operations.feedProblems.length > 0 ? (
         <section className="pro-section" aria-labelledby="disruptions-feeds">
-          <h2 id="disruptions-feeds">Feeds not reporting</h2>
+          <PixelSectionHeading mark="warning" id="disruptions-feeds">
+            Feeds not reporting
+          </PixelSectionHeading>
           <p className="muted small">
             These are exceptions too. Where a feed is down, the services behind it are unmeasured
             rather than running normally, and no item above can speak for them.

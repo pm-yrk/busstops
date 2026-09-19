@@ -5,6 +5,7 @@ import { EmptyState, ErrorState, RouteBadge } from "../components/primitives.js"
 import { apiClient } from "../lib/api.js";
 import { useFetch } from "../lib/use-fetch.js";
 import { DataModeBanner, ScopeFilters, formatMetricValue } from "./ProPrimitives.js";
+import { PixelSectionHeading } from "../components/pixel/PixelSectionHeading.js";
 
 /**
  * Route comparison (docs/10_BUS_STOPS_PRO.md "Routes and operators").
@@ -49,7 +50,9 @@ export function RoutesPage() {
       ) : null}
 
       <section className="pro-section" aria-labelledby="routes-heading">
-        <h2 id="routes-heading">Route comparison</h2>
+        <PixelSectionHeading mark="route" id="routes-heading">
+          Route comparison
+        </PixelSectionHeading>
         {routes.rows.length > 0 ? (
           <div className="pro-table-wrap">
             <table className="pro-table">
@@ -111,7 +114,9 @@ export function RoutesPage() {
 
       {routes.rows.some((row) => row.weatherSensitivity) ? (
         <section className="pro-section" aria-labelledby="routes-weather">
-          <h2 id="routes-weather">Weather sensitivity</h2>
+          <PixelSectionHeading mark="weather" id="routes-weather">
+            Weather sensitivity
+          </PixelSectionHeading>
           <ul className="pro-list">
             {routes.rows
               .filter((row) => row.weatherSensitivity)

@@ -5,6 +5,7 @@ import { EmptyState, ErrorState, StateLozenge } from "../components/primitives.j
 import { apiClient } from "../lib/api.js";
 import { useFetch } from "../lib/use-fetch.js";
 import { CompareBar, DataModeBanner, RankBar, ScopeFilters } from "./ProPrimitives.js";
+import { PixelSectionHeading } from "../components/pixel/PixelSectionHeading.js";
 
 /**
  * Congestion (docs/10_BUS_STOPS_PRO.md).
@@ -89,7 +90,9 @@ export function CongestionPage() {
       </p>
 
       <section className="pro-section" aria-labelledby="congestion-heading">
-        <h2 id="congestion-heading">Hotspots</h2>
+        <PixelSectionHeading mark="place" id="congestion-heading">
+          Hotspots
+        </PixelSectionHeading>
         {hotspots.length > 0 ? (
           <ul className="pro-list">
             {hotspots.map((hotspot) => (

@@ -9,9 +9,11 @@ import {
   RouteBadge,
   ServiceBanner,
 } from "../components/primitives.js";
+import { PixelMasthead } from "../components/pixel/PixelMasthead.js";
 import { apiClient } from "../lib/api.js";
 import { useFetch } from "../lib/use-fetch.js";
 import "./OperatorPage.css";
+import { PixelSectionHeading } from "../components/pixel/PixelSectionHeading.js";
 
 /**
  * Operator page (docs/03_SITE_MAP_AND_UX.md "Operator/network").
@@ -68,16 +70,17 @@ export function OperatorPage() {
     <article className="page operator-page">
       <ServiceBanner meta={response.meta} />
 
-      <header className="operator-page__header">
-        <h1>{operator.name}</h1>
-        {operator.contactUrl ? (
-          <p>
+      <PixelMasthead
+        title={operator.name}
+        standfirst={
+          operator.contactUrl ? (
             <a href={operator.contactUrl} rel="noreferrer noopener" target="_blank">
               Operator website
             </a>
-          </p>
-        ) : null}
-      </header>
+          ) : undefined
+        }
+        props={["bus", "shelter"]}
+      />
 
       {/*
         What this operator is, in the fields the endpoint actually returns.
@@ -108,7 +111,9 @@ export function OperatorPage() {
       </section>
 
       <section aria-labelledby="operator-metrics-heading" className="operator-page__section">
-        <h2 id="operator-metrics-heading">Performance</h2>
+        <PixelSectionHeading mark="chart" id="operator-metrics-heading">
+          Performance
+        </PixelSectionHeading>
 
         {!rankingEligible && rankingIneligibleReason ? (
           <p className="operator-page__ranking-note">{rankingIneligibleReason}</p>
@@ -134,7 +139,9 @@ export function OperatorPage() {
       </section>
 
       <section aria-labelledby="operator-routes-heading" className="operator-page__section">
-        <h2 id="operator-routes-heading">Routes</h2>
+        <PixelSectionHeading mark="route" id="operator-routes-heading">
+          Routes
+        </PixelSectionHeading>
         {routes.length > 0 ? (
           <ul className="operator-page__routes">
             {routes.map((route) => (
@@ -172,7 +179,9 @@ export function OperatorPage() {
       </section>
 
       <section aria-labelledby="operator-coverage-heading" className="operator-page__section">
-        <h2 id="operator-coverage-heading">What we can and cannot see</h2>
+        <PixelSectionHeading mark="warning" id="operator-coverage-heading">
+          What we can and cannot see
+        </PixelSectionHeading>
         <ul className="operator-page__caveats">
           {coverageCaveats.map((caveat) => (
             <li key={caveat}>{caveat}</li>

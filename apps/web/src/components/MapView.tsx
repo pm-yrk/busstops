@@ -67,8 +67,23 @@ export interface MapViewProps {
   degraded?: boolean;
 }
 
-/** Configured at build time; absent in environments with no licence-compliant style available. */
-export function configuredStyleUrl(): string | null {
+/**
+ * Configured at build time; absent in environments with no licence-compliant style available.
+ *
+ * `__busstopsMapStyle` is a seam for the end-to-end suite, alongside the `__busstopsMap` one
+ * below. The style URL is baked in by Vite, and the e2e build deliberately has none so that most
+ * specs exercise the list-only fallback a style-less deployment really gets — but one spec asks
+ * what the renderer actually painted, and it cannot do that without a renderer. Rather than give
+ * every spec a basemap to fix one, that spec hands a style straight to this function before the
+ * page scripts run.
+ *
+ * Read-only, and it can only ever *add* a map to a page that would otherwise show a list. It
+ * cannot reach a deployment: nothing in the product writes it.
+ */
+export function configuredStyleUrl(): string | StyleSpecification | null {
+  const injected = (globalThis as { __busstopsMapStyle?: string | StyleSpecification })
+    .__busstopsMapStyle;
+  if (injected) return injected;
   const url = import.meta.env?.VITE_MAP_STYLE_URL;
   return typeof url === "string" && url.length > 0 ? url : null;
 }
@@ -129,7 +144,7 @@ export function MapView({
     try {
       map = new maplibregl.Map({
         container: containerRef.current,
-        style: styleUrl as string | StyleSpecification,
+        style: styleUrl,
         bounds: [bounds.west, bounds.south, bounds.east, bounds.north],
         attributionControl: { compact: true },
         // Motion is a preference, not a default: honour it at the map level too.

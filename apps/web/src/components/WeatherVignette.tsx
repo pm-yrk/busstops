@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 import type { StopWeather, WeatherAdviceKind } from "@busstops/contracts";
 import { describeCondition, weatherAdvice, weatherConditionKind } from "@busstops/adapters";
 import {
@@ -207,7 +208,18 @@ export function WeatherVignette({
     <div className="vignette__holder" ref={holder}>
       <figure
         className={`vignette vignette--${advice?.kind ?? "unavailable"}${compact ? " vignette--compact" : ""}`}
-        style={{ width, height: "auto" }}
+        /*
+         * The artwork's width is handed to CSS rather than set here.
+         *
+         * It used to be `width: width` on this element, which pinned the whole figure — picture
+         * and caption together — to the scene, so the caption wrapped to the picture's column the
+         * way a newspaper photograph's does. That is right when the two are stacked and wrong
+         * once there is room to put them side by side: an inline width cannot be widened by a
+         * media query, so the stop page's weather section stayed 528 pixels wide inside a
+         * 1148-pixel column with the rest of it empty. The stylesheet now decides, and this only
+         * says how wide the picture is.
+         */
+        style={{ "--scene-w": width } as CSSProperties}
         data-condition={kind ?? "unavailable"}
         data-person={person.id}
       >

@@ -2,6 +2,7 @@ import { useCallback, useState } from "react";
 import { Link } from "react-router-dom";
 import type { DisruptionItem, DisruptionsResponse } from "@busstops/contracts";
 import { LoadingBus } from "../components/LoadingBus.js";
+import { PixelMasthead } from "../components/pixel/PixelMasthead.js";
 import {
   ComparisonBar,
   EmptyState,
@@ -14,6 +15,7 @@ import { apiClient } from "../lib/api.js";
 import { useFetch } from "../lib/use-fetch.js";
 import { minutesLabel, percentLabel } from "../lib/format.js";
 import "./DisruptionsPage.css";
+import { PixelSectionHeading } from "../components/pixel/PixelSectionHeading.js";
 
 /**
  * Disruptions (docs/03_SITE_MAP_AND_UX.md "Disruptions/detail").
@@ -62,13 +64,11 @@ export function DisruptionsPage() {
     <article className="page disruptions-page">
       <ServiceBanner meta={response.meta} />
 
-      <header className="disruptions-page__header">
-        <h1>Disruption</h1>
-        <p className="muted">
-          What operators have announced, and what we have observed. They are different claims, so
-          they are shown separately.
-        </p>
-      </header>
+      <PixelMasthead
+        title="Disruption"
+        standfirst="What operators have announced, and what we have observed. They are different claims, so they are shown separately."
+        props={["bin", "stopFlag"]}
+      />
 
       <OfficialNotices
         notices={response.data.official}
@@ -78,7 +78,9 @@ export function DisruptionsPage() {
 
       <section className="disruptions-page__observed" aria-labelledby="observed-heading">
         <header className="disruptions-page__header">
-          <h2 id="observed-heading">Observed by Bus Stops</h2>
+          <PixelSectionHeading mark="chart" id="observed-heading">
+            Observed by Bus Stops
+          </PixelSectionHeading>
           <p className="muted">
             Worked out from watching buses, not announced by anyone. Two ways of asking what is
             wrong: they rarely agree, and both are worth reading.
@@ -128,7 +130,9 @@ export function DisruptionsPage() {
       </section>
 
       <section aria-labelledby="coverage-heading" className="disruptions-page__coverage">
-        <h2 id="coverage-heading">What this does not cover</h2>
+        <PixelSectionHeading mark="warning" id="coverage-heading">
+          What this does not cover
+        </PixelSectionHeading>
         {response.data.uncoveredAreas.length > 0 ? (
           <ul>
             {response.data.uncoveredAreas.map((area) => (

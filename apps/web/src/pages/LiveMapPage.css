@@ -61,12 +61,10 @@
   margin-bottom: var(--space-xl);
 }
 
-.live-map__section h2 {
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
-  font-size: var(--font-size-h3);
-}
+/*
+ * The list sections' headings are the shared `PixelSectionHeading`, which brings its own type and
+ * its own rule; the flex row and the size that used to be here went with it.
+ */
 
 .live-map__list {
   list-style: none;

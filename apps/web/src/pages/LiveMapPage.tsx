@@ -18,6 +18,7 @@ import {
   StateLozenge,
 } from "../components/primitives.js";
 import "./LiveMapPage.css";
+import { PixelSectionHeading } from "../components/pixel/PixelSectionHeading.js";
 
 /**
  * Live map (docs/09_BUS_STOPS_LIVE.md "Live map").
@@ -301,9 +302,13 @@ export function LiveMapPage() {
             */}
             {layers.vehicles && (
               <section aria-labelledby="vehicles-heading" className="live-map__section">
-                <h2 id="vehicles-heading">
-                  Buses in view <StateLozenge tone="live">{vehicles.length}</StateLozenge>
-                </h2>
+                <PixelSectionHeading
+                  mark="bus"
+                  id="vehicles-heading"
+                  aside={<StateLozenge tone="live">{vehicles.length}</StateLozenge>}
+                >
+                  Buses in view
+                </PixelSectionHeading>
 
                 {vehicles.length === 0 ? (
                   <EmptyState
@@ -367,9 +372,13 @@ export function LiveMapPage() {
 
             {layers.stops && (
               <section aria-labelledby="stops-heading" className="live-map__section">
-                <h2 id="stops-heading">
-                  Stops in view <StateLozenge tone="neutral">{stops.length}</StateLozenge>
-                </h2>
+                <PixelSectionHeading
+                  mark="stop"
+                  id="stops-heading"
+                  aside={<StateLozenge tone="neutral">{stops.length}</StateLozenge>}
+                >
+                  Stops in view
+                </PixelSectionHeading>
 
                 {stops.length === 0 ? (
                   <EmptyState

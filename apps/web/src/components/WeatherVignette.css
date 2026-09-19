@@ -18,10 +18,35 @@
 
 .vignette {
   margin: 0;
-  max-width: 100%;
+  /*
+   * Stacked, the figure is as wide as its picture, so the caption wraps to the same column the
+   * artwork occupies — which is what a photograph and its caption do on a page.
+   */
+  width: min(100%, calc(var(--scene-w) * 1px));
   display: grid;
   gap: var(--space-sm);
   min-width: 0;
+}
+
+/*
+ * Side by side once there is room for both.
+ *
+ * Stacked, the picture is 576 pixels of artwork with 560 pixels of nothing beside it and the
+ * numbers underneath — which is how the stop page came to have a section that was half empty
+ * white. The scene takes the width it chose and the reading, the advice and the facts take the
+ * rest, so the section is as wide as its own heading rule.
+ *
+ * `auto 1fr` rather than two equal columns because the scene's width is not negotiable: it is a
+ * whole multiple of 192 art pixels, and a column that squeezed it would push it down a scale.
+ */
+@media (min-width: 900px) {
+  .vignette {
+    /* Side by side, the figure takes the section; only the scene keeps the artwork's width. */
+    width: 100%;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: start;
+    gap: var(--space-lg);
+  }
 }
 
 .vignette__scene {

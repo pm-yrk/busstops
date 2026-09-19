@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import type { DisruptionNotice, DisruptionSeverity } from "@busstops/contracts";
 import "./OfficialNotices.css";
+import { PixelSectionHeading } from "./pixel/PixelSectionHeading.js";
 
 /**
  * What operators and authorities have actually said.
@@ -171,7 +172,9 @@ export function OfficialNotices({
   return (
     <section className="official-notices" aria-labelledby={headingId}>
       <header className="official-notices__header">
-        <h2 id={headingId}>Official now</h2>
+        <PixelSectionHeading mark="warning" id={headingId}>
+          Official now
+        </PixelSectionHeading>
         <p className="muted small">
           Published by operators and transport authorities. Bus Stops repeats these; it does not
           write them.

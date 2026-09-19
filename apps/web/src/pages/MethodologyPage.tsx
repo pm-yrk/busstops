@@ -1,5 +1,6 @@
 import { SOURCE_REGISTRY } from "@busstops/contracts";
 import "./MethodologyPage.css";
+import { PixelSectionHeading } from "../components/pixel/PixelSectionHeading.js";
 
 /**
  * Data and methodology (docs/03_SITE_MAP_AND_UX.md, docs/14_SECURITY.md "legal/trust pages").
@@ -20,7 +21,9 @@ export function MethodologyPage() {
       </p>
 
       <section aria-labelledby="sources-heading">
-        <h2 id="sources-heading">Sources</h2>
+        <PixelSectionHeading mark="chart" id="sources-heading">
+          Sources
+        </PixelSectionHeading>
         <div className="methodology__table-wrap">
           <table className="methodology__table">
             <caption className="visually-hidden">
@@ -68,7 +71,9 @@ export function MethodologyPage() {
       </section>
 
       <section aria-labelledby="definitions-heading">
-        <h2 id="definitions-heading">What the words mean</h2>
+        <PixelSectionHeading mark="route" id="definitions-heading">
+          What the words mean
+        </PixelSectionHeading>
         <dl className="methodology__definitions">
           <dt>Live</dt>
           <dd>
@@ -98,7 +103,9 @@ export function MethodologyPage() {
       </section>
 
       <section aria-labelledby="metrics-heading">
-        <h2 id="metrics-heading">How the metrics are calculated</h2>
+        <PixelSectionHeading mark="clock" id="metrics-heading">
+          How the metrics are calculated
+        </PixelSectionHeading>
 
         <h3>Delay</h3>
         <p>
@@ -138,7 +145,9 @@ export function MethodologyPage() {
       </section>
 
       <section aria-labelledby="limits-heading">
-        <h2 id="limits-heading">What this product does not do</h2>
+        <PixelSectionHeading mark="warning" id="limits-heading">
+          What this product does not do
+        </PixelSectionHeading>
         <ul>
           <li>
             It does not replay history. Raw vehicle positions are deleted automatically within 48

@@ -6,6 +6,7 @@ import { apiClient } from "../lib/api.js";
 import { useFetch } from "../lib/use-fetch.js";
 import { formatLondonDate } from "../lib/format.js";
 import { DataModeBanner, ProMetricTile } from "./ProPrimitives.js";
+import { PixelSectionHeading } from "../components/pixel/PixelSectionHeading.js";
 
 /**
  * The Daily Brief browser view (docs/12_DAILY_BRIEF.md).
@@ -63,7 +64,9 @@ export function DailyBriefPage() {
       {brief.sections.length > 0 ? (
         <>
           <section className="pro-section" aria-labelledby="brief-yesterday">
-            <h2 id="brief-yesterday">Yesterday</h2>
+            <PixelSectionHeading mark="clock" id="brief-yesterday">
+              Yesterday
+            </PixelSectionHeading>
             {brief.sections.map((section) => (
               <div key={section.title} className="pro-card">
                 <h3>{section.title}</h3>
@@ -78,7 +81,9 @@ export function DailyBriefPage() {
           </section>
 
           <section className="pro-section" aria-labelledby="brief-today">
-            <h2 id="brief-today">Today</h2>
+            <PixelSectionHeading mark="clock" id="brief-today">
+              Today
+            </PixelSectionHeading>
             <p>
               Today&apos;s outlook is published once the morning peak has produced enough
               observations to say anything useful. Until then this section stays empty rather than
@@ -94,7 +99,9 @@ export function DailyBriefPage() {
       )}
 
       <section className="pro-section" aria-labelledby="brief-caveats">
-        <h2 id="brief-caveats">Coverage</h2>
+        <PixelSectionHeading mark="warning" id="brief-caveats">
+          Coverage
+        </PixelSectionHeading>
         <ul>
           {brief.coverageCaveats.map((caveat) => (
             <li key={caveat}>{caveat}</li>

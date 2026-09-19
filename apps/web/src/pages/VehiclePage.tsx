@@ -20,6 +20,7 @@ import { haversineMetresBrowser } from "../lib/geo.js";
 import { savedPlatform, suggestPlatform, walkingUrlFor } from "../lib/navigation-handoff.js";
 import type { MapResponse, StopDeparturesResponse } from "@busstops/contracts";
 import "./VehiclePage.css";
+import { PixelSectionHeading } from "../components/pixel/PixelSectionHeading.js";
 
 /**
  * Vehicle page (docs/03_SITE_MAP_AND_UX.md "Vehicle", docs/09_BUS_STOPS_LIVE.md "Tracking").
@@ -337,7 +338,9 @@ export function VehiclePage() {
       </section>
 
       <section aria-labelledby="vehicle-stops-heading" className="vehicle-page__section">
-        <h2 id="vehicle-stops-heading">Stops ahead</h2>
+        <PixelSectionHeading mark="stop" id="vehicle-stops-heading">
+          Stops ahead
+        </PixelSectionHeading>
         {visibleStops.length > 0 ? (
           <>
             <ol className="vehicle-page__stops">
@@ -375,7 +378,9 @@ export function VehiclePage() {
       </section>
 
       <section aria-labelledby="vehicle-path-heading" className="vehicle-page__section">
-        <h2 id="vehicle-path-heading">Where it has been</h2>
+        <PixelSectionHeading mark="route" id="vehicle-path-heading">
+          Where it has been
+        </PixelSectionHeading>
         <p className="muted small">
           {scheduledShape.length > 0
             ? "The scheduled route shape is published; the actual path travelled is held only in the bounded analysis window and is not served here."
@@ -401,7 +406,9 @@ export function VehiclePage() {
       ) : null}
 
       <section aria-labelledby="vehicle-help-heading" className="vehicle-page__section">
-        <h2 id="vehicle-help-heading">Not moving?</h2>
+        <PixelSectionHeading mark="warning" id="vehicle-help-heading">
+          Not moving?
+        </PixelSectionHeading>
         {showStoppedPanel ? (
           <BusStoppedPanel
             vehicle={vehicle}

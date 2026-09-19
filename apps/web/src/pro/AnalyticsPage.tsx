@@ -5,6 +5,7 @@ import { EmptyState, ErrorState } from "../components/primitives.js";
 import { apiClient } from "../lib/api.js";
 import { useFetch } from "../lib/use-fetch.js";
 import { DataModeBanner, ProMetricTile, ScopeFilters } from "./ProPrimitives.js";
+import { PixelSectionHeading } from "../components/pixel/PixelSectionHeading.js";
 
 /**
  * Analytics (docs/10_BUS_STOPS_PRO.md).
@@ -64,7 +65,9 @@ export function AnalyticsPage() {
 function Section({ section }: { section: AnalyticsSection }) {
   return (
     <section className="pro-section" aria-labelledby={`analytics-${section.key}`}>
-      <h2 id={`analytics-${section.key}`}>{section.title}</h2>
+      <PixelSectionHeading mark="chart" id={`analytics-${section.key}`}>
+        {section.title}
+      </PixelSectionHeading>
       <p>{section.description}</p>
 
       {section.metrics.length > 0 ? (

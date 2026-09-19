@@ -118,14 +118,6 @@
   gap: var(--space-sm);
 }
 
-.disruptions-page__coverage h2 {
-  font-family: var(--font-pixel);
-  font-size: var(--font-size-small);
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  margin: 0;
-}
-
 .disruptions-page__coverage ul {
   margin: 0;
   padding-left: var(--space-lg);

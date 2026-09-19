@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import type { JourneyPlanOption, JourneyPlanResponse, SearchResult } from "@busstops/contracts";
 import { JourneyStrip } from "../components/JourneyStrip.js";
+import { PixelMasthead } from "../components/pixel/PixelMasthead.js";
 import { LoadingBus } from "../components/LoadingBus.js";
 import {
   ConfidenceChip,
@@ -11,7 +12,7 @@ import {
   StateLozenge,
 } from "../components/primitives.js";
 import { apiClient, ApiError } from "../lib/api.js";
-import { minutesLabel } from "../lib/format.js";
+import { formatLondonTime, minutesLabel } from "../lib/format.js";
 import { savedPlatform, suggestPlatform, walkingUrlFor } from "../lib/navigation-handoff.js";
 import "./JourneyPage.css";
 
@@ -133,13 +134,11 @@ export function JourneyPage() {
     <article className="page journey-page">
       {plan ? <ServiceBanner meta={plan.meta} /> : null}
 
-      <header className="journey-page__header">
-        <h1>Plan a journey</h1>
-        <p className="muted">
-          We show when you are likely to arrive as a range, not a single time, because that is what
-          the data actually supports.
-        </p>
-      </header>
+      <PixelMasthead
+        title="Plan a journey"
+        standfirst="We show when you are likely to arrive as a range, not a single time, because that is what the data actually supports."
+        props={["stopFlag", "person", "tree"]}
+      />
 
       <form
         className="journey-page__form"
@@ -283,12 +282,25 @@ function JourneyOptionCard({
   );
 }
 
-/** Seconds into the service day rendered as a clock time; 25:10 becomes 01:10 the next day. */
-export function clockLabel(secondsIntoServiceDay: number, _serviceDate: string): string {
-  const wrapped = ((secondsIntoServiceDay % 86_400) + 86_400) % 86_400;
-  const hours = Math.floor(wrapped / 3600);
-  const minutes = Math.floor((wrapped % 3600) / 60);
-  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+/**
+ * Seconds into the service day, rendered as the clock a passenger is looking at.
+ *
+ * This used to be arithmetic — take the seconds modulo a day and divide — and the unused
+ * `_serviceDate` parameter was the tell that something was wrong. The seconds are counted from
+ * `${serviceDate}T00:00:00.000Z`, so dividing them up produces a **UTC** clock face. Every other
+ * time in this product goes through `formatLondonTime`; this one did not, so from late March to
+ * late October it showed every journey an hour behind the clock on the passenger's wall. A bus
+ * leaving at 09:14 read 08:14, which is not merely wrong, it is in the past — which is exactly
+ * what it looked like.
+ *
+ * Rebuilding the instant and formatting it in Europe/London fixes the offset and the day boundary
+ * at once: 25:10 is a real moment after midnight, and the formatter renders it 01:10 without the
+ * modulo, in whichever of GMT or BST applies on that date.
+ */
+export function clockLabel(secondsIntoServiceDay: number, serviceDate: string): string {
+  const dayStart = Date.parse(`${serviceDate}T00:00:00.000Z`);
+  if (!Number.isFinite(dayStart)) return "--:--";
+  return formatLondonTime(new Date(dayStart + secondsIntoServiceDay * 1000));
 }
 
 function EndpointPicker({

@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import type { RouteDetailResponse } from "@busstops/contracts";
 import { OfficialNotices } from "../components/OfficialNotices.js";
+import { PixelMasthead } from "../components/pixel/PixelMasthead.js";
 import { LoadingBus } from "../components/LoadingBus.js";
 import { vehicleHref } from "../lib/geo.js";
 import {
@@ -17,6 +18,7 @@ import { useFetch, useTicker } from "../lib/use-fetch.js";
 import { formatLondonTime } from "../lib/format.js";
 import { isFavourited, toggleFavourite } from "../lib/favourites.js";
 import "./RoutePage.css";
+import { PixelSectionHeading } from "../components/pixel/PixelSectionHeading.js";
 
 /**
  * Route page (docs/03_SITE_MAP_AND_UX.md "Route").
@@ -106,20 +108,26 @@ export function RoutePage() {
     <article className="page route-page">
       <ServiceBanner meta={response.meta} />
 
-      <header className="route-page__header">
-        <RouteBadge name={route.publicName} ariaLabel={`Route ${route.publicName}`} />
-        <div>
-          <h1>{route.description ?? `Route ${route.publicName}`}</h1>
-          {operator ? (
-            <p className="muted">
+      {/*
+        The badge stands beside the title rather than inside the masthead's text, because it is
+        the route's identity and not decoration: it is the thing somebody scanned the page for.
+      */}
+      <PixelMasthead
+        title={route.description ?? `Route ${route.publicName}`}
+        standfirst={
+          operator ? (
+            <>
               Operated by <Link to={`/operators/${operator.id}`}>{operator.name}</Link>
-            </p>
+            </>
           ) : (
-            <p className="muted">The operator for this route is not recorded.</p>
-          )}
-        </div>
+            "The operator for this route is not recorded."
+          )
+        }
+        props={["bus", "stopFlag"]}
+      >
+        <RouteBadge name={route.publicName} ariaLabel={`Route ${route.publicName}`} />
         <DataAge seconds={ageSeconds} />
-      </header>
+      </PixelMasthead>
 
       {/*
         What this route is, before the list of everywhere it stops.
@@ -214,7 +222,9 @@ export function RoutePage() {
       )}
 
       <section aria-labelledby="route-live-heading" className="route-page__section">
-        <h2 id="route-live-heading">Buses running now</h2>
+        <PixelSectionHeading mark="bus" id="route-live-heading">
+          Buses running now
+        </PixelSectionHeading>
         {activeVehicles.length > 0 ? (
           <ul className="route-page__vehicles">
             {activeVehicles.map((vehicle) => (
@@ -253,7 +263,9 @@ export function RoutePage() {
       </section>
 
       <section aria-labelledby="route-variants-heading" className="route-page__section">
-        <h2 id="route-variants-heading">Where it goes</h2>
+        <PixelSectionHeading mark="route" id="route-variants-heading">
+          Where it goes
+        </PixelSectionHeading>
 
         {variants.length > 1 ? (
           <div className="route-page__variant-tabs" role="tablist" aria-label="Route directions">
@@ -303,7 +315,9 @@ export function RoutePage() {
       </section>
 
       <section aria-labelledby="route-frequency-heading" className="route-page__section">
-        <h2 id="route-frequency-heading">Frequency and reliability</h2>
+        <PixelSectionHeading mark="chart" id="route-frequency-heading">
+          Frequency and reliability
+        </PixelSectionHeading>
         <p>
           {headwaySummary ??
             "This route's timetable does not support a meaningful frequency, so we do not show one."}
@@ -346,7 +360,9 @@ export function RoutePage() {
         highway authority have published. Kept apart, because who said a thing is part of it.
       */}
       <section aria-labelledby="route-incidents-heading" className="route-page__section">
-        <h2 id="route-incidents-heading">Disruption</h2>
+        <PixelSectionHeading mark="works" id="route-incidents-heading">
+          Disruption
+        </PixelSectionHeading>
         {incidents.length > 0 ? (
           <ul className="route-page__incidents">
             {incidents.map((incident) => (

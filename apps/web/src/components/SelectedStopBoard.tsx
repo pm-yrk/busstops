@@ -4,7 +4,6 @@ import type { StopDeparturesResponse } from "@busstops/contracts";
 import { apiClient, ApiError } from "../lib/api.js";
 import { useTicker } from "../lib/use-fetch.js";
 import { ArrivalBoard } from "./ArrivalBoard.js";
-import { WeatherVignette } from "./WeatherVignette.js";
 import { LoadingBus } from "./LoadingBus.js";
 import "./SelectedStopBoard.css";
 
@@ -175,35 +174,14 @@ export function SelectedStopBoard({ atcoCode, onClose, onResolved }: SelectedSto
             degraded={response.meta.degradation !== "normal"}
           />
           {/*
-            The weather scene, at full size, directly under the next bus.
+            No weather scene here, deliberately.
 
-            It was drawn `compact` and hidden entirely when no reading existed — so the artwork
-            that exists for this exact moment, somebody standing at a stop deciding whether to
-            wait outside, was either a thin band or nothing at all. It is the second thing the
-            panel says now, at the largest whole scale the column fits.
-
-            `/v1/stops/:atco` carries the weather in the same response as the departures, so this
-            costs no extra request. A stop whose degree square the collector has not reached shows
-            the shelter in a neutral state and says so, rather than vanishing.
+            It lived in this panel for a while and it was the wrong place for it. Somebody who
+            taps a stop on a map is asking one question — when is my bus — and a 384-pixel
+            illustration between the board and the rest pushed the answer under the fold on a
+            phone. The panel is a board; the picture belongs on the full stop page, which is what
+            the link below promises and where there is room to be generous with it.
           */}
-          <div className="selected-stop__weather">
-            <WeatherVignette
-              weather={response.data.weather ?? null}
-              atcoCode={response.data.stop.atcoCode}
-              now={now}
-              /*
-               * Drawn only when one genuinely is. `expectedTime` is the live or estimated time, so
-               * a bus within the quarter hour is a bus a passenger can see coming — and a bus in
-               * the picture when none is due would be the artwork telling a lie the rest of the
-               * product is careful not to.
-               */
-              busApproaching={response.data.departures.some((departure) => {
-                if (!departure.expectedTime) return false;
-                const minutes = (Date.parse(departure.expectedTime) - now.getTime()) / 60_000;
-                return minutes >= 0 && minutes <= 15;
-              })}
-            />
-          </div>
 
           <StopFacts stop={response.data.stop} routes={response.data.routes} />
 

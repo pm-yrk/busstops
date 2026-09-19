@@ -519,9 +519,25 @@ describe("JourneyPage", () => {
     expect(screen.getByText(/are not stored/)).toBeTruthy();
   });
 
-  it("renders times past midnight as the next day's clock, not as 25:10", () => {
-    expect(clockLabel(90_600, "2026-09-03")).toBe("01:10");
-    expect(clockLabel(32_400, "2026-09-03")).toBe("09:00");
+  /*
+   * These two assertions used to read 01:10 and 09:00, which is what the arithmetic produced and
+   * not what a passenger's clock says. The seconds are counted from `${serviceDate}T00:00:00Z`,
+   * so dividing them up renders a UTC clock face — and for the seven months of British Summer
+   * Time that is an hour behind the wall, which made every planned journey look like it had
+   * already gone. The old numbers were the implementation written down rather than the
+   * requirement, so they move.
+   */
+  it("renders a journey time on the passenger's clock, through British Summer Time", () => {
+    // 3 September is BST (UTC+1): nine hours after UTC midnight is ten in the morning here.
+    expect(clockLabel(32_400, "2026-09-03")).toBe("10:00");
+    // And past midnight is the next day's clock rather than 25:10.
+    expect(clockLabel(90_600, "2026-09-03")).toBe("02:10");
+  });
+
+  it("renders the same seconds an hour differently once the clocks go back", () => {
+    // 3 January is GMT, so the offset is zero and the arithmetic and the clock agree.
+    expect(clockLabel(32_400, "2026-01-03")).toBe("09:00");
+    expect(clockLabel(90_600, "2026-01-03")).toBe("01:10");
   });
 });
 

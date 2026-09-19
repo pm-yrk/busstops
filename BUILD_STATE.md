@@ -1,8 +1,119 @@
 # Bus Stops. Build State
 
-Last updated: 2026-09-19 (run 65: route detail's stop read cut 4x and measured; the live XML parse is what is left)
+Last updated: 2026-09-19 (run 66: the pixel idiom carried onto every page; run 65's byte work still open)
 
 ## Current status
+
+### Run 66: the artwork stops being one illustration on the home page
+
+The product had a street scene on the home page and seventeen pages of bare
+`h2`s on warm white under it. Three pieces close that, none of them a redesign:
+
+**A masthead band.** `PixelMasthead` puts a sliver of the hero's _own_ kerb tile
+under a page title, full bleed, with one to three things standing on it. It is
+the same `edgeWide` tile at the same whole-number scale, so every page stands on
+literally the same pavement as the home page rather than on a second drawing of
+one. Journey, Disruptions, Route and Operator take it; Pro takes the band alone
+(`PixelKerb`) under the header it already has.
+
+Three visual rounds were needed and each found a real fault by looking:
+
+1. The props stood 104px tall in a 52px band and overlapped the heading. The box
+   now grows to whatever is standing on it (`bandArtHeight`).
+2. Everything stood six pixels _into the road_, because the band placed them on
+   the bottom of its box rather than on the kerb. Fixed with `scene.mjs`'s own
+   geometry — `{ pavement: 132, kerb: 154, road: 160 }` — not numbers read off a
+   screenshot.
+3. The tile is a whole building, so painting the band's full height sliced the
+   terrace through the middle of its windows. Only the pavement-to-gutter strip
+   is painted now; the props rise into transparent air above it.
+
+A fourth fault was in the layout rather than the art: the props were positioned
+with `:nth-child`, which counted the paving `<span>` as a child, so every offset
+was one place out and the last prop had no rule at all. They are a flex row now,
+which also handles a 96-pixel bus and an 11-pixel person in the same band.
+
+**A section heading.** Route and Operator already headed their sections with the
+pixel face, small and uppercase over a rule, and it was the best-looking thing on
+either page. `PixelSectionHeading` is that treatment with a mark beside it, and
+it is now the only one: the per-page copies in `RoutePage.css`,
+`OperatorPage.css`, `DisruptionsPage.css`, `LiveMapPage.css` and `ProLayout.css`
+were deleted rather than left to drift. Pro keeps its one deliberate difference —
+a hairline rather than two pixels of ink, because Pro is calmer than Live.
+
+Stop, Route, Operator, Disruptions, Home, Vehicle, Methodology, the live map's
+two lists, the accessibility card, the official-notices block and eleven Pro
+pages take it. Three new 16-unit marks were drawn for it (`PixelBusMark`,
+`PixelStopMark`, `PixelPersonMark`): asking `PixelSprite` for a 24px bus rounds
+to the nearest whole multiple of its 33-pixel height, which is one, so the
+"small" mark would have come out 96 pixels wide. `PixelCloud` was redrawn too —
+it was three rectangles of `--colour-hairline`, which on warm white is very
+nearly invisible.
+
+**The weather scene is on the stop page only.** It has come out of the map's
+click panel entirely: that panel is a board, and a 384-pixel illustration above
+the fold pushes the next bus underneath it. `SelectedStopBoard` is back to
+58vh and a 500-560px desktop panel.
+
+It also stopped being half a section. The `<figure>` carried an inline
+`width` pinned to the artwork, so caption and picture wrapped to the picture's
+column — right when they are stacked, wrong on a 1148px page, where the section
+was 528px of content and 620px of nothing. The width is a CSS custom property
+now, and above 900px the picture and its readings sit side by side.
+
+**Journey times were an hour out in summer.** `clockLabel` was the only time
+formatter in the app not going through `formatLondonTime`: it did UTC arithmetic
+on a service-day offset, so during BST every journey time displayed an hour
+behind — which is what "journeys in the past" was. Two tests asserted the wrong
+numbers (01:10 and 09:00 for a 10:00 BST departure); they had encoded the
+implementation rather than the requirement and now cover a BST date and a GMT
+date each.
+
+**And a CI failure that was nobody's regression.** `map-paints.spec.ts` has had
+twelve cases red in CI for weeks, and the reason was environmental rather than
+in the product: `configuredStyleUrl()` reads `VITE_MAP_STYLE_URL` at build time,
+the e2e build never sets it, so `MapView` renders its list-only fallback and
+never constructs a MapLibre map — and a spec that asks `queryRenderedFeatures`
+what the renderer painted had no renderer to ask.
+
+The first fix was the wrong one and the suite said so. Setting the variable for
+the whole e2e build turned the map on for every spec, and the style-less build
+is _deliberate_: the other specs use it to exercise the fallback a style-less
+deployment really gets, and `art-bench` skips its marker section on exactly that
+basis. Turning it on broke `art-bench` at two viewports — and incidentally
+exposed that its marker assertions are themselves stale, written for DOM markers
+the map replaced with GL layers, and only ever passing because that early return
+always fired.
+
+So the style is injected per-spec instead. `configuredStyleUrl()` honours a
+`__busstopsMapStyle` global, the way `MapView` already exposes `__busstopsMap`
+for the deployed visual pass, and `map-paints` sets it in an init script with the
+glyphless style right there in the file. No route, no fetch, no 404, nothing
+shipped to `public/`, and every other spec sees exactly what it saw before.
+
+`art-bench`'s dead marker assertions are noted and left alone: that is a separate
+change, and reaching into it while fixing something else is how a green suite
+becomes an unreviewable diff.
+
+Two of this run's own tests had to change, and both were describing the old
+product rather than failing:
+
+- The e2e assertion that the vignette is _in_ the map panel now asserts the rule
+  it was given: the panel is a board, and clicking through to the stop page is
+  where the picture is.
+- `map-paints` read the bus count from `#vehicles-heading .lozenge`. The count
+  now sits beside the heading rather than inside it, so that selector found
+  nothing and the spec passed its first assertion by failing to look.
+
+Gates: eslint clean, prettier clean, typecheck clean, 1180 node tests and 190 web
+tests passing.
+
+**Not done, and not claimed.** No new mockups reached the repository, so the art
+_quality_ benchmark this run was asked to match could not be looked at; what is
+here raises the treatment by the standard already written down in
+`docs/02_DESIGN_SYSTEM.md`. The live map's clutter and bus-selection work is not
+in this milestone. Run 65's open item — 0.93 MiB of SIRI-VM XML parsed on the
+route page's critical path — is untouched and still the cause of the remaining 1102.
 
 ### Run 65: the stop read is a quarter of what it was, and the ceiling is still there
 

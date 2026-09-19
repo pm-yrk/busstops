@@ -18,16 +18,6 @@
   gap: var(--space-md);
 }
 
-.operator-page__section h2 {
-  font-family: var(--font-pixel);
-  font-size: var(--font-size-small);
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  margin: 0;
-  padding-bottom: var(--space-sm);
-  border-bottom: 2px solid var(--colour-ink);
-}
-
 /*
  * The ineligibility note sits above the metrics rather than beneath them: read after a row of
  * figures it would look like a footnote to a ranking that should not exist at all.

@@ -6,6 +6,7 @@ import { apiClient } from "../lib/api.js";
 import { useFetch } from "../lib/use-fetch.js";
 import { formatLondonDate } from "../lib/format.js";
 import { DataModeBanner, ProMetricTile } from "./ProPrimitives.js";
+import { PixelSectionHeading } from "../components/pixel/PixelSectionHeading.js";
 
 type Period = "daily" | "weekly" | "monthly";
 
@@ -74,7 +75,7 @@ export function ReportsPage() {
       {report.sections.length > 0 ? (
         report.sections.map((section) => (
           <section className="pro-section" key={section.title}>
-            <h2>{section.title}</h2>
+            <PixelSectionHeading mark="chart">{section.title}</PixelSectionHeading>
             <div className="pro-grid">
               {section.metrics.map((metric) => (
                 <ProMetricTile key={metric.key} metric={metric} />
@@ -91,7 +92,9 @@ export function ReportsPage() {
       )}
 
       <section className="pro-section" aria-labelledby="report-caveats">
-        <h2 id="report-caveats">What this report does not cover</h2>
+        <PixelSectionHeading mark="warning" id="report-caveats">
+          What this report does not cover
+        </PixelSectionHeading>
         <ul>
           {report.coverageCaveats.map((caveat) => (
             <li key={caveat}>{caveat}</li>

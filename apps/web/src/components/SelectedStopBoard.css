@@ -36,18 +36,13 @@
    * offset, so that clears them with room rather than exactly.
    */
   /*
-   * Tall enough that the weather scene is in it, not merely in the document.
+   * A board's worth of height, not an illustration's.
    *
-   * Run 64 measured the consequence of 62vh: "352x256 (scale 2) in a 358px panel, OFF SCREEN".
-   * The scale fix worked and the scene was still invisible on a phone, because the arrival board
-   * fills the sheet and the picture starts past its bottom edge — which is exactly the reported
-   * symptom, the space under NEXT BUS looking empty.
-   *
-   * The 6rem clearance was for MapLibre's controls, and those moved to the top left in run 58, so
-   * the bottom of the map is no longer the thing being protected. Four rems still keeps a strip
-   * of map visible above the sheet, so it reads as a sheet over a map rather than as a page.
+   * This went to 80vh to fit the weather scene, and the scene has moved to the stop page where it
+   * belongs. What is left is a heading, the next bus and a few rows, so the sheet takes what it
+   * needs and leaves the map visible behind it — which is the reason for opening it in place.
    */
-  max-height: min(80vh, calc(100% - 4rem));
+  max-height: min(58vh, calc(100% - 4rem));
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: var(--space-md);
@@ -79,17 +74,15 @@
  */
 @media (min-width: 1100px) {
   /*
-   * Five hundred and thirty is not an arbitrary number inside that range. The weather scene is 176
-   * art pixels wide and is only ever drawn at a whole multiple, so the panel's width decides its
-   * size in steps: at 500 it can fit two, and the scene sat 150 pixels short of the panel's own
-   * edge — present, and not the thing you saw first.
+   * Wide enough that a destination and a time sit on one line each.
    *
-   * Three of them is 528, and the panel needs 530, because `box-sizing: border-box` means the
-   * hairline is inside the width and the weather bleeds back over the padding but not over that.
-   * Measured rather than reasoned: at 528 the scene has 526px to live in and drops to two.
+   * The floor here used to be three times the weather art's 176 pixels. That picture is on the
+   * stop page now, so the number goes back to the thing it was always really about: "Leeds
+   * Bradford Airport" wrapping onto three lines is what pushed the next departure below the fold,
+   * and around five hundred is where that stops happening.
    */
   .selected-stop {
-    width: clamp(530px, 37vw, 560px);
+    width: clamp(500px, 34vw, 560px);
   }
 }
 
@@ -127,46 +120,15 @@
 }
 
 /*
- * The weather sits under the next bus, never above it.
- *
- * Someone opening a stop wants to know when their bus is; whether they will get wet while they
- * wait is the second question. Putting the vignette first would be a decorative panel with a
- * timetable underneath it.
- */
-.selected-stop__weather {
-  margin-top: var(--space-md);
-  padding-top: var(--space-md);
-  border-top: 1px solid var(--colour-hairline);
-}
-
-/*
  * The panel's rhythm, rather than a stack of components.
  *
- * Four movements, in the order a passenger needs them: when the bus is, what the weather is doing
- * where they are standing, what this stop is, and the way through to everything else. The rules
- * below are about the joins — space between the movements, and a hairline before the last one so
- * the link reads as a way out rather than as another fact.
+ * Three movements, in the order a passenger needs them: when the bus is, what this stop is, and
+ * the way through to everything else. The rules below are about the joins — space between the
+ * movements, and a hairline before the last one so the link reads as a way out rather than as
+ * another fact.
  */
 .selected-stop > * + * {
   margin-top: var(--space-md);
-}
-
-.selected-stop__weather {
-  /*
-   * Full bleed, and genuinely so — the padding is not put back.
-   *
-   * It was bled out and padded in again, which moves the border and leaves the picture measuring
-   * the same column as the text. Thirty-two pixels of that column is the difference between two
-   * whole scales of the artwork on a phone, so giving them back doubles the size of the scene
-   * where it matters most. The figure is exactly as wide as the art and centres in what is left,
-   * so nothing runs to the edge.
-   */
-  margin-inline: calc(var(--space-md) * -1);
-}
-
-/* The art is a whole number of pixels wide; whatever is left over goes evenly on both sides. */
-.selected-stop__weather .vignette {
-  margin-inline: auto;
 }
 
 .stop-facts {

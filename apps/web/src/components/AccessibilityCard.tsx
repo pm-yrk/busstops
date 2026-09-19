@@ -6,6 +6,7 @@ import type {
   StopAccessibility,
 } from "@busstops/contracts";
 import "./AccessibilityCard.css";
+import { PixelSectionHeading } from "./pixel/PixelSectionHeading.js";
 
 /**
  * Accessibility at this stop, as facts with sources.
@@ -129,7 +130,9 @@ export function AccessibilityCard({ accessibility, serviceFacts = [] }: Accessib
   return (
     <section className="a11y-card" aria-labelledby="accessibility-heading">
       <header className="a11y-card__header">
-        <h2 id="accessibility-heading">Accessibility at this stop</h2>
+        <PixelSectionHeading mark="person" id="accessibility-heading">
+          Accessibility at this stop
+        </PixelSectionHeading>
         <p className="muted small">
           What each source has published. Nothing here is assumed: a fact nobody has recorded is
           shown as not recorded, never as absent.
@@ -181,7 +184,9 @@ export function AccessibilityCard({ accessibility, serviceFacts = [] }: Accessib
       ) : null}
 
       <section className="a11y-card__vehicle" aria-labelledby="vehicle-accessibility-heading">
-        <h3 id="vehicle-accessibility-heading">The buses that call here</h3>
+        <PixelSectionHeading level={3} mark="bus" id="vehicle-accessibility-heading">
+          The buses that call here
+        </PixelSectionHeading>
         {serviceFacts.length > 0 ? (
           <ul className="a11y-card__facts">
             {serviceFacts.map((fact) => (

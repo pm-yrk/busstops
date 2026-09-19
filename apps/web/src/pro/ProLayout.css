@@ -75,14 +75,13 @@
   gap: var(--space-md);
 }
 
-.pro-section > h2 {
-  font-family: var(--font-pixel);
-  font-size: var(--font-size-small);
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  margin: 0;
-  padding-bottom: var(--space-sm);
-  border-bottom: 1px solid var(--colour-ink);
+/*
+ * Pro's section headings are the shared `PixelSectionHeading` now, so the type rules that used to
+ * live here have gone with it. What stays is the one difference that was deliberate: Pro is
+ * calmer than Live, so its sections are ruled with a hairline rather than with two pixels of ink.
+ */
+.pro-section .pixel-heading {
+  border-bottom-width: 1px;
 }
 
 .pro-grid {

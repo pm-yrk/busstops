@@ -4,15 +4,6 @@
   --page-max: 780px;
 }
 
-.journey-page__header h1 {
-  font-size: var(--font-size-h2);
-  margin: 0 0 var(--space-xs);
-}
-
-.journey-page__header p {
-  margin: 0;
-}
-
 .journey-page__form {
   display: grid;
   gap: var(--space-md);

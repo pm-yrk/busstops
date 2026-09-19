@@ -26,16 +26,6 @@
   gap: var(--space-md);
 }
 
-.route-page__section h2 {
-  font-family: var(--font-pixel);
-  font-size: var(--font-size-small);
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  margin: 0;
-  padding-bottom: var(--space-sm);
-  border-bottom: 2px solid var(--colour-ink);
-}
-
 .route-page__vehicles,
 .route-page__metrics,
 .route-page__incidents {

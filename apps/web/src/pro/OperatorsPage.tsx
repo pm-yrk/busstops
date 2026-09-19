@@ -5,6 +5,7 @@ import { EmptyState, ErrorState, StateLozenge } from "../components/primitives.j
 import { apiClient } from "../lib/api.js";
 import { useFetch } from "../lib/use-fetch.js";
 import { DataModeBanner, ProMetricTile, ScopeFilters } from "./ProPrimitives.js";
+import { PixelSectionHeading } from "../components/pixel/PixelSectionHeading.js";
 
 /**
  * Operator scorecards (docs/10_BUS_STOPS_PRO.md).
@@ -58,7 +59,9 @@ export function OperatorsPage() {
       ) : null}
 
       <section className="pro-section" aria-labelledby="ops-comparable">
-        <h2 id="ops-comparable">Scorecards</h2>
+        <PixelSectionHeading mark="chart" id="ops-comparable">
+          Scorecards
+        </PixelSectionHeading>
         {comparable.length > 0 ? (
           <ul className="pro-list">
             {comparable.map((card) => (
@@ -97,7 +100,9 @@ export function OperatorsPage() {
 
       {notComparable.length > 0 ? (
         <section className="pro-section" aria-labelledby="ops-not-comparable">
-          <h2 id="ops-not-comparable">Not comparable</h2>
+          <PixelSectionHeading mark="warning" id="ops-not-comparable">
+            Not comparable
+          </PixelSectionHeading>
           <p className="muted small">
             These operators are shown separately rather than ranked. Their figures describe the
             small part of their service we can see, and placing them in the list above would invite

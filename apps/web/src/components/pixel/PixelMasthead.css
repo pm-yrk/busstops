@@ -1,0 +1,150 @@
+/*
+ * The page masthead: a title, a sentence, and a sliver of the hero's own street under both.
+ *
+ * The band is the bottom border of the header rather than a panel of its own, so it reads as the
+ * page standing on something rather than as an illustration that has been pasted above the
+ * content. Everything is scaled by whole numbers and rendered `pixelated`, the same discipline
+ * the hero and the map markers follow.
+ */
+.pixel-masthead {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: start;
+  gap: var(--space-sm) var(--space-md);
+  margin-bottom: var(--space-lg);
+}
+
+.pixel-masthead__text h1 {
+  margin: 0;
+}
+
+.pixel-masthead__standfirst {
+  margin: var(--space-xs) 0 0;
+  max-width: 54ch;
+  color: var(--colour-muted);
+}
+
+.pixel-masthead__aside {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  /* Sits on the title's line, not below it, so the band stays the header's last row. */
+  grid-row: 1;
+  grid-column: 2;
+}
+
+/*
+ * The kerb.
+ *
+ * `--edge` is the same 32-pixel repeating tile the hero paints the rest of its street with, so
+ * this is literally the same pavement rather than a second drawing of one. Only the top of the
+ * tile is shown — pavement and a little road — because a masthead wants a hint of a street and
+ * not a street.
+ */
+/*
+ * Full bleed, because a street that stops in a rectangle is a picture of a street.
+ *
+ * The hero already paints its road off both edges of the window for exactly this reason. The
+ * masthead band sat inside the content column and read as a pasted image; running it to the
+ * viewport edges makes it the ground the page stands on.
+ */
+.pixel-masthead__band {
+  grid-column: 1 / -1;
+  position: relative;
+  /*
+   * A row of things standing on a pavement, laid out end-first.
+   *
+   * Flow, not fixed offsets. The first version gave each prop a hard `right` in art pixels, which
+   * broke twice over: the paving is itself a child, so `:nth-child` numbered everything one place
+   * out and the last prop got no rule at all; and a hard offset assumes every prop is the same
+   * width, when a bus is 96 art pixels and a waiting person is 11. A flex row spaces whatever a
+   * page asks for, in the order it asked, without the component knowing the sprite sizes.
+   */
+  display: flex;
+  justify-content: flex-end;
+  align-items: flex-end;
+  gap: calc(var(--prop-gap) * var(--px) * 1px);
+  /* Feet on the kerb line, which is where the art says the pavement ends. */
+  padding-block-end: calc(var(--kerb-up) * var(--px) * 1px);
+  padding-inline-end: calc(var(--prop-inset) * var(--px) * 1px);
+  height: calc(var(--band-h) * var(--px) * 1px);
+  /* Air, not asphalt. The paving is a child so the box can be taller than the street. */
+  margin-top: var(--space-sm);
+}
+
+/*
+ * The paving, kerb and gutter — full bleed, because a street that stops in a rectangle is a
+ * picture of a street. The hero paints its road off both edges of the window for the same reason.
+ */
+.pixel-masthead__paving {
+  position: absolute;
+  inset-inline: calc(50% - 50vw);
+  bottom: 0;
+  height: calc(var(--strip-h) * var(--px) * 1px);
+  background-image: var(--edge);
+  background-repeat: repeat-x;
+  background-position-x: left;
+  /*
+   * Slid so the strip starts at the pavement row rather than at the top of the tile. The tile is
+   * a whole building — brickwork, then paving at 132, the kerb at 154, carriageway below — and
+   * painting any of the masonry cut it through the middle of its windows.
+   */
+  background-position-y: calc(var(--strip-offset) * var(--px) * -1px);
+  background-size: calc(var(--edge-w) * var(--px) * 1px) calc(var(--edge-h) * var(--px) * 1px);
+  image-rendering: pixelated;
+}
+
+/*
+ * What stands on it.
+ *
+ * Laid out from the right, spaced apart. Right rather than left because the title reads from the
+ * left and props under the first words compete with them; pushed to the far end they are a detail
+ * the eye finds after the sentence.
+ */
+.pixel-masthead__prop {
+  position: relative;
+  flex: none;
+  image-rendering: pixelated;
+  display: block;
+}
+
+/*
+ * A phone gets the title and the kerb and fewer things standing on it.
+ *
+ * At 390px the aside wraps under the title, and three props plus a heading in a narrow column is
+ * a crowded band rather than a warm one.
+ */
+@media (max-width: 599px) {
+  .pixel-masthead {
+    grid-template-columns: 1fr;
+  }
+
+  .pixel-masthead__aside {
+    grid-row: auto;
+    grid-column: 1;
+  }
+
+  /*
+   * `nth-of-type`, not `nth-child`: the paving is a sibling span, and counting it as a child is
+   * what put the offsets one place out in the first place.
+   */
+  .pixel-masthead__prop:nth-of-type(3) {
+    display: none;
+  }
+}
+
+/*
+ * Reduced motion does not apply here — nothing moves — but forced-colours does: a decorative
+ * background image is dropped by the browser and would leave a bare box, so the band collapses to
+ * a rule rather than to a gap.
+ */
+@media (forced-colors: active) {
+  .pixel-masthead__band {
+    height: 0;
+    border-top: 1px solid CanvasText;
+  }
+
+  .pixel-masthead__prop {
+    display: none;
+  }
+}

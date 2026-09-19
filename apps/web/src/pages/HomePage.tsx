@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 import { Wordmark } from "../components/Wordmark.js";
 import { PixelStreetScene } from "../components/pixel/PixelStreetScene.js";
 import "./HomePage.css";
+import { PixelSectionHeading } from "../components/pixel/PixelSectionHeading.js";
 
 /**
  * Home (docs/03_SITE_MAP_AND_UX.md "Page requirements").
@@ -52,7 +53,9 @@ export function HomePage() {
       </section>
 
       <section className="home__section page" aria-labelledby="home-live-heading">
-        <h2 id="home-live-heading">Bus Stops Live</h2>
+        <PixelSectionHeading mark="bus" id="home-live-heading">
+          Bus Stops Live
+        </PixelSectionHeading>
         {/*
           What the deployment actually does, not what the architecture allows.
 
@@ -98,7 +101,9 @@ export function HomePage() {
       </section>
 
       <section className="home__section page" aria-labelledby="home-pro-heading">
-        <h2 id="home-pro-heading">Bus Stops Pro</h2>
+        <PixelSectionHeading mark="chart" id="home-pro-heading">
+          Bus Stops Pro
+        </PixelSectionHeading>
         <p className="home__lede">
           Network health, punctuality, reliability, congestion and abnormality analysis for
           transport professionals. The demo is public and needs no sign-in.
@@ -109,7 +114,9 @@ export function HomePage() {
       </section>
 
       <section className="home__section page" aria-labelledby="home-trust-heading">
-        <h2 id="home-trust-heading">Built to be checkable</h2>
+        <PixelSectionHeading mark="warning" id="home-trust-heading">
+          Built to be checkable
+        </PixelSectionHeading>
         <p className="home__lede">
           Every number carries its source, its freshness and its confidence. Where coverage is
           incomplete, the product leads with that fact rather than hiding it.

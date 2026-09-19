@@ -102,6 +102,54 @@ export function PixelCloudDrift(props: SpriteProps) {
   return <PixelSprite image={ART.cloud!} {...props} />;
 }
 
+/*
+ * Interface marks for the things the artwork draws at full size.
+ *
+ * A heading wants a bus at sixteen units, not the ninety-six-pixel sprite that drives across the
+ * home page: asked for at 24px, `PixelSprite` rounds to the nearest whole multiple of the native
+ * height, which for a 33-pixel-tall bus is one — so the "small" mark would have come out 96 pixels
+ * wide and pushed the heading off its line. These are the same vehicle, the same flag and the same
+ * person said in a few squares, which is what the rest of the mark set does.
+ */
+export function PixelBusMark(props: SpriteProps) {
+  return (
+    <PixelCanvas viewBox="0 0 16 16" {...props}>
+      <rect x="2" y="3" width="12" height="8" fill={RED} />
+      <rect x="2" y="3" width="12" height="2" fill={RED_DARK} />
+      <rect x="3" y="6" width="4" height="3" fill={SURFACE} />
+      <rect x="9" y="6" width="4" height="3" fill={SURFACE} />
+      <rect x="2" y="11" width="12" height="1" fill={INK} />
+      <rect x="4" y="12" width="2" height="2" fill={INK} />
+      <rect x="10" y="12" width="2" height="2" fill={INK} />
+    </PixelCanvas>
+  );
+}
+
+export function PixelStopMark(props: SpriteProps) {
+  return (
+    <PixelCanvas viewBox="0 0 16 16" {...props}>
+      <rect x="4" y="2" width="8" height="6" fill={RED} />
+      <rect x="5" y="4" width="6" height="1" fill={SURFACE} />
+      <rect x="5" y="6" width="4" height="1" fill={SURFACE} />
+      <rect x="7" y="8" width="2" height="6" fill={INK} />
+      <rect x="4" y="14" width="8" height="1" fill={HAIRLINE} />
+    </PixelCanvas>
+  );
+}
+
+export function PixelPersonMark(props: SpriteProps) {
+  return (
+    <PixelCanvas viewBox="0 0 16 16" {...props}>
+      <rect x="6" y="2" width="4" height="3" fill={INK} />
+      <rect x="5" y="6" width="6" height="5" fill={BLUE} />
+      <rect x="3" y="7" width="2" height="3" fill={BLUE} />
+      <rect x="11" y="7" width="2" height="3" fill={BLUE} />
+      <rect x="5" y="11" width="2" height="4" fill={INK} />
+      <rect x="9" y="11" width="2" height="4" fill={INK} />
+    </PixelCanvas>
+  );
+}
+
 export function PixelTrafficLights(props: SpriteProps) {
   return (
     <PixelCanvas viewBox="0 0 16 16" {...props}>
@@ -180,12 +228,26 @@ export function PixelSun(props: SpriteProps) {
   );
 }
 
+/*
+ * A cloud with an edge on it.
+ *
+ * It was three rectangles of `--colour-hairline`, which is the colour a divider is drawn in — on
+ * the warm-white canvas the mark was very nearly invisible, and beside a heading it read as a
+ * rendering fault rather than as a cloud. The body stays pale, because a cloud is pale; the
+ * outline in muted ink is what makes it a shape.
+ */
 export function PixelCloud(props: SpriteProps) {
   return (
     <PixelCanvas viewBox="0 0 16 16" {...props}>
-      <rect x="4" y="6" width="8" height="3" fill={HAIRLINE} />
-      <rect x="3" y="7" width="10" height="3" fill={HAIRLINE} />
-      <rect x="6" y="4" width="5" height="2" fill={HAIRLINE} />
+      <rect x="5" y="3" width="6" height="1" fill={MUTED} />
+      <rect x="4" y="4" width="8" height="1" fill={MUTED} />
+      <rect x="2" y="6" width="3" height="1" fill={MUTED} />
+      <rect x="1" y="7" width="2" height="4" fill={MUTED} />
+      <rect x="13" y="5" width="2" height="6" fill={MUTED} />
+      <rect x="2" y="11" width="12" height="1" fill={MUTED} />
+      <rect x="4" y="5" width="9" height="1" fill={SURFACE} />
+      <rect x="3" y="6" width="10" height="5" fill={SURFACE} />
+      <rect x="2" y="7" width="1" height="4" fill={SURFACE} />
     </PixelCanvas>
   );
 }

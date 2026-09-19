@@ -27,13 +27,21 @@ for (const size of [
 ]) {
   test(`the map paints every bus the list counts at ${size.name}`, async ({ page }) => {
     await page.setViewportSize(size);
-    await page.route("**/style.json", (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify(GLYPHLESS_STYLE),
-      }),
-    );
+    /*
+     * Hand the style to the page before its scripts run.
+     *
+     * The e2e build has no `VITE_MAP_STYLE_URL` on purpose — the other specs use the style-less
+     * build to exercise the list-only fallback, and `art-bench` skips its marker section on the
+     * same basis — so `MapView` would render that fallback here and there would be no renderer to
+     * ask what was painted. That is why these twelve cases had been red in CI for weeks: not a
+     * fault in the product, but a spec that could only ever pass against a real deployment.
+     *
+     * Injecting it rather than serving it at a URL also removes a moving part: no route, no
+     * fetch, no 404 to reason about, and the style under test is right here in the file.
+     */
+    await page.addInitScript((style) => {
+      (globalThis as { __busstopsMapStyle?: unknown }).__busstopsMapStyle = style;
+    }, GLYPHLESS_STYLE);
     await mockApi(page, { "/v1/map": MAP_WITH_TRAFFIC });
     await page.goto("/live");
     await page.waitForLoadState("networkidle");
@@ -56,8 +64,18 @@ for (const size of [
         zoom: instance ? Math.round(instance.getZoom() * 10) / 10 : null,
         buses: count(["vehicle-buses", "vehicle-pips"], false) + count(["vehicle-clusters"], true),
         stops: count(["stop-flags", "stop-pips"], false) + count(["stop-clusters"], true),
+        /*
+         * The count sits beside the heading, not inside it.
+         *
+         * `PixelSectionHeading` puts the words in the `h2` and anything that belongs on its line —
+         * a count, an age — in a sibling. Reaching for `#vehicles-heading .lozenge` found nothing
+         * once that landed, and a test that reads zero buses in the list passes its first
+         * assertion by failing to look. The row is what carries both.
+         */
         listed: Number(
-          document.querySelector("#vehicles-heading .lozenge")?.textContent?.trim() ?? "0",
+          document
+            .querySelector(".pixel-heading:has(#vehicles-heading) .lozenge")
+            ?.textContent?.trim() ?? "0",
         ),
       };
     });
