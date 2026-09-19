@@ -81,6 +81,60 @@ function describeDeath(artifact) {
   );
 }
 
+/**
+ * Ask the deployment, immediately, what the request that just died had reached.
+ *
+ * A 1102 answers with Cloudflare's error page and nothing of the Worker's, so the killed request
+ * can never report itself. The Worker leaves a breadcrumb in module scope and the next request on
+ * the same isolate carries it out — but run 68 reported none, because after a route request died
+ * the sweep moved on to other endpoints and other isolates, and by the time an instrumented
+ * handler ran again the breadcrumb was on an isolate nobody asked.
+ *
+ * So the failure is chased deliberately: several cheap instrumented requests, back to back,
+ * starting the moment the error page arrives. `/v1/nearby` is the cheapest handler that carries
+ * residency and the artifact note, which makes it the one least likely to die while asking.
+ *
+ * Two things are reported for every probe, and neither is interpreted here:
+ *  - the isolate's own request number, which is what distinguishes a surviving isolate from a
+ *    replaced one (a fresh isolate starts its counter at 1);
+ *  - the breadcrumb, if one came back.
+ *
+ * No breadcrumb across every probe is inconclusive, not exoneration: it is equally consistent
+ * with the isolate having been destroyed and with the probes having landed elsewhere. That is
+ * why the probe numbers are printed even when nothing was found.
+ */
+async function chaseBreadcrumb(coordinate, probes = 5) {
+  if (!coordinate || !Number.isFinite(coordinate.lat) || !Number.isFinite(coordinate.lon)) {
+    return " — no point was known to chase the breadcrumb with";
+  }
+  const seen = [];
+  for (let probe = 0; probe < probes; probe += 1) {
+    let answer;
+    try {
+      answer = await getJson(`/v1/nearby?lat=${coordinate.lat}&lon=${coordinate.lon}&radius=300`);
+    } catch (error) {
+      seen.push(`probe ${String(probe + 1)} could not be made (${error?.message ?? "unknown"})`);
+      continue;
+    }
+    const d = answer.body?.meta?.diagnostics;
+    if (!d) {
+      seen.push(
+        `probe ${String(probe + 1)}: ${answer.response.status}` +
+          `${describePlatformPage(answer.response, answer.text)} — no diagnostics came back`,
+      );
+      continue;
+    }
+    const death = describeDeath(d.artifact);
+    seen.push(
+      `probe ${String(probe + 1)}: isolate req#${String(d.residency?.requestsServed ?? "?")}` +
+        `, ${((d.residency?.charsAfter ?? 0) / 1048576).toFixed(2)} MiB resident` +
+        (death || ", nothing unfinished to report"),
+    );
+    if (death) break;
+  }
+  return ` — breadcrumb chase: ${seen.join(" | ")}`;
+}
+
 function describeResidency(residency) {
   if (!residency) return "";
   return (
@@ -1082,11 +1136,22 @@ await check("the pattern-heavy endpoints survive dense cities, repeatedly", asyn
           routeRequests += 1;
           const detailHtml = detail.text.trimStart().toLowerCase().startsWith("<!doctype");
           if (detailHtml || detail.response.status === 503) platformErrors += 1;
+          /*
+           * Chase it before asserting, not after.
+           *
+           * `assert` throws, so anything written after it never runs — and the breadcrumb is only
+           * readable in the seconds immediately following the death, while the isolate that holds
+           * it is still the one taking requests. The chase therefore happens first and its result
+           * is carried into the failure message.
+           */
+          const chased = detailHtml
+            ? await chaseBreadcrumb(stop.coordinate ?? observed.stop?.coordinate)
+            : "";
           assert(
             !detailHtml,
             `${city.name}: /v1/routes/${route.id} answered the platform's error page, not the ` +
               `Worker (${detail.response.status}${describePlatformPage(detail.response, detail.text)}) ` +
-              `on attempt ${String(attempt + 1)}${trail()}`,
+              `on attempt ${String(attempt + 1)}${chased}${trail()}`,
           );
           assert(
             detail.response.ok,
@@ -1446,7 +1511,14 @@ await check("a real stop carries real weather", async () => {
   const { response, body, text } = await getJson(
     `/v1/stops/${encodeURIComponent(observed.stop.id)}`,
   );
-  assert(response.ok, `expected 2xx, got ${describe(response, body, text)}`);
+  /*
+   * The board is instrumented now, so a death here has somewhere to be reported from. Run 68's
+   * 1102 on this endpoint was invisible from both sides: the killed request said nothing, and
+   * the handler set no breadcrumb for the next one to carry.
+   */
+  const chased = response.ok ? "" : await chaseBreadcrumb(observed.stop.coordinate);
+  assert(response.ok, `expected 2xx, got ${describe(response, body, text)}${chased}`);
+  const boardDiagnostics = body?.meta?.diagnostics;
   const weather = body?.data?.weather ?? null;
   if (weather === null) {
     return (
@@ -1479,7 +1551,18 @@ await check("a real stop carries real weather", async () => {
     `${observed.stop.name}: ${now.temperatureCelsius}°C (feels ${now.apparentTemperatureCelsius}°C), ` +
     `${now.precipitationMm}mm, wind ${now.windSpeedKph}kph, code ${now.weatherCode}, ` +
     `${now.isDay ? "day" : "night"}; cell ${weather.cell} at ${weather.cellSizeDegrees}°, ` +
-    `retrieved ${Math.round(ageMinutes)} min ago, ${weather.next.length} hour(s) ahead`
+    `retrieved ${Math.round(ageMinutes)} min ago, ${weather.next.length} hour(s) ahead` +
+    // What the board itself cost, so the endpoint that 1102'd in run 68 is measured when it works
+    // as well as when it does not — a stage breakdown from a healthy run is the baseline a failing
+    // one is read against.
+    (boardDiagnostics
+      ? `; board ${String(boardDiagnostics.elapsedMs ?? 0)}ms ` +
+        Object.entries(boardDiagnostics.stages ?? {})
+          .map(([stage, ms]) => `${stage}=${ms}ms`)
+          .join(" ") +
+        describeResidency(boardDiagnostics.residency) +
+        describeDeath(boardDiagnostics.artifact)
+      : "")
   );
 });
 

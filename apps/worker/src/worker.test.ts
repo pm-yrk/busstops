@@ -550,6 +550,70 @@ describe("GET /v1/stops/:id", () => {
     expect(body.data.stops).toEqual([]);
     expect(body.meta.degradation).not.toBe("normal");
   });
+
+  it("measures the board it serves, weather stage included", async () => {
+    /*
+     * This endpoint had no ledger until run 68 answered 1102 for it and there was nothing to
+     * read: no stage times, no residency, and no breadcrumb for the next request to carry out.
+     * A healthy board's stage breakdown is the baseline a failing one is read against, so it has
+     * to be present when the endpoint works, not only asserted when it does not.
+     */
+    const store = await publishedStore();
+    const response = await worker.fetch(get("/v1/stops/450010001"), makeEnv(store), ctx);
+    const body = (await response.json()) as {
+      meta: {
+        diagnostics?: {
+          stages?: Record<string, number>;
+          residency?: { requestsServed: number };
+        };
+      };
+    };
+    const diagnostics = body.meta.diagnostics;
+    expect(diagnostics).toBeDefined();
+    expect(Object.keys(diagnostics?.stages ?? {})).toEqual(
+      expect.arrayContaining(["live", "patterns", "services", "weather"]),
+    );
+    expect(diagnostics?.residency?.requestsServed).toBeGreaterThan(0);
+  });
+});
+
+describe("the breadcrumb a killed request leaves in the isolate", () => {
+  /*
+   * The instrument's own failure mode, which matters more than the instrument.
+   *
+   * A handler that returns early — 404, 400, 503 — used to leave its breadcrumb set, because the
+   * breadcrumb was only cleared by the residency callback at the *end* of the happy path. The
+   * next request then carried that breadcrumb out and the verifier printed "a previous request
+   * DID NOT FINISH" for a request that had answered a 404 perfectly well. A false death is worse
+   * than no instrument: it is indistinguishable from the thing being hunted, and it would have
+   * sent the 1102 investigation after a phantom.
+   */
+  it("says nothing about a request that answered a 404", async () => {
+    const store = await publishedStore();
+    const env = makeEnv(store);
+
+    // Route detail returns early here: the id resolves to no route, well before residency ends.
+    const missing = await worker.fetch(get("/v1/routes/does-not-exist"), env, ctx);
+    expect(missing.status).toBe(404);
+
+    const next = await worker.fetch(get("/v1/stops/450010001"), env, ctx);
+    const body = (await next.json()) as {
+      meta: { diagnostics?: { artifact?: Record<string, unknown> } };
+    };
+    expect(body.meta.diagnostics?.artifact?.diedPhase).toBeUndefined();
+  });
+
+  it("says nothing about a request that answered normally", async () => {
+    const store = await publishedStore();
+    const env = makeEnv(store);
+
+    await worker.fetch(get("/v1/nearby?lat=53.7996&lon=-1.56&radius=800"), env, ctx);
+    const next = await worker.fetch(get("/v1/stops/450010001"), env, ctx);
+    const body = (await next.json()) as {
+      meta: { diagnostics?: { artifact?: Record<string, unknown> } };
+    };
+    expect(body.meta.diagnostics?.artifact?.diedPhase).toBeUndefined();
+  });
 });
 
 describe("cross-origin access from the Pages app", () => {

@@ -153,6 +153,17 @@ const JOURNEY_PATTERN_READ_CHARS = 6 * 1024 * 1024;
 const NEARBY_BUDGET_MS = 1_500;
 
 /**
+ * The stop board's clock.
+ *
+ * This endpoint had no ledger at all, which is why run 68's weather failure could be seen from
+ * the outside (a 1102 on `/v1/stops/:id`) and not from the inside: no stage times, no residency,
+ * no isolate request number, and — the part that matters most — no breadcrumb, so a request
+ * killed here left nothing for the next one to carry out. The budget is generous because the
+ * board is the product's most important page; it exists to be *measured*, not to cut work short.
+ */
+const STOP_BOARD_BUDGET_MS = 3_000;
+
+/**
  * What an endpoint with no read ledger of its own gives the live feed.
  *
  * The map and route detail hand over whatever their own budget has left. The vehicle and live
@@ -311,7 +322,12 @@ function beginResidency(ledger: ReadLedger, handler = "unnamed"): () => void {
         ...Object.fromEntries(Object.entries(died.detail ?? {}).map(([k, v]) => [`died_${k}`, v])),
       });
     }
-    endBreadcrumb();
+    /*
+     * Deliberately not ended here. Residency is stamped when the reads finish, and the handler
+     * still has to compose and serialise its response afterwards — a request killed in that tail
+     * would leave nothing if the breadcrumb were cleared at this point. Dispatch's `finally`
+     * clears it once the response has actually been returned.
+     */
     ledger.residency({
       requestsServed: served,
       shardsBefore: before?.shards ?? 0,
@@ -898,11 +914,25 @@ router.get("/v1/stops/:id", async (_request, { env, params }) => {
   const stop = await network.stopByKey(params.id ?? "");
   if (!stop) return errorResponse("not_found", "Stop not found", 404);
 
-  const live = liveService
-    ? await liveService.departuresForStop(stop.atcoCode)
-    : { departures: [], health: [], failed: true, observedAt: null };
+  /*
+   * From here on the request is instrumented.
+   *
+   * Begun after the two short-circuit answers so that a 503 or a 404 neither trims the cache nor
+   * opens a breadcrumb it would have to remember to close.
+   */
+  const boardLedger = new ReadLedger(STOP_BOARD_BUDGET_MS);
+  const endBoardResidency = beginResidency(boardLedger, "stop-board");
 
-  const patterns = await network.patternsServingStop(stop);
+  mark("board:stop:done", { atco: stop.atcoCode });
+  const live = await boardLedger.stage("live", async () =>
+    liveService
+      ? await liveService.departuresForStop(stop.atcoCode)
+      : { departures: [], health: [], failed: true, observedAt: null },
+  );
+  mark("board:live:done", { departures: live.departures.length });
+
+  const patterns = await boardLedger.stage("patterns", () => network!.patternsServingStop(stop));
+  mark("board:patterns:done", { patterns: patterns.length });
   /*
    * The services these patterns belong to, not all 13,593 of them.
    *
@@ -910,9 +940,10 @@ router.get("/v1/stops/:id", async (_request, { env, params }) => {
    * — all pure computation, against the ten milliseconds a Workers Free invocation gets. A board
    * names about ten services, and asking for those is one pass over the text instead.
    */
-  const services = await network.servicesByIds(
-    new Set(patterns.map((geometry) => geometry.pattern.serviceRouteId)),
+  const services = await boardLedger.stage("services", () =>
+    network!.servicesByIds(new Set(patterns.map((geometry) => geometry.pattern.serviceRouteId))),
   );
+  mark("board:services:done", { services: services.size });
 
   /*
    * Outside London the timetable is the board.
@@ -966,14 +997,26 @@ router.get("/v1/stops/:id", async (_request, { env, params }) => {
   const observedAt = live.observedAt ?? null;
 
   const routes = routesServingStop(patterns, stop.id, services, await network.operators());
-  const snapshot = (await disruptions?.snapshot()) ?? null;
+  const snapshot = await boardLedger.stage("disruptions", async () =>
+    disruptions ? ((await disruptions.snapshot()) ?? null) : null,
+  );
+  mark("board:disruptions:done", { notices: snapshot?.notices.length ?? 0 });
   /*
    * Read alongside the board rather than ahead of it. A degree square that is missing or slow
    * must cost the stop page a picture, never a departure, so a failure here resolves to null and
    * the vignette is simply absent.
    */
-  const stopWeather =
-    (await weather?.forCoordinate(stop.locationCoordinate).catch(() => null)) ?? null;
+  mark("board:weather:begin", {
+    lat: stop.locationCoordinate.lat,
+    lon: stop.locationCoordinate.lon,
+  });
+  const stopWeather = await boardLedger.stage(
+    "weather",
+    async () => (await weather?.forCoordinate(stop.locationCoordinate).catch(() => null)) ?? null,
+  );
+  mark("board:weather:done", { found: stopWeather !== null });
+
+  endBoardResidency();
 
   return json(
     {
@@ -997,6 +1040,8 @@ router.get("/v1/stops/:id", async (_request, { env, params }) => {
           // dataset name carries the service date, window and bucket that produced it.
           ...timetableFailures.map((failure) => `timetable ${failure.dataset}`),
         ],
+        // Stage times, residency, and whatever the last request that did not finish had reached.
+        diagnostics: { ...boardLedger.toJSON() },
         safeMode: safeModeActive(state),
       }),
       data: {
@@ -2353,6 +2398,23 @@ export default {
         errorResponse("internal", "Something went wrong handling this request.", 500),
         decision.remaining,
       );
+    } finally {
+      /*
+       * Every request that reaches the end of dispatch clears its own breadcrumb.
+       *
+       * This used to be left to the handler's residency callback, which several handlers never
+       * reach: route detail returns early three times (no network, unknown route, no pattern),
+       * nearby returns early when the search tiles are unreadable, journeys when the request is
+       * malformed. Each of those left a breadcrumb set, and the next request would carry it out
+       * as "a previous request DID NOT FINISH" — a death reported for a request that answered a
+       * 404 perfectly well. A false positive here is worse than no instrument at all, because it
+       * is indistinguishable from the thing being hunted.
+       *
+       * A `finally` on dispatch runs for every return path and every throw. The only request
+       * that can now leave a breadcrumb behind is one that never returns from dispatch at all,
+       * which is exactly the definition of the failure.
+       */
+      endBreadcrumb();
     }
   },
 };
