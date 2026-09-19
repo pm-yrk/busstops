@@ -255,3 +255,68 @@ export function ScopeFilters({
     </div>
   );
 }
+
+/**
+ * Two measurements on one scale: what a segment is doing now against what it usually does.
+ *
+ * The numbers were there already — "142s now, 96s typical" in a row of spans — and nobody reads a
+ * row of spans as "half as long again". Two bars sharing a maximum make the gap the thing you see
+ * first, and the figures stay beside them because an operations team quotes numbers, not pictures.
+ *
+ * One hue, because this is magnitude. Whether the gap is bad is a judgement the card's confidence
+ * and frequency lines make in words; a red bar would make it for them.
+ */
+export function CompareBar({
+  nowSeconds,
+  typicalSeconds,
+  label,
+}: {
+  nowSeconds: number;
+  typicalSeconds: number;
+  label: string;
+}) {
+  const scale = Math.max(nowSeconds, typicalSeconds, 1);
+  const rows: Array<{ name: string; value: number; kind: "now" | "typical" }> = [
+    { name: "Now", value: nowSeconds, kind: "now" },
+    { name: "Typical", value: typicalSeconds, kind: "typical" },
+  ];
+
+  return (
+    <figure className="pro-compare" aria-label={label}>
+      {rows.map((row) => (
+        <div className="pro-compare__row" key={row.kind}>
+          <span className="pro-compare__name">{row.name}</span>
+          <span className="pro-compare__track">
+            <span
+              className={`pro-compare__fill pro-compare__fill--${row.kind}`}
+              style={{ width: `${Math.max(2, Math.round((row.value / scale) * 100))}%` }}
+            />
+          </span>
+          <span className="pro-compare__value">{Math.round(row.value)}s</span>
+        </div>
+      ))}
+    </figure>
+  );
+}
+
+/**
+ * Where this row sits against the biggest in the list it is part of.
+ *
+ * A ranked list says which is worst and hides by how much: first and second can differ by a factor
+ * of ten or by nothing at all, and an operations decision is different in each case. One thin bar
+ * anchored to the baseline, scaled to the list's own maximum, with the value written out.
+ */
+export function RankBar({ value, max, label }: { value: number; max: number; label: string }) {
+  if (max <= 0) return null;
+  return (
+    <div className="pro-rank" title={label}>
+      <span className="pro-rank__track" aria-hidden="true">
+        <span
+          className="pro-rank__fill"
+          style={{ width: `${Math.max(2, Math.round((value / max) * 100))}%` }}
+        />
+      </span>
+      <span className="pro-rank__label">{label}</span>
+    </div>
+  );
+}

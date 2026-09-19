@@ -3,7 +3,7 @@ import type { LiveOperationsItem, LiveOperationsResponse } from "@busstops/contr
 import { LoadingBus } from "../components/LoadingBus.js";
 import { EmptyState, ErrorState, StateLozenge } from "../components/primitives.js";
 import { apiClient } from "../lib/api.js";
-import { useFetch } from "../lib/use-fetch.js";
+import { useFetch, useTicker } from "../lib/use-fetch.js";
 import { DataModeBanner, ScopeFilters } from "./ProPrimitives.js";
 
 /**
@@ -33,6 +33,8 @@ export function ProDisruptionsPage() {
   const [sortKey, setSortKey] = useState<SortKey>("severity");
   const [officialOnly, setOfficialOnly] = useState(false);
   const [lifecycle, setLifecycle] = useState("");
+  // Ticks so "for 42 min" keeps being true on a screen left open on a wall.
+  const now = useTicker(30_000).getTime();
 
   const fetcher = useCallback(
     (signal: AbortSignal) => apiClient.proLiveOperations({ windowMinutes }, signal),
@@ -128,6 +130,8 @@ export function ProDisruptionsPage() {
           appears without warning, but it should not be acted on alone.
         </p>
 
+        <SeveritySummary items={items} />
+
         {items.length > 0 ? (
           <div className="pro-table-wrap">
             <table className="pro-table">
@@ -149,7 +153,7 @@ export function ProDisruptionsPage() {
               </thead>
               <tbody>
                 {items.map((item) => (
-                  <ExceptionRow key={item.incident.id} item={item} />
+                  <ExceptionRow key={item.incident.id} item={item} now={now} />
                 ))}
               </tbody>
             </table>
@@ -190,7 +194,74 @@ export function ProDisruptionsPage() {
   );
 }
 
-function ExceptionRow({ item }: { item: LiveOperationsItem }) {
+/**
+ * How long this has been going on, from its own start time.
+ *
+ * An inbox sorted by severity hides the time dimension entirely: a highly abnormal item detected
+ * four minutes ago and one that has been running for three hours sit next to each other looking
+ * identical, and they are completely different operational situations.
+ */
+function elapsedLabel(startedAt: string, now: number): string | null {
+  const started = Date.parse(startedAt);
+  if (!Number.isFinite(started)) return null;
+  const minutes = Math.floor((now - started) / 60_000);
+  if (minutes < 0) return null;
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m`;
+}
+
+const SEVERITY_ORDER = ["highly_abnormal", "abnormal", "elevated", "typical"] as const;
+
+/**
+ * What the inbox is made of, before anybody reads a row of it.
+ *
+ * "Fourteen exceptions" and "fourteen exceptions, nine of them highly abnormal" are different
+ * pieces of news, and the table could only give the second by being counted by hand. One
+ * proportional bar, one hue in four steps because this is a severity ordering rather than four
+ * unrelated things, with every band named and counted beside it so identity is never colour alone.
+ *
+ * A band is omitted entirely when its count is zero: a legend entry for a severity that is not
+ * present is a reader's time spent on nothing.
+ */
+function SeveritySummary({ items }: { items: readonly LiveOperationsItem[] }) {
+  if (items.length === 0) return null;
+
+  const counts = SEVERITY_ORDER.map((severity) => ({
+    severity,
+    label: severity.replace(/_/g, " "),
+    count: items.filter((item) => item.incident.severity === severity).length,
+  })).filter((band) => band.count > 0);
+
+  if (counts.length === 0) return null;
+
+  return (
+    <figure className="pro-severity" aria-label="Exceptions by severity">
+      <div className="pro-severity__bar" aria-hidden="true">
+        {counts.map((band) => (
+          <span
+            key={band.severity}
+            className={`pro-severity__band pro-severity__band--${band.severity}`}
+            style={{ flexGrow: band.count }}
+          />
+        ))}
+      </div>
+      <figcaption className="pro-severity__legend">
+        {counts.map((band) => (
+          <span className="pro-severity__key" key={band.severity}>
+            <span
+              className={`pro-severity__swatch pro-severity__band--${band.severity}`}
+              aria-hidden="true"
+            />
+            <strong>{band.count}</strong> {band.label}
+          </span>
+        ))}
+      </figcaption>
+    </figure>
+  );
+}
+
+function ExceptionRow({ item, now }: { item: LiveOperationsItem; now: number }) {
   return (
     <tr>
       <th scope="row">{item.incident.narrative}</th>
@@ -207,7 +278,15 @@ function ExceptionRow({ item }: { item: LiveOperationsItem }) {
           {item.incident.severity.replace(/_/g, " ")}
         </StateLozenge>
       </td>
-      <td>{item.incident.lifecycle}</td>
+      <td>
+        {item.incident.lifecycle}
+        {elapsedLabel(item.incident.startedAt, now) ? (
+          <>
+            <br />
+            <span className="muted small">for {elapsedLabel(item.incident.startedAt, now)}</span>
+          </>
+        ) : null}
+      </td>
       <td>{item.recoveryTrend}</td>
       <td>
         {item.incident.confidence.level}

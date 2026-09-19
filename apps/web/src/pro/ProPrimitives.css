@@ -261,3 +261,177 @@
   font-size: var(--font-size-small);
   color: var(--colour-muted);
 }
+
+/*
+ * Compare bars: now against typical, on one scale.
+ *
+ * Thin marks, a 4px rounded data-end, anchored to the baseline. The track is the surface the bar
+ * is drawn on rather than a second series, so it stays a hairline wash.
+ */
+.pro-compare {
+  display: grid;
+  gap: 4px;
+  margin: var(--space-sm) 0 0;
+}
+
+.pro-compare__row {
+  display: grid;
+  grid-template-columns: 4.5rem 1fr 3.5rem;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.pro-compare__name,
+.pro-compare__value {
+  font-size: var(--font-size-small);
+  color: var(--colour-muted);
+}
+
+.pro-compare__value {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--colour-ink);
+}
+
+.pro-compare__track,
+.pro-rank__track {
+  display: block;
+  height: 8px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--colour-ink) 8%, transparent);
+  overflow: hidden;
+}
+
+.pro-compare__fill,
+.pro-rank__fill {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+}
+
+/* One hue, two steps: the darker step is the measurement, the lighter one its baseline. */
+.pro-compare__fill--now {
+  background: var(--colour-ink);
+}
+
+.pro-compare__fill--typical {
+  background: color-mix(in srgb, var(--colour-ink) 34%, transparent);
+}
+
+.pro-rank {
+  display: grid;
+  gap: 2px;
+  margin-top: var(--space-xs);
+}
+
+.pro-rank__fill {
+  background: color-mix(in srgb, var(--colour-red) 72%, transparent);
+}
+
+.pro-rank__label {
+  font-size: var(--font-size-small);
+  color: var(--colour-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * Severity distribution: one bar, four steps of one hue.
+ *
+ * Severity is an ordering, not four unrelated categories, so it takes a sequential ramp rather
+ * than four hues — and the bands are counted and named in the legend beneath, so a reader who
+ * cannot separate the steps loses nothing. The 2px gap between segments is the surface showing
+ * through, which is what keeps two adjacent bands from reading as one.
+ */
+.pro-severity {
+  margin: var(--space-sm) 0 var(--space-md);
+  display: grid;
+  gap: var(--space-xs);
+}
+
+.pro-severity__bar {
+  display: flex;
+  gap: 2px;
+  height: 10px;
+}
+
+.pro-severity__band {
+  display: block;
+  border-radius: 3px;
+  min-width: 4px;
+}
+
+.pro-severity__band--highly_abnormal {
+  background: var(--colour-red-dark);
+}
+
+.pro-severity__band--abnormal {
+  background: var(--colour-red);
+}
+
+.pro-severity__band--elevated {
+  background: color-mix(in srgb, var(--colour-red) 45%, transparent);
+}
+
+.pro-severity__band--typical {
+  background: color-mix(in srgb, var(--colour-ink) 18%, transparent);
+}
+
+.pro-severity__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs) var(--space-md);
+  font-size: var(--font-size-small);
+  color: var(--colour-muted);
+}
+
+.pro-severity__key {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pro-severity__key strong {
+  color: var(--colour-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.pro-severity__swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex: none;
+}
+
+/*
+ * The Daily Brief masthead.
+ *
+ * Editorial weight where the product is publishing rather than displaying: a kicker, the date at
+ * heading scale, a standfirst, and a rule underneath in the ink rather than the hairline so the
+ * edition reads as printed.
+ */
+.pro-brief {
+  margin-bottom: var(--space-lg);
+  padding-bottom: var(--space-md);
+  border-bottom: 3px solid var(--colour-ink);
+}
+
+.pro-brief__kicker {
+  margin: 0;
+  font-size: var(--font-size-small);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--colour-red);
+}
+
+.pro-brief__date {
+  margin: var(--space-xs) 0 0;
+  font-size: var(--font-size-h1);
+  line-height: 1.1;
+}
+
+.pro-brief__standfirst {
+  margin: var(--space-xs) 0 0;
+  max-width: 46ch;
+  color: var(--colour-muted);
+  font-size: var(--font-size-small);
+}

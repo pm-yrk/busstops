@@ -120,6 +120,21 @@ describe("what the map emphasises", () => {
       "A",
     );
     expect(features.features.map((f) => f.properties.emphasis)).toEqual([1, 0]);
+    expect(features.features.map((f) => f.properties.selected)).toEqual([1, 0]);
+  });
+
+  /*
+   * The ring layer draws on `selected`, and this is why it cannot draw on `emphasis`: exploring
+   * with nothing chosen emphasises every stop, so a ring on emphasis would ring the whole screen.
+   */
+  it("selects no stop at all when nothing is selected, though it emphasises them all", () => {
+    const features = stopFeatures(
+      [stop({ atcoCode: "A" }), stop({ atcoCode: "B" })],
+      { kind: "explore" },
+      null,
+    );
+    expect(features.features.map((f) => f.properties.emphasis)).toEqual([1, 1]);
+    expect(features.features.map((f) => f.properties.selected)).toEqual([0, 0]);
   });
 
   it("emphasises the stops on a journey", () => {

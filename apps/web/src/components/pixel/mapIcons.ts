@@ -17,12 +17,23 @@ export interface PixelIcon {
   name: string;
   scale: number;
   src: string;
+  /**
+   * Draw the sprite mirrored left-to-right.
+   *
+   * The bus marker is a side view with its destination blind at the right-hand end, so it is a bus
+   * driving east. A symbol layer can rotate an icon but cannot mirror one, and rotating a side
+   * view is worse than leaving it alone — a westbound bus would be drawn upside down. Two
+   * textures cost two uploads once and give every bus on the street a direction it is facing.
+   */
+  flip?: boolean;
 }
 
 export const MAP_ICONS: PixelIcon[] = [
   { name: "bus-red", scale: 2, src: MARKERS.busMarkerRed!.src },
+  { name: "bus-red-west", scale: 2, src: MARKERS.busMarkerRed!.src, flip: true },
   { name: "bus-red-large", scale: 3, src: MARKERS.busMarkerRed!.src },
   { name: "bus-amber", scale: 2, src: MARKERS.busMarkerAmber!.src },
+  { name: "bus-amber-west", scale: 2, src: MARKERS.busMarkerAmber!.src, flip: true },
   { name: "stop-flag", scale: 2, src: MARKERS.stopMarker!.src },
   { name: "stop-flag-large", scale: 3, src: MARKERS.stopMarker!.src },
 ];
@@ -50,6 +61,12 @@ export async function rasterise(icon: PixelIcon): Promise<ImageData | null> {
   if (!context) return null;
 
   context.imageSmoothingEnabled = false;
+  if (icon.flip) {
+    // Mirrored about the sprite's own centre, so the drawing occupies the same box either way and
+    // a bus does not jump sideways at the moment it turns around.
+    context.translate(canvas.width, 0);
+    context.scale(-1, 1);
+  }
   context.drawImage(image, 0, 0, canvas.width, canvas.height);
   return context.getImageData(0, 0, canvas.width, canvas.height);
 }

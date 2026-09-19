@@ -1,7 +1,7 @@
 import { useCallback, useState } from "react";
 import type { RoutesResponse } from "@busstops/contracts";
 import { LoadingBus } from "../components/LoadingBus.js";
-import { EmptyState, ErrorState } from "../components/primitives.js";
+import { EmptyState, ErrorState, RouteBadge } from "../components/primitives.js";
 import { apiClient } from "../lib/api.js";
 import { useFetch } from "../lib/use-fetch.js";
 import { DataModeBanner, ScopeFilters, formatMetricValue } from "./ProPrimitives.js";
@@ -72,7 +72,14 @@ export function RoutesPage() {
               <tbody>
                 {routes.rows.map((row) => (
                   <tr key={row.routeId}>
-                    <th scope="row">{row.routeName}</th>
+                    {/*
+                      The same badge the passenger side draws, so a route is the same object in
+                      both products. A comparison table whose first column is plain text makes the
+                      reader find the row they came for by reading; a badge is found by shape.
+                    */}
+                    <th scope="row">
+                      <RouteBadge name={row.routeName} ariaLabel={`Route ${row.routeName}`} />
+                    </th>
                     <td>{row.operatorName}</td>
                     {row.metrics.map((metric) => (
                       <td key={metric.key} className="numeric">
@@ -110,7 +117,9 @@ export function RoutesPage() {
               .filter((row) => row.weatherSensitivity)
               .map((row) => (
                 <li key={row.routeId} className="pro-card">
-                  <h3>Route {row.routeName}</h3>
+                  <h3>
+                    <RouteBadge name={row.routeName} ariaLabel={`Route ${row.routeName}`} />
+                  </h3>
                   <p>{row.weatherSensitivity}</p>
                 </li>
               ))}

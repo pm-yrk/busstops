@@ -57,6 +57,14 @@ export interface StopFeatureProperties {
   indicator: string | null;
   routes: string;
   emphasis: number;
+  /**
+   * 1 when this is the stop whose board is open.
+   *
+   * Distinct from `emphasis`, which answers a different question. Exploring with nothing chosen
+   * emphasises every stop — that is what "no filter" means — so a ring drawn on emphasis would
+   * ring four hundred stops at once. Selection is one stop or none.
+   */
+  selected: number;
 }
 
 export interface VehicleFeatureProperties {
@@ -154,6 +162,7 @@ export function stopFeatures(
         // string anyway. Sorted upstream, so this is stable between refreshes.
         routes: stop.routePublicNames.join(" "),
         emphasis: stopEmphasis(stop, intent, selectedId),
+        selected: selectedId !== null && stop.atcoCode === selectedId ? 1 : 0,
       },
     })),
   };

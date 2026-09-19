@@ -41,13 +41,24 @@ export function DailyBriefPage() {
     <>
       <DataModeBanner provenance={brief.provenance} />
 
-      <section className="pro-section" aria-labelledby="brief-heading">
-        <h2 id="brief-heading">Daily Brief</h2>
-        <p className="muted small">
-          For {formatLondonDate(new Date(brief.periodStart))}. This page and the email are built
-          from the same frozen snapshot, so the figures cannot drift apart between them.
+      {/*
+        A masthead, because this is an edition rather than a screen.
+
+        The Brief is the one Pro surface that is published — frozen, dated, and sent to people who
+        read it away from the product — and it was presented as another `pro-section` with an h2.
+        The date is the largest thing on it: a reader's first question about a brief is always
+        which one they are looking at.
+      */}
+      <header className="pro-brief" aria-labelledby="brief-heading">
+        <p className="pro-brief__kicker">Bus Stops Pro · Daily Brief</p>
+        <h2 id="brief-heading" className="pro-brief__date">
+          {formatLondonDate(new Date(brief.periodStart))}
+        </h2>
+        <p className="pro-brief__standfirst">
+          This page and the email are built from the same frozen snapshot, so the figures cannot
+          drift apart between them.
         </p>
-      </section>
+      </header>
 
       {brief.sections.length > 0 ? (
         <>

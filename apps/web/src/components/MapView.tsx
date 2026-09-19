@@ -486,6 +486,28 @@ function addSourcesAndLayers(map: MapLibreMap): void {
     paint: { "text-color": "#ffffff" },
   });
 
+  /*
+   * The selected stop, under its own mark, for the same reason the selected bus has one.
+   *
+   * A board can be open on a stop that is one grey pip among four hundred, and a passenger who
+   * pans the map then has no way to find the stop they are reading about. The ring is drawn at
+   * every scale — a selection has to survive a zoom — and under the pip and the flag, so the stop
+   * is still the same drawing with something around it rather than a different kind of stop.
+   */
+  map.addLayer({
+    id: "stop-selected",
+    type: "circle",
+    source: SOURCES.stops,
+    filter: ["all", ["!", ["has", "point_count"]], ["==", ["get", "selected"], 1]],
+    paint: {
+      "circle-radius": 14,
+      "circle-color": "#e5242a",
+      "circle-opacity": 0.14,
+      "circle-stroke-color": "#e5242a",
+      "circle-stroke-width": 2,
+    },
+  });
+
   // ---- neighbourhood: which way is everything going ----------------------
   map.addLayer({
     id: "stop-pips",
@@ -565,7 +587,23 @@ function addSourcesAndLayers(map: MapLibreMap): void {
     filter: ["!", ["has", "point_count"]],
     minzoom: ZOOM.street,
     layout: {
-      "icon-image": ["case", ["get", "stale"], "bus-amber", "bus-red"],
+      /*
+       * Which way it is going, drawn rather than described.
+       *
+       * A street full of identical buses facing the same way is a pattern, not traffic. The
+       * marker is a side view whose blind is at its right-hand end, so it is already a bus
+       * driving east; a bearing in the western half of the compass gets the mirrored texture.
+       * Not rotated: rotating a side elevation through 200 degrees draws a bus on its roof.
+       *
+       * A bus whose feed gives no bearing keeps the eastbound drawing rather than being assigned
+       * a direction — the same rule as everywhere else, that an unknown is not a guess.
+       */
+      "icon-image": [
+        "case",
+        [">", ["coalesce", ["get", "bearing"], 0], 180],
+        ["case", ["get", "stale"], "bus-amber-west", "bus-red-west"],
+        ["case", ["get", "stale"], "bus-amber", "bus-red"],
+      ],
       "icon-allow-overlap": true,
       ...(font === null
         ? {}
