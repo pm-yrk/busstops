@@ -109,7 +109,21 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-async function getJson(path) {
+/**
+ * One request, and one patient retry when the Worker asks us to slow down.
+ *
+ * The Worker allows 120 requests a minute per client and this script is a single client. Run 63
+ * widened the place matrix from five to eight, which put the sweep of stop boards, route attempts
+ * and map reads past that line — and five checks failed with `429 Too many requests` that had
+ * nothing to do with the endpoints they were testing.
+ *
+ * The limit is not the thing to change. It is there to keep a £0 deployment from being trivially
+ * expensive to attack, no passenger makes 120 requests in a minute, and lowering a protective
+ * guard so that a test goes green is how guards stop meaning anything. What is wrong is the
+ * client: it should honour `Retry-After` like anything else that is told to wait. Once only, and
+ * bounded, so a genuinely rate-limited deployment still fails the run rather than hanging it.
+ */
+async function fetchOnce(path) {
   const response = await fetch(`${apiUrl}${path}`, { signal: AbortSignal.timeout(20_000) });
   const text = await response.text();
   let body = null;
@@ -121,6 +135,19 @@ async function getJson(path) {
     // diagnosis, so throwing it away turns a specific failure into "got 500".
   }
   return { response, body, text };
+}
+
+async function getJson(path) {
+  const first = await fetchOnce(path);
+  if (first.response.status !== 429) return first;
+
+  const retryAfter = Number(first.response.headers.get("retry-after"));
+  const waitMs = Math.min(
+    65_000,
+    Math.max(1_000, (Number.isFinite(retryAfter) ? retryAfter : 5) * 1000),
+  );
+  await new Promise((resolve) => setTimeout(resolve, waitMs));
+  return fetchOnce(path);
 }
 
 /**

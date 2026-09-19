@@ -2003,7 +2003,29 @@ router.get("/v1/disruptions", async (_request, { env }) => {
         safeMode: safeModeActive(state),
       }),
       data: {
-        official: snapshot?.notices ?? [],
+        /*
+         * The notices, with their route names made fit to read.
+         *
+         * Run 63 asked the official sources for the first time and they answered — and the page
+         * put `Blue_Line`, `Green_Line`, `Navy_Line`, `Pink_Line` and `Purple_Line` in front of a
+         * passenger, which the sweep caught as raw identifiers. `routeBadgeName` exists for
+         * exactly this and its own comment says the Worker applies it again on the way out,
+         * because an artifact is published once and then served for days: a snapshot collected
+         * before any fix would still show a key otherwise. This path was the one place that
+         * never called it.
+         *
+         * Names only. `lineRef` is an identifier and is matched against, so it is left alone.
+         */
+        official: (snapshot?.notices ?? []).map((notice) => ({
+          ...notice,
+          affectedRoutes: notice.affectedRoutes.map((route) => ({
+            ...route,
+            /* Optional in the contract: a notice may name a route it cannot name publicly. */
+            ...(route.publishedLineName === undefined
+              ? {}
+              : { publishedLineName: routeBadgeName(route.publishedLineName) }),
+          })),
+        })),
         sourcesQueried: snapshot?.sourcesQueried ?? [],
         officialCollectedAt: snapshot?.collectedAt ?? null,
         byDelayBurden: [],
