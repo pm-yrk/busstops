@@ -43,7 +43,15 @@
   .vignette {
     /* Side by side, the figure takes the section; only the scene keeps the artwork's width. */
     width: 100%;
-    grid-template-columns: auto minmax(0, 1fr);
+    /*
+     * The readings get a floor.
+     *
+     * `minmax(0, 1fr)` let the second column collapse to whatever the picture left over, which
+     * on the stop page was about 150 pixels — enough to break "Don't forget your umbrella" over
+     * three lines and stack every fact label above its value. Sixteen rems is the width at which
+     * the temperature, the advice and the facts grid all read normally.
+     */
+    grid-template-columns: auto minmax(16rem, 1fr);
     align-items: start;
     gap: var(--space-lg);
   }

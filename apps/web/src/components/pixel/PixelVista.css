@@ -1,0 +1,131 @@
+/*
+ * Title on one side, a small world on the other.
+ *
+ * The art is authored once at its native size and scaled by whole numbers only — `--scale` is
+ * set per breakpoint rather than letting the image stretch, because a pixel that is sometimes one
+ * and sometimes one and a half screen pixels is the difference between pixel art and a photograph
+ * of pixel art.
+ */
+/*
+ * A flex row that wraps, rather than a grid with a breakpoint.
+ *
+ * The scene is a fixed number of pixels wide — it is pixel art, so it is 544 or it is 272, never
+ * 61%. What varies is whether the column it is in can afford that beside a heading. Given a
+ * sensible basis for the text, flex answers that on its own: where both fit they sit side by
+ * side, and where they do not the scene drops to its own line as a banner. No breakpoint has to
+ * know that the journey planner's column is 780px and Pro's is 1180.
+ */
+.pixel-vista {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-md) var(--space-lg);
+  margin-bottom: var(--space-lg);
+  /* The scene sits on the page's own baseline, so the art and the type share a floor. */
+  border-bottom: 2px solid var(--colour-ink);
+  padding-bottom: 0;
+}
+
+/*
+ * Enough room for a heading and a sentence before the scene is allowed to share the line.
+ *
+ * The basis is what decides the wrap. Below it the text would be a ribbon — "Plan a journey"
+ * broke onto two lines with the standfirst six words wide — so the scene takes its own row
+ * instead, which is the better of the two shapes at that width anyway.
+ */
+.pixel-vista__text {
+  flex: 1 1 24rem;
+  padding-bottom: var(--space-md);
+  min-width: 0;
+}
+
+.pixel-vista__text h1 {
+  margin: 0;
+}
+
+.pixel-vista__standfirst {
+  margin: var(--space-xs) 0 0;
+  max-width: 54ch;
+  color: var(--colour-muted);
+}
+
+.pixel-vista__aside {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+  margin-top: var(--space-sm);
+}
+
+/*
+ * The scene.
+ *
+ * `--scale` is a whole number. The image is given its exact pixel size rather than a percentage,
+ * and `pixelated` stops the browser smoothing it. `min-width: 0` on the grid's other column is
+ * what lets a long title wrap instead of squeezing the art off its own grid.
+ */
+.pixel-vista__scene {
+  --scale: 2;
+  width: calc(var(--art-w) * var(--scale) * 1px);
+  height: calc(var(--art-h) * var(--scale) * 1px);
+  overflow: hidden;
+  /* The scene's own ground line is its last row, so it sits directly on the rule. */
+  display: block;
+}
+
+.pixel-vista__scene img {
+  display: block;
+  width: calc(var(--art-w) * var(--scale) * 1px);
+  height: calc(var(--art-h) * var(--scale) * 1px);
+  image-rendering: pixelated;
+}
+
+/*
+ * The scene's size answers to its column, not to the window.
+ *
+ * Pages set their own reading width, so a viewport media query measures the wrong thing: at
+ * 1440px the journey planner's column is 780. This is the one thing a container query is for,
+ * and it works here because it styles a descendant — an element cannot restyle its own
+ * container, which is why the wrap above is done with flex rather than with a query.
+ */
+.pixel-vista {
+  container-type: inline-size;
+}
+
+.pixel-vista__scene {
+  margin-inline-start: auto;
+}
+
+@container (max-width: 600px) {
+  .pixel-vista__scene {
+    --scale: 1;
+  }
+}
+
+/*
+ * A phone trims the scene from the left rather than shrinking it further.
+ *
+ * At 390px even the native-size art is wider than the column. The brief for this was explicit —
+ * a phone should recompose, not lose its character — so the part of the scene nearest the road,
+ * which is where the bus and the people are, is the part kept in frame.
+ */
+@media (max-width: 719px) {
+  .pixel-vista__scene {
+    max-width: 100%;
+    direction: rtl;
+  }
+
+  .pixel-vista__scene img {
+    direction: ltr;
+  }
+}
+
+/*
+ * Forced colours drops background and decorative images, which would leave an empty box the
+ * height of the art. The scene collapses instead.
+ */
+@media (forced-colors: active) {
+  .pixel-vista__scene {
+    display: none;
+  }
+}

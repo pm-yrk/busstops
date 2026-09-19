@@ -1,6 +1,6 @@
 import { NavLink, Outlet } from "react-router-dom";
 import { PixelRouteMark } from "../components/pixel/PixelArt.js";
-import { PixelKerb } from "../components/pixel/PixelMasthead.js";
+import { PixelVistaScene } from "../components/pixel/PixelVista.js";
 import "./ProLayout.css";
 
 /**
@@ -46,11 +46,14 @@ export function ProLayout() {
           how much it rests on, and how much of the network it can actually see.
         </p>
         {/*
-          The same pavement the passenger side stands on, so Pro reads as part of the product
-          rather than as an admin tool bolted to the side of it. One band, nothing standing on it
-          but a stop flag: this is the calmer half of the family.
+          The room the product is watched from.
+          
+          Pro had the same strip of pavement every other page had, which made the analytics tool
+          look like a passenger page with the content missing. This says what Pro is in one
+          picture: a desk, a window onto the city, and three screens showing a map, a chart and a
+          status list. It is decoration — none of those screens is showing this deployment.
         */}
-        <PixelKerb props={["stopFlag"]} className="pro-layout__kerb" />
+        <PixelVistaScene vista="controlRoom" className="pro-layout__vista" />
       </header>
 
       <nav className="pro-layout__nav" aria-label="Pro sections">

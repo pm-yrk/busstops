@@ -8,6 +8,7 @@ import {
   PEOPLE_META,
   PERSON_SIZE,
   VIGNETTE_SIZE,
+  VIGNETTE_WORLD_SIZE,
 } from "./pixel/sprites/generated.js";
 import "./WeatherVignette.css";
 
@@ -99,6 +100,16 @@ export interface WeatherVignetteProps {
    * is careful not to, and "there is a bus on the way" is worth saying when it is true.
    */
   busApproaching?: boolean;
+  /**
+   * Which composition of the same street to draw.
+   *
+   * "panel" is the portrait the map's stop board was designed around. "world" is the stop page's
+   * wide view: the same shelter with the street it stands on either side of it, a skyline, a
+   * lamp, a bench and a second tree. Same drawing code and the same weather; a different shape,
+   * because a picture that works at 176 x 128 in a side panel is the wrong aspect entirely for
+   * the full width of a page.
+   */
+  geometry?: "panel" | "world";
 }
 
 /**
@@ -108,9 +119,9 @@ export interface WeatherVignetteProps {
  * width is decided by the page around it. Before the first measurement — and in a test renderer,
  * where nothing has a width — it stays at the maximum, which is the desktop case.
  */
-function useFittingScale(available: number | null, maximum: number): number {
+function useFittingScale(available: number | null, maximum: number, artWidth: number): number {
   if (available === null || available <= 0) return maximum;
-  return Math.max(1, Math.min(maximum, Math.floor(available / VIGNETTE_SIZE.w)));
+  return Math.max(1, Math.min(maximum, Math.floor(available / artWidth)));
 }
 
 export function WeatherVignette({
@@ -120,10 +131,17 @@ export function WeatherVignette({
   now = new Date(),
   compact = false,
   busApproaching = false,
+  geometry = "panel",
 }: WeatherVignetteProps) {
   const holder = useRef<HTMLDivElement>(null);
   const [available, setAvailable] = useState<number | null>(null);
-  const scale = useFittingScale(available, compact ? Math.min(2, maximumScale) : maximumScale);
+  const world = geometry === "world";
+  const size = world ? VIGNETTE_WORLD_SIZE : VIGNETTE_SIZE;
+  const scale = useFittingScale(
+    available,
+    compact ? Math.min(2, maximumScale) : maximumScale,
+    size.w,
+  );
 
   useEffect(() => {
     const element = holder.current;
@@ -156,11 +174,18 @@ export function WeatherVignette({
    * Day when nothing is known. Night is a statement about the time at that stop, and this
    * component is not in a position to make one without a reading.
    */
-  const backdrop = hour === null || hour.isDay ? ART.vignetteDay! : ART.vignetteNight!;
+  const day = hour === null || hour.isDay;
+  const backdrop = world
+    ? day
+      ? ART.vignetteWorldDay!
+      : ART.vignetteWorldNight!
+    : day
+      ? ART.vignetteDay!
+      : ART.vignetteNight!;
 
   const PERSON_W_HALF = PERSON_SIZE.w / 2;
-  const width = VIGNETTE_SIZE.w * scale;
-  const height = VIGNETTE_SIZE.h * scale;
+  const width = size.w * scale;
+  const height = size.h * scale;
 
   /*
    * The person stands on the pavement in the shelter's open side, under the roof's overhang.
@@ -168,8 +193,15 @@ export function WeatherVignette({
    * These were 62 and ground-minus-height in a 96-wide picture. The scene is 176 wide now, and
    * carrying the old numbers over would have stood everybody against the left-hand wall.
    */
-  const personLeft = 96 * scale;
-  const personTop = (VIGNETTE_SIZE.ground - PERSON_SIZE.h + 2) * scale;
+  /*
+   * Where the person stands, which is a different place in each composition.
+   *
+   * In the panel the shelter fills the frame and its open side is at 96. The world is the same
+   * shelter drawn at the left of a wider street, so the open side is further left — standing the
+   * character at 96 in that one puts them through the stop flag.
+   */
+  const personLeft = (world ? 74 : 96) * scale;
+  const personTop = (size.ground - PERSON_SIZE.h + 2) * scale;
 
   const accessoryArt = accessory ? ART[`accessory_${accessory.name}`]! : null;
 
@@ -232,18 +264,26 @@ export function WeatherVignette({
             alt=""
           />
 
-          {(advice ? EFFECTS_FOR[advice.kind] : []).map((name, index) => {
-            const art = ART[name]!;
+          {(advice ? EFFECTS_FOR[advice.kind] : []).map((panelName, index) => {
+            /*
+             * Each composition has its own effect layers, because a layer is laid over its scene
+             * pixel for pixel. A 176-wide sheet of rain over the 320-wide world would either
+             * stretch — the one thing this art system exists to avoid — or leave two fifths of
+             * the street dry.
+             */
+            const name = world ? (`${panelName}World` as keyof typeof ART) : panelName;
+            const art = ART[name] ?? ART[panelName]!;
+            const isSun = panelName === "effect_sun";
             return (
               <img
                 key={name}
-                className={`vignette__effect vignette__effect--${name.replace("effect_", "")}`}
+                className={`vignette__effect vignette__effect--${panelName.replace("effect_", "")}`}
                 src={art.src}
                 width={art.w * scale}
                 height={art.h * scale}
                 // The sun sits top-left; every other effect covers the whole scene.
                 style={
-                  name === "effect_sun"
+                  isSun
                     ? { left: 4 * scale, top: 2 * scale }
                     : { left: 0, top: 0, animationDelay: `${index * -0.7}s` }
                 }
@@ -258,8 +298,13 @@ export function WeatherVignette({
               src={(hour?.isDay !== false ? ART.farBusDay! : ART.farBusNight!).src}
               width={(hour?.isDay !== false ? ART.farBusDay! : ART.farBusNight!).w * scale}
               height={(hour?.isDay !== false ? ART.farBusDay! : ART.farBusNight!).h * scale}
-              /* On the road, at the left, coming towards the stop. */
-              style={{ left: 6 * scale, top: (VIGNETTE_SIZE.h - 26) * scale }}
+              /*
+               * On the road, coming towards the stop.
+               *
+               * Measured from this composition's own height rather than from the panel's, or the
+               * bus in the world scene sat twenty-four pixels below the tarmac.
+               */
+              style={{ left: (world ? 168 : 6) * scale, top: (size.h - 26) * scale }}
               alt=""
             />
           ) : null}

@@ -23,8 +23,34 @@ export const V2_H = 128;
 /** The pavement surface: where a person's feet and a shelter's posts share one ground. */
 export const V2_GROUND = 98;
 
-const KERB_TOP = V2_GROUND + 10;
-const ROAD_TOP = KERB_TOP + 4;
+/**
+ * The stop page wants the same street at a different shape.
+ *
+ * The scene was written against three module constants, which was right while there was one
+ * composition and wrong the moment there were two: the stop page wants a wide world — sky,
+ * skyline, a row of frontage, several people — and the map-sized 176 x 128 portrait is the wrong
+ * aspect for it entirely. Rather than a second copy of two hundred lines of drawing code that
+ * would immediately start to drift from this one, the geometry is a value the composer sets.
+ *
+ * Module-scoped mutable state is normally a smell. It is safe here and nowhere else: this module
+ * runs only inside `tools/pixel-art/build.mjs`, which is a single-threaded script that draws one
+ * canvas at a time and writes PNGs. Nothing imports it at runtime.
+ */
+export const GEOMETRIES = {
+  panel: { w: 176, h: 128, ground: 98 },
+  /*
+   * The stop page's world. Wide enough for a skyline, a terrace, a shelter and a few people
+   * without any of them touching, and tall enough that the sky is a place weather can happen in
+   * rather than a strip above the roofline.
+   */
+  world: { w: 320, h: 104, ground: 78 },
+};
+
+function withKerb(g) {
+  return { ...g, kerb: g.ground + 10, road: g.ground + 14 };
+}
+
+let GEO = withKerb(GEOMETRIES.panel);
 
 /* --------------------------------------------------------------- backdrop */
 
@@ -37,9 +63,9 @@ const ROAD_TOP = KERB_TOP + 4;
  */
 function sky(c, { night }) {
   if (night) {
-    c.rect(0, 0, V2_W, 30, "a");
-    c.rect(0, 30, V2_W, 22, "f");
-    c.rect(0, 52, V2_W, 22, "g");
+    c.rect(0, 0, GEO.w, 30, "a");
+    c.rect(0, 30, GEO.w, 22, "f");
+    c.rect(0, 52, GEO.w, 22, "g");
     // A few stars, thinned towards the horizon where a town's own light drowns them.
     for (const [x, y] of [
       [14, 8],
@@ -62,10 +88,10 @@ function sky(c, { night }) {
    * A hard line across the whole width reads as a rule someone drew, not as weather. Alternating
    * pixels along each boundary is enough to dissolve it at any scale this is drawn at.
    */
-  c.rect(0, 0, V2_W, 26, "S");
-  c.rect(0, 26, V2_W, 26, "T");
-  c.rect(0, 52, V2_W, 22, "W");
-  for (let x = 0; x < V2_W; x += 2) {
+  c.rect(0, 0, GEO.w, 26, "S");
+  c.rect(0, 26, GEO.w, 26, "T");
+  c.rect(0, 52, GEO.w, 22, "W");
+  for (let x = 0; x < GEO.w; x += 2) {
     c.px(x, 26, "S");
     c.px(x + 1, 27, "T");
     c.px(x, 52, "T");
@@ -89,9 +115,9 @@ function frontage(c, { night }) {
    * garden wall and the ground floor of a frontage, and it belongs below the shelter's roof.
    */
   const top = 66;
-  const bottom = V2_GROUND;
+  const bottom = GEO.ground;
 
-  c.rect(0, top, V2_W, bottom - top, "7");
+  c.rect(0, top, GEO.w, bottom - top, "7");
   /*
    * Courses with perpends, not stripes.
    *
@@ -100,13 +126,13 @@ function frontage(c, { night }) {
    * brick is enough for the eye to finish the job.
    */
   for (let y = top + 4; y < bottom; y += 4) {
-    c.hline(0, y, V2_W, "6");
+    c.hline(0, y, GEO.w, "6");
     const offset = ((y - top) / 4) % 2 === 0 ? 0 : 5;
-    for (let x = offset; x < V2_W; x += 10) c.vline(x, y + 1, 3, "6");
+    for (let x = offset; x < GEO.w; x += 10) c.vline(x, y + 1, 3, "6");
   }
   // A coping course on top, catching the light, which is what gives a wall its edge.
-  c.rect(0, top, V2_W, 2, "9");
-  c.hline(0, top + 2, V2_W, "6");
+  c.rect(0, top, GEO.w, 2, "9");
+  c.hline(0, top + 2, GEO.w, "6");
 
   /*
    * One window, at the left, where the shelter does not cover it. Two were drawn before and both
@@ -146,7 +172,7 @@ function tree(c, { night }) {
    * from what is put down.
    */
   const x = 148;
-  const foot = V2_GROUND;
+  const foot = GEO.ground;
   const crown = 46;
 
   // A trunk that tapers, and leans very slightly, because a straight bar reads as a post.
@@ -198,7 +224,7 @@ function shelter(c, { night }) {
   const w = 80;
   const roof = 42;
   const glassTop = roof + 7;
-  const glassBottom = V2_GROUND - 1;
+  const glassBottom = GEO.ground - 1;
 
   // Rear posts first, so the glass sits in front of them.
   c.rect(x + 4, roof + 5, 3, glassBottom - roof - 4, "N");
@@ -290,9 +316,9 @@ function shelter(c, { night }) {
 function stopFlag(c, { night }) {
   const x = 118;
   const top = 50;
-  c.rect(x, top, 3, V2_GROUND - top, "N");
-  c.vline(x + 2, top, V2_GROUND - top, "M");
-  c.rect(x - 2, V2_GROUND - 3, 7, 3, "M");
+  c.rect(x, top, 3, GEO.ground - top, "N");
+  c.vline(x + 2, top, GEO.ground - top, "M");
+  c.rect(x - 2, GEO.ground - 3, 7, 3, "M");
 
   // The flag, red, reading away from the shelter.
   c.rect(x + 3, top, 26, 16, "s");
@@ -309,7 +335,7 @@ function stopFlag(c, { night }) {
 /** A litter bin, because every stop has one and its absence is noticeable. */
 function bin(c) {
   const x = 150;
-  const top = V2_GROUND - 20;
+  const top = GEO.ground - 20;
   c.rect(x, top + 2, 13, 18, "N");
   c.rect(x + 1, top + 3, 11, 16, "M");
   c.rect(x - 1, top, 15, 3, "O");
@@ -329,37 +355,37 @@ function bin(c) {
  */
 function ground(c, { night }) {
   // Pavement.
-  c.rect(0, V2_GROUND, V2_W, KERB_TOP - V2_GROUND, "P");
-  c.hline(0, V2_GROUND, V2_W, "Q");
+  c.rect(0, GEO.ground, GEO.w, GEO.kerb - GEO.ground, "P");
+  c.hline(0, GEO.ground, GEO.w, "Q");
   // Paving joints, so the slabs read as slabs rather than as a band of grey.
-  for (let x = 6; x < V2_W; x += 22) c.vline(x, V2_GROUND + 1, KERB_TOP - V2_GROUND - 1, "O");
-  c.hline(0, V2_GROUND + 5, V2_W, "O");
+  for (let x = 6; x < GEO.w; x += 22) c.vline(x, GEO.ground + 1, GEO.kerb - GEO.ground - 1, "O");
+  c.hline(0, GEO.ground + 5, GEO.w, "O");
 
   // Tactile paving at the kerb edge: buff, with its blisters.
-  c.rect(0, KERB_TOP - 4, V2_W, 4, "8");
-  for (let x = 2; x < V2_W; x += 4) {
-    c.px(x, KERB_TOP - 3, "9");
-    c.px(x, KERB_TOP - 1, "7");
+  c.rect(0, GEO.kerb - 4, GEO.w, 4, "8");
+  for (let x = 2; x < GEO.w; x += 4) {
+    c.px(x, GEO.kerb - 3, "9");
+    c.px(x, GEO.kerb - 1, "7");
   }
 
   // Kerb: a face and a top, with the top catching the light.
-  c.rect(0, KERB_TOP, V2_W, ROAD_TOP - KERB_TOP, "O");
-  c.hline(0, KERB_TOP, V2_W, "Q");
-  c.hline(0, ROAD_TOP - 1, V2_W, "N");
+  c.rect(0, GEO.kerb, GEO.w, GEO.road - GEO.kerb, "O");
+  c.hline(0, GEO.kerb, GEO.w, "Q");
+  c.hline(0, GEO.road - 1, GEO.w, "N");
 
   /*
    * Road. Mid-grey rather than near-black: the first pass painted it "M" with a dense two-tone
    * speckle and the bottom fifth of the picture turned into a band of static that outweighed
    * everything above it. Asphalt in daylight is grey, and its texture is sparse.
    */
-  c.rect(0, ROAD_TOP, V2_W, V2_H - ROAD_TOP, "N");
-  for (let y = ROAD_TOP + 2; y < V2_H; y += 3) {
-    for (let x = (y * 7) % 13; x < V2_W; x += 13) c.px(x, y, "M");
+  c.rect(0, GEO.road, GEO.w, GEO.h - GEO.road, "N");
+  for (let y = GEO.road + 2; y < GEO.h; y += 3) {
+    for (let x = (y * 7) % 13; x < GEO.w; x += 13) c.px(x, y, "M");
   }
 
   // Double yellow lines, breaking for the stop cage, in the paint tone rather than a wash.
-  for (const y of [ROAD_TOP + 2, ROAD_TOP + 4]) {
-    for (let x = 0; x < V2_W; x += 1) {
+  for (const y of [GEO.road + 2, GEO.road + 4]) {
+    for (let x = 0; x < GEO.w; x += 1) {
       if (x > 26 && x < 132) continue;
       c.px(x, y, "z");
     }
@@ -374,34 +400,187 @@ function ground(c, { night }) {
    * A UK bus stop clearway is marked with a single thick yellow line where the double yellows
    * break, which is both the truth and the thing that reads at this size.
    */
-  c.rect(26, ROAD_TOP + 2, 106, 3, "z");
-  c.hline(26, ROAD_TOP + 2, 106, "Z");
+  c.rect(26, GEO.road + 2, 106, 3, "z");
+  c.hline(26, GEO.road + 2, 106, "Z");
 
   // A gully at the kerb, because water has to go somewhere and it is a stop's own landmark.
-  c.rect(138, ROAD_TOP + 1, 11, 5, "M");
-  for (let i = 1; i < 5; i += 2) c.hline(139, ROAD_TOP + 1 + i, 9, "K");
+  c.rect(138, GEO.road + 1, 11, 5, "M");
+  for (let i = 1; i < 5; i += 2) c.hline(139, GEO.road + 1 + i, 9, "K");
 
   if (night) {
     // Under lamplight the kerb catches a line and the road stays dark.
-    c.rect(0, ROAD_TOP, V2_W, V2_H - ROAD_TOP, "M");
-    c.hline(0, KERB_TOP, V2_W, "P");
+    c.rect(0, GEO.road, GEO.w, GEO.h - GEO.road, "M");
+    c.hline(0, GEO.kerb, GEO.w, "P");
   }
 }
 
 /** The shelter's shadow on the pavement, which is what stops it floating. */
 function shelterShadow(c, s) {
-  c.rect(s.x - 2, V2_GROUND, s.w + 10, 2, "-");
-  c.rect(s.x + 2, V2_GROUND + 2, s.w + 2, 1, "=");
+  c.rect(s.x - 2, GEO.ground, s.w + 10, 2, "-");
+  c.rect(s.x + 2, GEO.ground + 2, s.w + 2, 1, "=");
 }
 
 /* ------------------------------------------------------------------ scene */
 
-export function vignette2Scene({ night = false } = {}) {
-  const c = new Canvas(V2_W, V2_H, ".");
+/**
+ * What the wide composition has room for and the panel does not.
+ *
+ * The panel is a portrait of one shelter. The world is a stretch of street, and a stretch of
+ * street that is a shelter with a hundred and fifty empty pixels beside it is worse than the
+ * portrait, not better. These are the things that turn the extra width into somewhere: a skyline
+ * so the sky has a horizon, clouds so it has weather, and along the right-hand pavement the
+ * ordinary furniture of a British street — lamp, railings, bench, a second tree.
+ *
+ * Everything here is scenery. Nothing in it states a fact about the stop.
+ */
+function worldBackdrop(c, { night }) {
+  const wallTop = 66;
+
+  /*
+   * A skyline, drawn in sky tones rather than in masonry ones.
+   *
+   * Distance in this palette is a matter of contrast, not of blur: the further a block is, the
+   * closer its colour sits to the sky it stands against. Two ranks, the back one paler, is enough
+   * to read as a city rather than as a row of boxes.
+   */
+  /*
+   * Back rank paler and taller, front rank darker and lower.
+   *
+   * The first attempt had it the other way round and the result was a row of dark pillars in
+   * front of a pale one — tombstones, not a city. Distance in this palette is contrast: the
+   * further away a block is, the closer its colour sits to the sky behind it, and the front rank
+   * has to stay low or it fills the sky the weather needs.
+   */
+  const ranks = night
+    ? [
+        { tone: "a", top: 26, seed: 11, min: 12, span: 20 },
+        { tone: "f", top: 40, seed: 3, min: 16, span: 14 },
+      ]
+    : [
+        { tone: "Q", top: 26, seed: 11, min: 12, span: 20 },
+        { tone: "P", top: 40, seed: 3, min: 16, span: 14 },
+      ];
+  for (const rank of ranks) {
+    let x = -4;
+    let n = rank.seed;
+    while (x < GEO.w) {
+      n = (n * 1103515245 + 12345) & 0x7fffffff;
+      const w = rank.min + (n % rank.span);
+      n = (n * 1103515245 + 12345) & 0x7fffffff;
+      const top = rank.top + (n % 12);
+      c.rect(x, top, w, wallTop - top, rank.tone);
+      // A parapet line, and a hint of a lift shaft on the taller ones.
+      c.hline(x, top, w, night ? "g" : "O");
+      if (w > 16) c.rect(x + 3, top - 4, 4, 4, rank.tone);
+      // Lit windows at night: a few, never a grid.
+      if (night) {
+        for (let wy = top + 4; wy < wallTop - 3; wy += 6)
+          for (let wx = x + 2; wx < x + w - 2; wx += 5)
+            if (((wx * 37 + wy * 101) ^ (wx * wy)) % 9 < 2) c.px(wx, wy, "z");
+      }
+      x += w + 1 + (n % 3);
+    }
+  }
+
+  /* Clouds: blocky, flat-bottomed, and only in the top band where there is room for them. */
+  if (!night) {
+    for (const [cx, cy, scale] of [
+      [34, 9, 1],
+      [128, 5, 0],
+      [196, 12, 1],
+      [268, 7, 0],
+    ]) {
+      const w = 18 + scale * 8;
+      c.rect(cx, cy + 3, w, 4, "W");
+      c.rect(cx + 4, cy, w - 10, 4, "W");
+      c.rect(cx + 2, cy + 1, 5, 3, "X");
+      c.hline(cx, cy + 6, w, "R");
+    }
+  }
+}
+
+/**
+ * The pavement furniture, drawn after the ground rather than before it.
+ *
+ * This was one pass with the skyline, which put the bench and the foot of the lamp post
+ * underneath the garden wall and the kerb — the wall is drawn later and is opaque, so a bench
+ * thirty pixels tall simply vanished and a lamp post appeared to be growing out of the brickwork.
+ * Anything standing *on* the pavement has to be laid down after the pavement is.
+ */
+function worldStreet(c, { night }) {
+  const wallTop = 66;
+  /*
+   * The right-hand pavement.
+   *
+   * Placed from the right edge inwards so the composition still works if the canvas is widened
+   * again, and spaced so no two objects touch — a lamp post growing out of a bench is the thing
+   * that makes a pixel scene look assembled rather than drawn.
+   */
+  const ground = GEO.ground;
+
+  // Railings along the back of the pavement, behind everything else on it.
+  for (let x = 196; x < GEO.w - 4; x += 5) {
+    c.vline(x, wallTop - 11, 11, night ? "L" : "M");
+  }
+  c.hline(196, wallTop - 10, GEO.w - 200, night ? "L" : "M");
+  c.hline(196, wallTop - 4, GEO.w - 200, night ? "L" : "M");
+
+  // A lamp post: column, ladder bar, lantern. Lit at night, and it lights the pavement.
+  const lampX = 214;
+  c.rect(lampX, ground - 46, 3, 46, night ? "L" : "M");
+  c.vline(lampX, ground - 46, 46, night ? "M" : "N");
+  c.rect(lampX - 2, ground - 2, 7, 2, "M");
+  c.rect(lampX - 3, ground - 52, 9, 4, "M");
+  c.rect(lampX - 2, ground - 51, 7, 2, night ? "Z" : "P");
+  c.rect(lampX - 4, ground - 48, 11, 1, "L");
+  if (night) {
+    // A pool of light, as alpha over whatever is beneath rather than as a pale disc.
+    c.rect(lampX - 10, ground - 3, 24, 3, "%");
+    c.rect(lampX - 6, ground - 6, 16, 3, "%");
+  }
+
+  // A bench, facing the road.
+  const benchX = 238;
+  c.rect(benchX, ground - 11, 30, 3, night ? "M" : "6");
+  c.hline(benchX, ground - 11, 30, night ? "N" : "7");
+  c.rect(benchX, ground - 16, 30, 2, night ? "M" : "6");
+  for (const lx of [benchX + 2, benchX + 25]) {
+    c.vline(lx, ground - 16, 16, "M");
+    c.vline(lx + 1, ground - 8, 8, "M");
+  }
+  c.rect(benchX - 1, ground, 32, 1, "=");
+
+  // A second tree, further along and a shade cooler, so the two do not read as a copy.
+  const treeX = 288;
+  const canopy = night ? "1" : "3";
+  const canopyLight = night ? "2" : "4";
+  c.rect(treeX, ground - 20, 3, 20, night ? "L" : "M");
+  c.disc(treeX + 1, ground - 28, 9, canopy);
+  c.disc(treeX - 4, ground - 24, 6, canopy);
+  c.disc(treeX + 6, ground - 25, 6, canopy);
+  c.disc(treeX - 2, ground - 32, 5, canopyLight);
+  c.disc(treeX + 4, ground - 30, 4, canopyLight);
+  if (!night) c.disc(treeX - 1, ground - 34, 2, "5");
+  c.rect(treeX - 6, ground, 15, 1, "=");
+
+  // A pigeon on the railing, because a street with nothing alive on it is a diagram.
+  const pigeonX = 202;
+  c.rect(pigeonX, wallTop - 15, 5, 3, night ? "M" : "N");
+  c.px(pigeonX + 5, wallTop - 16, night ? "M" : "O");
+  c.px(pigeonX + 6, wallTop - 15, "y");
+  c.px(pigeonX - 1, wallTop - 14, night ? "L" : "M");
+}
+
+export function vignette2Scene({ night = false, geometry = "panel" } = {}) {
+  GEO = withKerb(GEOMETRIES[geometry] ?? GEOMETRIES.panel);
+  const c = new Canvas(GEO.w, GEO.h, ".");
   sky(c, { night });
+  const wide = GEO.w >= GEOMETRIES.world.w;
+  if (wide) worldBackdrop(c, { night });
   frontage(c, { night });
   tree(c, { night });
   ground(c, { night });
+  if (wide) worldStreet(c, { night });
   const s = shelter(c, { night });
   shelterShadow(c, s);
   stopFlag(c, { night });

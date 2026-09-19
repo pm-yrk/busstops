@@ -9,7 +9,7 @@ import {
   RouteBadge,
   ServiceBanner,
 } from "../components/primitives.js";
-import { PixelMasthead } from "../components/pixel/PixelMasthead.js";
+import { PixelVista } from "../components/pixel/PixelVista.js";
 import { apiClient } from "../lib/api.js";
 import { useFetch } from "../lib/use-fetch.js";
 import "./OperatorPage.css";
@@ -70,7 +70,7 @@ export function OperatorPage() {
     <article className="page operator-page">
       <ServiceBanner meta={response.meta} />
 
-      <PixelMasthead
+      <PixelVista
         title={operator.name}
         standfirst={
           operator.contactUrl ? (
@@ -79,7 +79,7 @@ export function OperatorPage() {
             </a>
           ) : undefined
         }
-        props={["bus", "shelter"]}
+        vista="depot"
       />
 
       {/*

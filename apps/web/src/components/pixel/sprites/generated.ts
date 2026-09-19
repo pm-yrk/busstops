@@ -19,6 +19,41 @@ export const ART: Record<string, PixelImage> = {
     w: 480,
     h: 200,
   },
+  vistaRoute: {
+    src: "/art/vista-route.png",
+    w: 232,
+    h: 76,
+  },
+  vistaJourney: {
+    src: "/art/vista-journey.png",
+    w: 272,
+    h: 76,
+  },
+  vistaRoadworks: {
+    src: "/art/vista-roadworks.png",
+    w: 288,
+    h: 76,
+  },
+  vistaControlRoom: {
+    src: "/art/vista-control-room.png",
+    w: 248,
+    h: 76,
+  },
+  vistaDepot: {
+    src: "/art/vista-depot.png",
+    w: 264,
+    h: 76,
+  },
+  vignetteWorldDay: {
+    src: "/art/vignette-world-day.png",
+    w: 320,
+    h: 104,
+  },
+  vignetteWorldNight: {
+    src: "/art/vignette-world-night.png",
+    w: 320,
+    h: 104,
+  },
   streetTall: {
     src: "/art/street-tall.png",
     w: 192,
@@ -304,6 +339,46 @@ export const ART: Record<string, PixelImage> = {
     w: 176,
     h: 128,
   },
+  effect_rainNearWorld: {
+    src: "/art/effect-rain-near-world.png",
+    w: 320,
+    h: 104,
+  },
+  effect_rainFarWorld: {
+    src: "/art/effect-rain-far-world.png",
+    w: 320,
+    h: 104,
+  },
+  effect_rainReflectionsWorld: {
+    src: "/art/effect-rain-reflections-world.png",
+    w: 320,
+    h: 104,
+  },
+  effect_snowWorld: {
+    src: "/art/effect-snow-world.png",
+    w: 320,
+    h: 104,
+  },
+  effect_sunWorld: {
+    src: "/art/effect-sun-world.png",
+    w: 36,
+    h: 36,
+  },
+  effect_fogWorld: {
+    src: "/art/effect-fog-world.png",
+    w: 320,
+    h: 104,
+  },
+  effect_windWorld: {
+    src: "/art/effect-wind-world.png",
+    w: 320,
+    h: 104,
+  },
+  effect_heatWorld: {
+    src: "/art/effect-heat-world.png",
+    w: 320,
+    h: 104,
+  },
 };
 
 /** Small enough to inline, and MapLibre needs them without a round trip. */
@@ -587,3 +662,12 @@ export const ACCESSORY_ANCHORS: Record<string, "hand" | "head" | "neck" | "eyes"
   sunHat: "head",
 };
 export const VIGNETTE_SIZE = { w: 176, h: 128, ground: 98 } as const;
+
+/**
+ * The stop page's wide composition of the same street.
+ *
+ * Same drawing code, different shape: the map's panel is a portrait of one shelter and the stop
+ * page has room for the street it stands on. Everything positioned against the scene — the
+ * people, the approaching bus, the weather layers — reads its geometry from here.
+ */
+export const VIGNETTE_WORLD_SIZE = { w: 320, h: 104, ground: 78 } as const;

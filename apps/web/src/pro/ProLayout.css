@@ -9,11 +9,50 @@
   gap: var(--space-lg);
 }
 
+/*
+ * Title and intro on the left, the control room on the right.
+ *
+ * Two columns once there is room for both, because the scene is 248 art pixels wide and putting
+ * it under the intro would push the section nav — the thing anybody comes to Pro to use — below
+ * the fold. The rule stays the header's floor and the picture sits on it.
+ */
 .pro-layout__header {
   display: grid;
-  gap: var(--space-sm);
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: var(--space-sm) var(--space-lg);
   padding-bottom: var(--space-md);
   border-bottom: 2px solid var(--colour-ink);
+}
+
+.pro-layout__title,
+.pro-layout__intro {
+  grid-column: 1;
+}
+
+.pro-layout__vista {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: end;
+  /* Flush with the header's rule rather than floating above it. */
+  margin-bottom: calc(var(--space-md) * -1);
+}
+
+/*
+ * Below a desktop the scene goes under the text at half the scale rather than disappearing.
+ * `PixelVista.css` already drops `--scale` to 1 at this width; this only moves it into the flow.
+ */
+@media (max-width: 1099px) {
+  .pro-layout__header {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .pro-layout__vista {
+    grid-column: 1;
+    grid-row: auto;
+    justify-self: end;
+    margin-bottom: calc(var(--space-md) * -1);
+  }
 }
 
 .pro-layout__eyebrow {

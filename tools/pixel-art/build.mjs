@@ -5,11 +5,20 @@ import { busFront, busMarker, stopMarker } from "./bus.mjs";
 import { busSide2, busMid2 } from "./bus2.mjs";
 import { wideScene, tallScene, edgeStrip, GEOMETRY } from "./scene.mjs";
 import { shelter, stopFlag, tree, person, cloud, bin } from "./street.mjs";
+import {
+  routeVista,
+  journeyVista,
+  roadworksVista,
+  controlRoomVista,
+  depotVista,
+} from "./vistas.mjs";
 import { PEOPLE, ACCESSORIES, drawPerson, drawAccessory, PERSON_W, PERSON_H } from "./people.mjs";
+import { GEOMETRIES } from "./vignette2.mjs";
 import {
   vignetteScene,
   farBus,
   EFFECTS,
+  setEffectGeometry,
   VIGNETTE_W,
   VIGNETTE_H,
   VIGNETTE_GROUND,
@@ -29,6 +38,21 @@ mkdirSync(ART_DIR, { recursive: true });
 /** name in code -> [file name, drawing]. */
 const FILES = {
   streetWide: ["street-wide", wideScene()],
+  /*
+   * One composed scene per page, replacing the strip of pavement every page shared.
+   *
+   * These are decoration and state nothing: the roadworks board says ROAD WORKS AHEAD and never
+   * a real closure, and the bus in the control room's window is not a bus that is running.
+   */
+  vistaRoute: ["vista-route", routeVista()],
+  vistaJourney: ["vista-journey", journeyVista()],
+  vistaRoadworks: ["vista-roadworks", roadworksVista()],
+  vistaControlRoom: ["vista-control-room", controlRoomVista()],
+  vistaDepot: ["vista-depot", depotVista()],
+
+  /* The stop page's world: the same street, composed wide, with a skyline behind it. */
+  vignetteWorldDay: ["vignette-world-day", vignetteScene({ geometry: "world" })],
+  vignetteWorldNight: ["vignette-world-night", vignetteScene({ night: true, geometry: "world" })],
   streetTall: ["street-tall", tallScene()],
   busNear: ["bus-near", busSide2({ route: "36" })],
   busNearB: ["bus-near-b", busSide2({ route: "36", wheelPhase: Math.PI / 4 })],
@@ -105,9 +129,23 @@ for (const person of PEOPLE) {
 for (const name of Object.keys(ACCESSORIES)) {
   FILES[`accessory_${name}`] = [`accessory-${name}`, drawAccessory(name)];
 }
-for (const [name, make] of Object.entries(EFFECTS)) {
-  FILES[`effect_${name}`] = [`effect-${name.replace(/([A-Z])/g, "-$1").toLowerCase()}`, make()];
+/*
+ * One set of effect layers per scene geometry.
+ *
+ * The stop page's world is 320 x 104 and the map panel's is 176 x 128, and an effect layer is
+ * positioned over its scene pixel for pixel — so each composition needs rain cut to its own size.
+ * Stretching one to fit the other is the one thing this whole art system exists to avoid.
+ */
+for (const geometry of ["panel", "world"]) {
+  setEffectGeometry(geometry);
+  const suffix = geometry === "panel" ? "" : "-world";
+  const key = geometry === "panel" ? "" : "World";
+  for (const [name, make] of Object.entries(EFFECTS)) {
+    const file = `effect-${name.replace(/([A-Z])/g, "-$1").toLowerCase()}${suffix}`;
+    FILES[`effect_${name}${key}`] = [file, make()];
+  }
 }
+setEffectGeometry("panel");
 
 const INLINE = {
   busMarkerRed: busMarker({}),
@@ -209,6 +247,15 @@ export const ACCESSORY_ANCHORS: Record<string, "hand" | "head" | "neck" | "eyes"
   2,
 )};
 export const VIGNETTE_SIZE = { w: ${VIGNETTE_W}, h: ${VIGNETTE_H}, ground: ${VIGNETTE_GROUND} } as const;
+
+/**
+ * The stop page's wide composition of the same street.
+ *
+ * Same drawing code, different shape: the map's panel is a portrait of one shelter and the stop
+ * page has room for the street it stands on. Everything positioned against the scene — the
+ * people, the approaching bus, the weather layers — reads its geometry from here.
+ */
+export const VIGNETTE_WORLD_SIZE = { w: ${GEOMETRIES.world.w}, h: ${GEOMETRIES.world.h}, ground: ${GEOMETRIES.world.ground} } as const;
 `;
 
 /*

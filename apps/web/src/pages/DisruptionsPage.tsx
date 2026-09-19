@@ -2,7 +2,7 @@ import { useCallback, useState } from "react";
 import { Link } from "react-router-dom";
 import type { DisruptionItem, DisruptionsResponse } from "@busstops/contracts";
 import { LoadingBus } from "../components/LoadingBus.js";
-import { PixelMasthead } from "../components/pixel/PixelMasthead.js";
+import { PixelVista } from "../components/pixel/PixelVista.js";
 import {
   ComparisonBar,
   EmptyState,
@@ -64,10 +64,10 @@ export function DisruptionsPage() {
     <article className="page disruptions-page">
       <ServiceBanner meta={response.meta} />
 
-      <PixelMasthead
+      <PixelVista
         title="Disruption"
         standfirst="What operators have announced, and what we have observed. They are different claims, so they are shown separately."
-        props={["bin", "stopFlag"]}
+        vista="roadworks"
       />
 
       <OfficialNotices

@@ -272,6 +272,23 @@ export function StopPage() {
           atcoCode={stop.atcoCode}
           now={now}
           /*
+           * The wide composition, which is what this section is for.
+           *
+           * The map's panel gets the portrait: it is answering "when is my bus" and the picture
+           * is the second question. This is the page "Everything about this stop" leads to, and
+           * it has the width for the street the shelter actually stands on.
+           */
+          geometry="world"
+          /*
+           * Two, not three.
+           *
+           * The fitting scale takes the largest whole multiple that fits, and on a 1148-pixel
+           * column that is three — a 960-pixel picture with 150 pixels of readings beside it,
+           * which is a photograph with a caption squeezed into the gutter. At two the scene is
+           * 640 and the temperature, the advice and the four facts have room to be read.
+           */
+          scale={2}
+          /*
            * Drawn only when a bus genuinely is due. `expectedTime` is the live or estimated time,
            * so a bus inside the quarter hour is one a passenger can expect to see — and a bus in
            * the picture when none is coming would be the artwork telling a lie the rest of the

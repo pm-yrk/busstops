@@ -2,7 +2,7 @@ import { useCallback, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import type { RouteDetailResponse } from "@busstops/contracts";
 import { OfficialNotices } from "../components/OfficialNotices.js";
-import { PixelMasthead } from "../components/pixel/PixelMasthead.js";
+import { PixelVista } from "../components/pixel/PixelVista.js";
 import { LoadingBus } from "../components/LoadingBus.js";
 import { vehicleHref } from "../lib/geo.js";
 import {
@@ -112,7 +112,7 @@ export function RoutePage() {
         The badge stands beside the title rather than inside the masthead's text, because it is
         the route's identity and not decoration: it is the thing somebody scanned the page for.
       */}
-      <PixelMasthead
+      <PixelVista
         title={route.description ?? `Route ${route.publicName}`}
         standfirst={
           operator ? (
@@ -123,11 +123,11 @@ export function RoutePage() {
             "The operator for this route is not recorded."
           )
         }
-        props={["bus", "stopFlag"]}
+        vista="route"
       >
         <RouteBadge name={route.publicName} ariaLabel={`Route ${route.publicName}`} />
         <DataAge seconds={ageSeconds} />
-      </PixelMasthead>
+      </PixelVista>
 
       {/*
         What this route is, before the list of everywhere it stops.

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import type { JourneyPlanOption, JourneyPlanResponse, SearchResult } from "@busstops/contracts";
 import { JourneyStrip } from "../components/JourneyStrip.js";
-import { PixelMasthead } from "../components/pixel/PixelMasthead.js";
+import { PixelVista } from "../components/pixel/PixelVista.js";
 import { LoadingBus } from "../components/LoadingBus.js";
 import {
   ConfidenceChip,
@@ -134,10 +134,10 @@ export function JourneyPage() {
     <article className="page journey-page">
       {plan ? <ServiceBanner meta={plan.meta} /> : null}
 
-      <PixelMasthead
+      <PixelVista
         title="Plan a journey"
         standfirst="We show when you are likely to arrive as a range, not a single time, because that is what the data actually supports."
-        props={["stopFlag", "person", "tree"]}
+        vista="journey"
       />
 
       <form

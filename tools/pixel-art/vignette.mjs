@@ -1,5 +1,5 @@
 import { Canvas } from "./canvas.mjs";
-import { V2_W, V2_H, V2_GROUND, vignette2Scene, farBus } from "./vignette2.mjs";
+import { V2_W, V2_H, V2_GROUND, GEOMETRIES, vignette2Scene, farBus } from "./vignette2.mjs";
 
 /**
  * The weather vignette's backdrop and its weather layers.
@@ -31,8 +31,22 @@ export function vignetteScene(options = {}) {
  * the area more than tripled. Every count below is written as a density and multiplied by the
  * area, so a future resize does not silently thin the weather out.
  */
-const AREA = (VIGNETTE_W * VIGNETTE_H) / (96 * 72);
-const scaled = (countAt96x72) => Math.round(countAt96x72 * AREA);
+/**
+ * The effects follow whichever scene they will be laid over.
+ *
+ * They are absolutely-positioned layers drawn at the scene's exact size, so a 176 x 128 rain
+ * layer over the stop page's 320 x 104 world would either stretch — which is the one thing pixel
+ * art must never do — or cover two fifths of it. `setEffectGeometry` switches the size the
+ * generators below draw at, and the build emits one set per composition.
+ */
+let EG = { w: V2_W, h: V2_H };
+
+export function setEffectGeometry(name) {
+  const g = GEOMETRIES[name] ?? GEOMETRIES.panel;
+  EG = { w: g.w, h: g.h };
+}
+
+const scaled = (countAt96x72) => Math.round((countAt96x72 * (EG.w * EG.h)) / (96 * 72));
 
 /** A small deterministic generator, so the same weather draws the same way every build. */
 function random(seed) {
@@ -43,21 +57,21 @@ function random(seed) {
 export const EFFECTS = {
   /** Rain: short diagonal strokes at one angle, in two densities for parallax. */
   rainNear(seed = 1) {
-    const canvas = new Canvas(VIGNETTE_W, VIGNETTE_H);
+    const canvas = new Canvas(EG.w, EG.h);
     const next = random(seed);
     for (let i = 0; i < scaled(34); i += 1) {
-      const x = Math.floor(next() * VIGNETTE_W);
-      const y = Math.floor(next() * VIGNETTE_H);
+      const x = Math.floor(next() * EG.w);
+      const y = Math.floor(next() * EG.h);
       canvas.line(x, y, x - 3, y + 7, "j");
     }
     return canvas;
   },
   rainFar(seed = 2) {
-    const canvas = new Canvas(VIGNETTE_W, VIGNETTE_H);
+    const canvas = new Canvas(EG.w, EG.h);
     const next = random(seed);
     for (let i = 0; i < scaled(26); i += 1) {
-      const x = Math.floor(next() * VIGNETTE_W);
-      const y = Math.floor(next() * VIGNETTE_H);
+      const x = Math.floor(next() * EG.w);
+      const y = Math.floor(next() * EG.h);
       canvas.line(x, y, x - 1, y + 4, "i");
     }
     return canvas;
@@ -70,16 +84,16 @@ export const EFFECTS = {
    * standing up off them. There was nowhere to put this before — the old picture had no road.
    */
   rainReflections(seed = 11) {
-    const canvas = new Canvas(VIGNETTE_W, VIGNETTE_H);
+    const canvas = new Canvas(EG.w, EG.h);
     const next = random(seed);
     for (let i = 0; i < scaled(14); i += 1) {
-      const x = Math.floor(next() * VIGNETTE_W);
-      const y = VIGNETTE_GROUND + 2 + Math.floor(next() * (VIGNETTE_H - VIGNETTE_GROUND - 4));
+      const x = Math.floor(next() * EG.w);
+      const y = VIGNETTE_GROUND + 2 + Math.floor(next() * (EG.h - VIGNETTE_GROUND - 4));
       canvas.hline(x, y, 2 + Math.floor(next() * 4), next() > 0.5 ? "k" : "j");
     }
     // Splashes: a pixel up off the wet surface, which is what says the drops are still falling.
     for (let i = 0; i < scaled(6); i += 1) {
-      const x = Math.floor(next() * VIGNETTE_W);
+      const x = Math.floor(next() * EG.w);
       const y = VIGNETTE_GROUND + 3 + Math.floor(next() * 10);
       canvas.px(x, y, "k");
       canvas.px(x + 2, y - 1, "j");
@@ -88,16 +102,16 @@ export const EFFECTS = {
   },
   /** Snow: single pixels and a few two-pixel flakes, no diagonals. */
   snow(seed = 3) {
-    const canvas = new Canvas(VIGNETTE_W, VIGNETTE_H);
+    const canvas = new Canvas(EG.w, EG.h);
     const next = random(seed);
     for (let i = 0; i < scaled(40); i += 1) {
-      const x = Math.floor(next() * VIGNETTE_W);
-      const y = Math.floor(next() * VIGNETTE_H);
+      const x = Math.floor(next() * EG.w);
+      const y = Math.floor(next() * EG.h);
       canvas.px(x, y, "W");
       if (next() > 0.7) canvas.px(x + 1, y, "R");
     }
     // Settled snow along the kerb and the shelter roof, because snow that never lands is rain.
-    for (let x = 0; x < VIGNETTE_W; x += 1) {
+    for (let x = 0; x < EG.w; x += 1) {
       if (next() > 0.25) canvas.px(x, VIGNETTE_GROUND - 1, "W");
     }
     return canvas;
@@ -121,9 +135,9 @@ export const EFFECTS = {
      * the density varying along each band rather than pixel by pixel. So this draws soft
      * horizontal runs of varying length, thickest low down, and leaves the top third alone.
      */
-    const canvas = new Canvas(VIGNETTE_W, VIGNETTE_H);
+    const canvas = new Canvas(EG.w, EG.h);
     const next = random(7);
-    const from = Math.round(VIGNETTE_H * 0.2);
+    const from = Math.round(EG.h * 0.2);
 
     /*
      * Fourth attempt, and the failure this time was density rather than shape.
@@ -133,10 +147,10 @@ export const EFFECTS = {
      * white blizzard. Fog is something you see the street *through*. Every other row, one run,
      * and only where mist actually collects.
      */
-    for (let y = from; y < VIGNETTE_H; y += 2) {
-      const depth = (y - from) / (VIGNETTE_H - from);
+    for (let y = from; y < EG.h; y += 2) {
+      const depth = (y - from) / (EG.h - from);
       if (next() > 0.18 + depth * 0.4) continue;
-      const x = Math.floor(next() * VIGNETTE_W);
+      const x = Math.floor(next() * EG.w);
       const len = Math.round(8 + next() * 28 * (0.4 + depth));
       canvas.hline(x, y, len, depth > 0.65 ? "W" : "R");
     }
@@ -149,7 +163,7 @@ export const EFFECTS = {
      * Wind is legible when something is being carried by it and when the streaks bend, so these
      * taper and lift at their trailing end, and there is a leaf and a scrap of paper in them.
      */
-    const canvas = new Canvas(VIGNETTE_W, VIGNETTE_H);
+    const canvas = new Canvas(EG.w, EG.h);
     const streak = (x, y, len, lift) => {
       canvas.hline(x, y, len, "R");
       canvas.hline(x + len, y - lift, 4, "Q");
@@ -180,10 +194,10 @@ export const EFFECTS = {
      * left empty — the first pass drew it as a short strip that the composition then placed in
      * the sky, where hot air does not shimmer.
      */
-    const canvas = new Canvas(VIGNETTE_W, VIGNETTE_H);
+    const canvas = new Canvas(EG.w, EG.h);
     for (let band = 0; band < 3; band += 1) {
       const y = VIGNETTE_GROUND + 12 + band * 4;
-      for (let x = band * 9; x < VIGNETTE_W; x += 29) {
+      for (let x = band * 9; x < EG.w; x += 29) {
         canvas.hline(x, y, 7, "%");
         canvas.hline(x + 7, y - 1, 5, "%");
       }
