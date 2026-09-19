@@ -44,6 +44,8 @@ import {
   patternIndexDataset,
   patternIndexTileDataset,
   stopRoutesDataset,
+  mapStopsDataset,
+  type MapStopRow,
   type PatternIndexRow,
   type StopRoutesRow,
   routeBadgeName,
@@ -306,6 +308,23 @@ export interface NetworkSlice {
   stopsById: ReadonlyMap<string, Stop>;
   patternsById: ReadonlyMap<string, RoutePattern>;
   services: ReadonlyMap<string, ServiceRoute>;
+}
+
+/**
+ * A stop as the map draws it.
+ *
+ * Deliberately not a `Stop`: the projection does not carry provenance, quality flags, amenities or
+ * NaPTAN status, and a type that claimed to would be inviting a caller to read a field that is not
+ * there. What a marker needs is what this has.
+ */
+export interface MapStop {
+  id: string;
+  atcoCode: string;
+  name: string;
+  /** Named as `Stop` names it, so the map handler reads both through one shape. */
+  locationCoordinate: Coordinate;
+  indicator?: string;
+  routePublicNames: string[];
 }
 
 export interface StopsInViewport {
@@ -816,6 +835,72 @@ export class NetworkReader {
       services,
       complete: !stops.truncated && patterns.complete,
     };
+  }
+
+  /**
+   * A viewport from the map projection, when the artifact carries one.
+   *
+   * Returns `null` when it does not, so the caller falls back to the stop and stop-route families
+   * rather than describing an empty country — the same contract the pattern index uses, and for
+   * the same reason: an artifact published before this existed has to keep working until it is
+   * rebuilt.
+   *
+   * The saving is bytes, which is the floor the parse-time filters could not get under: walking
+   * the text costs about three milliseconds a mebibyte before an object is built, and a viewport
+   * was reading 7.00 MiB across two families to draw four hundred markers.
+   */
+  async mapStopsInBoundingBox(
+    bbox: { west: number; south: number; east: number; north: number },
+    limit: number,
+    now: number = Date.now(),
+    ledger?: ReadLedger,
+    budgetChars?: number,
+  ): Promise<{ stops: MapStop[]; truncated: boolean } | null> {
+    const index = await this.networkIndex(now);
+    if (!index?.mapStopTiles || index.mapStopTiles.length === 0) return null;
+
+    const read = await this.readTiles<MapStopRow>(
+      mapStopsDataset,
+      stopTilesForBoundingBox(bbox),
+      index.mapStopTiles,
+      index.version,
+      now,
+      Math.min(budgetChars ?? this.requestChars, this.requestChars),
+      ledger ? { ledger, family: "stops", budgetReason: "stop_read_budget" } : undefined,
+      // `y` and `x` rather than `lat` and `lon`: the projection's keys are one character.
+      (body, start, end) => {
+        const lat = numberAt(body, start, end, "y");
+        const lon = numberAt(body, start, end, "x");
+        if (lat === null || lon === null) return true;
+        return lat >= bbox.south && lat <= bbox.north && lon >= bbox.west && lon <= bbox.east;
+      },
+    );
+
+    const inside = read.records
+      .filter(
+        (row) =>
+          row.y >= bbox.south && row.y <= bbox.north && row.x >= bbox.west && row.x <= bbox.east,
+      )
+      .map((row) => ({
+        id: row.i,
+        atcoCode: row.a,
+        name: passengerName(row.n),
+        locationCoordinate: { lat: row.y, lon: row.x },
+        ...(row.d === undefined ? {} : { indicator: row.d }),
+        routePublicNames: row.r ?? [],
+      }));
+
+    if (inside.length <= limit) return { stops: inside, truncated: read.truncated };
+
+    // Nearest the middle, for the reason `stopsInBoundingBox` gives: an arbitrary slice would
+    // drop the centre of the screen.
+    const centre = { lat: (bbox.north + bbox.south) / 2, lon: (bbox.east + bbox.west) / 2 };
+    const ranked = inside
+      .map((stop) => ({ stop, distance: haversineMetres(centre, stop.locationCoordinate) }))
+      .sort((a, b) => a.distance - b.distance)
+      .slice(0, limit)
+      .map((entry) => entry.stop);
+    return { stops: ranked, truncated: true };
   }
 
   async stopsInBoundingBox(

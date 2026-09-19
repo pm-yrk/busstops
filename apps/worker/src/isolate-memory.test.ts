@@ -1269,6 +1269,79 @@ describe("answering without reading geometry", () => {
     expect(parsed).toBeLessThan(parsedWide);
   });
 
+  it("draws a viewport from one projected family instead of two general ones", async () => {
+    const { reader, reads } = await publishedReader();
+    const bbox = { west: -1.7, south: 53.7, east: -1.4, north: 53.9 };
+
+    const general = await reader.stopsInBoundingBox(bbox, 400);
+    reads.length = 0;
+
+    const fresh = await publishedReader();
+    const projected = await fresh.reader.mapStopsInBoundingBox(bbox, 400);
+    expect(projected).not.toBeNull();
+
+    // The same stops, by identity, however they were read.
+    expect(projected!.stops.map((stop) => stop.id).sort()).toEqual(
+      general.stops.map((stop) => stop.id).sort(),
+    );
+
+    // And their route names, which used to be a second family entirely.
+    const named = await reader.routeNamesForStopTiles(stopTilesForBoundingBox(bbox));
+    for (const stop of projected!.stops) {
+      expect(stop.routePublicNames).toEqual(named.byStopId.get(stop.id) ?? []);
+    }
+
+    // Not one stop-routes object opened: the projection carries the names.
+    expect(fresh.reads.filter((key) => key.includes("stop-routes"))).toEqual([]);
+  });
+
+  it("is smaller than the two families it replaces", async () => {
+    const store = new InMemoryObjectStore();
+    const result = await publishNetworkShards(store, network(), { version: "v1" });
+    expect(result.index?.mapStopTiles?.length).toBeGreaterThan(0);
+
+    const sizeOf = async (prefix: string) => {
+      let total = 0;
+      for (const key of await store.list("")) {
+        if (key.includes(prefix)) total += ((await store.get(key)) ?? "").length;
+      }
+      return total;
+    };
+
+    const projection = await sizeOf("map-stops");
+    const replaced = (await sizeOf("network/stops-tile/")) + (await sizeOf("network/stop-routes/"));
+    expect(projection).toBeGreaterThan(0);
+    /*
+     * The whole point of the family. A published `Stop` carries provenance, quality flags,
+     * ingestion time, locality, amenities and NaPTAN status; a marker draws none of them.
+     */
+    expect(projection).toBeLessThan(replaced);
+  });
+
+  it("falls back rather than describing an empty country", async () => {
+    /*
+     * An artifact published before this family existed has no projection tiles on its index.
+     * Republished properly rather than edited in place: the index carries a checksum, and rewriting
+     * the object under it makes the reader refuse to serve a corrupted artifact — which is the
+     * integrity check working, not the case this test is about.
+     */
+    const store = new InMemoryObjectStore();
+    const published = await publishNetworkShards(store, network(), { version: "v1" });
+    const { mapStopTiles: _dropped, ...withoutProjection } = published.index!;
+    await new ArtifactStore(store).publish({
+      dataset: SHARDED.index,
+      version: "v1",
+      records: [withoutProjection],
+      schemaVersion: "1.0.0",
+      sources: ["bods"],
+    });
+
+    const reader = new NetworkReader(store);
+    expect(
+      await reader.mapStopsInBoundingBox({ west: -1.7, south: 53.7, east: -1.4, north: 53.9 }, 400),
+    ).toBeNull();
+  });
+
   it("finds a pattern by its id, from one bucket rather than a geographic scan", async () => {
     const { reader, reads } = await publishedReader();
     const built = network();

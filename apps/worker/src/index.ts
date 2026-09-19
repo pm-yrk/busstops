@@ -496,17 +496,38 @@ router.get("/v1/map", async (_request, { env, url }) => {
    * comes back. What they were queueing for was wall-clock time, which is the one thing there is
    * no reason to spend twice.
    */
+  /*
+   * The map projection first, the two general families only if the artifact has no projection.
+   *
+   * Measured: a viewport read 7.00 MiB across the stop and stop-route tiles, and walking that text
+   * costs about three milliseconds a mebibyte before an object is built — against a ten-millisecond
+   * budget. Filtering the parse took the objects from 23,806 to 788 and the text stayed exactly as
+   * large, so the bytes are the floor. `network/map-stops` is those two families projected to what
+   * a marker draws, in one read instead of two.
+   */
+  const projected = network
+    ? await network.mapStopsInBoundingBox(
+        bbox,
+        MAP_QUERY_LIMITS.maxStops,
+        Date.now(),
+        ledger,
+        MAP_STOP_READ_CHARS,
+      )
+    : null;
+
   const [stopsResult, liveObservations] = await ledger.stage("essentials", () =>
     Promise.all([
-      network
-        ? network.stopsInBoundingBox(
-            bbox,
-            MAP_QUERY_LIMITS.maxStops,
-            Date.now(),
-            ledger,
-            MAP_STOP_READ_CHARS,
-          )
-        : Promise.resolve({ stops: [], truncated: false }),
+      projected
+        ? Promise.resolve({ stops: projected.stops, truncated: projected.truncated })
+        : network
+          ? network.stopsInBoundingBox(
+              bbox,
+              MAP_QUERY_LIMITS.maxStops,
+              Date.now(),
+              ledger,
+              MAP_STOP_READ_CHARS,
+            )
+          : Promise.resolve({ stops: [], truncated: false }),
       liveAllowed && liveService
         ? /*
            * With the map's own remaining time, for the reason route detail already has it.
@@ -542,19 +563,29 @@ router.get("/v1/map", async (_request, { env, url }) => {
    * `network/stop-routes` is the same answer published as the answer, on the stops' own grid: a
    * list of names where a polyline was.
    */
-  const stopRoutes = network
-    ? await ledger.stage("stop-routes", () =>
-        network!.routeNamesForStopTiles(
-          stopTilesForBoundingBox(bbox),
-          Date.now(),
-          ledger,
-          MAP_STOP_ROUTES_CHARS,
-          // The stops this response carries, so the parse builds four hundred rows rather than
-          // every row in a quarter of a degree. They are already resolved by the stage above.
-          new Set(stopsResult.stops.map((stop) => stop.id)),
-        ),
-      )
-    : { byStopId: new Map<string, string[]>(), complete: true, available: true };
+  /*
+   * The projection already carries the names, so this whole read disappears when it is present.
+   * That is the second half of the saving: one family read instead of two.
+   */
+  const stopRoutes = projected
+    ? {
+        byStopId: new Map(projected.stops.map((stop) => [stop.id, stop.routePublicNames])),
+        complete: !projected.truncated,
+        available: true,
+      }
+    : network
+      ? await ledger.stage("stop-routes", () =>
+          network!.routeNamesForStopTiles(
+            stopTilesForBoundingBox(bbox),
+            Date.now(),
+            ledger,
+            MAP_STOP_ROUTES_CHARS,
+            // The stops this response carries, so the parse builds four hundred rows rather than
+            // every row in a quarter of a degree. They are already resolved by the stage above.
+            new Set(stopsResult.stops.map((stop) => stop.id)),
+          ),
+        )
+      : { byStopId: new Map<string, string[]>(), complete: true, available: true };
 
   /*
    * The tiles, only for what the index cannot answer.

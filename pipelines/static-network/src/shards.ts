@@ -374,6 +374,43 @@ export const ROUTE_PATTERN_BUCKETS = 512;
  * opens a pattern tile at all. Nationally this is tens of bytes per stop against a pattern tile's
  * megabytes, because a name is not a polyline.
  */
+/**
+ * The map's own view of a stop, holding what a marker draws and nothing else.
+ *
+ * Measured against the deployed artifact: a viewport reads 7.00 MiB across the stop tiles and the
+ * stop-route tiles, and walking that text costs about three milliseconds a mebibyte before a
+ * single object is built — against the ten milliseconds a Workers Free invocation gets in total.
+ * Filtering the parse took the objects from 23,806 to 788 and the wall of text stayed exactly the
+ * same size, so the bytes are the floor and this is how they come down.
+ *
+ * A published `Stop` carries `provenance`, `qualityFlags`, `ingestedAt`, `localityId`, `amenities`,
+ * `naptanStatus` and `supersededByStopId`. A marker needs none of them. Keys are one character for
+ * the same reason: at roughly a hundred bytes a record, the key names are a measurable share of
+ * the object.
+ *
+ * The route names live here too, so the map reads one family rather than two.
+ */
+export const MAP_STOPS_PREFIX = "network/map-stops";
+
+export interface MapStopRow {
+  /** Stop id, what a marker navigates by. */
+  i: string;
+  /** ATCO code, what a deep link is built from. */
+  a: string;
+  /** Passenger-facing name. */
+  n: string;
+  y: number;
+  x: number;
+  /** Indicator such as "Stand A", when the stop has one. */
+  d?: string;
+  /** Route public names calling here, sorted; absent when nothing calls. */
+  r?: string[];
+}
+
+export function mapStopsDataset(tile: string): string {
+  return `${MAP_STOPS_PREFIX}/${tile}`;
+}
+
 export const STOP_ROUTES_PREFIX = "network/stop-routes";
 
 export interface StopRoutesRow {
@@ -578,6 +615,12 @@ export interface NetworkIndexRecord {
    * distinguishable from "the object could not be read", which are opposite facts.
    */
   stopRouteTiles?: string[];
+  /**
+   * Tiles of the map projection. Absent on an artifact built before it existed, which is what
+   * lets a reader fall back to the stop and stop-route families rather than describe an empty
+   * country.
+   */
+  mapStopTiles?: string[];
   patternIndexBuckets?: number;
   patternIndexShards?: number[];
   /**

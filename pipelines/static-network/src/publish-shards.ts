@@ -44,6 +44,8 @@ import {
   stopRoutesDataset,
   type PatternIndexRow,
   type StopRoutesRow,
+  type MapStopRow,
+  mapStopsDataset,
   type RoutePatternsRow,
 } from "./shards.js";
 
@@ -278,7 +280,17 @@ export async function publishNetworkShards(
    * published as the answer — a list of names is tens of bytes where a polyline is megabytes — so
    * the map reads the tiles it was already reading and never opens a pattern tile at all.
    */
-  const stopRouteShards = groupStopRoutesByTile(network);
+  const namesByStop = routeNamesByStop(network);
+
+  const mapStopShards = groupMapStopsByTile(network, namesByStop);
+  const mapStopTiles = [...mapStopShards.keys()].sort();
+  await publishFamily(
+    "map-stops",
+    [...mapStopShards].map(([tile, rows]) => shardOf(mapStopsDataset(tile), rows)),
+  );
+  mapStopShards.clear();
+
+  const stopRouteShards = groupStopRoutesByTile(network, namesByStop);
   const stopRouteTiles = [...stopRouteShards.keys()].sort();
   await publishFamily(
     "stop-routes",
@@ -360,6 +372,7 @@ export async function publishNetworkShards(
     searchTiles,
     searchPrefixes,
     stopRouteTiles,
+    mapStopTiles,
     patternIndexBuckets: PATTERN_INDEX_BUCKETS,
     patternIndexShards,
     patternIndexTiles,
@@ -541,10 +554,43 @@ function groupPatternsByService(network: BuiltNetwork): Map<number, RoutePattern
  * Names are deduplicated and sorted, so a marker's label is the same between requests rather than
  * reshuffling as the map refreshes.
  */
-function groupStopRoutesByTile(network: BuiltNetwork): Map<string, StopRoutesRow[]> {
+/**
+ * The map projection: every stop a viewport can draw, with its route names beside it.
+ *
+ * Built from the same per-stop name index `groupStopRoutesByTile` uses, so the two families agree
+ * by construction rather than by coincidence. Unlike that one, a stop with nothing calling at it
+ * is still published — the map draws it, and an absent row would take it off the screen.
+ */
+function groupMapStopsByTile(
+  network: BuiltNetwork,
+  namesByStop: ReadonlyMap<string, ReadonlySet<string>>,
+): Map<string, MapStopRow[]> {
+  const byTile = new Map<string, MapStopRow[]>();
+  for (const stop of network.stops) {
+    const names = namesByStop.get(stop.id);
+    const row: MapStopRow = {
+      i: stop.id,
+      a: stop.atcoCode,
+      n: stop.name,
+      y: stop.locationCoordinate.lat,
+      x: stop.locationCoordinate.lon,
+      ...(stop.indicator === undefined ? {} : { d: stop.indicator }),
+      ...(names && names.size > 0 ? { r: [...names].sort() } : {}),
+    };
+    const tile = tileForStop(stop);
+    const rows = byTile.get(tile);
+    if (rows) rows.push(row);
+    else byTile.set(tile, [row]);
+  }
+  // Deterministic order, so the same network publishes byte-identical shards.
+  for (const rows of byTile.values()) rows.sort((a, b) => (a.i < b.i ? -1 : 1));
+  return byTile;
+}
+
+/** The per-stop route names both the stop-routes family and the map projection are built from. */
+function routeNamesByStop(network: BuiltNetwork): Map<string, Set<string>> {
   const serviceNames = new Map(network.services.map((service) => [service.id, service.publicName]));
   const namesByStop = new Map<string, Set<string>>();
-
   for (const pattern of network.patterns) {
     const name = serviceNames.get(pattern.serviceRouteId);
     // A pattern whose service is not in this build has no name to publish. Filing the id instead
@@ -556,7 +602,13 @@ function groupStopRoutesByTile(network: BuiltNetwork): Map<string, StopRoutesRow
       else namesByStop.set(stopId, new Set([name]));
     }
   }
+  return namesByStop;
+}
 
+function groupStopRoutesByTile(
+  network: BuiltNetwork,
+  namesByStop: ReadonlyMap<string, ReadonlySet<string>> = routeNamesByStop(network),
+): Map<string, StopRoutesRow[]> {
   const byTile = new Map<string, StopRoutesRow[]>();
   for (const stop of network.stops) {
     const names = namesByStop.get(stop.id);
