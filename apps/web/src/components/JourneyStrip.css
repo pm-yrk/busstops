@@ -1,0 +1,107 @@
+/*
+ * The strip is a rail with stations on it. The rail is decorative — the list is the structure,
+ * and a screen reader gets the places and times in order without any of this.
+ */
+.journey-strip {
+  list-style: none;
+  margin: var(--space-sm) 0 0;
+  padding: 0;
+  display: grid;
+}
+
+.journey-strip__leg {
+  display: grid;
+  grid-template-columns: 20px 1fr;
+  gap: var(--space-sm);
+}
+
+.journey-strip__rail {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  justify-items: center;
+}
+
+.journey-strip__node {
+  width: 11px;
+  height: 11px;
+  margin-top: 4px;
+  border-radius: 50%;
+  border: 2px solid var(--colour-ink);
+  background: var(--colour-surface);
+}
+
+.journey-strip__leg--bus .journey-strip__node {
+  background: var(--colour-red);
+  border-color: var(--colour-red);
+}
+
+.journey-strip__line {
+  width: 2px;
+  background: var(--colour-hairline);
+  min-height: 100%;
+}
+
+.journey-strip__leg--bus .journey-strip__line {
+  background: var(--colour-red);
+}
+
+.journey-strip__body {
+  padding-bottom: var(--space-md);
+  min-width: 0;
+}
+
+.journey-strip__place {
+  margin: 0;
+  font-weight: 600;
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+
+.journey-strip__place--end {
+  margin-top: var(--space-xs);
+}
+
+.journey-strip__change {
+  font-size: var(--font-size-micro);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--colour-amber-pale);
+  color: var(--colour-ink);
+  font-weight: 700;
+}
+
+.journey-strip__action {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-top: var(--space-xs);
+  flex-wrap: wrap;
+}
+
+/* One art pixel is one art pixel: whole-number scaling, never smoothed. */
+.journey-strip__art {
+  image-rendering: pixelated;
+  flex: none;
+}
+
+.journey-strip__what {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.journey-strip__towards {
+  font-size: var(--font-size-small);
+}
+
+.journey-strip__time {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}

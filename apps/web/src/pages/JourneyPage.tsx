@@ -1,12 +1,12 @@
 import { useCallback, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import type { JourneyPlanOption, JourneyPlanResponse, SearchResult } from "@busstops/contracts";
+import { JourneyStrip } from "../components/JourneyStrip.js";
 import { LoadingBus } from "../components/LoadingBus.js";
 import {
   ConfidenceChip,
   EmptyState,
   ErrorState,
-  RouteBadge,
   ServiceBanner,
   StateLozenge,
 } from "../components/primitives.js";
@@ -227,25 +227,22 @@ function JourneyOptionCard({
         {uncertaintySeconds > 0 ? ` · ${minutesLabel(uncertaintySeconds)} of uncertainty` : ""}
       </p>
 
-      <ol className="journey-option__legs">
-        {option.legs.map((leg, index) => (
-          <li key={`${leg.fromName}-${leg.toName}-${index}`}>
-            {leg.mode === "walk" ? (
-              <span className="journey-option__leg-mode">Walk</span>
-            ) : (
-              <RouteBadge name={leg.routeName ?? "Bus"} />
-            )}
-            <span>
-              {leg.fromName} → {leg.toName}
-              {leg.headsign ? <span className="muted small"> towards {leg.headsign}</span> : null}
-            </span>
-            <span className="muted small">
-              {clockLabel(leg.departureSeconds, serviceDate)}–
-              {clockLabel(leg.arrivalSeconds, serviceDate)}
-            </span>
-          </li>
-        ))}
-      </ol>
+      {/*
+        The legs as a journey rather than as sentences about one. Every value passed is the
+        planner's own: no leg is summarised, merged or invented on the way to the picture.
+      */}
+      <JourneyStrip
+        legs={option.legs.map((leg) => ({
+          mode: leg.mode === "walk" ? "walk" : "bus",
+          fromName: leg.fromName,
+          toName: leg.toName,
+          routeName: leg.routeName ?? null,
+          headsign: leg.headsign ?? null,
+          departureLabel: clockLabel(leg.departureSeconds, serviceDate),
+          arrivalLabel: clockLabel(leg.arrivalSeconds, serviceDate),
+          minutes: Math.max(0, (leg.arrivalSeconds - leg.departureSeconds) / 60),
+        }))}
+      />
 
       {option.explanation ? (
         <p className="journey-option__explanation">{option.explanation}</p>
