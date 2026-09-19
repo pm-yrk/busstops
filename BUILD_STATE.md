@@ -1,8 +1,61 @@
 # Bus Stops. Build State
 
-Last updated: 2026-09-19 (run 66: the pixel idiom carried onto every page; run 65's byte work still open)
+Last updated: 2026-09-19 (run 67: page-specific scenes deployed; the 1102's cause is not what run 65 said)
 
 ## Current status
+
+### Run 67: the scenes are deployed, and the 1102 diagnosis was wrong
+
+`https://preview.busstops.pages.dev`. Nineteen of twenty-one data checks pass,
+including geographic parity across eight English places and London, both journey
+plans, and all five landmark searches. Two fail, and between them they overturn
+run 65's conclusion.
+
+**The route 1102 is not a byte problem.** Run 65 measured 0.93 MiB of SIRI-VM
+XML on the route page's critical path and called that the cause. This run's
+ledger says otherwise. The request that failed was the _smallest_ of the six:
+
+```
+Leeds#1 24  146ms   0.99 MiB   vehicles=0ms    bods fetch=0ms   0.44 MiB -> 283 accepted
+Leeds#2 24  477ms   0.99 MiB   vehicles=276ms  bods fetch=276ms 0.44 MiB -> 283 accepted
+Leeds#3 27  369ms   0.80 MiB   vehicles=161ms  bods fetch=161ms 0.44 MiB -> 283 accepted
+Leeds#4 28 1200ms   0.76 MiB   vehicles=965ms  bods fetch=965ms 0.00 MiB -> FAILED   <- 1102
+```
+
+Fewest bytes, fewest stops (49), and it is the one that died. What is different
+is the upstream: the BODS fetch took 965ms and returned **nothing**. Every
+request that succeeded got its 0.44 MiB in 276ms or less, or out of cache.
+
+So the correlation is with a **slow or failing upstream live fetch**, not with
+parse volume — and the fix run 65 proposed, moving the XML off the critical
+path, would not have addressed it. Taking the live lookup off the route page is
+still probably right, but for a different reason and with a different measure of
+success: what has to stop is a stalled upstream taking the whole request down.
+
+**Also not established:** whether 1102 here is CPU or memory. The ledger reports
+the isolate holding 2 shards / 3.88 MiB across requests, and trimming on the map
+path ("held 8 shard(s)/6.58 MiB, trimmed 6"). That is well inside 128 MB, which
+points at CPU — but Cloudflare's error page names neither, and nothing measured
+so far distinguishes them. Naming one without evidence is how the last three
+runs went wrong.
+
+**The stop endpoint is intermittent, not weather-dependent.** `/v1/stops/:id`
+passed for Piccadilly's departure board and 1102'd for Piccadilly's weather in
+the same run, minutes apart. Same endpoint, same stop, different outcome. So
+this is the same intermittent fault as route detail rather than a cost that
+arrived with the weather artifact, which is what it looked like at first glance.
+
+Visual sweep: 423 pass. The failures are almost all the same 1102 seen from a
+browser — a missing `Access-Control-Allow-Origin` is what Cloudflare's error
+page looks like to `fetch` — plus the live map failing to load any basemap tile
+in the runner, which is worth separating from the rest next run.
+
+**What this run actually shipped** is the art milestone: five page-specific
+composed scenes, fourteen new props, and the stop page's wide world. Those are
+described in the commit. I have not seen them on the deployment: this container
+cannot reach `*.pages.dev`, so the only evidence available to me is the
+workflow's own sweep, and the sweep has no check that looks at the new scenes.
+That gap is the first thing to close next run.
 
 ### Run 66: the artwork stops being one illustration on the home page
 
