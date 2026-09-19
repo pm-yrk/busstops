@@ -96,8 +96,55 @@ export function ProMetricTile({ metric }: { metric: ProMetric }) {
       {metric.suppressed ? (
         <p className="pro-metric__suppressed">{metric.suppressionReason}</p>
       ) : (
-        <p className="pro-metric__comparison">{comparison ?? "No comparable baseline yet."}</p>
+        <p className="pro-metric__comparison">
+          {metric.value !== null && metric.baselineValue !== null ? (
+            <span
+              className="pro-metric__delta"
+              data-direction={
+                metric.value > metric.baselineValue
+                  ? "up"
+                  : metric.value < metric.baselineValue
+                    ? "down"
+                    : "flat"
+              }
+            >
+              {/*
+                A direction and a word, not a colour on its own. Whether up is good depends on the
+                metric — a rise in "buses running" and a rise in "average delay" are opposite news
+                — so the arrow states the change and the sentence beside it states the baseline.
+              */}
+              {metric.value > metric.baselineValue
+                ? "▲"
+                : metric.value < metric.baselineValue
+                  ? "▼"
+                  : "■"}
+            </span>
+          ) : null}
+          {comparison ?? "No comparable baseline yet."}
+        </p>
       )}
+
+      {/*
+        Coverage as a bar as well as a number.
+
+        The share of the requested scope with usable data is the figure that decides how much of
+        the rest of the tile to believe, and it was a percentage in the fourth row of a definition
+        list. One thin bar, one hue, anchored to its baseline — magnitude, so sequential rather
+        than a status colour, because "87% of the network" is not good news or bad news on its own.
+
+        `aria-hidden`, because the same number is announced from the facts list below and a screen
+        reader does not need it twice.
+      */}
+      <div
+        className="pro-metric__coverage"
+        aria-hidden="true"
+        title={`${(metric.coverage * 100).toFixed(0)}% of this scope had usable data`}
+      >
+        <span
+          className="pro-metric__coverage-fill"
+          style={{ width: `${Math.max(2, Math.round(metric.coverage * 100))}%` }}
+        />
+      </div>
 
       <dl className="pro-metric__facts">
         <div>

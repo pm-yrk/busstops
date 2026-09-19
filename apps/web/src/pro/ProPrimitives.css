@@ -205,3 +205,59 @@
   margin: 0;
   grid-column: 1 / -1;
 }
+
+/*
+ * The KPI tile, given a hierarchy.
+ *
+ * Everything on it used to be the same weight: the figure, the comparison, four facts and a
+ * disclosure, all in a row of equal grey. A control tower is read at a glance and then
+ * interrogated, so the figure leads, the comparison sits under it, and the provenance stays put
+ * but recedes.
+ */
+.pro-metric__value {
+  font-size: clamp(2rem, 4.5vw, 2.75rem);
+  font-weight: 700;
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  margin: var(--space-xs) 0 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.pro-metric__delta {
+  margin-right: var(--space-xs);
+  font-size: var(--font-size-small);
+}
+
+.pro-metric__delta[data-direction="up"],
+.pro-metric__delta[data-direction="down"] {
+  color: var(--colour-ink);
+}
+
+.pro-metric__delta[data-direction="flat"] {
+  color: var(--colour-muted);
+}
+
+/*
+ * A thin mark anchored to its baseline, with a rounded data end — the track is the whole scope
+ * and the fill is the part of it that could be measured.
+ */
+.pro-metric__coverage {
+  height: 6px;
+  margin-top: var(--space-sm);
+  border-radius: 3px;
+  background: var(--colour-hairline);
+  overflow: hidden;
+}
+
+.pro-metric__coverage-fill {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--colour-ink);
+}
+
+.pro-metric__facts {
+  margin-top: var(--space-sm);
+  font-size: var(--font-size-small);
+  color: var(--colour-muted);
+}

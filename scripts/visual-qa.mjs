@@ -873,6 +873,63 @@ for (const size of WIDTHS) {
         );
       }
 
+      /*
+       * A page that is empty on purpose, or a page that is accidentally empty.
+       *
+       * These are different things and they look identical in a screenshot. A deliberate empty
+       * state says what is missing and why — `EmptyState` and `ErrorState` both render a
+       * `.state-block` with a title — and an accident is a heading over a blank panel. The sweep
+       * could not tell them apart, so a page that had quietly lost its data passed every check on
+       * it except a human noticing.
+       *
+       * The test is: did this page put anything substantive on the screen, and if not, did it say
+       * why? Substantive means content a passenger reads — list items, table rows, cards,
+       * figures — rather than the chrome that is on every page.
+       */
+      const substance = await page.evaluate(() => {
+        const main = document.querySelector("main") ?? document.body;
+        const CONTENT = [
+          "li",
+          "tbody tr",
+          ".surface",
+          "dl div",
+          "figure",
+          ".route-badge",
+          ".state-block",
+        ];
+        const counted = new Set();
+        for (const selector of CONTENT) {
+          for (const node of main.querySelectorAll(selector)) {
+            // Nav and footer are on every page and say nothing about this one.
+            if (node.closest("nav, footer, header.app__header")) continue;
+            counted.add(node);
+          }
+        }
+        const stateBlocks = [...main.querySelectorAll(".state-block")];
+        return {
+          items: counted.size,
+          words: (main.textContent ?? "").trim().split(/\s+/).filter(Boolean).length,
+          declared: stateBlocks.length > 0,
+          declaredTitles: stateBlocks
+            .map((block) => block.querySelector(".state-block__title")?.textContent?.trim() ?? "")
+            .filter(Boolean)
+            .slice(0, 2),
+          heading: main.querySelector("h1")?.textContent?.trim() ?? "",
+        };
+      });
+
+      const looksEmpty = substance.items < 3 || substance.words < 40;
+      record(
+        `${size.name}/${target.name} is not accidentally empty`,
+        !looksEmpty || substance.declared,
+        looksEmpty
+          ? substance.declared
+            ? `deliberately empty: ${substance.declaredTitles.join("; ") || "(state block, no title)"}`
+            : `${substance.items} content element(s) and ${substance.words} word(s) under ` +
+              `"${substance.heading || "(no heading)"}", and nothing saying why`
+          : `${substance.items} content element(s), ${substance.words} word(s)`,
+      );
+
       if (target.name === "search-results") {
         const results = await page.evaluate(() => {
           const items = [...document.querySelectorAll(".search-page__result")];
