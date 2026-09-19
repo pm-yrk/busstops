@@ -96,6 +96,23 @@ const PAGES = [
     /* The plan is fetched after the page settles, so the shot waits for a result or a reason. */
     settleOn: ".journey-strip, .state-block",
   },
+  /*
+   * A second corridor, in a different city and on a different scale.
+   *
+   * Leeds to its airport is a long inter-urban hop; York Station to the Minster is a short walk
+   * plus one hop across a city centre, which is the journey most people actually plan. A strip
+   * that reads well for the first and badly for the second is a strip that only works when the
+   * legs are long, and one example would never say so.
+   */
+  {
+    name: "journey-result-york",
+    path:
+      "/journey?fromLat=53.9579&fromLon=-1.0934&fromLabel=" +
+      encodeURIComponent("York Station") +
+      "&toLat=53.9623&toLon=-1.0819&toLabel=" +
+      encodeURIComponent("York Minster"),
+    settleOn: ".journey-strip, .state-block",
+  },
   { name: "disruptions", path: "/disruptions" },
   { name: "saved", path: "/saved" },
   { name: "methodology", path: "/methodology" },
@@ -640,6 +657,50 @@ for (const size of WIDTHS) {
             board,
             board ? `board open: ${heading.trim().slice(0, 60)}` : "no stop board on the page",
           );
+
+          /*
+           * The weather scene, measured rather than admired.
+           *
+           * "The artwork is technically present but effectively invisible" is a thing a
+           * screenshot shows and no assertion so far could: the scene is drawn at a whole
+           * multiple of 176 art pixels, so whether it got two of them or one is the whole
+           * difference between a picture and a stamp, and it depends on the width the panel
+           * hands it at this viewport. The numbers below are what the screenshot beside them
+           * would tell a person looking at it.
+           *
+           * The layer counts are reported, never asserted. A clear noon has no effect layers and
+           * that is correct; a stop whose square the collector has not reached has no reading at
+           * all and must say so instead of drawing one.
+           */
+          const scene = await page.evaluate(() => {
+            const figure = document.querySelector(".selected-stop .vignette");
+            if (!figure) return null;
+            const box = figure.querySelector(".vignette__scene")?.getBoundingClientRect();
+            const panel = document.querySelector(".selected-stop")?.getBoundingClientRect();
+            return {
+              width: Math.round(box?.width ?? 0),
+              height: Math.round(box?.height ?? 0),
+              panelWidth: Math.round(panel?.width ?? 0),
+              effects: figure.querySelectorAll(".vignette__effect").length,
+              person: figure.querySelector(".vignette__person") !== null,
+              accessory: figure.querySelector(".vignette__accessory") !== null,
+              bus: figure.querySelector(".vignette__bus") !== null,
+              unavailable: figure.classList.contains("vignette--unavailable"),
+              caption: (figure.querySelector("figcaption")?.textContent ?? "").trim().slice(0, 80),
+            };
+          });
+
+          record(
+            `${size.name}/${target.name} draws the weather scene at a visible size`,
+            scene !== null && scene.width >= 176 * 2,
+            scene === null
+              ? "no vignette in the stop board at all"
+              : `${scene.width}x${scene.height} scene in a ${scene.panelWidth}px panel ` +
+                  `(scale ${Math.round(scene.width / 176)}), ` +
+                  `${scene.effects} effect layer(s), person ${scene.person}, ` +
+                  `accessory ${scene.accessory}, bus ${scene.bus}, ` +
+                  `${scene.unavailable ? "no reading: " : "reading: "}${scene.caption}`,
+          );
         }
 
         record(
@@ -977,6 +1038,49 @@ for (const size of WIDTHS) {
               `"${substance.heading || "(no heading)"}", and nothing saying why`
           : `${substance.items} content element(s), ${substance.words} word(s)`,
       );
+
+      /*
+       * A journey that reads as a journey.
+       *
+       * The emptiness check would pass on a page that rendered three sentences about legs, and
+       * the milestone asks for the itinerary to be drawn: a walk, a boarding stop, the bus with
+       * its route number, where it is going, any change, and the final walk. So the shape is
+       * measured — how many legs, how many of the bus legs carry a route badge, whether a change
+       * is marked — and a planner that found nothing has to have said why instead.
+       */
+      if (target.name.startsWith("journey-result")) {
+        const strip = await page.evaluate(() => {
+          const first = document.querySelector(".journey-strip");
+          if (!first) {
+            const block = document.querySelector(".state-block__title");
+            return { drawn: false, reason: block?.textContent?.trim() ?? "" };
+          }
+          const legs = [...first.querySelectorAll(".journey-strip__leg")];
+          return {
+            drawn: true,
+            options: document.querySelectorAll(".journey-strip").length,
+            legs: legs.length,
+            rides: legs.filter((leg) => leg.querySelector(".route-badge")).length,
+            changes: first.querySelectorAll(".journey-strip__change").length,
+            arrival:
+              document
+                .querySelector(".journey-option__arrival")
+                ?.textContent?.trim()
+                .slice(0, 60) ?? "",
+          };
+        });
+
+        record(
+          `${size.name}/${target.name} draws the itinerary or says why it cannot`,
+          strip.drawn ? strip.legs > 0 : strip.reason.length > 0,
+          strip.drawn
+            ? `${strip.options} option(s), ${strip.legs} leg(s) in the first, ` +
+                `${strip.rides} with a route badge, ${strip.changes} change marker(s) — ${strip.arrival}`
+            : strip.reason
+              ? `no plan, and the page says: ${strip.reason}`
+              : "no journey strip and nothing saying why",
+        );
+      }
 
       if (target.name === "search-results") {
         const results = await page.evaluate(() => {
