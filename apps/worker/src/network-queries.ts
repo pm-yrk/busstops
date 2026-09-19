@@ -9,6 +9,18 @@ import type {
 import type { PatternGeometry } from "@busstops/matching";
 
 /**
+ * As much of a stop as a route page draws.
+ *
+ * Route detail used to resolve its stops as full `Stop` records — provenance, quality flags,
+ * amenities, accessibility — and print four of their fields. Naming the four is what lets the
+ * cheap read answer: both the general tiles and the map projection satisfy this, so the caller
+ * cannot accidentally reach for something only the expensive one carries.
+ */
+export type RouteStop = Pick<Stop, "id" | "atcoCode" | "name" | "locationCoordinate"> & {
+  indicator?: string;
+};
+
+/**
  * Read-only queries over whatever slice of the network a request has read.
  *
  * These are derivations of static data, not new analysis: the Worker composes what the pipelines
@@ -37,7 +49,7 @@ export interface RouteVariant {
 /** Every pattern of a service, with its stop sequence resolved to names. */
 export function routeVariants(
   patterns: readonly PatternGeometry[],
-  stopsById: ReadonlyMap<string, Stop>,
+  stopsById: ReadonlyMap<string, RouteStop>,
 ): RouteVariant[] {
   return patterns
     .map((geometry) => {

@@ -6,6 +6,7 @@ import type {
   ServiceRoute,
   Stop,
 } from "@busstops/contracts";
+import type { RouteStop } from "./network-queries.js";
 import {
   ArtifactStore,
   objectKeyFor,
@@ -296,6 +297,26 @@ function hasWantedKey(
   const id = valueAt(body, start, end, "id");
   if (id !== null && wanted.has(id)) return true;
   const atco = valueAt(body, start, end, "atcoCode");
+  return atco !== null && wanted.has(atco);
+}
+
+/**
+ * The same question asked of a projection row, whose keys are one character each.
+ *
+ * Reusing `hasWantedKey` here looked right and rejected every line: a map row spells its id `i`
+ * and its ATCO code `a`, so a filter looking for `"id"` and `"atcoCode"` matches nothing and the
+ * route resolves no stops at all. The worker tests caught it immediately, which is the argument
+ * for having had them.
+ */
+function hasWantedMapKey(
+  body: string,
+  start: number,
+  end: number,
+  wanted: ReadonlySet<string>,
+): boolean {
+  const id = valueAt(body, start, end, "i");
+  if (id !== null && wanted.has(id)) return true;
+  const atco = valueAt(body, start, end, "a");
   return atco !== null && wanted.has(atco);
 }
 
@@ -1089,13 +1110,66 @@ export class NetworkReader {
    * `truncated` is load-bearing: a route's stops are a statement of fact about where it goes, and
    * a caller must be able to refuse to publish a partial one as the whole route.
    */
+  /**
+   * The map projection, read for a set of tiles and keyed both ways a route names a stop.
+   *
+   * A `MapStop` is not a `Stop` — it has no provenance, amenities or accessibility — but every
+   * field a route variant prints is on it, and the difference in size is the whole point. The
+   * shape returned here is widened to `Stop` for the caller, which is honest about what is
+   * present: the fields the projection does not carry are absent rather than invented, and
+   * nothing downstream of `routeVariants` reads them.
+   *
+   * Null when this artifact has no projection, so the general tiles still answer.
+   */
+  private async mapStopsForTiles(
+    tiles: readonly string[],
+    index: NetworkIndexRecord,
+    now: number,
+    budgetChars: number,
+    ledger: ReadLedger | undefined,
+    wanted: ReadonlySet<string>,
+  ): Promise<{
+    byId: Map<string, RouteStop>;
+    byAtco: Map<string, RouteStop>;
+    truncated: boolean;
+  } | null> {
+    if (!index.mapStopTiles || index.mapStopTiles.length === 0) return null;
+
+    const read = await this.readTiles<MapStopRow>(
+      mapStopsDataset,
+      tiles,
+      index.mapStopTiles,
+      index.version,
+      now,
+      budgetChars,
+      ledger ? { ledger, family: "stops", budgetReason: "route_stop_read_budget" } : undefined,
+      (body, start, end) => hasWantedMapKey(body, start, end, wanted),
+    );
+
+    const byId = new Map<string, RouteStop>();
+    const byAtco = new Map<string, RouteStop>();
+    for (const row of read.records) {
+      const stop: RouteStop = {
+        id: row.i,
+        atcoCode: row.a,
+        name: passengerName(row.n),
+        locationCoordinate: { lat: row.y, lon: row.x },
+        ...(row.d === undefined ? {} : { indicator: row.d }),
+      };
+      byId.set(row.i, stop);
+      byAtco.set(row.a, stop);
+    }
+
+    return { byId, byAtco, truncated: read.truncated };
+  }
+
   async stopsForGeometries(
     geometries: readonly PatternGeometry[],
     now: number = Date.now(),
     ledger?: ReadLedger,
     budgetChars?: number,
   ): Promise<{
-    stopsById: Map<string, Stop>;
+    stopsById: Map<string, RouteStop>;
     truncated: boolean;
     tilesRequested: number;
     requested: number;
@@ -1103,7 +1177,7 @@ export class NetworkReader {
   }> {
     const keys = [...new Set(geometries.flatMap((geometry) => geometry.pattern.stopSequence))];
     const empty = {
-      stopsById: new Map<string, Stop>(),
+      stopsById: new Map<string, RouteStop>(),
       truncated: false,
       tilesRequested: 0,
       requested: keys.length,
@@ -1147,6 +1221,49 @@ export class NetworkReader {
     const wanted = new Set(keys);
     const keep: LineFilter = (body, start, end) => hasWantedKey(body, start, end, wanted);
 
+    /*
+     * The projection first, because a route page needs a marker's worth of a stop.
+     *
+     * Measured on the deployment, with per-family accounting: a Leeds route spent 4.56 MiB of its
+     * 4.83 MiB resolving stops, reading three general tiles of full `Stop` records — four
+     * kilobytes each, carrying provenance, quality flags, amenities and accessibility — to obtain
+     * a name, an ATCO code and a coordinate. That is what puts this endpoint over the
+     * ten-millisecond CPU ceiling, and it is the same read the map replaced.
+     *
+     * `network/map-stops` already holds exactly those fields at about a quarter the size, and
+     * `routeVariants` uses nothing else: the id, the ATCO code, the name, and the coordinate the
+     * live bounding box is built from. `locality` looks like an exception and is not — the
+     * pipeline publishes an NPTG locality *code* rather than the gazetteer of names it points
+     * into, so the Worker has always set that field to null on purpose. There is nothing to lose
+     * by reading the smaller rows.
+     *
+     * Returns null when the artifact has no projection, and the general tiles answer below. The
+     * filter is the same one: a line is matched by id or ATCO code before it is parsed.
+     */
+    const projected = await this.mapStopsForTiles(
+      tiles,
+      index,
+      now,
+      budgetChars ?? this.requestChars,
+      ledger,
+      wanted,
+    );
+    if (projected) {
+      const stopsById = new Map<string, RouteStop>();
+      for (const key of keys) {
+        const stop = projected.byId.get(key) ?? projected.byAtco.get(key);
+        if (stop) stopsById.set(key, stop);
+      }
+      ledger?.count({ stops: stopsById.size });
+      return {
+        stopsById,
+        truncated: projected.truncated,
+        tilesRequested: tiles.length,
+        requested: keys.length,
+        resolved: stopsById.size,
+      };
+    }
+
     const result = await this.readStopTiles(
       tiles,
       index.stopTiles,
@@ -1164,7 +1281,7 @@ export class NetworkReader {
       byAtco.set(stop.atcoCode, stop);
     }
 
-    const stopsById = new Map<string, Stop>();
+    const stopsById = new Map<string, RouteStop>();
     for (const key of keys) {
       const stop = byId.get(key) ?? byAtco.get(key);
       if (stop) stopsById.set(key, stop);

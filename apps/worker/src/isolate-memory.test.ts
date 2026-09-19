@@ -15,6 +15,7 @@ import { PLACES_DATASET } from "@busstops/pipeline-places";
 import { NetworkReader } from "./network-reader.js";
 import { ReadLedger } from "./read-ledger.js";
 import {
+  MAP_STOPS_PREFIX,
   ROUTE_PATTERN_BUCKETS,
   routePatternsBucketFor,
   routePatternsDataset,
@@ -915,6 +916,35 @@ describe("a route's stops", () => {
     expect(reads.filter((key) => key.includes(SHARDED.stopLocator))).toEqual([]);
     // And the tiles it did open are the handful the route runs through, not the country's.
     expect(reads.filter((key) => key.includes(SHARDED.stopTile)).length).toBeLessThan(6);
+  });
+
+  /*
+   * The whole point of the change, measured rather than asserted by shape.
+   *
+   * Run 64's per-family accounting named this: a Leeds route spent 4.56 MiB of its 4.83 MiB
+   * resolving stops, reading general tiles of full `Stop` records — provenance, quality flags,
+   * amenities, accessibility — to print a name, an ATCO code and a coordinate. The projection
+   * holds exactly those at about a quarter the size.
+   */
+  it("reads the projection rather than the general tiles, and far fewer bytes of it", async () => {
+    const { reader, reads, serviceId } = await publishedSprawl();
+    const patterns = await reader.patternsForService(serviceId);
+
+    reads.length = 0;
+    const ledger = new ReadLedger(1800);
+    const resolved = await reader.stopsForGeometries(patterns.geometries, Date.now(), ledger);
+
+    expect(resolved.resolved).toBeGreaterThan(400);
+    // Not one general stop tile was opened; the map projection answered instead.
+    expect(reads.filter((key) => key.includes(SHARDED.stopTile))).toEqual([]);
+    expect(reads.filter((key) => key.includes(MAP_STOPS_PREFIX)).length).toBeGreaterThan(0);
+
+    // Every field the route page draws is present on what came back.
+    const stop = [...resolved.stopsById.values()][0]!;
+    expect(stop.id.length).toBeGreaterThan(0);
+    expect(stop.atcoCode.length).toBeGreaterThan(0);
+    expect(stop.name.length).toBeGreaterThan(0);
+    expect(Number.isFinite(stop.locationCoordinate.lat)).toBe(true);
   });
 
   it("costs far fewer objects than resolving the same stops by key", async () => {
