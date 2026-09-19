@@ -4,8 +4,10 @@ import { toIso } from "@busstops/pipeline-core";
 import { activeDegradationSteps, isAtLeast } from "@busstops/governor";
 import { StageRunner, type Checkpoint, type RunReport } from "./stages.js";
 import {
+  emptySegmentMatchProfile,
   indexSegments,
   sampleSegmentsForTrace,
+  summariseSegmentMatchProfile,
   type RoadSegment,
   type SegmentSample,
 } from "./segments.js";
@@ -110,6 +112,16 @@ export async function runAnalyticsBatch(
            * matcher offered the wrong city returns.
            */
           const index = indexSegments(batch.segments);
+          /*
+           * The stage measures itself.
+           *
+           * Run 67 processed a quarter of its traces in a full budget and rejected half of what
+           * it did process below the confidence floor. Both numbers are outcomes; neither says
+           * where the time went or which of the confidence's three factors did the rejecting,
+           * and those have different fixes. The floor stays where it is until this says why the
+           * matches are weak.
+           */
+          const profile = emptySegmentMatchProfile();
 
           for (const [vehicleRef, trace] of batch.traces) {
             /*
@@ -128,6 +140,8 @@ export async function runAnalyticsBatch(
               trace,
               index,
               batch.routeByVehicle.get(vehicleRef) ?? null,
+              {},
+              profile,
             );
             collected.push(...result.samples);
             lowConfidence += result.discardedLowConfidence;
@@ -144,8 +158,20 @@ export async function runAnalyticsBatch(
               rejected: lowConfidence + implausible + unmatched,
               lowConfidenceTraces: lowConfidence,
               implausibleTraversals: implausible,
+              segmentsIndexed: index.size,
+              ...summariseSegmentMatchProfile(profile),
             },
             notes: [
+              /*
+               * Said in one line, because the counters answer a question that is asked out loud
+               * on every run: are the matches weak because the roads are missing, because the
+               * positions are far from them, or because the decode never settled.
+               */
+              `match profile: ${profile.candidatesMax} candidates at most, ` +
+                `${Math.round(profile.candidateSearchMs)}ms finding them and ` +
+                `${Math.round(profile.decodeMs)}ms decoding; rejections were ` +
+                `${profile.rejectedByCoverage} coverage / ${profile.rejectedByDistance} distance / ` +
+                `${profile.rejectedByInstability} instability`,
               ...(lowConfidence > 0
                 ? [
                     `${lowConfidence} traces produced no samples because their map match was below the confidence floor`,

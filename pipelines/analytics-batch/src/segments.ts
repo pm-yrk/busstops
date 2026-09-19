@@ -1,6 +1,16 @@
+// Imported explicitly rather than taken from the global: this package runs under Node in a
+// scheduled Action, and a sub-millisecond clock is what a per-trace cost of a few hundred
+// microseconds needs to be visible at all.
+import { performance } from "node:perf_hooks";
 import type { Coordinate, VehicleObservation } from "@busstops/contracts";
 import { haversineMetres } from "@busstops/pipeline-core";
-import { mapMatch, type MapMatchCandidateGeometry } from "@busstops/matching";
+import {
+  addMapMatchProfile,
+  emptyMapMatchProfile,
+  mapMatch,
+  type MapMatchCandidateGeometry,
+  type MapMatchProfile,
+} from "@busstops/matching";
 
 /**
  * Segment sampling (docs/07_DATA_PIPELINES.md stage "segment samples").
@@ -55,6 +65,102 @@ export interface SegmentSamplingResult {
 }
 
 /**
+ * What the matching stage cost and why matches were rejected, accumulated across traces.
+ *
+ * The batch report could say "4,265 traces processed, 2,178 below the confidence floor" and no
+ * more, which is enough to know something is wrong and not enough to know what. The confidence is
+ * the product of three independent factors with three different remedies, so the rejections are
+ * attributed to whichever factor was weakest — and the costs are split between finding candidates
+ * and projecting onto them, because those are also different problems.
+ *
+ * Attribution is a diagnosis, not a verdict: "coverage was the weakest factor" means the roads
+ * were missing under most of the trace, not that coverage alone caused the rejection.
+ */
+export interface SegmentMatchProfile {
+  traces: number;
+  /** Milliseconds inside the spatial index, looking up candidates. */
+  candidateSearchMs: number;
+  /** Milliseconds inside the decode itself. */
+  decodeMs: number;
+  /** Candidates offered per trace, for judging whether the grid is the right size. */
+  candidatesMin: number;
+  candidatesMax: number;
+  candidatesTotal: number;
+  /** Traces with no candidate geometry at all: a coverage gap, not a weak match. */
+  tracesWithNoCandidates: number;
+  /** Rejected below the floor, attributed to the weakest of the three confidence factors. */
+  rejectedByCoverage: number;
+  rejectedByDistance: number;
+  rejectedByInstability: number;
+  /** Summed over rejected traces, so the mean distance from the floor is recoverable. */
+  rejectedConfidenceTotal: number;
+  accepted: number;
+  matcher: MapMatchProfile;
+}
+
+export function emptySegmentMatchProfile(): SegmentMatchProfile {
+  return {
+    traces: 0,
+    candidateSearchMs: 0,
+    decodeMs: 0,
+    candidatesMin: Number.POSITIVE_INFINITY,
+    candidatesMax: 0,
+    candidatesTotal: 0,
+    tracesWithNoCandidates: 0,
+    rejectedByCoverage: 0,
+    rejectedByDistance: 0,
+    rejectedByInstability: 0,
+    rejectedConfidenceTotal: 0,
+    accepted: 0,
+    matcher: emptyMapMatchProfile(),
+  };
+}
+
+/** The profile as a report reads it, with the derived figures the raw counters imply. */
+export function summariseSegmentMatchProfile(profile: SegmentMatchProfile): Record<string, number> {
+  const traces = Math.max(1, profile.traces);
+  const offered = profile.matcher.projections + profile.matcher.projectionsSkippedByBounds;
+  return {
+    traces: profile.traces,
+    candidateSearchMs: Math.round(profile.candidateSearchMs),
+    decodeMs: Math.round(profile.decodeMs),
+    msPerTrace: Number(((profile.candidateSearchMs + profile.decodeMs) / traces).toFixed(3)),
+    candidatesPerTrace: Math.round(profile.candidatesTotal / traces),
+    candidatesMin: profile.candidatesMin === Number.POSITIVE_INFINITY ? 0 : profile.candidatesMin,
+    candidatesMax: profile.candidatesMax,
+    tracesWithNoCandidates: profile.tracesWithNoCandidates,
+    projections: profile.matcher.projections,
+    projectionsSkippedByBounds: profile.matcher.projectionsSkippedByBounds,
+    /*
+     * What the precomputed bounding boxes were worth. A high share means the grid hands the
+     * decode many candidates it cannot use, which is a statement about the grid's size rather
+     * than about the matcher.
+     */
+    boundsSkipShare:
+      offered === 0 ? 0 : Number((profile.matcher.projectionsSkippedByBounds / offered).toFixed(3)),
+    candidatesWithoutBounds: profile.matcher.candidatesWithoutBounds,
+    pointsWithNoState: profile.matcher.pointsWithNoState,
+    statesPerPoint:
+      profile.matcher.points === 0
+        ? 0
+        : Number((profile.matcher.statesKept / profile.matcher.points).toFixed(2)),
+    accepted: profile.accepted,
+    rejectedByCoverage: profile.rejectedByCoverage,
+    rejectedByDistance: profile.rejectedByDistance,
+    rejectedByInstability: profile.rejectedByInstability,
+    meanRejectedConfidence: Number(
+      (
+        profile.rejectedConfidenceTotal /
+        Math.max(
+          1,
+          profile.rejectedByCoverage + profile.rejectedByDistance + profile.rejectedByInstability,
+        )
+      ).toFixed(3),
+    ),
+  };
+}
+
+/**
  * Where each segment is, so a trace is matched against its own street rather than the country.
  *
  * `sampleSegmentsForTrace` was handed every segment in the batch and rebuilt the whole candidate
@@ -87,7 +193,29 @@ export interface SegmentIndex {
 export function indexSegments(segments: readonly RoadSegment[]): SegmentIndex {
   const cells = new Map<string, MapMatchCandidateGeometry[]>();
   for (const segment of segments) {
-    const geometry: MapMatchCandidateGeometry = { id: segment.id, path: segment.path };
+    /*
+     * The extent is computed here, once per segment for the whole batch.
+     *
+     * A road's bounding box does not change between vehicles, and the matcher uses it to skip
+     * projecting a point onto a path it cannot possibly be near. Computing it inside the matcher
+     * would redo this work for every trace that sees the segment — which is precisely the
+     * repeated static geometry work the profile exists to measure.
+     */
+    let minLat = Infinity;
+    let minLon = Infinity;
+    let maxLat = -Infinity;
+    let maxLon = -Infinity;
+    for (const point of segment.path) {
+      if (point.lat < minLat) minLat = point.lat;
+      if (point.lat > maxLat) maxLat = point.lat;
+      if (point.lon < minLon) minLon = point.lon;
+      if (point.lon > maxLon) maxLon = point.lon;
+    }
+    const geometry: MapMatchCandidateGeometry = {
+      id: segment.id,
+      path: segment.path,
+      ...(Number.isFinite(minLat) ? { bounds: { minLat, minLon, maxLat, maxLon } } : {}),
+    };
     // Every cell the path passes through, not just its ends: a 1.2 km segment can cross one.
     const keys = new Set(segment.path.map((point) => cellKey(point.lat, point.lon)));
     for (const key of keys) {
@@ -142,6 +270,8 @@ export function sampleSegmentsForTrace(
   segments: readonly RoadSegment[] | SegmentIndex,
   routeId: string | null,
   options: SegmentSamplingOptions = {},
+  /** Accumulated across every trace in the batch, when the caller is profiling. */
+  profile?: SegmentMatchProfile,
 ): SegmentSamplingResult {
   const config = { ...SEGMENT_DEFAULTS, ...options };
   const result: SegmentSamplingResult = {
@@ -158,19 +288,30 @@ export function sampleSegmentsForTrace(
     return result;
   }
 
+  const searchStartedAt = profile ? performance.now() : 0;
   const geometries: MapMatchCandidateGeometry[] = indexed
     ? indexed.near(trace)
     : (segments as readonly RoadSegment[]).map((segment) => ({
         id: segment.id,
         path: segment.path,
       }));
+  if (profile) {
+    profile.traces += 1;
+    profile.candidateSearchMs += performance.now() - searchStartedAt;
+    profile.candidatesTotal += geometries.length;
+    profile.candidatesMin = Math.min(profile.candidatesMin, geometries.length);
+    profile.candidatesMax = Math.max(profile.candidatesMax, geometries.length);
+  }
   // A trace with no road anywhere near it is unmatched, which is a fact about coverage rather
   // than a low-confidence match — and counting it as the latter would blame the matcher.
   if (geometries.length === 0) {
     result.unmatchedTraces += 1;
+    if (profile) profile.tracesWithNoCandidates += 1;
     return result;
   }
 
+  const matcherProfile = profile ? emptyMapMatchProfile() : undefined;
+  const decodeStartedAt = profile ? performance.now() : 0;
   const matched = mapMatch(
     trace.map((observation) => ({
       coordinate: observation.coordinate,
@@ -178,12 +319,35 @@ export function sampleSegmentsForTrace(
       bearingDegrees: observation.bearingDegrees ?? null,
     })),
     geometries,
+    {},
+    matcherProfile,
   );
+  if (profile && matcherProfile) {
+    profile.decodeMs += performance.now() - decodeStartedAt;
+    addMapMatchProfile(profile.matcher, matcherProfile);
+  }
 
   if (matched.confidence < config.minimumMatchConfidence) {
     result.discardedLowConfidence += 1;
+    if (profile) {
+      /*
+       * Attributed to the weakest of the three factors the confidence multiplies together.
+       *
+       * Poor coverage, positions far from the centreline and an unsettled decode are three
+       * different problems with three different fixes, and a single rejected count cannot tell
+       * them apart. Ties go to coverage, then distance, which is the order of how fundamental
+       * the problem is: roads that are not there cannot be matched better.
+       */
+      const { coverage, meanPointConfidence, stability } = matched.components;
+      const weakest = Math.min(coverage, meanPointConfidence, stability);
+      if (weakest === coverage) profile.rejectedByCoverage += 1;
+      else if (weakest === meanPointConfidence) profile.rejectedByDistance += 1;
+      else profile.rejectedByInstability += 1;
+      profile.rejectedConfidenceTotal += matched.confidence;
+    }
     return result;
   }
+  if (profile) profile.accepted += 1;
 
   // Group consecutive points that decoded onto the same segment; each run is one traversal.
   let runStart = 0;

@@ -169,6 +169,42 @@ async function main(): Promise<number> {
   report.notes = [...result.notes, ...result.report.stages.flatMap((stage) => stage.notes)];
   report.samples = result.samples.length;
   report.incidents = result.incidents.length;
+  /*
+   * The closed window the edge will read, at the top of the report.
+   *
+   * It is the one figure that says whether this run produced something Pro can actually show,
+   * and reading it out of a stage's metrics means knowing which stage to look in.
+   */
+  report.publishedSummary = result.publish?.summary ?? null;
+
+  /*
+   * And the match profile on the console, not only in the artifact.
+   *
+   * The report has to be downloaded; the job log is what gets read first, and "why are the
+   * matches weak" is the question the next change depends on.
+   */
+  const matching = result.report.stages.find((stage) => stage.name === "segment_samples");
+  if (matching) {
+    const m = matching.metrics;
+    console.log(
+      `Map match: ${m.traces ?? 0} traces, ${m.candidatesPerTrace ?? 0} candidates each ` +
+        `(max ${m.candidatesMax ?? 0}) from ${m.segmentsIndexed ?? 0} segments; ` +
+        `${m.candidateSearchMs ?? 0}ms searching, ${m.decodeMs ?? 0}ms decoding ` +
+        `(${m.msPerTrace ?? 0}ms/trace); ${m.projections ?? 0} projections with ` +
+        `${m.projectionsSkippedByBounds ?? 0} skipped by extent (${m.boundsSkipShare ?? 0}); ` +
+        `${m.statesPerPoint ?? 0} states/point, ${m.pointsWithNoState ?? 0} points snapped to ` +
+        `nothing; accepted ${m.accepted ?? 0}, rejected ${m.rejectedByCoverage ?? 0} coverage / ` +
+        `${m.rejectedByDistance ?? 0} distance / ${m.rejectedByInstability ?? 0} instability ` +
+        `at mean confidence ${m.meanRejectedConfidence ?? 0}`,
+    );
+  }
+  if (result.publish?.summary) {
+    const s = result.publish.summary;
+    console.log(
+      `Closed window ${s.windowStart} → ${s.windowEnd}: ${s.segmentsMeasured} segment(s) from ` +
+        `${s.sampleCount} sample(s), ${s.distinctVehicles} vehicle(s), ${s.distinctRoutes} route(s)`,
+    );
+  }
 
   if (result.publish && !result.publish.complete) {
     const rolledBack = await rollbackIntelligence(store);
