@@ -127,9 +127,18 @@ export function ControlTowerPage() {
         </section>
       </div>
 
-      {tower.routesRequiringAttention.length > 0 ? (
-        <section className="pro-section" aria-labelledby="ct-routes">
-          <h2 id="ct-routes">Routes requiring attention</h2>
+      {/*
+        The one section on this page that used to disappear when it had nothing to say.
+ 
+        Every other one states its empty case — the exception inbox has an `EmptyState`, both
+        ranking lists have an `emptyLabel`, source health says "every source is reporting
+        normally". A dashboard where most sections answer and one silently goes missing reads as
+        a page that failed to load part of itself, and "no route needs attention" is the answer an
+        operations team most wants at a glance.
+      */}
+      <section className="pro-section" aria-labelledby="ct-routes">
+        <h2 id="ct-routes">Routes requiring attention</h2>
+        {tower.routesRequiringAttention.length > 0 ? (
           <ul className="pro-list">
             {tower.routesRequiringAttention.map((route) => (
               <li key={route.routeId} className="pro-card">
@@ -144,8 +153,13 @@ export function ControlTowerPage() {
               </li>
             ))}
           </ul>
-        </section>
-      ) : null}
+        ) : (
+          <p className="muted small">
+            No route in this scope crossed the attention threshold in this window. That is a
+            statement about the routes we can measure, not about the whole network.
+          </p>
+        )}
+      </section>
 
       <section className="pro-section" aria-labelledby="ct-outlook">
         <h2 id="ct-outlook">Outlook</h2>
