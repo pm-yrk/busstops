@@ -1342,6 +1342,61 @@ describe("answering without reading geometry", () => {
     ).toBeNull();
   });
 
+  it("resolves a stop from one small bucket instead of a city's tile", async () => {
+    const { reader } = await publishedReader();
+    const wide = await reader.stopsInBoundingBox(
+      { west: -2, south: 53.5, east: -1.2, north: 54 },
+      400,
+    );
+    const target = wide.stops[0]!;
+
+    const fresh = await publishedReader();
+    fresh.reads.length = 0;
+    const found = await fresh.reader.stopByKey(target.id);
+
+    expect(found?.id).toBe(target.id);
+    expect(found?.name).toBe(target.name);
+    // Not one stop tile, and not the locator either: the detail bucket answers on its own.
+    expect(fresh.reads.filter((key) => key.includes("network/stops-tile/"))).toEqual([]);
+    expect(fresh.reads.filter((key) => key.includes("network/stop-locator/"))).toEqual([]);
+    expect(fresh.reads.some((key) => key.includes("network/stop-detail/"))).toBe(true);
+  });
+
+  it("resolves the same stop by its ATCO code, through the alias", async () => {
+    const { reader } = await publishedReader();
+    const wide = await reader.stopsInBoundingBox(
+      { west: -2, south: 53.5, east: -1.2, north: 54 },
+      400,
+    );
+    const target = wide.stops.find((stop) => stop.atcoCode !== stop.id)!;
+    expect(target).toBeDefined();
+
+    const fresh = await publishedReader();
+    const found = await fresh.reader.stopByKey(target.atcoCode);
+    expect(found?.id).toBe(target.id);
+  });
+
+  it("falls back to the tiles when the artifact has no detail buckets", async () => {
+    const store = new InMemoryObjectStore();
+    const published = await publishNetworkShards(store, network(), { version: "v1" });
+    const { stopDetailBuckets: _dropped, ...older } = published.index!;
+    await new ArtifactStore(store).publish({
+      dataset: SHARDED.index,
+      version: "v1",
+      records: [older],
+      schemaVersion: "1.0.0",
+      sources: ["bods"],
+    });
+
+    const reader = new NetworkReader(store);
+    const wide = await reader.stopsInBoundingBox(
+      { west: -2, south: 53.5, east: -1.2, north: 54 },
+      400,
+    );
+    // The old path still answers, which is what keeps a deployment working across the republish.
+    expect(await reader.stopByKey(wide.stops[0]!.id)).not.toBeNull();
+  });
+
   it("finds a pattern by its id, from one bucket rather than a geographic scan", async () => {
     const { reader, reads } = await publishedReader();
     const built = network();

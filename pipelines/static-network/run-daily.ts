@@ -22,7 +22,7 @@ import {
   type SpilledJourneyPublishResult,
 } from "./src/publish-spilled-journeys.js";
 import { encodeDepartureShardFromJsonl } from "./src/departures-index.js";
-import { publishNetworkShards } from "./src/publish-shards.js";
+import { MAX_PUBLISH_BYTES, publishNetworkShards } from "./src/publish-shards.js";
 import { fetchStaticSources } from "./src/sources.js";
 
 const FINGERPRINT_DATASET = "network/fingerprints";
@@ -319,6 +319,7 @@ async function main(): Promise<number> {
     // Where the wall clock went. A family that doubles in object count doubles the writes, and
     // the writes are most of this step's runtime as well as the metered operation.
     families: shardResult.families,
+    publishedBytes: shardResult.publishedBytes,
     stopTiles: shardResult.index?.stopTiles.length ?? 0,
     patternTiles: shardResult.index?.patternTiles.length ?? 0,
     searchPrefixes: shardResult.index?.searchPrefixes.length ?? 0,
@@ -328,10 +329,16 @@ async function main(): Promise<number> {
       shardResult.families
         .map(
           (family) =>
-            `${family.name} ${family.objects} object(s) in ${(family.ms / 1000).toFixed(1)}s` +
+            `${family.name} ${family.objects} object(s), ` +
+            `${(family.bytes / 1024 / 1024).toFixed(1)} MiB in ${(family.ms / 1000).toFixed(1)}s` +
             (family.failed > 0 ? ` (${family.failed} failed)` : ""),
         )
         .join(", "),
+  );
+  console.log(
+    `This publish occupies ${(shardResult.publishedBytes / 1024 / 1024).toFixed(0)} MiB across ` +
+      `${shardResult.published} object(s); one version may hold ` +
+      `${(MAX_PUBLISH_BYTES / 1024 / 1024).toFixed(0)} MiB of R2's 10 GiB free allowance.`,
   );
   if (shardResult.index === null) {
     console.error(

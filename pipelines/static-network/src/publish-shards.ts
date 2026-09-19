@@ -46,6 +46,9 @@ import {
   type StopRoutesRow,
   type MapStopRow,
   mapStopsDataset,
+  type StopDetailRow,
+  stopDetailDataset,
+  stopDetailBucketFor,
   type RoutePatternsRow,
 } from "./shards.js";
 
@@ -86,7 +89,9 @@ export interface ShardPublishResult {
    * guessing which family had grown. These writes are the bulk of the build's wall clock, and the
    * free tier is counted in operations, so both numbers are worth keeping.
    */
-  families: Array<{ name: string; objects: number; failed: number; ms: number }>;
+  families: Array<{ name: string; objects: number; failed: number; bytes: number; ms: number }>;
+  /** Total bytes this publish occupies, counted as it was written. */
+  publishedBytes: number;
 }
 
 export interface ShardPublishOptions {
@@ -121,6 +126,51 @@ function utf8Bytes(value: string): number {
   return nodeBuffer ? nodeBuffer.byteLength(value, "utf8") : encoder!.encode(value).length;
 }
 
+/**
+ * R2's free storage allowance, and what one publish is allowed to occupy inside it.
+ *
+ * The bucket went over ten gigabytes in run 53 and retention could only claw back four objects a
+ * second, so a publish that does not know its own size is how it happens again. Four versions of
+ * headroom: retention keeps the live one and prunes behind it, and a run that cannot finish its
+ * pruning must still leave room for the next publish.
+ */
+export const FREE_STORAGE_BYTES = 10 * 1024 * 1024 * 1024;
+export const MAX_PUBLISH_BYTES = FREE_STORAGE_BYTES / 4;
+
+export interface StoragePlan {
+  families: Array<{ name: string; objects: number; bytes: number }>;
+  objects: number;
+  bytes: number;
+  limitBytes: number;
+  withinLimit: boolean;
+}
+
+/**
+ * What this publish will occupy, measured before a byte of it is written.
+ *
+ * The lines are built to be measured rather than estimated from record counts: a `Stop` and a map
+ * projection row differ by a factor of four, so a count says nothing useful about bytes. The
+ * caller decides what to do about a plan that does not fit; this only reports it.
+ */
+export function planStorage(families: Array<{ name: string; lines: string[][] }>): StoragePlan {
+  const measured = families.map((family) => ({
+    name: family.name,
+    objects: family.lines.filter((lines) => lines.length > 0).length,
+    bytes: family.lines.reduce(
+      (total, lines) => total + lines.reduce((n, line) => n + utf8Bytes(line) + 1, 0),
+      0,
+    ),
+  }));
+  const bytes = measured.reduce((total, family) => total + family.bytes, 0);
+  return {
+    families: measured,
+    objects: measured.reduce((total, family) => total + family.objects, 0),
+    bytes,
+    limitBytes: MAX_PUBLISH_BYTES,
+    withinLimit: bytes <= MAX_PUBLISH_BYTES,
+  };
+}
+
 export async function publishNetworkShards(
   store: ObjectStore,
   network: BuiltNetwork,
@@ -149,9 +199,20 @@ export async function publishNetworkShards(
    * the free tier is counted in operations, so both numbers are worth keeping.
    */
   const families: ShardPublishResult["families"] = [];
+  /*
+   * What this publish is occupying, counted as it goes.
+   *
+   * Exact rather than estimated: a `Stop` and a map-projection row differ by a factor of four, so
+   * a record count says nothing useful about bytes. The index is written last and atomically, so a
+   * build that runs past the ceiling is abandoned before it becomes live and the previous artifact
+   * keeps serving — which is the only safe way to fail, given the bucket went over ten gigabytes
+   * in run 53 and retention could only remove four objects a second.
+   */
+  let publishedBytes = 0;
   const publishFamily = async (name: string, shards: Shard[]): Promise<void> => {
     const began = Date.now();
     let biggest: ShardPublishResult["largest"][number] | null = null;
+    let familyBytes = 0;
 
     const outcomes = await mapWithConcurrency(shards, TILE_PUBLISH_CONCURRENCY, async (shard) => {
       if (shard.lines.length === 0) return { dataset: shard.dataset, error: null };
@@ -183,6 +244,7 @@ export async function publishNetworkShards(
       if (!biggest || bytes > biggest.bytes) {
         biggest = { dataset: shard.dataset, bytes, records: kept.length };
       }
+      familyBytes += bytes;
 
       try {
         /*
@@ -222,8 +284,10 @@ export async function publishNetworkShards(
       name,
       objects: shards.length,
       failed: familyFailed,
+      bytes: familyBytes,
       ms: Date.now() - began,
     });
+    publishedBytes += familyBytes;
   };
 
   const stopShards = groupStopsByTile(network);
@@ -240,6 +304,14 @@ export async function publishNetworkShards(
     [...locatorShards].map(([bucket, records]) => shardOf(stopLocatorDataset(bucket), records)),
   );
   locatorShards.clear();
+
+  const stopDetailShards = groupStopDetail(network);
+  const stopDetailBuckets = [...stopDetailShards.keys()].sort((a, b) => a - b);
+  await publishFamily(
+    "stop-detail",
+    [...stopDetailShards].map(([bucket, rows]) => shardOf(stopDetailDataset(bucket), rows)),
+  );
+  stopDetailShards.clear();
 
   const patternShards = groupPatternsByTile(network);
   const patternTiles = [...patternShards.keys()].sort();
@@ -350,7 +422,28 @@ export async function publishNetworkShards(
   );
   searchPrefixShards.clear();
 
-  const partial = { published, failed, oversized, truncated, largest, families };
+  const partial = { published, failed, oversized, truncated, largest, families, publishedBytes };
+
+  if (publishedBytes > MAX_PUBLISH_BYTES) {
+    /*
+     * Abandoned before the index, so nothing published here is ever served. Raising the ceiling is
+     * not the remedy: a publish this size means a family has grown and the question is which.
+     */
+    return {
+      index: null,
+      ...partial,
+      failed: [
+        ...failed,
+        {
+          dataset: SHARDED.index,
+          reason:
+            `this publish would occupy ${(publishedBytes / 1024 / 1024).toFixed(0)} MiB, past the ` +
+            `${(MAX_PUBLISH_BYTES / 1024 / 1024).toFixed(0)} MiB one version may hold. The index ` +
+            `was not written, so the previous artifact is still live.`,
+        },
+      ],
+    };
+  }
 
   if (failed.length > 0) {
     // The index is the pointer that makes a publish live. Withholding it when a shard failed
@@ -373,6 +466,7 @@ export async function publishNetworkShards(
     searchPrefixes,
     stopRouteTiles,
     mapStopTiles,
+    stopDetailBuckets,
     patternIndexBuckets: PATTERN_INDEX_BUCKETS,
     patternIndexShards,
     patternIndexTiles,
@@ -890,6 +984,30 @@ function groupLocators(network: BuiltNetwork): Map<number, StopLocatorRecord[]> 
     add(stop.id, tile);
     if (stop.atcoCode !== stop.id) add(stop.atcoCode, tile);
   }
+  return byBucket;
+}
+
+/**
+ * The stop page's lookup. See `STOP_DETAIL_BUCKETS` for why it is hashed rather than geographic.
+ *
+ * The stop is filed once under its id; its ATCO code gets an alias row rather than a second copy.
+ */
+function groupStopDetail(network: BuiltNetwork): Map<number, StopDetailRow[]> {
+  const byBucket = new Map<number, StopDetailRow[]>();
+  const add = (bucket: number, row: StopDetailRow) => {
+    const rows = byBucket.get(bucket);
+    if (rows) rows.push(row);
+    else byBucket.set(bucket, [row]);
+  };
+
+  for (const stop of network.stops) {
+    add(stopDetailBucketFor(stop.id), { k: stop.id, s: stop });
+    if (stop.atcoCode !== stop.id) {
+      add(stopDetailBucketFor(stop.atcoCode), { k: stop.atcoCode, a: stop.id });
+    }
+  }
+  // Deterministic order, so the same network publishes byte-identical shards.
+  for (const rows of byBucket.values()) rows.sort((a, b) => (a.k < b.k ? -1 : 1));
   return byBucket;
 }
 

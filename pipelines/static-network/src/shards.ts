@@ -272,6 +272,44 @@ export function searchPrefixesForWord(word: string, published: ReadonlySet<strin
 }
 
 /** What the edge needs to resolve an identifier to the shard holding it. */
+/**
+ * The stop page's own lookup: one small object, not a city's worth of tile.
+ *
+ * `/v1/stops/:id` resolved a stop through a locator bucket and then a 0.25-degree stop tile, and a
+ * dense city's tile is several mebibytes. Measured, walking that text costs about three
+ * milliseconds a mebibyte before a record is built, against the ten milliseconds of CPU a Workers
+ * Free invocation gets in total — which is why the stop page and the weather field on it were the
+ * last endpoints still answering 1102.
+ *
+ * Hashed rather than geographic, because a stop page is a question about one identifier and
+ * nothing about where it is. A thousand buckets over the national stop list puts a few hundred
+ * stops in each, which is a small object however dense the city.
+ *
+ * A stop is filed once, under its id. Its ATCO code gets an alias row instead of a second copy:
+ * the API accepts either identity, and duplicating every record to serve the rarer one would cost
+ * the whole family's bytes again.
+ */
+export const STOP_DETAIL_BUCKETS = 1024;
+export const STOP_DETAIL_PREFIX = "network/stop-detail";
+
+export function stopDetailBucketFor(key: string, buckets = STOP_DETAIL_BUCKETS): number {
+  return locatorBucketFor(key, buckets);
+}
+
+export function stopDetailDataset(bucket: number): string {
+  return `${STOP_DETAIL_PREFIX}/${bucket}`;
+}
+
+/** Either the stop itself, or a pointer from its ATCO code to the id it is filed under. */
+export interface StopDetailRow {
+  /** The identifier this row answers to. */
+  k: string;
+  /** The stop, when this row is the record rather than an alias. */
+  s?: Stop;
+  /** The id to look up instead, when this row is an alias. */
+  a?: string;
+}
+
 export interface StopLocatorRecord {
   /** A stop id or an ATCO code; both resolve to the same tile. */
   key: string;
@@ -621,6 +659,11 @@ export interface NetworkIndexRecord {
    * country.
    */
   mapStopTiles?: string[];
+  /**
+   * Buckets of the stop-detail family. Absent on an artifact built before it existed, which is
+   * what lets the reader fall back to the locator and the stop tiles.
+   */
+  stopDetailBuckets?: number[];
   patternIndexBuckets?: number;
   patternIndexShards?: number[];
   /**

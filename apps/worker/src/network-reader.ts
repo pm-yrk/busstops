@@ -45,6 +45,9 @@ import {
   patternIndexTileDataset,
   stopRoutesDataset,
   mapStopsDataset,
+  stopDetailDataset,
+  stopDetailBucketFor,
+  type StopDetailRow,
   type MapStopRow,
   type PatternIndexRow,
   type StopRoutesRow,
@@ -966,6 +969,9 @@ export class NetworkReader {
     const index = await this.networkIndex(now);
     if (!index || keys.length === 0) return resolved;
 
+    const fromDetail = await this.stopsFromDetail(keys, index, now);
+    if (fromDetail) return fromDetail;
+
     const buckets = new Set(keys.map((key) => locatorBucketFor(key)));
     const locatorRows = await Promise.all(
       [...buckets].map((bucket) =>
@@ -993,6 +999,75 @@ export class NetworkReader {
       const stop = byId.get(key) ?? byAtco.get(key);
       if (stop) resolved.set(key, stop);
     }
+    return resolved;
+  }
+
+  /**
+   * The stop-detail family, when the artifact carries one.
+   *
+   * Returns `null` when it does not, so the caller falls back to the locator and the stop tiles
+   * rather than reporting a stop that exists as missing — the same contract the map projection and
+   * the pattern index use.
+   *
+   * Two rounds at most. A stop is filed under its id, and its ATCO code is an alias row pointing
+   * at that id, so a lookup by code reads its own bucket, learns the id, and reads the bucket the
+   * record is in. Both are small hashed objects rather than a city's stop tile.
+   */
+  private async stopsFromDetail(
+    keys: readonly string[],
+    index: NetworkIndexRecord,
+    now: number,
+  ): Promise<Map<string, Stop> | null> {
+    if (!index.stopDetailBuckets || index.stopDetailBuckets.length === 0) return null;
+
+    const resolved = new Map<string, Stop>();
+    const readBuckets = async (wanted: ReadonlySet<string>): Promise<StopDetailRow[]> => {
+      const buckets = new Set([...wanted].map((key) => stopDetailBucketFor(key)));
+      const rows = await Promise.all(
+        [...buckets].map((bucket) =>
+          this.readShardSized<StopDetailRow>(
+            stopDetailDataset(bucket),
+            index.version,
+            now,
+            undefined,
+            // Only the rows asked about are built; the rest of the bucket is never parsed.
+            (body, start, end) => {
+              const key = valueAt(body, start, end, "k");
+              return key === null || wanted.has(key);
+            },
+          ),
+        ),
+      );
+      return rows.flatMap((read) => read.records);
+    };
+
+    /*
+     * The same humanising the tile path does, at the same boundary.
+     *
+     * `readStopTiles` cleans the name on its way out, and a second way of reading a stop that did
+     * not would put `White_Rose_Shopping_Centre` back in front of a passenger — which is exactly
+     * what an existing test caught here. The identifiers are untouched: `id` and `atcoCode` are
+     * what links are built from.
+     */
+    const present = (stop: Stop): Stop => ({ ...stop, name: passengerName(stop.name) });
+
+    const firstPass = await readBuckets(new Set(keys));
+    const aliases = new Map<string, string>();
+    for (const row of firstPass) {
+      if (row.s) resolved.set(row.k, present(row.s));
+      else if (row.a) aliases.set(row.k, row.a);
+    }
+
+    if (aliases.size > 0) {
+      const byId = await readBuckets(new Set(aliases.values()));
+      const stopsById = new Map<string, Stop>();
+      for (const row of byId) if (row.s) stopsById.set(row.k, present(row.s));
+      for (const [key, id] of aliases) {
+        const stop = stopsById.get(id);
+        if (stop) resolved.set(key, stop);
+      }
+    }
+
     return resolved;
   }
 
