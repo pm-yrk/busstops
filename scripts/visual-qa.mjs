@@ -307,6 +307,18 @@ function watch(page, sink) {
   });
   page.on("response", (response) => {
     const url = response.url();
+    /*
+     * Which resource 404ed, not merely that one did.
+     *
+     * Chromium's console message for a failed subresource is "Failed to load resource: the server
+     * responded with a status of 404 ()" — no URL in the text, so run 60 reported the vehicle
+     * page failing at all three widths and named nothing. A status without a subject is a fact
+     * nobody can act on, which is how it survived a run.
+     */
+    const status = response.status();
+    if (status >= 400 && sink.badResponses) {
+      sink.badResponses.push(`${status} ${url.replace(/^https?:\/\/[^/]+/, "")}`);
+    }
     if (url.includes("openfreemap") || url.includes("tiles")) {
       sink.tileResponses.push({ url, status: response.status() });
     }
@@ -329,7 +341,7 @@ for (const size of WIDTHS) {
   });
 
   for (const target of PAGES) {
-    const sink = { consoleErrors: [], failedRequests: [], tileResponses: [] };
+    const sink = { consoleErrors: [], failedRequests: [], tileResponses: [], badResponses: [] };
     const page = await context.newPage();
     watch(page, sink);
 
@@ -453,7 +465,10 @@ for (const size of WIDTHS) {
         record(
           `${size.name}/${target.name} loads without console errors`,
           false,
-          sink.consoleErrors.slice(0, 3).join(" | "),
+          sink.consoleErrors.slice(0, 3).join(" | ") +
+            (sink.badResponses.length > 0
+              ? ` — from: ${sink.badResponses.slice(0, 3).join(", ")}`
+              : ""),
         );
       }
 
@@ -1104,6 +1119,22 @@ for (const size of WIDTHS) {
           "figure",
           ".route-badge",
           ".state-block",
+          /*
+           * A page whose job is to take input is not empty when it is showing the input.
+           *
+           * Search, Journey and Pro settings were all reported accidentally empty at all three
+           * widths, and all three were fine: a search box, two endpoint pickers and a column of
+           * preference controls are exactly what those pages are for, and none of them is a list,
+           * a table or a card. Counting the controls is what makes this check about the page
+           * rather than about the shape of its markup.
+           *
+           * It does not let a broken results page through. Whether a plan was drawn is a
+           * different question, asked separately by the journey-strip check, which is the one
+           * that caught the planner never running on arrival.
+           */
+          "input",
+          "select",
+          "textarea",
         ];
         const counted = new Set();
         for (const selector of CONTENT) {

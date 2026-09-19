@@ -420,7 +420,13 @@
   font-size: var(--font-size-small);
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: var(--colour-red);
+  /*
+   * The dark red, measured rather than chosen. Axe put the brand red at 4.2:1 on the warm white
+   * at 13px — under the 4.5 that normal-weight text needs — on all three widths of the deployed
+   * brief. This is a kicker on a published document, so it is small type by design and cannot be
+   * sized out of the problem; the darker step of the same hue carries it.
+   */
+  color: var(--colour-red-dark);
 }
 
 .pro-brief__date {

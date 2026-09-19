@@ -381,6 +381,47 @@ describe("JourneyPage", () => {
     expect(arrival.textContent).toMatch(/Arrive between \d{2}:\d{2} and \d{2}:\d{2}/);
   });
 
+  /*
+   * The deployed sweep found this at all three widths: "Plan a journey", forty-eight words, and
+   * no itinerary — while the same corridor planned fine through the API in under two seconds.
+   * `/journey?fromLat=…&toLat=…` is how a destination tapped on the map arrives here, and the
+   * page seeded both fields from the URL and then waited for somebody to press a button they had
+   * effectively already pressed.
+   */
+  it("plans on arrival when both ends came from the link", async () => {
+    const journey = vi.spyOn(apiClient, "journey").mockResolvedValue(plan);
+
+    render(
+      <MemoryRouter
+        initialEntries={[
+          "/journey?fromLat=53.7965&fromLon=-1.5478&fromLabel=Leeds" +
+            "&toLat=53.8659&toLon=-1.6606&toLabel=Leeds%20Bradford%20Airport",
+        ]}
+      >
+        <JourneyPage />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText(/Arrive between/)).toBeTruthy();
+    expect(journey).toHaveBeenCalledTimes(1);
+    expect(journey.mock.calls[0]![0]).toEqual({ lat: 53.7965, lon: -1.5478 });
+    expect(journey.mock.calls[0]![1]).toEqual({ lat: 53.8659, lon: -1.6606 });
+  });
+
+  /* Half a link is not a request: one endpoint seeded is a form to finish, not a plan to run. */
+  it("does not plan when the link carries only one end", async () => {
+    const journey = vi.spyOn(apiClient, "journey").mockResolvedValue(plan);
+
+    render(
+      <MemoryRouter initialEntries={["/journey?fromLat=53.7965&fromLon=-1.5478&fromLabel=Leeds"]}>
+        <JourneyPage />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByLabelText("To")).toBeTruthy();
+    expect(journey).not.toHaveBeenCalled();
+  });
+
   it("says the journey could not be planned instead of showing an empty list", async () => {
     vi.spyOn(apiClient, "search").mockResolvedValue({
       meta,

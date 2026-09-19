@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import type { JourneyPlanOption, JourneyPlanResponse, SearchResult } from "@busstops/contracts";
 import { JourneyStrip } from "../components/JourneyStrip.js";
@@ -69,6 +69,38 @@ export function JourneyPage() {
       setPlanning(false);
     }
   }, []);
+
+  /*
+   * A journey that arrives with both ends already on it is a journey somebody has asked for.
+   *
+   * `/journey?fromLat=…&toLat=…` is how a destination tapped on the map, or opened from a stop
+   * page, gets here — and the page seeded the two fields from the URL and then did nothing, so
+   * what a passenger saw was a form they had already filled in, waiting for them to press the
+   * button again. The deployed sweep caught it at all three widths: the planner answers this
+   * corridor in under two seconds through the API, and the page showed forty-eight words and no
+   * itinerary.
+   *
+   * Once, on arrival, and only for endpoints that came from the URL. A ref rather than a
+   * dependency list because the point is that it does not run again: re-planning as somebody
+   * edits an endpoint would fire a request per keystroke and fight the form.
+   */
+  const planned = useRef(false);
+  useEffect(() => {
+    if (planned.current) return;
+    const from = endpointFromParams(searchParams, "from");
+    const to = endpointFromParams(searchParams, "to");
+    if (!from || !to) return;
+    planned.current = true;
+
+    /*
+     * On the next tick, not in the effect's own body. `runPlan` sets "planning" before it awaits
+     * anything, and setting state synchronously inside an effect makes React render twice for one
+     * arrival. The timer also gives this a cleanup: a passenger who navigates away before the
+     * request is even sent does not get a state update on an unmounted page.
+     */
+    const timer = setTimeout(() => void runPlan(from, to), 0);
+    return () => clearTimeout(timer);
+  }, [searchParams, runPlan]);
 
   const useMyLocation = useCallback(() => {
     if (!globalThis.navigator?.geolocation) {

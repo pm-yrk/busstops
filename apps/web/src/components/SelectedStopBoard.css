@@ -12,7 +12,17 @@
 .selected-stop {
   position: absolute;
   z-index: 2;
-  inset: auto var(--space-md) var(--space-md) var(--space-md);
+  /*
+   * Flush to the map's sides on a phone, inset only from the bottom.
+   *
+   * Sixteen pixels each side is thirty-two off the width the weather scene measures, and the
+   * scene is only ever drawn at a whole multiple of 176 art pixels — so those thirty-two pixels
+   * were the difference between two of them and one. The deployed sweep measured it directly:
+   * "176x128 scene in a 326px panel (scale 1)", where my local ruler had predicted 356px, because
+   * the map on the real page is narrower than the viewport. A bottom sheet that touches the sides
+   * is also simply what a bottom sheet is.
+   */
+  inset: auto 0 0 0;
   /*
    * A phone gets the full width of the map: a bottom sheet, not a card floating in a corner.
    *
@@ -29,10 +39,12 @@
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: var(--space-md);
-  border-radius: var(--radius-md);
+  /* A sheet rises from the edge, so only its top corners are round and only its top has a line. */
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
   background: var(--colour-surface);
   border: 1px solid var(--colour-hairline);
-  box-shadow: 0 12px 32px rgb(0 0 0 / 18%);
+  border-width: 1px 0 0;
+  box-shadow: 0 -4px 32px rgb(0 0 0 / 18%);
 }
 
 /* Tablet and up: a side panel, so the map keeps its width and the board keeps its own. */
@@ -41,6 +53,10 @@
     inset: var(--space-md) var(--space-md) var(--space-md) auto;
     width: 420px;
     max-height: none;
+    /* A card again rather than a sheet: it floats, so it is round and outlined all the way. */
+    border-radius: var(--radius-md);
+    border-width: 1px;
+    box-shadow: 0 12px 32px rgb(0 0 0 / 18%);
   }
 }
 
