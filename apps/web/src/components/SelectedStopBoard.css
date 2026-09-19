@@ -35,7 +35,19 @@
    * Six rems of map are kept clear above it: the zoom pair is two 29px buttons and a ten-pixel
    * offset, so that clears them with room rather than exactly.
    */
-  max-height: min(62vh, calc(100% - 6rem));
+  /*
+   * Tall enough that the weather scene is in it, not merely in the document.
+   *
+   * Run 64 measured the consequence of 62vh: "352x256 (scale 2) in a 358px panel, OFF SCREEN".
+   * The scale fix worked and the scene was still invisible on a phone, because the arrival board
+   * fills the sheet and the picture starts past its bottom edge — which is exactly the reported
+   * symptom, the space under NEXT BUS looking empty.
+   *
+   * The 6rem clearance was for MapLibre's controls, and those moved to the top left in run 58, so
+   * the bottom of the map is no longer the thing being protected. Four rems still keeps a strip
+   * of map visible above the sheet, so it reads as a sheet over a map rather than as a page.
+   */
+  max-height: min(80vh, calc(100% - 4rem));
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: var(--space-md);
