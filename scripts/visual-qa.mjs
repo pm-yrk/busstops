@@ -174,18 +174,48 @@ async function clickPaintedStop(page) {
  * anything. This exercises the handler the way a person does — find where a bus was painted,
  * convert it back to the page, click there.
  */
+/**
+ * Clicks a bus that is actually clickable.
+ *
+ * It used to take the first painted feature and click where the map says it is, which is a
+ * different question: a panel, a zoom control or the attribution can be sitting on top of that
+ * point, and a click there lands on them. Run 59 failed this on desktop and phone and passed it
+ * on tablet, which is the signature of a geometric accident rather than a product defect — the
+ * sweep had opened a stop board the step before and never closed it, so on a phone the bottom
+ * sheet covered most of the map and on a desktop the side panel covered the right third.
+ *
+ * So the point is tested before it is used. `elementFromPoint` is the browser's own answer to
+ * "what would this click hit", and a bus under something else is skipped for the next one rather
+ * than clicked and reported as a broken panel.
+ */
 async function clickPaintedBus(page) {
   const point = await page.evaluate(() => {
     const map = globalThis.__busstopsMap;
     if (!map) return null;
     const features = map.queryRenderedFeatures({ layers: ["vehicle-buses", "vehicle-pips"] });
-    const feature = features[0];
-    if (!feature) return null;
-    const projected = map.project(feature.geometry.coordinates);
-    const box = map.getCanvas().getBoundingClientRect();
-    return { x: box.left + projected.x, y: box.top + projected.y };
+    if (features.length === 0) return null;
+
+    const canvas = map.getCanvas();
+    const box = canvas.getBoundingClientRect();
+    let covered = 0;
+    for (const feature of features) {
+      const projected = map.project(feature.geometry.coordinates);
+      const x = box.left + projected.x;
+      const y = box.top + projected.y;
+      if (x < 0 || y < 0 || x > globalThis.innerWidth || y > globalThis.innerHeight) continue;
+      const hit = document.elementFromPoint(x, y);
+      if (hit === canvas || canvas.contains(hit)) return { x, y, covered, of: features.length };
+      covered += 1;
+    }
+    return { blocked: covered, of: features.length };
   });
+
   if (!point) throw new Error("no bus was painted, so none could be clicked");
+  if (point.x === undefined) {
+    throw new Error(
+      `all ${point.of} painted bus(es) were under something else, so none could be clicked`,
+    );
+  }
   await page.mouse.click(point.x, point.y);
 }
 
@@ -880,6 +910,21 @@ for (const size of WIDTHS) {
          * bus to ask.
          */
         if (map.busesDrawn > 0) {
+          /*
+           * Close the stop board first, the way a passenger would.
+           *
+           * The step above opens one and it stays open — it is a panel over the map, so a click
+           * where a bus is drawn underneath it correctly lands on the panel. Leaving it open and
+           * then reporting "no bus panel opened" measures the sweep's own sequencing.
+           */
+          await page.keyboard.press("Escape");
+          await page
+            .locator(".selected-stop")
+            .waitFor({ state: "detached", timeout: 5_000 })
+            .catch(() => {
+              /* Already gone, or never opened. Either way the map is clear enough to try. */
+            });
+
           let busClickFailed = null;
           try {
             await clickPaintedBus(page);

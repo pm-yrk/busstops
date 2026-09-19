@@ -95,6 +95,7 @@ export async function publishNetwork(
     dataset: string;
     records: readonly unknown[];
     minimumRecordCount: number;
+    maximumShrinkFraction?: number;
   }> = [
     {
       dataset: DATASETS.stops,
@@ -103,7 +104,36 @@ export async function publishNetwork(
     },
     { dataset: DATASETS.operators, records: network.operators, minimumRecordCount: 1 },
     { dataset: DATASETS.services, records: network.services, minimumRecordCount: 1 },
-    { dataset: DATASETS.patterns, records: network.patterns, minimumRecordCount: 1 },
+    {
+      dataset: DATASETS.patterns,
+      records: network.patterns,
+      /*
+       * Patterns are the one national dataset whose size is set by the calendar rather than by
+       * coverage, and the default shrink guard cannot tell that from corruption.
+       *
+       * A pattern is an ordered stop list, accumulated only from trips inside the service-date
+       * horizon. A weekday horizon carries school runs, peak-only extras and short workings that
+       * simply do not exist at the weekend, so the same feed yields about a third fewer patterns
+       * on a Saturday than on a Friday. Run 59 measured it: 31,045 patterns against the previous
+       * version's ~45,900, a 32.4% shrink that failed the 25% default and rolled back a build in
+       * which every one of 11,483 shard objects had published cleanly.
+       *
+       * That was not a broken read, and the report proves it rather than suggesting it: both
+       * source fingerprints came back `changed: false`, so the input bytes were identical to the
+       * build being compared against. The only variable that moved was which two days the horizon
+       * covered. Left alone, this guard rejects *every* weekend rebuild.
+       *
+       * So the relative comparison is widened to cover what the calendar can legitimately do —
+       * the journey tiles already carry 0.9 for the weaker version of this same reason — and the
+       * protection is moved to where it belongs: an absolute floor. A shrink guard compares this
+       * build against a version whose own health is assumed; a floor does not. One pattern per
+       * two published services is roughly four times below the smallest national build observed
+       * and far above anything a partial or regional read could produce, so a misread is caught
+       * by a number that the calendar cannot move.
+       */
+      minimumRecordCount: Math.max(1, Math.floor(network.services.length / 2)),
+      maximumShrinkFraction: 0.6,
+    },
   ];
 
   // The journey count is still guarded, just not by publishing them all in one object: a build
@@ -130,6 +160,9 @@ export async function publishNetwork(
         sources: ["naptan", "bods"],
         partialCoverage,
         minimumRecordCount: attempt.minimumRecordCount,
+        ...(attempt.maximumShrinkFraction === undefined
+          ? {}
+          : { maximumShrinkFraction: attempt.maximumShrinkFraction }),
         now,
         ...(network.warnings.length > 0
           ? { notes: `${network.warnings.length} build warning(s)` }

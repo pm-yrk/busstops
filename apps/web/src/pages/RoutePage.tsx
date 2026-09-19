@@ -270,9 +270,21 @@ export function RoutePage() {
         )}
       </section>
 
-      {incidents.length > 0 ? (
-        <section aria-labelledby="route-incidents-heading" className="route-page__section">
-          <h2 id="route-incidents-heading">Disruption</h2>
+      {/*
+        Disruption, always said out loud.
+
+        Both sections used to vanish when their array was empty, so a route with nothing wrong
+        with it had no disruption heading at all — and "nothing reported" and "we did not look"
+        were the same blank space. They are different answers and a passenger deciding whether to
+        risk this route needs the first one. The response always carries both arrays, so empty
+        genuinely means we looked and found nothing, and saying so is honest.
+
+        `incidents` are derived from observation; `disruptions` are what the operator and the
+        highway authority have published. Kept apart, because who said a thing is part of it.
+      */}
+      <section aria-labelledby="route-incidents-heading" className="route-page__section">
+        <h2 id="route-incidents-heading">Disruption</h2>
+        {incidents.length > 0 ? (
           <ul className="route-page__incidents">
             {incidents.map((incident) => (
               <li key={incident.id}>
@@ -283,24 +295,35 @@ export function RoutePage() {
               </li>
             ))}
           </ul>
-        </section>
-      ) : null}
+        ) : null}
 
-      {/*
-        What the operator has actually announced about this route.
+        {disruptions.length > 0 ? (
+          <OfficialNotices
+            notices={disruptions}
+            sourcesQueried={[]}
+            collectedAt={response.meta.observedAt}
+            headingId="route-official-now"
+          />
+        ) : null}
 
-        `incidents` above are derived from observation and the intelligence pipeline has published
-        none yet, so this section was the whole of what a route page could say about disruption —
-        which meant a route with a published closure on it showed nothing at all.
-      */}
-      {disruptions.length > 0 ? (
-        <OfficialNotices
-          notices={disruptions}
-          sourcesQueried={[]}
-          collectedAt={response.meta.observedAt}
-          headingId="route-official-now"
-        />
-      ) : null}
+        {incidents.length === 0 && disruptions.length === 0 ? (
+          <p className="muted small">
+            Nothing is reported on this route as at{" "}
+            {/*
+              `observedAt` is null when nothing live was read for this answer, which is exactly
+              the case this sentence exists for — so it falls back to when the answer itself was
+              made rather than to no time at all. A freshness claim with no time on it is the one
+              shape this sentence must not take.
+            */}
+            <time dateTime={response.meta.observedAt ?? response.meta.generatedAt}>
+              {formatLondonTime(new Date(response.meta.observedAt ?? response.meta.generatedAt))}
+            </time>
+            . That covers notices the operator and the highway authority have published, and
+            disruption our own observations have identified — it is not a claim about anything
+            neither of those can see.
+          </p>
+        ) : null}
+      </section>
     </article>
   );
 }
