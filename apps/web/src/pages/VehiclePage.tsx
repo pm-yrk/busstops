@@ -293,21 +293,41 @@ export function VehiclePage() {
         <DataAge seconds={vehicle.freshnessSeconds} prefix="Last seen" />
       </header>
 
+      {/*
+        "Not known" is what a broken site says. This says which.
+ 
+        Both of these are null for almost every bus, and it is worth writing down why, because it
+        is not a gap we can close by trying harder. The captured BODS SIRI-VM response carries
+        `VehicleLocation`, `Bearing`, `LineRef`, `OperatorRef`, origin and destination, and the
+        journey refs — and no `Velocity`, no `Delay`, no `MonitoredCall` and no `OnwardCalls`.
+        There is nothing in the feed to derive a delay or a speed from, so the adapter parses
+        everything that is published and the Worker reports null honestly.
+ 
+        A passenger reading "Not known" concludes the site is broken. A passenger reading "this
+        operator's feed does not publish it" has learned something true about the data, which is
+        the whole posture of the product.
+      */}
       <section className="vehicle-page__facts" aria-label="Current status">
         <div>
           <span className="vehicle-page__fact-label">Punctuality</span>
           <span className="vehicle-page__fact-value">
-            {vehicle.delaySeconds === null ? "Not known" : delayLabel(vehicle.delaySeconds)}
+            {vehicle.delaySeconds === null ? (
+              <span className="muted small">Not published by this feed</span>
+            ) : (
+              delayLabel(vehicle.delaySeconds)
+            )}
           </span>
         </div>
         <div>
           <span className="vehicle-page__fact-label">Movement</span>
           <span className="vehicle-page__fact-value">
-            {vehicle.motionState === "moving"
-              ? "Moving"
-              : vehicle.motionState === "stationary"
-                ? "Stationary"
-                : "Not known"}
+            {vehicle.motionState === "moving" ? (
+              "Moving"
+            ) : vehicle.motionState === "stationary" ? (
+              "Stationary"
+            ) : (
+              <span className="muted small">No speed in this feed</span>
+            )}
           </span>
         </div>
         <div>
