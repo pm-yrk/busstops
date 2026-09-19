@@ -51,6 +51,27 @@ function describeFamilies(families) {
     .join(", ")}`;
 }
 
+/**
+ * What the isolate was doing when a request died.
+ *
+ * A request the platform kills with 1102 reports nothing — that is the definition of the
+ * failure — so every diagnosis so far has been assembled from the requests that survived. The
+ * Worker leaves a breadcrumb in module scope and the next request carries it out; this is the
+ * half of the picture that has been missing, and it is the only thing that can say whether the
+ * failure happens before or after the parse begins.
+ */
+function describeDeath(artifact) {
+  if (!artifact || artifact.diedPhase === undefined) return "";
+  const extra = Object.entries(artifact)
+    .filter(([key]) => key.startsWith("died_"))
+    .map(([key, value]) => `${key.slice(5)}=${String(value)}`)
+    .join(" ");
+  return (
+    ` !! a previous request DIED: req#${artifact.diedRequest} ${artifact.diedHandler}` +
+    ` last reached "${artifact.diedPhase}" at ${artifact.diedAtMs}ms${extra ? ` (${extra})` : ""}`
+  );
+}
+
 function describeResidency(residency) {
   if (!residency) return "";
   return (
@@ -809,7 +830,8 @@ await check("the map says what it cost", async () => {
           .join(" ")}`
       : "; the map named no artifact") +
     describeFamilies(d.families) +
-    describeResidency(d.residency)
+    describeResidency(d.residency) +
+    describeDeath(d.artifact)
   );
 });
 
@@ -1113,7 +1135,8 @@ await check("the pattern-heavy endpoints survive dense cities, repeatedly", asyn
                     `${entry.outcome === "request_failed" ? "FAILED" : `${entry.accepted} accepted`}`,
                 )
                 .join("") +
-              describeResidency(routeDiagnostics.residency),
+              describeResidency(routeDiagnostics.residency) +
+              describeDeath(routeDiagnostics.artifact),
           );
           routePeakMs = Math.max(routePeakMs, routeDiagnostics.elapsedMs ?? 0);
           routePeakChars = Math.max(routePeakChars, routeDiagnostics.chars ?? 0);

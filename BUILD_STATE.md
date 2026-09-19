@@ -1,8 +1,81 @@
 # Bus Stops. Build State
 
-Last updated: 2026-09-19 (run 67: page-specific scenes deployed; the 1102's cause is not what run 65 said)
+Last updated: 2026-09-19 (run 68: Pro traced end to end; the 1102 instrumented rather than guessed at)
 
 ## Current status
+
+### Run 68: Pro traced end to end, and the 1102 given an instrument
+
+#### Pro: every stage, with counts
+
+Traced from the run-67 reports rather than from the UI. The chain and where it
+stops:
+
+| stage                        | in                  | out                       | note                                                                                                                                   |
+| ---------------------------- | ------------------- | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `network/segments`           | —                   | present                   | published run 66; the batch cleared its `no_segments` gate                                                                             |
+| live observations            | 35,440 fetched      | **33,180 accepted**       | 1,242 duplicate, 1,018 implausible, 0 rejected, coverage 1                                                                             |
+| collection window            | —                   | **`truncated: true`**     | 12 of 24 partitions skipped (per-run cap 12); "stopped after 2 of 3 snapshots"                                                         |
+| traces assembled             | 33,180 obs          | **17,270 traces**         |                                                                                                                                        |
+| `segment_samples` (the join) | **4,265 of 17,270** | **47 emitted**            | 4,199 rejected; 2,178 below the map-match confidence floor; 18 implausible traversals; `durationMs: 300000` — the stage hit its budget |
+| `interval_aggregates`        | 47 samples          | 43 buckets                | **`suppressedBuckets: 43`** — all of them                                                                                              |
+| `incident_lifecycle`         | 0                   | 0                         | nothing to do                                                                                                                          |
+| `atomic_publish`             | 43 buckets          | **1 emitted, 1 rejected** | "43 buckets are still open and were not published"                                                                                     |
+| metric artifacts             | —                   | **none**                  | `intelligence/segment-metrics: no records produced`                                                                                    |
+| outcome                      | —                   | **`rolled_back`**         | restored `intelligence/incidents@2026-09-18T03:18:44.323Z`                                                                             |
+| pointer                      | —                   | **unchanged**             | so Pro keeps serving the last good publish                                                                                             |
+| Pro API                      | —                   | 1 of 6 headline metrics   | over 0 observations                                                                                                                    |
+
+**Three independent gates close, and the third is structural.**
+
+1. _The join yields 1.1%._ 4,265 traces in, 47 samples out. The single largest
+   loss is 2,178 traces whose map match fell below the confidence floor. And
+   only a quarter of the traces were even attempted, because the stage spent its
+   full 300,000 ms budget.
+
+2. _`minimumSamples: 5`._ A bucket needs five traversals of the same segment in
+   the same five-minute interval before it publishes a figure rather than a
+   count. 47 samples spread over 43 buckets is about one each, so every bucket
+   is suppressed by design.
+
+3. _Only closed buckets are published._ `publish.ts:80` filters
+   `bucket.state === "closed"`. A bucket is 300 s long and stays open for a
+   further 600 s of lateness grace, so it closes **fifteen minutes after it
+   starts**. The workflow collects for about four minutes and starts the batch
+   0.7 s later — collection finished at 14:22:02.928Z, the batch began at
+   14:22:03.610Z. **Every bucket is necessarily open.**
+
+Gate 3 means the current deploy-time shape — collect a few minutes, then batch
+immediately — cannot publish a segment metric no matter how good the join gets.
+That is the thing to fix first, and fixing 1 or 2 without it changes nothing.
+
+#### 1102: what is actually claimed
+
+Corrected, because the previous entry overstated it. A slow or failed live fetch
+**correlates** with some of the failures. It is not established as the cause:
+network waiting costs a Worker no CPU, so a 965 ms fetch is not by itself an
+explanation, and nothing measured yet distinguishes CPU from memory.
+
+The reason four runs of diagnostics have not settled it is structural: **a
+request the platform kills never returns its ledger**, so every measurement so
+far describes only the requests that survived.
+
+`apps/worker/src/breadcrumb.ts` closes that. Module scope survives across
+requests in an isolate — the residency counter already proves it, reporting
+req#12, #17, #19, #20, #22, #23, #25 from one isolate — so each stage stamps
+where it has reached, a handler that finishes clears it, and a breadcrumb still
+set when the next request starts belongs to a request that never finished. That
+next response carries it out.
+
+Stamped either side of the parts in question: `reads:begin` (with whether the
+isolate is cold and what it was already holding), `statics:done`, `live:begin`,
+`siri:cache-hit`, `siri:fetch:begin`, `siri:parse:begin` (with the byte count in
+hand), `siri:parse:done`, `live:done`. The verification script prints it as
+`!! a previous request DIED: req#N route-detail last reached "…" at Nms`.
+
+That answers the open question directly: dying at `siri:fetch:begin` means the
+socket, dying at `siri:parse:begin` means the work. Five tests cover the
+mechanism. No refactor until it has reported.
 
 ### Run 67: the scenes are deployed, and the 1102 diagnosis was wrong
 

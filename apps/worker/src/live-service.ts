@@ -20,6 +20,7 @@ import {
 } from "@busstops/adapters";
 import { cacheTtlMultiplier } from "@busstops/governor";
 import type { WorkerEnv } from "./env.js";
+import { mark } from "./breadcrumb.js";
 
 /**
  * Live data service.
@@ -318,15 +319,31 @@ export class LiveService {
 
         let normalized: NormalizedFeed;
         if (reused) {
+          mark("siri:cache-hit", { chars: fresh.chars });
           normalized = fresh;
         } else {
+          /*
+           * Three stamps around the one stage nothing has been able to see inside.
+           *
+           * A request the platform kills reports nothing, so the only way to learn whether it
+           * died waiting on the socket or partway through turning 0.4 MiB of XML into objects is
+           * to leave a mark before each and let the next request carry it out. `parseMs` cannot
+           * answer this — a Worker's clock does not advance across pure computation — and the
+           * distinction is the whole question: waiting costs no CPU, parsing costs nothing else.
+           */
+          mark("siri:fetch:begin", { bounded });
           const xml = await client.coalesce(cacheKey, () =>
             client.fetchText(url, { timeoutMs, ...(bounded ? { maxAttempts: 1 } : {}) }),
           );
+          mark("siri:parse:begin", { chars: xml.length });
           const parsed = normalizeSiriVm(xml, {
             retrievedAt: now.toISOString(),
             vehicleSalt: this.vehicleSalt(),
             now,
+          });
+          mark("siri:parse:done", {
+            chars: xml.length,
+            observations: parsed.observations.length,
           });
           normalized = { parsed, chars: xml.length, at: now.getTime() };
           /*

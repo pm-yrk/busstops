@@ -30,6 +30,7 @@ import {
 } from "./live-service.js";
 import { NetworkReader } from "./network-reader.js";
 import { ReadLedger } from "./read-ledger.js";
+import { beginBreadcrumb, endBreadcrumb, mark, takeUnfinished } from "./breadcrumb.js";
 import {
   passengerName,
   patternTilesForBoundingBox,
@@ -275,13 +276,33 @@ let requestsServed = 0;
  * Returns the "after" half as a callback so a handler reads as: open the ledger, begin, and stamp
  * residency once the reads are done.
  */
-function beginResidency(ledger: ReadLedger): () => void {
+function beginResidency(ledger: ReadLedger, handler = "unnamed"): () => void {
   requestsServed += 1;
   const served = requestsServed;
+  /*
+   * Start a breadcrumb, and pick up whatever the last request left behind.
+   *
+   * A request the platform kills never reaches its own response, so its ledger is lost — which
+   * is why four runs of diagnostics have described only the requests that survived. A breadcrumb
+   * still set when this one starts belongs to a request that never finished.
+   */
+  beginBreadcrumb(handler, served);
   const before = network?.residency() ?? null;
   const evicted = network?.trimTo(RESIDENT_FLOOR_CHARS) ?? 0;
+  mark("reads:begin", { cold: served === 1, residentChars: before?.chars ?? 0 });
   return () => {
     const after = network?.residency() ?? null;
+    const died = takeUnfinished();
+    if (died) {
+      ledger.artifactNote({
+        diedRequest: died.request,
+        diedHandler: died.handler,
+        diedPhase: died.phase,
+        diedAtMs: died.atMs,
+        ...Object.fromEntries(Object.entries(died.detail ?? {}).map(([k, v]) => [`died_${k}`, v])),
+      });
+    }
+    endBreadcrumb();
     ledger.residency({
       requestsServed: served,
       shardsBefore: before?.shards ?? 0,
@@ -458,7 +479,7 @@ router.get("/v1/map", async (_request, { env, url }) => {
 
   const now = new Date();
   const ledger = new ReadLedger(MAP_ENRICHMENT_BUDGET_MS);
-  const endResidency = beginResidency(ledger);
+  const endResidency = beginResidency(ledger, "map");
 
   // Only the tiles this viewport covers are read. The national stop set is 198 MiB against a
   // 128 MiB isolate, so "load it and filter" is not an option that exists.
@@ -1212,7 +1233,7 @@ router.get("/v1/journeys", async (_request, { env, url }) => {
    * same five-mebibyte cap the map uses rather than the shared default.
    */
   const journeyLedger = new ReadLedger(JOURNEY_BUDGET_MS);
-  const endJourneyResidency = beginResidency(journeyLedger);
+  const endJourneyResidency = beginResidency(journeyLedger, "journeys");
   const journeyIndexForSlice = await journeyLedger.stage("index", () => network!.networkIndex());
   /*
    * Which way to get the patterns, decided from what each one actually costs.
@@ -1654,7 +1675,7 @@ router.get("/v1/routes/:id", async (_request, { env, params }) => {
    * `stopsForGeometries`, not in a larger budget.
    */
   const routeLedger = new ReadLedger(ROUTE_DETAIL_BUDGET_MS);
-  const endRouteResidency = beginResidency(routeLedger);
+  const endRouteResidency = beginResidency(routeLedger, "route-detail");
 
   const index = await routeLedger.stage("index", async () =>
     network ? await network.networkIndex() : null,
@@ -1728,6 +1749,11 @@ router.get("/v1/routes/:id", async (_request, { env, params }) => {
    * and the counts are in the diagnostics either way.
    */
   const routeDetailComplete = patterns.complete && !stopsResult.truncated;
+  mark("statics:done", {
+    stops: stopsById.size,
+    patterns: geometries.length,
+    complete: routeDetailComplete,
+  });
 
   /*
    * The live lookup is bounded by the route's own extent, snapped and capped.
@@ -1785,9 +1811,24 @@ router.get("/v1/routes/:id", async (_request, { env, params }) => {
        * budget. A floor of 300ms, because a deadline shorter than a round trip is a guaranteed
        * failure dressed up as a timeout.
        */
+      /*
+       * Either side of the live lookup, so the breadcrumb says which half a dead request was in.
+       *
+       * This is the open question about the remaining 1102: a slow upstream fetch correlates with
+       * the failures, but network waiting costs a Worker no CPU, so a 965ms fetch is not by
+       * itself an explanation. What distinguishes the two possibilities is whether the request
+       * died with the socket still open or after the bytes were in hand and the XML was being
+       * turned into objects — and only a breadcrumb left behind can say, because a killed request
+       * reports nothing itself.
+       */
+      mark("live:begin", { remainingMs: routeLedger.remainingMs });
       const live = await routeLedger.stage("vehicles", () =>
         liveService!.vehiclesInBoundingBox(cappedBox, Math.max(300, routeLedger.remainingMs)),
       );
+      mark("live:done", {
+        observations: live.observations.length,
+        failedSources: live.failedSources.length,
+      });
       health = live.health;
       failedSources = live.failedSources;
       liveDiagnostics = live.diagnostics;
@@ -2108,7 +2149,7 @@ router.get("/v1/nearby", async (_request, { env, url }) => {
   // Read from the search tiles around the point, not from a national index, and on a ledger —
   // this was the last read on the reader with no budget on it, and run 44 answered 1102 for it.
   const nearbyLedger = new ReadLedger(NEARBY_BUDGET_MS);
-  const endNearbyResidency = beginResidency(nearbyLedger);
+  const endNearbyResidency = beginResidency(nearbyLedger, "nearby");
   const found = network
     ? await nearbyLedger.stage("search-tiles", () =>
         network!.nearby({ lat, lon }, { radiusMetres, limit: 25 }, Date.now(), nearbyLedger),
