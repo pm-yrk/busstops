@@ -50,8 +50,14 @@
  * glance rather than something to be parsed.
  */
 @media (min-width: 1100px) {
+  /*
+   * Five hundred and twenty-eight is not an arbitrary number inside that range: the weather scene
+   * is 176 art pixels wide and is only ever drawn at a whole multiple, so 528 is exactly three of
+   * them. At 500 the same panel could only fit two, and the scene sat 150 pixels short of the
+   * panel's own edge — present, and not the thing you saw first.
+   */
   .selected-stop {
-    width: clamp(500px, 34vw, 560px);
+    width: clamp(528px, 36vw, 560px);
   }
 }
 
@@ -114,9 +120,21 @@
 }
 
 .selected-stop__weather {
-  /* Full bleed to the panel's padding: the scene is the second thing said, not an inset aside. */
+  /*
+   * Full bleed, and genuinely so — the padding is not put back.
+   *
+   * It was bled out and padded in again, which moves the border and leaves the picture measuring
+   * the same column as the text. Thirty-two pixels of that column is the difference between two
+   * whole scales of the artwork on a phone, so giving them back doubles the size of the scene
+   * where it matters most. The figure is exactly as wide as the art and centres in what is left,
+   * so nothing runs to the edge.
+   */
   margin-inline: calc(var(--space-md) * -1);
-  padding-inline: var(--space-md);
+}
+
+/* The art is a whole number of pixels wide; whatever is left over goes evenly on both sides. */
+.selected-stop__weather .vignette {
+  margin-inline: auto;
 }
 
 .stop-facts {
