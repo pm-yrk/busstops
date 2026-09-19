@@ -124,6 +124,54 @@ product rather than failing:
 Gates: eslint clean, prettier clean, typecheck clean, 1180 node tests and 190 web
 tests passing.
 
+### Deployed: run 66
+
+`https://preview.busstops.pages.dev`, Worker
+`https://busstops-api-preview.paulmurrin13.workers.dev`.
+
+**All twenty data-verification checks pass**, including the geographic parity the
+brief asked for: Leeds, Manchester, Birmingham, Bristol, York, Newcastle,
+Brighton and Shrewsbury all return real routes and departures, London returns
+400 TfL stops with live arrivals and an honestly empty vehicle layer, and the
+five landmark searches all resolve. 55 route-detail requests across eight cities
+answered with no platform error page.
+
+The visual sweep: **441 pass, 13 fail**, and every one of the thirteen is
+accounted for.
+
+**Mine, and fixed in this commit:**
+
+- `phone/operator does not scroll sideways — 13px — span.pixel-masthead__paving
+overhangs by 13px`. The masthead's full bleed uses `calc(50% - 50vw)`, and
+  `100vw` counts the classic scrollbar while the page's own box does not. Only a
+  long page shows it, which is why Operator was the one that caught it.
+  `.app__main` now carries `overflow-x: clip` — `clip` not `hidden`, so it does
+  not become a scroll container, and on `.app__main` not `.app`, so the header
+  keeps `position: sticky`. Verified structurally rather than by eye: a
+  deliberately 3000px-wide child inside main now produces zero page scroll.
+- Six weather failures, all of the form "the selected stop board carries no
+  vignette at all". Those checks asserted the old rule. The sweep now checks
+  both halves of the new one: the map panel must carry no scene, and the page
+  behind "Everything about this stop" must.
+
+**Not mine, and still open:**
+
+- Three CORS failures on `/v1/routes/:id` and `/v1/journeys`. No
+  `Access-Control-Allow-Origin` is what Cloudflare's 1102 error page looks like
+  from a browser. This is run 65's open item exactly, and the measured cause is
+  unchanged: 0.93 MiB of SIRI-VM XML parsed on the route page's critical path.
+- `desktop/journey-result-york is not accidentally empty` — the same 1102, seen
+  from the page rather than from the console.
+- `phone/vehicle` 404 on a vehicle ref. Most likely a vehicle that stopped being
+  reported between the sweep picking it and asking for it, which is ordinary for
+  a live feed; not yet confirmed either way, so it is listed rather than
+  dismissed.
+
+Also worth recording from the ledger, because it is the number the next run has
+to move: route peak 1.44 MiB decoded, and the slowest route page was Birmingham
+45 at `vehicles=972ms` against `route-patterns=77ms stops=151ms`. The live
+lookup is now the overwhelming majority of a route request's time.
+
 **Not done, and not claimed.** No new mockups reached the repository, so the art
 _quality_ benchmark this run was asked to match could not be looked at; what is
 here raises the treatment by the standard already written down in

@@ -739,48 +739,81 @@ for (const size of WIDTHS) {
           );
 
           /*
-           * The weather scene, measured rather than admired.
+           * The board is a board; the picture is one click further on.
            *
-           * "The artwork is technically present but effectively invisible" is a thing a
-           * screenshot shows and no assertion so far could: the scene is drawn at a whole
-           * multiple of 176 art pixels, so whether it got two of them or one is the whole
-           * difference between a picture and a stamp, and it depends on the width the panel
-           * hands it at this viewport. The numbers below are what the screenshot beside them
-           * would tell a person looking at it.
+           * This used to measure the vignette inside `.selected-stop`, and that is no longer
+           * where it lives. Somebody who taps a stop on a map wants the next bus, and a
+           * 384-pixel illustration above the fold pushed the one thing they came for underneath
+           * it — so the scene moved to the page "Everything about this stop" promises, where
+           * there is room to be generous.
            *
-           * The layer counts are reported, never asserted. A clear noon has no effect layers and
-           * that is correct; a stop whose square the collector has not reached has no reading at
-           * all and must say so instead of drawing one.
+           * Both halves of that rule are checked, because only checking the second would let the
+           * picture quietly come back to the panel: the board must not carry a scene, and the
+           * page it links to must.
            */
-          const scene = await page.evaluate(() => {
-            const figure = document.querySelector(".selected-stop .vignette");
-            if (!figure) return null;
-            const box = figure.querySelector(".vignette__scene")?.getBoundingClientRect();
-            const panel = document.querySelector(".selected-stop")?.getBoundingClientRect();
-            return {
-              width: Math.round(box?.width ?? 0),
-              height: Math.round(box?.height ?? 0),
-              panelWidth: Math.round(panel?.width ?? 0),
-              effects: figure.querySelectorAll(".vignette__effect").length,
-              person: figure.querySelector(".vignette__person") !== null,
-              accessory: figure.querySelector(".vignette__accessory") !== null,
-              bus: figure.querySelector(".vignette__bus") !== null,
-              unavailable: figure.classList.contains("vignette--unavailable"),
-              caption: (figure.querySelector("figcaption")?.textContent ?? "").trim().slice(0, 80),
-            };
-          });
-
           record(
-            `${size.name}/${target.name} draws the weather scene at a visible size`,
-            scene !== null && scene.width >= 176 * 2,
-            scene === null
-              ? "no vignette in the stop board at all"
-              : `${scene.width}x${scene.height} scene in a ${scene.panelWidth}px panel ` +
-                  `(scale ${Math.round(scene.width / 176)}), ` +
-                  `${scene.effects} effect layer(s), person ${scene.person}, ` +
-                  `accessory ${scene.accessory}, bus ${scene.bus}, ` +
-                  `${scene.unavailable ? "no reading: " : "reading: "}${scene.caption}`,
+            `${size.name}/${target.name} keeps the stop board board-focused`,
+            (await page.locator(".selected-stop .vignette").count()) === 0,
+            "the map panel carries no weather scene, so the next bus is what is above the fold",
           );
+
+          const more = page.getByRole("link", { name: /everything about this stop/i }).first();
+          if ((await more.count()) > 0) {
+            await more.click();
+            await page.waitForLoadState("domcontentloaded");
+            await page.waitForTimeout(1200);
+
+            /*
+             * Measured rather than admired.
+             *
+             * "Technically present but effectively invisible" is a thing a screenshot shows and
+             * no assertion could: the scene is drawn at a whole multiple of 176 art pixels, so
+             * whether it got two of them or one is the whole difference between a picture and a
+             * stamp. The layer counts are reported, never asserted — a clear noon has no effect
+             * layers and that is correct, and a square the collector has not reached has no
+             * reading at all and must say so rather than draw one.
+             */
+            const scene = await page.evaluate(() => {
+              const figure = document.querySelector(".stop-page__weather .vignette");
+              if (!figure) return null;
+              const box = figure.querySelector(".vignette__scene")?.getBoundingClientRect();
+              const section = document
+                .querySelector(".stop-page__weather")
+                ?.getBoundingClientRect();
+              return {
+                width: Math.round(box?.width ?? 0),
+                height: Math.round(box?.height ?? 0),
+                sectionWidth: Math.round(section?.width ?? 0),
+                effects: figure.querySelectorAll(".vignette__effect").length,
+                person: figure.querySelector(".vignette__person") !== null,
+                accessory: figure.querySelector(".vignette__accessory") !== null,
+                bus: figure.querySelector(".vignette__bus") !== null,
+                unavailable: figure.classList.contains("vignette--unavailable"),
+                caption: (figure.querySelector("figcaption")?.textContent ?? "")
+                  .trim()
+                  .slice(0, 80),
+              };
+            });
+
+            record(
+              `${size.name}/${target.name} draws the weather scene on the stop page`,
+              scene !== null && scene.width >= 176 * 2,
+              scene === null
+                ? "no vignette on the stop page at all"
+                : `${scene.width}x${scene.height} scene in a ${scene.sectionWidth}px section ` +
+                    `(scale ${Math.round(scene.width / 176)}), ` +
+                    `${scene.effects} effect layer(s), person ${scene.person}, ` +
+                    `accessory ${scene.accessory}, bus ${scene.bus}, ` +
+                    `${scene.unavailable ? "no reading: " : "reading: "}${scene.caption}`,
+            );
+
+            await page.screenshot({
+              path: join(screenshotDir, `${size.name}-stop-page-weather.png`),
+              fullPage: true,
+            });
+            await page.goBack();
+            await page.waitForTimeout(800);
+          }
         }
 
         record(
@@ -913,61 +946,82 @@ for (const size of WIDTHS) {
           );
 
           /*
-           * And the weather scene, measured on the path a passenger actually takes.
+           * And the same rule on the path a passenger actually takes.
            *
-           * The deep link proved the vignette can render; it did not prove that clicking a stop
-           * on the map gets you one, and those are different journeys through the same component.
-           * The brief is explicit that the normal interaction is the one that must be reliable,
-           * so this asks the same questions here: how big the scene is, whether it drew a real
-           * condition or said it had none, and whether the approaching bus is in it.
+           * The deep link proved the page can draw a scene; it did not prove that clicking a stop
+           * on the map leads to one, and those are different journeys through the same component.
+           * The normal interaction is the one that has to be reliable, so it is asked the same
+           * two questions: the board stays a board, and the page behind "Everything about this
+           * stop" has the picture on it.
            *
            * The condition is reported, never asserted: a clear night has no effect layers and
-           * that is the truth about the sky, not a defect. What is asserted is that the scene is
-           * there and big enough to see.
+           * that is the truth about the sky, not a defect.
            */
           if (board.open) {
-            const scene = await page.evaluate(() => {
-              const figure = document.querySelector(".selected-stop .vignette");
-              if (!figure) return null;
-              const box = figure.querySelector(".vignette__scene")?.getBoundingClientRect();
-              const panel = document.querySelector(".selected-stop")?.getBoundingClientRect();
-              const effects = [...figure.querySelectorAll(".vignette__effect")].map(
-                (node) => (node.className.match(/vignette__effect--(\w+)/) ?? [])[1],
-              );
-              return {
-                width: Math.round(box?.width ?? 0),
-                height: Math.round(box?.height ?? 0),
-                panelWidth: Math.round(panel?.width ?? 0),
-                /* Is any of it on screen, or has it been pushed below the panel's scroll? */
-                visible: (box?.top ?? 0) < globalThis.innerHeight && (box?.bottom ?? 0) > 0,
-                effects,
-                accessory: figure.querySelector(".vignette__accessory") !== null,
-                bus: figure.querySelector(".vignette__bus") !== null,
-                unavailable: figure.classList.contains("vignette--unavailable"),
-                reading:
-                  figure.querySelector(".vignette__reading")?.textContent?.trim().slice(0, 60) ??
-                  "",
-              };
-            });
-
             record(
-              `${size.name}/live shows the weather scene when a stop is clicked`,
-              scene !== null && scene.width >= 176 * 2 && scene.visible,
-              scene === null
-                ? "the selected stop board carries no vignette at all"
-                : `${scene.width}x${scene.height} (scale ${Math.round(scene.width / 176)}) in a ` +
-                    `${scene.panelWidth}px panel, ${scene.visible ? "on screen" : "OFF SCREEN"}; ` +
-                    (scene.unavailable
-                      ? "no reading, neutral scene"
-                      : `reading "${scene.reading}", effects [${scene.effects.join(", ") || "none"}], ` +
-                        `accessory ${scene.accessory}, approaching bus ${scene.bus}`),
+              `${size.name}/live keeps the clicked stop board board-focused`,
+              (await page.locator(".selected-stop .vignette").count()) === 0,
+              "the panel opened by a click carries no weather scene, only the board",
             );
 
-            /* The panel as a passenger meets it, with the scene in the frame. */
+            /* The panel as a passenger meets it. */
             await page.screenshot({
-              path: join(screenshotDir, `${size.name}-live-stop-weather.png`),
+              path: join(screenshotDir, `${size.name}-live-stop-board.png`),
               fullPage: false,
             });
+
+            const more = page.getByRole("link", { name: /everything about this stop/i }).first();
+            if ((await more.count()) > 0) {
+              await more.click();
+              await page.waitForLoadState("domcontentloaded");
+              await page.waitForTimeout(1200);
+
+              const scene = await page.evaluate(() => {
+                const figure = document.querySelector(".stop-page__weather .vignette");
+                if (!figure) return null;
+                const box = figure.querySelector(".vignette__scene")?.getBoundingClientRect();
+                const section = document
+                  .querySelector(".stop-page__weather")
+                  ?.getBoundingClientRect();
+                const effects = [...figure.querySelectorAll(".vignette__effect")].map(
+                  (node) => (node.className.match(/vignette__effect--(\w+)/) ?? [])[1],
+                );
+                return {
+                  width: Math.round(box?.width ?? 0),
+                  height: Math.round(box?.height ?? 0),
+                  sectionWidth: Math.round(section?.width ?? 0),
+                  /* Is any of it on screen, or is it below where anybody will look? */
+                  visible: (box?.top ?? 0) < globalThis.innerHeight && (box?.bottom ?? 0) > 0,
+                  effects,
+                  accessory: figure.querySelector(".vignette__accessory") !== null,
+                  bus: figure.querySelector(".vignette__bus") !== null,
+                  unavailable: figure.classList.contains("vignette--unavailable"),
+                  reading:
+                    figure.querySelector(".vignette__reading")?.textContent?.trim().slice(0, 60) ??
+                    "",
+                };
+              });
+
+              record(
+                `${size.name}/live reaches the weather scene from a clicked stop`,
+                scene !== null && scene.width >= 176 * 2,
+                scene === null
+                  ? "the stop page reached by clicking carries no vignette at all"
+                  : `${scene.width}x${scene.height} (scale ${Math.round(scene.width / 176)}) in a ` +
+                      `${scene.sectionWidth}px section, ${scene.visible ? "in the first screen" : "below the fold"}; ` +
+                      (scene.unavailable
+                        ? "no reading, neutral scene"
+                        : `reading "${scene.reading}", effects [${scene.effects.join(", ") || "none"}], ` +
+                          `accessory ${scene.accessory}, approaching bus ${scene.bus}`),
+              );
+
+              await page.screenshot({
+                path: join(screenshotDir, `${size.name}-stop-page-from-map.png`),
+                fullPage: true,
+              });
+              await page.goBack();
+              await page.waitForTimeout(800);
+            }
           }
         } else {
           // Not a failure of the page: no stops in view is a data question, answered elsewhere.

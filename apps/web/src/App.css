@@ -77,6 +77,21 @@
 
 .app__main {
   flex: 1;
+  /*
+   * Full-bleed art reaches the window's edges, and a scrollbar is not one of them.
+   *
+   * The masthead's kerb runs off both sides with `inset-inline: calc(50% - 50vw)`, and `100vw`
+   * counts the classic scrollbar's width while the page's own box does not. On a long page —
+   * Operator at 390px was the one the deployed sweep caught — that put thirteen pixels of paving
+   * past the right edge and gave a phone a sideways scroll on a page with nothing wide on it.
+   *
+   * `clip` rather than `hidden`: `hidden` makes this a scroll container, which would trap the
+   * page's own scrolling and is the usual way this fix goes wrong. `clip` only trims, and it may
+   * be set on one axis while the other stays visible, which is exactly what is wanted. It is on
+   * `.app__main` rather than on `.app`, because a clipping ancestor would break the header's
+   * `position: sticky`.
+   */
+  overflow-x: clip;
 }
 
 .app__main:focus {
