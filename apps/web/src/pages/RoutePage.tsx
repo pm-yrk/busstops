@@ -3,6 +3,8 @@ import { Link, useParams } from "react-router-dom";
 import type { RouteDetailResponse } from "@busstops/contracts";
 import { OfficialNotices } from "../components/OfficialNotices.js";
 import { PixelVista } from "../components/pixel/PixelVista.js";
+import { RouteStrip } from "../components/RouteStrip.js";
+import { ART } from "../components/pixel/sprites/generated.js";
 import { LoadingBus } from "../components/LoadingBus.js";
 import { vehicleHref } from "../lib/geo.js";
 import {
@@ -154,6 +156,19 @@ export function RoutePage() {
               {variant.stops[variant.stops.length - 1]?.name ?? "—"}
             </span>
           </div>
+          {/*
+            The shape of the route, above the six facts about it.
+
+            Built from the same `variant.stops` the list further down is built from, so it cannot
+            disagree with it, and captioned to say that the spacing is sequence rather than
+            distance — the endpoint returns no coordinates.
+          */}
+          <RouteStrip
+            stops={variant.stops}
+            distanceMetres={variant.distanceMetres}
+            direction={variant.direction}
+          />
+
           <dl className="route-summary__facts">
             <div>
               <dt>Stops</dt>
@@ -189,6 +204,22 @@ export function RoutePage() {
               </dd>
             </div>
           </dl>
+
+          {/*
+            A pale skyline along the foot of the card.
+
+            One tone, no windows, no named building: it sits behind real figures and anything
+            with more contrast than this competes with them. It is a city, not *this* city —
+            nothing in the response says which skyline this route runs through.
+          */}
+          <img
+            className="route-summary__skyline"
+            src={ART.skylineStrip!.src}
+            alt=""
+            aria-hidden="true"
+            width={ART.skylineStrip!.w}
+            height={ART.skylineStrip!.h}
+          />
         </section>
       ) : null}
 
@@ -228,7 +259,23 @@ export function RoutePage() {
         {activeVehicles.length > 0 ? (
           <ul className="route-page__vehicles">
             {activeVehicles.map((vehicle) => (
-              <li key={vehicle.vehicleRef}>
+              <li key={vehicle.vehicleRef} className="route-vehicle">
+                {/*
+                  The same bus the rest of the site draws, at list size.
+
+                  A row of links with times beside them is a table of vehicle references. The
+                  sprite is what makes it a list of buses — and it is the same drawing as the one
+                  on the map and in the hero, reduced, rather than a second idea of a bus.
+                */}
+                <img
+                  className="route-vehicle__bus"
+                  src={ART.busRow!.src}
+                  alt=""
+                  aria-hidden="true"
+                  width={ART.busRow!.w}
+                  height={ART.busRow!.h}
+                />
+                <span className="route-vehicle__live" aria-hidden="true" />
                 {/*
                   A link that works from here.
 

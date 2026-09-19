@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 import type { DisruptionNotice, DisruptionSeverity } from "@busstops/contracts";
 import "./OfficialNotices.css";
 import { PixelSectionHeading } from "./pixel/PixelSectionHeading.js";
+import { PixelClock, PixelCone, PixelPin, PixelRouteMark, PixelWarning } from "./pixel/PixelArt.js";
 
 /**
  * What operators and authorities have actually said.
@@ -43,6 +44,20 @@ export function OfficialNoticeCard({ notice, now }: { notice: DisruptionNotice; 
   return (
     <li className={`notice notice--${notice.severity}`}>
       <div className="notice__head">
+        {/*
+          A mark for what kind of thing this is, sized to sit beside the severity rather than
+          above the words.
+
+          Chosen from the notice's own `reason`, not from its text: a cone means the publisher
+          said roadworks, and a warning means it said something else or nothing. Guessing a
+          category from the summary would put a picture of roadworks on a notice about a
+          demonstration.
+        */}
+        {notice.reason?.value?.toLowerCase().includes("road") ? (
+          <PixelCone size={20} className="notice__mark" />
+        ) : (
+          <PixelWarning size={20} className="notice__mark" />
+        )}
         <span className={`notice__severity notice__severity--${notice.severity}`}>
           {SEVERITY_LABEL[notice.severity]}
         </span>
@@ -55,7 +70,10 @@ export function OfficialNoticeCard({ notice, now }: { notice: DisruptionNotice; 
 
       <dl className="notice__facts">
         <div>
-          <dt>When</dt>
+          <dt>
+            <PixelClock size={16} className="notice__fact-mark" />
+            When
+          </dt>
           <dd>{whenLabel(notice, now)}</dd>
         </div>
         <div>
@@ -65,7 +83,10 @@ export function OfficialNoticeCard({ notice, now }: { notice: DisruptionNotice; 
         </div>
         {notice.affectedRoutes.length > 0 ? (
           <div>
-            <dt>Routes</dt>
+            <dt>
+              <PixelRouteMark size={16} className="notice__fact-mark" />
+              Routes
+            </dt>
             <dd className="notice__routes">
               {notice.affectedRoutes.map((route) => (
                 <span className="notice__route" key={`${route.operatorRef}-${route.lineRef}`}>
@@ -83,7 +104,10 @@ export function OfficialNoticeCard({ notice, now }: { notice: DisruptionNotice; 
         ) : null}
         {notice.affectedStops.length > 0 ? (
           <div>
-            <dt>Stops</dt>
+            <dt>
+              <PixelPin size={16} className="notice__fact-mark" />
+              Stops
+            </dt>
             <dd className="notice__stops">
               {notice.affectedStops.slice(0, 6).map((stop) => (
                 <Link key={stop.atcoCode} to={`/stops/${stop.atcoCode}`}>

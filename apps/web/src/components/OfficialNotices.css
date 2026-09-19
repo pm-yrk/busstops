@@ -214,3 +214,29 @@
 .official-notices__outcome.is-ok {
   color: var(--colour-success);
 }
+
+/*
+ * Marks on a notice card: small, beside the words, never above them.
+ *
+ * A published notice is the one thing on this page that is somebody else's writing, and the
+ * typography has to stay dominant — a reader is here for what the operator said, not for a
+ * picture of a cone. These are at 20 and 16 pixels, which is where the 16-unit marks are drawn
+ * to be read, and they sit on the same line as the label they belong to.
+ */
+.notice__mark {
+  flex: none;
+  align-self: center;
+}
+
+.notice__fact-mark {
+  display: inline-block;
+  vertical-align: -3px;
+  margin-right: 4px;
+}
+
+@media (forced-colors: active) {
+  .notice__mark,
+  .notice__fact-mark {
+    display: none;
+  }
+}

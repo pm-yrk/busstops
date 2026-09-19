@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import type { JourneyPlanOption, JourneyPlanResponse, SearchResult } from "@busstops/contracts";
 import { JourneyStrip } from "../components/JourneyStrip.js";
+import { ART } from "../components/pixel/sprites/generated.js";
 import { PixelVista } from "../components/pixel/PixelVista.js";
 import { LoadingBus } from "../components/LoadingBus.js";
 import {
@@ -241,12 +242,32 @@ function JourneyOptionCard({
   return (
     <li className="journey-option">
       <header>
-        <StateLozenge tone="info">{rankingLabel}</StateLozenge>
-        <p className="journey-option__arrival">
-          Arrive between {clockLabel(option.arrivalLowSeconds, serviceDate)} and{" "}
-          {clockLabel(option.arrivalHighSeconds, serviceDate)}
-        </p>
-        <ConfidenceChip confidence={option.confidence} />
+        <div className="journey-option__head">
+          <StateLozenge tone="info">{rankingLabel}</StateLozenge>
+          <p className="journey-option__arrival">
+            Arrive between {clockLabel(option.arrivalLowSeconds, serviceDate)} and{" "}
+            {clockLabel(option.arrivalHighSeconds, serviceDate)}
+          </p>
+          <ConfidenceChip confidence={option.confidence} />
+        </div>
+
+        {/*
+          A journey in miniature, beside the arrival time.
+
+          Deliberately generic: two unnamed civic silhouettes with a dashed run and a bus between
+          them. The planner knows the names of the two ends and nothing about what they look
+          like, so drawing a minster because the destination string says "Minster" would be the
+          artwork asserting something nothing checked. Orientation and warmth; the itinerary
+          below carries every fact.
+        */}
+        <img
+          className="journey-option__mini"
+          src={ART.journeyMini!.src}
+          alt=""
+          aria-hidden="true"
+          width={ART.journeyMini!.w}
+          height={ART.journeyMini!.h}
+        />
       </header>
 
       <p className="journey-option__summary">

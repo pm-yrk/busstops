@@ -11,6 +11,9 @@ import {
   roadworksVista,
   controlRoomVista,
   depotVista,
+  skylineStrip,
+  busRow,
+  journeyMini,
 } from "./vistas.mjs";
 import { PEOPLE, ACCESSORIES, drawPerson, drawAccessory, PERSON_W, PERSON_H } from "./people.mjs";
 import { GEOMETRIES } from "./vignette2.mjs";
@@ -49,6 +52,10 @@ const FILES = {
   vistaRoadworks: ["vista-roadworks", roadworksVista()],
   vistaControlRoom: ["vista-control-room", controlRoomVista()],
   vistaDepot: ["vista-depot", depotVista()],
+  /* Fragments: a pale skyline for the foot of a card, and a bus small enough for a list row. */
+  skylineStrip: ["skyline-strip", skylineStrip()],
+  busRow: ["bus-row", busRow({ route: "" })],
+  journeyMini: ["journey-mini", journeyMini()],
 
   /* The stop page's world: the same street, composed wide, with a skyline behind it. */
   vignetteWorldDay: ["vignette-world-day", vignetteScene({ geometry: "world" })],

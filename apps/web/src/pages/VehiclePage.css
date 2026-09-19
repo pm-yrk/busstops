@@ -4,11 +4,28 @@
   --page-max: 780px;
 }
 
+/*
+ * Four things on this line now, not three: the bus, the route badge, the title block and the age.
+ *
+ * Left at three columns the hero pushed the age onto a second row of its own, which put "Last
+ * seen" under the title and looked like a caption for it. It wraps to a column on a phone, where
+ * a 300-pixel drawing beside a heading leaves neither of them room.
+ */
 .vehicle-page__header {
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
   align-items: start;
   gap: var(--space-md);
+}
+
+@media (max-width: 899px) {
+  .vehicle-page__header {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .vehicle-page__hero {
+    grid-column: 1 / -1;
+  }
 }
 
 .vehicle-page__header h1 {
@@ -143,5 +160,33 @@
 
   .vehicle-page__header > :last-child {
     grid-column: 1 / -1;
+  }
+}
+
+/*
+ * The hero bus.
+ *
+ * Full width of the header on a phone and beside the title on a desktop, at whole-number scale
+ * either way. It sits on the header's own baseline so the drawing and the type share a floor,
+ * which is the same rule the page mastheads follow.
+ */
+.vehicle-page__hero {
+  width: 300px;
+  height: 96px;
+  image-rendering: pixelated;
+  align-self: end;
+  order: -1;
+}
+
+@media (max-width: 699px) {
+  .vehicle-page__hero {
+    width: 150px;
+    height: 48px;
+  }
+}
+
+@media (forced-colors: active) {
+  .vehicle-page__hero {
+    display: none;
   }
 }

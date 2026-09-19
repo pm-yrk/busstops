@@ -203,3 +203,176 @@
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
+
+/*
+ * The summary card's skyline.
+ *
+ * Anchored to the card's bottom edge and clipped by it, so the buildings are cut off by the card
+ * rather than floating inside it. Scaled by whole numbers like everything else; at a card width
+ * the 240-pixel strip is shown at two and cropped, which is what it was drawn wide for.
+ */
+.route-summary {
+  position: relative;
+  overflow: hidden;
+}
+
+/*
+ * Room for the skyline under the facts, so the two never share a line.
+ *
+ * The first attempt put a 68-pixel silhouette at the card's bottom edge with the facts still
+ * ending there, and "DISRUPTION / none reported" was printed over the top of a building. The
+ * card reserves the height instead; the drawing sits in the space it was given.
+ */
+.route-summary {
+  padding-bottom: calc(var(--space-md) + 34px);
+}
+
+.route-summary__skyline {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 480px;
+  height: 68px;
+  image-rendering: pixelated;
+  /* Quiet enough that the figures above it never have to compete. */
+  opacity: 0.35;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.route-summary__line,
+.route-summary__facts,
+.route-strip {
+  position: relative;
+  z-index: 1;
+}
+
+@media (max-width: 699px) {
+  .route-summary__skyline {
+    width: 240px;
+    height: 34px;
+  }
+}
+
+@media (forced-colors: active) {
+  .route-summary__skyline {
+    display: none;
+  }
+}
+
+/*
+ * A live vehicle row: the bus, a pulse that says it is reporting, then the words.
+ *
+ * The pulse is the one thing on the row that is not a fact from the response — it means "this
+ * came from the live feed", which is true of every row in this list, and the time beside it
+ * carries the actual freshness.
+ */
+.route-page__vehicles > li.route-vehicle {
+  display: grid;
+  grid-template-columns: auto auto 1fr auto;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.route-vehicle__bus {
+  width: 44px;
+  height: 18px;
+  image-rendering: pixelated;
+}
+
+.route-vehicle__live {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--colour-success);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--colour-success) 25%, transparent);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .route-vehicle__live {
+    animation: route-vehicle-pulse 2.4s ease-in-out infinite;
+  }
+}
+
+@keyframes route-vehicle-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--colour-success) 25%, transparent);
+  }
+
+  50% {
+    box-shadow: 0 0 0 6px color-mix(in srgb, var(--colour-success) 8%, transparent);
+  }
+}
+
+@media (max-width: 599px) {
+  .route-vehicle__bus {
+    display: none;
+  }
+
+  .route-page__vehicles > li.route-vehicle {
+    grid-template-columns: auto 1fr auto;
+  }
+}
+
+/*
+ * The stop sequence as a line rather than a list.
+ *
+ * Every stop gets a circle on a vertical rule, with the two termini filled: the same language as
+ * the strip at the top of the page, so the overview and the detail read as one diagram seen at
+ * two scales.
+ */
+.route-page__stops {
+  list-style: none;
+  margin: var(--space-md) 0 0;
+  padding: 0;
+  position: relative;
+}
+
+.route-page__stops::before {
+  content: "";
+  position: absolute;
+  left: 7px;
+  top: 10px;
+  bottom: 10px;
+  width: 3px;
+  background: var(--colour-red);
+}
+
+.route-page__stops > li {
+  position: relative;
+  padding: var(--space-xs) 0 var(--space-xs) calc(var(--space-lg) + var(--space-xs));
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-sm);
+}
+
+.route-page__stops > li::before {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 50%;
+  translate: 0 -50%;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 3px solid var(--colour-red);
+  background: var(--colour-surface);
+}
+
+/* The two ends are solid, which is what makes them read as termini rather than as stops. */
+.route-page__stops > li:first-child::before,
+.route-page__stops > li:last-child::before {
+  width: 17px;
+  height: 17px;
+  left: 0;
+  background: var(--colour-red);
+  box-shadow: inset 0 0 0 3px var(--colour-surface);
+}
+
+@media (forced-colors: active) {
+  .route-page__stops::before {
+    background: CanvasText;
+  }
+}

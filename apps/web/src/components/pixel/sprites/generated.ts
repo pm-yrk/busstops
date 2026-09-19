@@ -44,6 +44,21 @@ export const ART: Record<string, PixelImage> = {
     w: 264,
     h: 76,
   },
+  skylineStrip: {
+    src: "/art/skyline-strip.png",
+    w: 240,
+    h: 34,
+  },
+  busRow: {
+    src: "/art/bus-row.png",
+    w: 44,
+    h: 18,
+  },
+  journeyMini: {
+    src: "/art/journey-mini.png",
+    w: 184,
+    h: 48,
+  },
   vignetteWorldDay: {
     src: "/art/vignette-world-day.png",
     w: 320,

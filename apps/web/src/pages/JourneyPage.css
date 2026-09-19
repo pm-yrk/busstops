@@ -211,3 +211,48 @@
     grid-column: 1 / -1;
   }
 }
+
+/*
+ * The option's header: the facts on the left, a small picture of the trip on the right.
+ *
+ * It wraps rather than shrinking, for the same reason the page masthead does — the art is a whole
+ * number of pixels wide or it is nothing, so where both do not fit, the picture takes its own
+ * line instead of being squeezed to a fraction of a pixel.
+ */
+.journey-option > header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-sm) var(--space-md);
+}
+
+.journey-option__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-sm);
+  flex: 1 1 18rem;
+  min-width: 0;
+}
+
+.journey-option__mini {
+  flex: none;
+  width: 184px;
+  height: 48px;
+  image-rendering: pixelated;
+  border-radius: var(--radius-sm);
+}
+
+@media (min-width: 900px) {
+  .journey-option__mini {
+    width: 368px;
+    height: 96px;
+  }
+}
+
+@media (forced-colors: active) {
+  .journey-option__mini {
+    display: none;
+  }
+}

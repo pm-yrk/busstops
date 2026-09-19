@@ -21,6 +21,7 @@ import { savedPlatform, suggestPlatform, walkingUrlFor } from "../lib/navigation
 import type { MapResponse, StopDeparturesResponse } from "@busstops/contracts";
 import "./VehiclePage.css";
 import { PixelSectionHeading } from "../components/pixel/PixelSectionHeading.js";
+import { ART } from "../components/pixel/sprites/generated.js";
 
 /**
  * Vehicle page (docs/03_SITE_MAP_AND_UX.md "Vehicle", docs/09_BUS_STOPS_LIVE.md "Tracking").
@@ -266,6 +267,23 @@ export function VehiclePage() {
       <ServiceBanner meta={response.meta} />
 
       <header className="vehicle-page__header">
+        {/*
+          The bus is the subject of this page, so it is drawn at the size a subject gets.
+
+          Every other page uses this vehicle at list or marker size; here it is the hero — the
+          same 150 x 48 drawing the home page's near lane carries, with its wheel arches, blind,
+          window bays and passengers. It says nothing about *this* vehicle: the feed publishes a
+          position and a reference, not a livery, and a drawing that varied by operator would be
+          inventing one.
+        */}
+        <img
+          className="vehicle-page__hero"
+          src={ART.busNear!.src}
+          alt=""
+          aria-hidden="true"
+          width={ART.busNear!.w}
+          height={ART.busNear!.h}
+        />
         {routePublicName ? <RouteBadge name={routePublicName} /> : null}
         <div>
           <h1>{destinationName ?? "Destination not published"}</h1>

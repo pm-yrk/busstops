@@ -3,6 +3,7 @@ import { busSide2, busMid2 } from "./bus2.mjs";
 import { shelter, stopFlag, tree } from "./street.mjs";
 import { PEOPLE, drawPerson, PERSON_H } from "./people.mjs";
 import { shopBuilding } from "./buildings.mjs";
+import { text } from "./font.mjs";
 import { farBus } from "./vignette2.mjs";
 import {
   barrier,
@@ -345,5 +346,167 @@ export function depotVista() {
   c.blit(redMid("36"), 152, VISTA_H - 33);
   stand(c, drawPerson(PEOPLE[5], "plain"), 18);
   stand(c, tree({ w: 26, h: 34, seed: 11 }), 236);
+  return c;
+}
+
+/* ------------------------------------------------------------ fragments */
+
+/**
+ * A pale skyline, for the bottom of a card.
+ *
+ * Deliberately one tone and no windows: it sits behind real figures — stop counts, distances,
+ * how many buses are running — and anything with more contrast than this competes with them.
+ * Drawn wide and shallow so a card can show whatever slice of it fits and crop the rest.
+ */
+export function skylineStrip({ w = 240, h = 34, seed = 12 } = {}) {
+  const c = new Canvas(w, h);
+  let x = -3;
+  let n = seed;
+  while (x < w) {
+    n = (n * 1103515245 + 12345) & 0x7fffffff;
+    const bw = 10 + (n % 20);
+    n = (n * 1103515245 + 12345) & 0x7fffffff;
+    const bh = 10 + (n % (h - 8));
+    c.rect(x, h - bh, bw, bh, "Q");
+    c.hline(x, h - bh, bw, "P");
+    // A mast or a lift overrun on the taller ones, so the roofline is not all flat.
+    if (bh > h - 14) {
+      c.rect(x + 3, h - bh - 5, 2, 5, "Q");
+      c.px(x + 3, h - bh - 6, "P");
+    }
+    x += bw + 1 + (n % 3);
+  }
+  return c;
+}
+
+/**
+ * A bus at list size: small enough for a table row, detailed enough to be the same vehicle.
+ *
+ * `busMid2` at 96 pixels is too wide for a row of live vehicles, and the 16-unit mark is a
+ * symbol rather than a drawing. This is the middle: a bus you can tell is facing right, with
+ * windows, a blind and wheels.
+ */
+export function busRow({ route = "" } = {}) {
+  const c = new Canvas(44, 18);
+  // Body, with the front lower and chamfered.
+  c.rect(1, 3, 42, 11, "s");
+  c.rect(3, 2, 38, 2, "s");
+  c.hline(3, 2, 38, "t");
+  c.vline(1, 4, 9, "t");
+  c.hline(1, 13, 42, "q");
+  // Windows: three bays and a door gap.
+  for (const [x, bw] of [
+    [4, 8],
+    [14, 6],
+    [26, 7],
+  ]) {
+    c.rect(x, 5, bw, 5, "h");
+    c.hline(x, 5, bw, "g");
+    c.px(x + 1, 6, "j");
+  }
+  // Doors, darker than the glass so they read as a division.
+  c.rect(22, 5, 3, 8, "f");
+  // Destination blind.
+  c.rect(34, 4, 8, 4, "K");
+  if (route) {
+    text(c, 35, 5, route.slice(0, 2), "Z");
+  } else {
+    /*
+     * A lit blind with no number on it, rather than a black rectangle.
+     *
+     * The sprite is shipped once and reused for every vehicle in a list, so it cannot carry a
+     * route number — but an unlit black box on the front of a bus reads as a hole in the
+     * bodywork. Two amber bars is what a blind looks like from across a street.
+     */
+    c.hline(35, 5, 6, "y");
+    c.hline(35, 6, 4, "Z");
+  }
+  // Lights.
+  c.px(42, 5, "Z");
+  c.px(42, 12, "t");
+  // Wheels with hubs.
+  for (const wx of [9, 33]) {
+    c.disc(wx, 14, 3, "K");
+    c.disc(wx, 14, 1, "P");
+  }
+  c.hline(2, 17, 40, "=");
+  return c;
+}
+
+/**
+ * A journey, in miniature: somewhere, a line with a bus on it, somewhere else.
+ *
+ * Deliberately generic. The planner knows the names of the two ends and nothing about what they
+ * look like, so drawing York Minster because the destination string says "York Minster" would be
+ * the artwork asserting something the data never checked. These are two unnamed civic
+ * silhouettes — one low and wide, one taller — which is enough to read as "from a place to
+ * another place" without claiming which places.
+ *
+ * Orientation and warmth, not navigation. The itinerary underneath carries the facts.
+ */
+export function journeyMini({ w = 184, h = 48 } = {}) {
+  const c = new Canvas(w, h);
+  const ground = h - 7;
+
+  // Sky, lightest at the horizon.
+  c.rect(0, 0, w, ground - 12, "S");
+  c.rect(0, ground - 12, w, 12, "T");
+  for (let x = 0; x < w; x += 2) c.px(x, ground - 12, "S");
+
+  // Two small clouds, well clear of both silhouettes.
+  for (const [cx, cy, cw] of [
+    [62, 4, 16],
+    [116, 8, 13],
+  ]) {
+    c.rect(cx, cy + 2, cw, 3, "W");
+    c.rect(cx + 3, cy, cw - 7, 3, "W");
+    c.px(cx + 4, cy + 1, "X");
+  }
+
+  /* The origin: a low civic block with a portico and a clock, drawn in masonry tones. */
+  c.rect(4, ground - 22, 40, 22, "8");
+  c.hline(4, ground - 22, 40, "9");
+  c.rect(16, ground - 30, 16, 8, "8");
+  c.hline(16, ground - 30, 16, "9");
+  c.rect(22, ground - 34, 4, 4, "7");
+  c.disc(24, ground - 26, 3, "R");
+  c.px(24, ground - 26, "K");
+  c.px(24, ground - 28, "K");
+  for (let x = 8; x < 42; x += 6) c.rect(x, ground - 16, 3, 8, "h");
+  c.rect(4, ground - 3, 40, 3, "7");
+
+  /* The destination: taller, with a spire, so the two ends are told apart at a glance. */
+  const dx = w - 44;
+  c.rect(dx, ground - 26, 36, 26, "8");
+  c.hline(dx, ground - 26, 36, "9");
+  c.rect(dx + 24, ground - 38, 9, 12, "8");
+  c.hline(dx + 24, ground - 38, 9, "9");
+  /* A spire that tapers to a point, rather than a stub: four courses, each narrower. */
+  for (let i = 0; i < 4; i++) {
+    const sw = 9 - i * 2;
+    c.hline(dx + 24 + i, ground - 39 - i, sw, "7");
+  }
+  c.vline(dx + 28, ground - 45, 3, "7");
+  for (let x = dx + 4; x < dx + 22; x += 6) c.rect(x, ground - 20, 3, 10, "h");
+  c.rect(dx, ground - 3, 36, 3, "7");
+
+  /* The path between them: a dashed run at ground level with a bus on it. */
+  for (let x = 48; x < dx - 4; x += 6) c.hline(x, ground, 3, "P");
+  c.blit(busRow(), Math.round((48 + dx) / 2) - 22, ground - 17);
+
+  /*
+   * A pin at each end of the path, not on the buildings.
+   *
+   * The first placement put them over the masonry, where they read as doors. On the ground at
+   * the two ends of the dashed run they read as what they are: this journey starts here and
+   * finishes there.
+   */
+  for (const px of [50, dx - 6]) {
+    c.rect(px - 2, ground - 9, 5, 5, "t");
+    c.hline(px - 2, ground - 9, 5, "u");
+    c.px(px, ground - 7, "W");
+    c.vline(px, ground - 4, 4, "s");
+  }
+  c.hline(0, h - 1, w, "=");
   return c;
 }
