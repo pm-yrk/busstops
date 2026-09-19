@@ -78,6 +78,24 @@ const PAGES = [
    */
   { name: "search-results", path: `/search?q=${encodeURIComponent("Leeds")}` },
   { name: "journey", path: "/journey" },
+  /*
+   * A journey with a plan on it, not just the form.
+   *
+   * `/journey` alone photographs two inputs and a button, which says nothing about whether the
+   * planner works or whether a result is legible. The endpoints are seeded the way the map seeds
+   * them when a destination is tapped: Leeds city centre to Leeds Bradford Airport, which is the
+   * corridor the verification plans as well, so the two agree about what "works" means.
+   */
+  {
+    name: "journey-result",
+    path:
+      "/journey?fromLat=53.7965&fromLon=-1.5478&fromLabel=" +
+      encodeURIComponent("Leeds City Centre") +
+      "&toLat=53.8659&toLon=-1.6606&toLabel=" +
+      encodeURIComponent("Leeds Bradford Airport"),
+    /* The plan is fetched after the page settles, so the shot waits for a result or a reason. */
+    settleOn: ".journey-strip, .state-block",
+  },
   { name: "disruptions", path: "/disruptions" },
   { name: "saved", path: "/saved" },
   { name: "methodology", path: "/methodology" },
@@ -280,6 +298,21 @@ for (const size of WIDTHS) {
         timeout: 60_000,
       });
       await page.waitForTimeout(target.name.startsWith("live") ? 9_000 : 2_000);
+
+      /*
+       * Some pages only become themselves after a request lands — a journey has a form until the
+       * planner answers. A page that declares what "settled" looks like waits for it before it is
+       * measured or photographed, so the shot is of the result rather than of the spinner.
+       */
+      if (target.settleOn) {
+        await page
+          .locator(target.settleOn)
+          .first()
+          .waitFor({ state: "visible", timeout: 20_000 })
+          .catch(() => {
+            /* Never settling is itself reported, by the emptiness check below. */
+          });
+      }
 
       await page.screenshot({
         path: join(screenshotDir, `${size.name}-${target.name}.png`),
@@ -597,6 +630,11 @@ for (const size of WIDTHS) {
                 .textContent({ timeout: 5_000 })
                 .catch(() => null)) ?? "(no heading yet)")
             : "";
+          await page.screenshot({
+            path: `${screenshotDir}/${size.name}-live-selected-stop.png`,
+            fullPage: false,
+          });
+
           record(
             `${size.name}/${target.name} opens the stop board it was linked to`,
             board,
@@ -777,6 +815,16 @@ for (const size of WIDTHS) {
             path: join(screenshotDir, `${size.name}-live-bus-selected.png`),
             fullPage: false,
           });
+          /*
+           * The selected bus, photographed. Every other state of this map has a shot and this one
+           * — the panel a passenger opens by tapping a vehicle — had none, so "does it look
+           * finished" could only be answered for the map and never for the thing on top of it.
+           */
+          await page.screenshot({
+            path: `${screenshotDir}/${size.name}-live-selected-bus.png`,
+            fullPage: false,
+          });
+
           record(
             `${size.name}/live opens a bus when one is clicked`,
             busClickFailed === null &&
