@@ -106,6 +106,16 @@ export interface ReadDiagnostics {
   budgetMs: number;
   /** Stated in the payload so nobody reads the number above as headroom. */
   budgetMeasures: "wall-clock-io";
+  /**
+   * What the published index says this artifact can answer with, and what was used.
+   *
+   * Three runs read the same 490 records at 1.97 MiB — full `Stop` records, not the projection —
+   * against three different artifacts, including one deployed minutes after `map-stops` published
+   * cleanly and one served by a Worker with no warm isolate at all. That rules out staleness and
+   * leaves "the reader is not taking the new path", which is not something the numbers already
+   * here can distinguish from "the new family is not in the index". This says which.
+   */
+  artifact?: Record<string, string | number | boolean>;
   objectsRequested: number;
   objectsRead: number;
   objectsCached: number;
@@ -136,6 +146,7 @@ export class ReadLedger {
   private readonly counts: LedgerCounts = {};
   private stoppedReason: string | null = null;
   private residencyReport: IsolateResidency | null = null;
+  private artifactNotes: Record<string, string | number | boolean> | null = null;
 
   constructor(
     readonly budgetMs: number,
@@ -196,6 +207,11 @@ export class ReadLedger {
   }
 
   /** What the isolate was holding, recorded once the request has finished its reads. */
+  /** Records what the artifact declared and which path the handler took because of it. */
+  artifactNote(notes: Record<string, string | number | boolean>): void {
+    this.artifactNotes = { ...this.artifactNotes, ...notes };
+  }
+
   residency(report: IsolateResidency): void {
     this.residencyReport = report;
   }
@@ -250,6 +266,7 @@ export class ReadLedger {
       budgetStopped: this.stopped,
       degradationReason: this.stoppedReason,
       stages: Object.fromEntries(this.stageMs),
+      ...(this.artifactNotes === null ? {} : { artifact: this.artifactNotes }),
       ...(this.residencyReport === null ? {} : { residency: this.residencyReport }),
     };
   }

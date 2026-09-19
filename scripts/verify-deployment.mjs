@@ -723,6 +723,11 @@ await check("the map says what it cost", async () => {
     `${d.objectsFailed} failed; ${(d.chars / 1048576).toFixed(2)} MiB decoded; ` +
     `${d.records} record(s); ${stages}; ` +
     `degraded ${String(body.data.degraded)}${body.data.degradationReason ? ` (${body.data.degradationReason})` : ""}` +
+    (d.artifact
+      ? `; artifact ${Object.entries(d.artifact)
+          .map(([key, value]) => `${key}=${String(value)}`)
+          .join(" ")}`
+      : "; the map named no artifact") +
     describeResidency(d.residency)
   );
 });

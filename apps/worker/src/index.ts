@@ -515,6 +515,25 @@ router.get("/v1/map", async (_request, { env, url }) => {
       )
     : null;
 
+  /*
+   * Which path this request took, and what the artifact offered it.
+   *
+   * Three runs read the same 490 records at 1.97 MiB against three different artifacts — one of
+   * them deployed minutes after `map-stops` published cleanly, one of them a Worker with no warm
+   * isolate to be stale. Every number already reported is identical whichever branch runs, so the
+   * diagnostics could not tell "the reader ignored the projection" from "the projection is not in
+   * the index". This states both, which costs one object in the payload and ends the guessing.
+   */
+  if (network) {
+    const declared = await network.networkIndex(Date.now());
+    ledger.artifactNote({
+      version: declared?.version ?? "(no index)",
+      mapStopTiles: declared?.mapStopTiles?.length ?? 0,
+      stopDetailBuckets: declared?.stopDetailBuckets?.length ?? 0,
+      projectionUsed: projected !== null,
+    });
+  }
+
   const [stopsResult, liveObservations] = await ledger.stage("essentials", () =>
     Promise.all([
       projected
