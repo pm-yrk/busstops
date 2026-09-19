@@ -580,6 +580,41 @@ for (const size of WIDTHS) {
             ),
             attribution:
               document.querySelector(".maplibregl-ctrl-attrib")?.textContent?.trim() ?? "",
+            /*
+             * Semantic zoom, as the renderer sees it rather than as the code intends it.
+             *
+             * `text-font` on the bus layer is the one thing that cannot be read from the source:
+             * it is borrowed from whatever stack the basemap style actually serves, and when that
+             * lookup comes back empty the whole text block is dropped and every bus on the street
+             * is an anonymous red shape. The layer would still be there, still painting, and the
+             * screenshot would look almost right.
+             */
+            busesLabelled: (() => {
+              if (!instance) return null;
+              try {
+                const layout = instance.getLayoutProperty("vehicle-buses", "text-field");
+                const font = instance.getLayoutProperty("vehicle-buses", "text-font");
+                if (!layout || !font) return "no font borrowed from the basemap: buses unlabelled";
+                const withRoute = instance
+                  .queryRenderedFeatures({ layers: ["vehicle-buses"] })
+                  .filter((feature) => String(feature.properties?.route ?? "").length > 0).length;
+                return `font ${JSON.stringify(font)}, ${withRoute} drawn bus(es) carry a route`;
+              } catch {
+                return null;
+              }
+            })(),
+            /* Pointing the way they are going: how many of the drawn buses took the mirrored texture. */
+            busesFacingWest: (() => {
+              if (!instance) return null;
+              try {
+                return instance
+                  .queryRenderedFeatures({ layers: ["vehicle-buses"] })
+                  .filter((feature) => Number(feature.properties?.bearing) > 180).length;
+              } catch {
+                return null;
+              }
+            })(),
+            selectedRings: painted(["stop-selected", "vehicle-selected"]),
           };
         });
 
@@ -744,6 +779,25 @@ for (const size of WIDTHS) {
           map.stopsDrawn + map.stopsClustered > 0,
           `${map.stopsDrawn} stop(s) drawn and ${map.stopsClustered} inside clusters`,
         );
+        /*
+         * A bus with no number on it is a red shape. The layer would still be there, still
+         * painting, and the screenshot would look almost right — so this asks the renderer
+         * whether the text block survived the basemap font lookup, and how many of the buses it
+         * drew are facing the other way.
+         *
+         * Only where individual buses are drawn: at city and neighbourhood scale there is no text
+         * layer to interrogate and saying so would be noise on every page.
+         */
+        if (map.busesDrawn > 0 && map.scale === "street") {
+          record(
+            `${size.name}/${target.name} puts route numbers on the buses`,
+            typeof map.busesLabelled === "string" && !map.busesLabelled.startsWith("no font"),
+            map.busesLabelled ?? "(the map instance could not be reached)",
+          );
+          console.log(
+            `        ${map.busesFacingWest ?? "?"} of ${map.busesDrawn} drawn bus(es) face west`,
+          );
+        }
         record(
           `${size.name}/${target.name} keeps its map out of normal flow`,
           map.mapScrollHeight > 0 && map.mapScrollHeight < 2000,
