@@ -1,8 +1,68 @@
 # Bus Stops. Build State
 
-Last updated: 2026-09-19 (run 58: stop-link target sizes fixed; map controls move off the panel corner; 1102 tracks isolate warmth)
+Last updated: 2026-09-19 (visible passenger sprint landed; run 59 republishing the national artifact with map-stops and stop-detail)
 
 ## Current status
+
+### The visible passenger sprint (2026-09-19) — landed, evidence pending
+
+Code on `claude/bus-stops-platform-build-f7qztb` through `e0f2a6e`. Gates: 1,175 node · 186 web ·
+prettier · eslint `--max-warnings=0` · typecheck · secret scan clean. **Not yet photographed on a
+deployment**: run 59 deployed Pages at 01:25 from `bdc78f1`, before any of this landed, so its
+sweep is evidence about the _artifact_ and not about these surfaces. A follow-up run without the
+bootstrap carries the frontend.
+
+**The live map.**
+
+- A selected stop has a ring, mirroring the selected bus. `emphasis` could not be reused for it:
+  exploring with nothing chosen emphasises every stop — that is what "no filter" means — so a ring
+  on emphasis rings four hundred stops at once. `selected` is one stop or none.
+- Buses face the way they are going. The marker is a side view with its blind at the right-hand
+  end, so it is already driving east; a bearing past 180° gets a mirrored texture. Not rotated: a
+  side elevation turned through 200 degrees is a bus on its roof. No bearing keeps the eastbound
+  drawing rather than inventing a direction.
+
+**The weather artwork, and a two-pixel bug that made widening the panel pointless.**
+
+The scene is 176 art pixels wide and is only ever drawn at a whole multiple, so the width the
+panel hands it decides its size in steps. `.selected-stop__weather` bled out to the panel edge and
+then padded itself back in, leaving the picture measuring the same column as the sentences. Full
+bleed without the padding back gains 32px, which on a phone is a whole scale.
+
+The desktop panel then went to 528 — three times 176 — which was arithmetic and was wrong:
+`box-sizing: border-box` puts the hairline inside the width and the bleed does not cross it, so
+the scene had 526px and floored to two. `tools/layout/panel-width.mjs` renders the panel's own
+stylesheets over an empty box (no data of any kind — a ruler, not evidence about the product) and
+reports what the scene actually gets:
+
+```
+desktop  1440   panel 533px   holder 531px   scale 3   scene 528px
+tablet    768   panel 420px   holder 418px   scale 2   scene 352px
+phone     390   panel 358px   holder 356px   scale 2   scene 352px
+```
+
+**Pro, using existing functionality only.**
+
+- Congestion hotspots are charts: a ranked bar scaled to the list's own maximum, and a
+  now-against-typical pair on one scale. "Most abnormal" ranks by rarity, so its bar grows as the
+  frequency falls.
+- `BandStrip` — one proportional bar, one hue in ordered steps, every band named and counted
+  beside it — serves both the exception inbox's severity mix and the control tower's source
+  health. A band with a count of zero is omitted; it has a test.
+- Exception rows carry how long the exception has been running. Four minutes old and three hours
+  old were identical on screen and are different situations.
+- The Daily Brief has a masthead. It is the one Pro surface that is published, frozen and dated,
+  and it was another `pro-section` with an h2.
+- Route badges reach the Pro comparison table, so a route is the same object in both products.
+
+**The sweep asks the questions a person asks of a screenshot**, because the artifact host that
+holds the uploaded PNGs is outside this container's egress allowlist and they cannot be fetched
+here. It now reports the weather scene's rendered size, the scale it landed on, the panel it sat
+in, how many effect layers drew and whether the person, accessory and approaching bus are there —
+reported, never asserted, since a clear noon has no effects and that is correct. A journey is
+measured as an itinerary: legs, how many carry a route badge, whether a change is marked. A second
+corridor was added, York Station → York Minster, because Leeds → its airport is a long
+inter-urban hop and York is the short walk-plus-one-hop that most people actually plan.
 
 ### Run 58: the link targets are fixed, and the failure count tracks isolate warmth (2026-09-19)
 
