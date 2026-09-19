@@ -1,8 +1,65 @@
 # Bus Stops. Build State
 
-Last updated: 2026-09-19 (visible passenger sprint landed; run 59 republishing the national artifact with map-stops and stop-detail)
+Last updated: 2026-09-19 (runs 59-62: the national republish landed; the map projection is live and reads 1.97 MiB where it read 7.00)
 
 ## Current status
+
+### Runs 59-62: the republish landed, and the projection was working before I believed it
+
+| Run | What it was for                                  | Outcome                                                                                                    |
+| --- | ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| 59  | First republish with `map-stops` + `stop-detail` | **Rolled back.** 11,483 shard objects wrote cleanly; `network/patterns` failed a 25% shrink guard at 32.4% |
+| 60  | Republish with the guard fixed                   | **Published.** 1,681 MiB, 11,483 objects, inside the 2,560 MiB ceiling                                     |
+| 61  | Cold Worker against the new artifact             | Same map numbers — which I misread                                                                         |
+| 62  | Artifact diagnostic                              | `mapStopTiles=460 stopDetailBuckets=1024 projectionUsed=true`                                              |
+
+**The shrink guard could not tell a Saturday from a broken read.** A pattern is
+an ordered stop list accumulated only from trips inside the service-date horizon.
+Run 59's horizon was Saturday and Sunday; the version it compared against was
+published on the Friday, so its horizon held a weekday and its school runs, peak
+extras and short workings. 31,045 against roughly 45,900. The report proves it
+rather than suggesting it: **both source fingerprints came back `changed: false`**,
+so the input bytes were identical to the build being compared against. Left
+alone, that guard rejects every weekend rebuild. The relative comparison is now
+0.6 and the protection moved to an absolute floor of one pattern per two
+services — strictly more protection, since a floor does not assume the health of
+the version it compares against.
+
+**Three runs of self-correction on one number.** `/v1/map` reported `490 records
+at 1.97 MiB` in runs 59, 60 and 61. I divided one by the other, got 4.2 KB, and
+concluded it must be full `Stop` records — so I spent runs 61 and 62 hunting a
+bug that was not there. `chars` counts the text a parse-time filter _scans_;
+`records` counts what it _keeps_. 1.97 MiB scanned against the 7.00 MiB the two
+general families used to read **is** the saving, and it had been live since run 60.
+
+**The real defect was beside it.** The map reported `degraded
+(stop_routes_budget)` on every dense viewport while every stop it drew carried a
+full route list. `mapStopsInBoundingBox` returns `truncated: true` when the box
+holds more stops than the map draws — a statement about marker count — and the
+handler read it as "the labels are incomplete". With the projection the names
+arrive on the same row as the stop, so the returned stops always have complete
+labels. Fixed, with a test asserting both halves.
+
+### What the deployment proves now
+
+- Leeds → Leeds Bradford Airport and York Station → York Minster both plan, five
+  legs each.
+- 5 of 5 landmarks found, including `Bullring → Bull Ring`.
+- London returns real TfL predictions; five cities return real routes and
+  departures; 55 live vehicles; Pro reports `data mode live`.
+- Visual sweep: **332 → 429 passes**.
+
+### Still failing, and owned
+
+- **Route detail 1102s in Bristol on attempt 4**, and `/v1/stops/:id` (so the
+  weather field) 1102s outright. Both are the Workers Free 10 ms CPU ceiling on
+  a warm isolate, not the artifact. `/v1/stops/:id` cannot report its own
+  diagnostics while it 503s, so the way in is to reduce its work until it
+  answers and then read what it says.
+- **Phone `/v1/map` 1102s** where desktop and tablet pass — the phone is the
+  last of the three widths, so it lands on the most-used isolate. Reported by
+  the sweep as a CORS error, which is what a 1102 error page looks like from a
+  browser: it carries no `Access-Control-Allow-Origin`.
 
 ### The visible passenger sprint (2026-09-19) — landed, evidence pending
 
