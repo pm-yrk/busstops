@@ -106,7 +106,7 @@ export default [
   {
     // Node scripts that drive a browser: the bodies passed to page.evaluate run in the page, so
     // they legitimately reference browser globals.
-    files: ["tools/pixel-art/page-shots.mjs"],
+    files: ["tools/pixel-art/page-shots.mjs", "tools/layout/panel-width.mjs"],
     languageOptions: {
       globals: browserGlobals,
     },
