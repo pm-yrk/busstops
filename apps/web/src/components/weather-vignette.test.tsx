@@ -139,3 +139,52 @@ describe("WeatherVignette", () => {
     }
   });
 });
+
+/**
+ * The state with no reading behind it.
+ *
+ * The section used to be hidden entirely when the collector had not reached a stop's degree
+ * square, which made the product look unfinished at exactly the stops that most needed something
+ * on the screen. The scene is drawn regardless; what it must never do is imply a condition.
+ */
+describe("a stop the forecast has not reached", () => {
+  it("still draws the shelter and the person", () => {
+    const { container } = render(<WeatherVignette weather={null} atcoCode="450010001" />);
+    expect(container.querySelector(".vignette__scene")).not.toBeNull();
+    expect(container.querySelector("[data-person]")).not.toBeNull();
+  });
+
+  it("says so plainly instead of showing a number", () => {
+    render(<WeatherVignette weather={null} atcoCode="450010001" />);
+    expect(screen.getByText(/weather temporarily unavailable/i)).toBeTruthy();
+    expect(document.body.textContent).not.toMatch(/°C/);
+  });
+
+  it("claims no condition: no effect layer and no accessory", () => {
+    const { container } = render(<WeatherVignette weather={null} atcoCode="450010001" />);
+    expect(container.querySelectorAll(".vignette__effect")).toHaveLength(0);
+    expect(container.querySelector(".vignette__accessory")).toBeNull();
+    expect(container.querySelector("[data-condition]")?.getAttribute("data-condition")).toBe(
+      "unavailable",
+    );
+  });
+
+  it("attributes nothing, because nothing was read", () => {
+    render(<WeatherVignette weather={null} atcoCode="450010001" />);
+    expect(document.body.textContent).not.toMatch(/Open-Meteo/i);
+    expect(screen.getByText(/has not published this stop's area yet/i)).toBeTruthy();
+  });
+});
+
+describe("the approaching bus", () => {
+  it("is drawn only when the caller says one is due", () => {
+    const { container, unmount } = render(
+      <WeatherVignette weather={weather()} atcoCode="450010001" busApproaching />,
+    );
+    expect(container.querySelector(".vignette__bus")).not.toBeNull();
+    unmount();
+
+    const quiet = render(<WeatherVignette weather={weather()} atcoCode="450010001" />);
+    expect(quiet.container.querySelector(".vignette__bus")).toBeNull();
+  });
+});

@@ -211,3 +211,20 @@
     transform: translateX(40%);
   }
 }
+
+/*
+ * The state with no reading behind it.
+ *
+ * Desaturated rather than hidden: the shelter and the person waiting in it are true whatever the
+ * sky is doing, and a section that vanishes is what made the product look unfinished. No effect
+ * layer, no accessory and no numbers are drawn, so nothing here claims a condition.
+ */
+.vignette--unavailable .vignette__scene {
+  filter: saturate(0.45);
+}
+
+.vignette__unavailable {
+  margin: 0;
+  font-weight: 600;
+  color: var(--colour-muted);
+}

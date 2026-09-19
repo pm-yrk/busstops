@@ -100,3 +100,50 @@
   padding-top: var(--space-md);
   border-top: 1px solid var(--colour-hairline);
 }
+
+/*
+ * The panel's rhythm, rather than a stack of components.
+ *
+ * Four movements, in the order a passenger needs them: when the bus is, what the weather is doing
+ * where they are standing, what this stop is, and the way through to everything else. The rules
+ * below are about the joins — space between the movements, and a hairline before the last one so
+ * the link reads as a way out rather than as another fact.
+ */
+.selected-stop > * + * {
+  margin-top: var(--space-md);
+}
+
+.selected-stop__weather {
+  /* Full bleed to the panel's padding: the scene is the second thing said, not an inset aside. */
+  margin-inline: calc(var(--space-md) * -1);
+  padding-inline: var(--space-md);
+}
+
+.stop-facts {
+  display: grid;
+  gap: var(--space-xs);
+}
+
+.stop-facts__routes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+}
+
+.stop-facts__routes a {
+  text-decoration: none;
+}
+
+.stop-facts__detail {
+  margin: 0;
+}
+
+.selected-stop__more {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--min-touch-target);
+  padding-top: var(--space-sm);
+  border-top: 1px solid var(--colour-hairline);
+  width: 100%;
+  font-weight: 600;
+}

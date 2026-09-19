@@ -59,7 +59,15 @@ function personIndexFor(atcoCode: string, serviceDate: string): number {
 }
 
 export interface WeatherVignetteProps {
-  weather: StopWeather;
+  /**
+   * Null when no reading has been published for this stop.
+   *
+   * The scene is still drawn — a shelter and somebody waiting in it are true whatever the sky is
+   * doing — but with no effect layer, no accessory and no numbers, and a plain statement that the
+   * weather is unavailable. Hiding the whole section was the old behaviour and it made the product
+   * look unfinished; inventing a condition to fill the space would be worse than either.
+   */
+  weather: StopWeather | null;
   atcoCode: string;
   /**
    * The largest number of CSS pixels per art pixel this may be drawn at.
@@ -132,17 +140,22 @@ export function WeatherVignette({
     return () => observer.disconnect();
   }, []);
 
-  const hour = weather.current;
-  const advice = weatherAdvice(hour);
-  const condition = describeCondition(hour.weatherCode);
-  const kind = weatherConditionKind(hour.weatherCode);
+  const hour = weather?.current ?? null;
+  const advice = hour ? weatherAdvice(hour) : null;
+  const condition = hour ? describeCondition(hour.weatherCode) : null;
+  const kind = hour ? weatherConditionKind(hour.weatherCode) : null;
 
   const serviceDate = now.toISOString().slice(0, 10);
   const person = PEOPLE_META[personIndexFor(atcoCode, serviceDate)]!;
-  const accessory = ACCESSORY_FOR[advice.kind];
+  // No accessory without a reading: an umbrella is a claim that it is raining.
+  const accessory = advice ? ACCESSORY_FOR[advice.kind] : null;
   const pose = accessory?.pose === "holding" ? "holding" : "plain";
   const personArt = ART[`person_${person.id.replace(/-/g, "_")}_${pose}`]!;
-  const backdrop = hour.isDay ? ART.vignetteDay! : ART.vignetteNight!;
+  /*
+   * Day when nothing is known. Night is a statement about the time at that stop, and this
+   * component is not in a position to make one without a reading.
+   */
+  const backdrop = hour === null || hour.isDay ? ART.vignetteDay! : ART.vignetteNight!;
 
   const PERSON_W_HALF = PERSON_SIZE.w / 2;
   const width = VIGNETTE_SIZE.w * scale;
@@ -193,9 +206,9 @@ export function WeatherVignette({
   return (
     <div className="vignette__holder" ref={holder}>
       <figure
-        className={`vignette vignette--${advice.kind}${compact ? " vignette--compact" : ""}`}
+        className={`vignette vignette--${advice?.kind ?? "unavailable"}${compact ? " vignette--compact" : ""}`}
         style={{ width, height: "auto" }}
-        data-condition={kind}
+        data-condition={kind ?? "unavailable"}
         data-person={person.id}
       >
         <div className="vignette__scene" style={{ width, height }}>
@@ -207,7 +220,7 @@ export function WeatherVignette({
             alt=""
           />
 
-          {EFFECTS_FOR[advice.kind].map((name, index) => {
+          {(advice ? EFFECTS_FOR[advice.kind] : []).map((name, index) => {
             const art = ART[name]!;
             return (
               <img
@@ -230,9 +243,9 @@ export function WeatherVignette({
           {busApproaching ? (
             <img
               className="vignette__bus"
-              src={(hour.isDay ? ART.farBusDay! : ART.farBusNight!).src}
-              width={(hour.isDay ? ART.farBusDay! : ART.farBusNight!).w * scale}
-              height={(hour.isDay ? ART.farBusDay! : ART.farBusNight!).h * scale}
+              src={(hour?.isDay !== false ? ART.farBusDay! : ART.farBusNight!).src}
+              width={(hour?.isDay !== false ? ART.farBusDay! : ART.farBusNight!).w * scale}
+              height={(hour?.isDay !== false ? ART.farBusDay! : ART.farBusNight!).h * scale}
               /* On the road, at the left, coming towards the stop. */
               style={{ left: 6 * scale, top: (VIGNETTE_SIZE.h - 26) * scale }}
               alt=""
@@ -261,15 +274,24 @@ export function WeatherVignette({
         </div>
 
         <figcaption className="vignette__caption">
-          <p className="vignette__reading">
-            <strong>{Math.round(hour.temperatureCelsius)}°C</strong>
-            <span className="muted">
-              feels like {Math.round(hour.apparentTemperatureCelsius)}°C
-            </span>
-            <span>{condition}</span>
-          </p>
+          {hour === null ? (
+            /*
+             * Said plainly, with no reading invented to fill the space. The collector publishes by
+             * degree square, so a stop it has not reached yet is a coverage gap rather than a
+             * failure, and either way the honest thing is a sentence rather than a guess.
+             */
+            <p className="vignette__unavailable">Weather temporarily unavailable</p>
+          ) : (
+            <p className="vignette__reading">
+              <strong>{Math.round(hour.temperatureCelsius)}°C</strong>
+              <span className="muted">
+                feels like {Math.round(hour.apparentTemperatureCelsius)}°C
+              </span>
+              <span>{condition}</span>
+            </p>
+          )}
 
-          {advice.message ? (
+          {advice?.message ? (
             <p className="vignette__advice">
               {advice.message}
               {advice.because.length > 0 ? (
@@ -279,42 +301,52 @@ export function WeatherVignette({
           ) : null}
 
           {/* Every published number, so the picture is never the only thing said. */}
-          <dl className="vignette__facts">
-            <div>
-              <dt>Rain</dt>
-              <dd>
-                {hour.precipitationMm.toFixed(1)} mm
-                {hour.precipitationProbability === null
-                  ? ""
-                  : ` · ${hour.precipitationProbability}% chance`}
-              </dd>
-            </div>
-            <div>
-              <dt>Wind</dt>
-              <dd>
-                {Math.round(hour.windSpeedKph)} km/h
-                {hour.windGustKph === null ? "" : ` · gusts ${Math.round(hour.windGustKph)}`}
-              </dd>
-            </div>
-            {compact ? null : (
-              <>
-                <div>
-                  <dt>UV</dt>
-                  <dd>{hour.uvIndex === null ? "Not published" : hour.uvIndex.toFixed(1)}</dd>
-                </div>
-                <div>
-                  <dt>Daylight</dt>
-                  <dd>{hour.isDay ? "Daytime" : "After dark"}</dd>
-                </div>
-              </>
-            )}
-          </dl>
+          {hour === null ? null : (
+            <dl className="vignette__facts">
+              <div>
+                <dt>Rain</dt>
+                <dd>
+                  {hour.precipitationMm.toFixed(1)} mm
+                  {hour.precipitationProbability === null
+                    ? ""
+                    : ` · ${hour.precipitationProbability}% chance`}
+                </dd>
+              </div>
+              <div>
+                <dt>Wind</dt>
+                <dd>
+                  {Math.round(hour.windSpeedKph)} km/h
+                  {hour.windGustKph === null ? "" : ` · gusts ${Math.round(hour.windGustKph)}`}
+                </dd>
+              </div>
+              {compact ? null : (
+                <>
+                  <div>
+                    <dt>UV</dt>
+                    <dd>{hour.uvIndex === null ? "Not published" : hour.uvIndex.toFixed(1)}</dd>
+                  </div>
+                  <div>
+                    <dt>Daylight</dt>
+                    <dd>{hour.isDay ? "Daytime" : "After dark"}</dd>
+                  </div>
+                </>
+              )}
+            </dl>
+          )}
 
           {/*
             The attribution is not optional in either form. Open-Meteo's licence requires it, and
             a compact panel is a smaller place to say it, not a reason not to.
           */}
-          {compact ? (
+          {weather === null ? (
+            /*
+             * No attribution, because nothing has been attributed: Open-Meteo's licence applies to
+             * a reading and there is no reading. Where the gap comes from is worth saying instead.
+             */
+            <p className="vignette__source small muted">
+              The forecast collector has not published this stop&apos;s area yet.
+            </p>
+          ) : compact ? (
             <p className="vignette__source micro muted">{weather.attribution}</p>
           ) : (
             <p className="vignette__source small muted">

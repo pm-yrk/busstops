@@ -35,6 +35,69 @@ export interface SelectedStopBoardProps {
   onResolved?: (stop: { atcoCode: string; coordinate: { lat: number; lon: number } }) => void;
 }
 
+/**
+ * What is true about this stop, once the bus and the sky have been dealt with.
+ *
+ * The panel was a board and then a link, which read as two technical components stacked rather
+ * than as one thing a passenger uses. This is the third movement: which routes call here, what
+ * the stop physically is, and what it has — a shelter to stand under matters quite a lot to
+ * somebody looking at a weather picture directly above it.
+ *
+ * Only sourced facts. A stop with no amenities recorded says nothing rather than implying none.
+ */
+function StopFacts({
+  stop,
+  routes,
+}: {
+  stop: StopDeparturesResponse["data"]["stop"];
+  routes: StopDeparturesResponse["data"]["routes"];
+}) {
+  const label: Record<string, string> = {
+    shelter: "Shelter",
+    seating: "Seating",
+    lighting: "Lighting",
+    real_time_display: "Live display",
+    step_free: "Step-free",
+    tactile_paving: "Tactile paving",
+  };
+  /*
+   * `value: false` means recorded as absent, which is a different fact from not recorded at all
+   * and must not be listed as though the stop had it. Only what is there is named.
+   */
+  const shown = (stop.amenities ?? [])
+    .filter((amenity) => amenity.value && label[amenity.key])
+    .map((amenity) => label[amenity.key]!);
+
+  if (routes.length === 0 && shown.length === 0 && !stop.indicator) return null;
+
+  return (
+    <section className="stop-facts" aria-label="About this stop">
+      {routes.length > 0 ? (
+        <div className="stop-facts__routes">
+          {routes.slice(0, 8).map((route) => (
+            <Link
+              key={route.id}
+              to={`/routes/${encodeURIComponent(route.id)}`}
+              className="route-badge route-badge--inline"
+            >
+              {route.publicName}
+            </Link>
+          ))}
+          {routes.length > 8 ? (
+            <span className="muted small">and {routes.length - 8} more</span>
+          ) : null}
+        </div>
+      ) : null}
+
+      {stop.indicator || shown.length > 0 ? (
+        <p className="stop-facts__detail small muted">
+          {[stop.indicator, ...shown.map((amenity) => label[amenity])].filter(Boolean).join(" · ")}
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
 export function SelectedStopBoard({ atcoCode, onClose, onResolved }: SelectedStopBoardProps) {
   const [response, setResponse] = useState<StopDeparturesResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -112,25 +175,37 @@ export function SelectedStopBoard({ atcoCode, onClose, onResolved }: SelectedSto
             degraded={response.meta.degradation !== "normal"}
           />
           {/*
-            Real weather for this stop, under the next bus.
+            The weather scene, at full size, directly under the next bus.
 
-            It was only on the full stop page, so the panel a passenger actually opens — the one
-            over the map, at the stop they are standing at — said nothing about whether they were
-            about to get wet. The board already fetches it: `/v1/stops/:atco` carries the weather
-            in the same response as the departures, so this costs no extra request. Null is a real
-            answer where the weather job has not published that degree square yet, and nothing is
-            drawn rather than a placeholder implying it is calm.
+            It was drawn `compact` and hidden entirely when no reading existed — so the artwork
+            that exists for this exact moment, somebody standing at a stop deciding whether to
+            wait outside, was either a thin band or nothing at all. It is the second thing the
+            panel says now, at the largest whole scale the column fits.
+
+            `/v1/stops/:atco` carries the weather in the same response as the departures, so this
+            costs no extra request. A stop whose degree square the collector has not reached shows
+            the shelter in a neutral state and says so, rather than vanishing.
           */}
-          {response.data.weather && (
-            <div className="selected-stop__weather">
-              <WeatherVignette
-                weather={response.data.weather}
-                atcoCode={response.data.stop.atcoCode}
-                now={now}
-                compact
-              />
-            </div>
-          )}
+          <div className="selected-stop__weather">
+            <WeatherVignette
+              weather={response.data.weather ?? null}
+              atcoCode={response.data.stop.atcoCode}
+              now={now}
+              /*
+               * Drawn only when one genuinely is. `expectedTime` is the live or estimated time, so
+               * a bus within the quarter hour is a bus a passenger can see coming — and a bus in
+               * the picture when none is due would be the artwork telling a lie the rest of the
+               * product is careful not to.
+               */
+              busApproaching={response.data.departures.some((departure) => {
+                if (!departure.expectedTime) return false;
+                const minutes = (Date.parse(departure.expectedTime) - now.getTime()) / 60_000;
+                return minutes >= 0 && minutes <= 15;
+              })}
+            />
+          </div>
+
+          <StopFacts stop={response.data.stop} routes={response.data.routes} />
 
           <Link to={`/stops/${response.data.stop.atcoCode}`} className="selected-stop__more">
             Everything about this stop
