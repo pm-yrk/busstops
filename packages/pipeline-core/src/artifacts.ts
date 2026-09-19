@@ -186,6 +186,40 @@ export class ArtifactStore {
   }
 
   /**
+   * Every published version of a dataset, newest first.
+   *
+   * The manifest names one version — the live one — which is all a reader serving traffic needs.
+   * A batch that has to aggregate a *closed* window needs the others: a five-minute bucket stays
+   * open for ten minutes after it ends, so the observations that can be aggregated are never the
+   * ones just collected. They are in the versions before it.
+   */
+  async listVersions(dataset: string): Promise<string[]> {
+    const keys = await this.store.list(`data/${dataset}/`);
+    return keys
+      .map((key) => /\/([^/]+)\.jsonl$/.exec(key)?.[1] ?? null)
+      .filter((version): version is string => version !== null)
+      .sort()
+      .reverse();
+  }
+
+  /**
+   * One historical version's records.
+   *
+   * Deliberately without the checksum comparison `readRecords` makes: a manifest describes the
+   * current version only, so there is no recorded hash for an older object to be checked against.
+   * The guard that matters is still in place — `readCurrent` is what serves traffic and it still
+   * verifies — and a corrupted line here fails loudly on `JSON.parse` rather than silently.
+   */
+  async readVersionRecords<T>(dataset: string, version: string): Promise<T[]> {
+    const raw = await this.store.get(objectKeyFor(dataset, version));
+    if (raw === null) return [];
+    return raw
+      .split("\n")
+      .filter((line) => line.length > 0)
+      .map((line) => JSON.parse(line) as T);
+  }
+
+  /**
    * Validate, write the versioned object, then atomically swap the manifest pointer.
    * Throws before the swap when validation fails, leaving the previous version live.
    */

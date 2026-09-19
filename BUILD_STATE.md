@@ -1,8 +1,65 @@
 # Bus Stops. Build State
 
-Last updated: 2026-09-19 (run 68: Pro traced end to end; the 1102 instrumented rather than guessed at)
+Last updated: 2026-09-19 (run 69: the intelligence batch aggregates settled windows; more art landed)
 
 ## Current status
+
+### Run 69: the batch now aggregates a window that has closed
+
+Run 68's trace found the gate: a bucket is 300 s long and stays open a further
+600 s for late revision, `publish.ts` publishes only closed buckets, and the
+workflow collected four minutes of observations and started the batch 0.7 s
+later. Every bucket was open. Every run rolled back. The join, the sample floor
+and the confidence threshold were all downstream of something that could never
+have published whatever they did.
+
+**The fix is the window, not the thresholds.** `minimumSamples` is unchanged at
+5, the lateness grace is unchanged at 600 s, and open buckets are still refused —
+each of those exists to stop a figure that is about to change from going into
+circulation, and trading one for a populated dashboard would be buying the
+appearance of data with the thing that makes it trustworthy.
+
+`src/closed-window.ts` reaches back through published observation versions and
+takes only observations older than the settle horizon (`now − 900 s`). Newest
+version first, bounded by a six-hour lookback, 40 versions and 250,000 records,
+because raw traces are retained 48 hours and "everything still in the bucket"
+would be two days of vehicle positions read into one process.
+
+`ArtifactStore` gained `listVersions` and `readVersionRecords` to make that
+possible: the manifest names the live version only, which is all a reader
+serving traffic needs and not enough for a batch that must aggregate history.
+
+The batch report now carries the window — versions available and read, records
+read, records inside the closed window, the horizon, and the span the accepted
+observations actually cover — so the next run says in numbers whether this
+worked rather than leaving it to be inferred from whether Pro looks populated.
+
+Seven tests cover it, including one that reproduces run 67's exact shape:
+collect a few minutes, batch immediately, publish nothing.
+
+**Not yet proven end to end.** This has not run against the bucket. The proof
+required is the chain with non-zero counts at every stage, and the next
+`run_intelligence` deploy is what produces it — run 67's observations are about
+two hours old, so they are settled and inside both the lookback and retention.
+
+### 1102: what the breadcrumb does and does not establish
+
+Narrowed after review, and the code says so now. A breadcrumb names the last
+stage a request reached before it disappeared. That is a position, not a
+mechanism:
+
+- `siri:fetch:begin` means it died after the fetch started and before the next
+  stamp. It does **not** mean the socket caused it — a Worker pays no CPU for
+  waiting, and something else in the isolate may have been the cost.
+- `siri:parse:begin` is a narrower window containing real CPU work, so it is
+  stronger evidence — still a position.
+
+And absence proves nothing. Whether Cloudflare keeps an isolate after a 1102 or
+replaces it is undocumented, so a breadcrumb that arrives is positive evidence
+and no breadcrumb is **inconclusive**. The reporting request's own number is
+carried alongside (`diedReportedBy`) because a fresh isolate starts at 1: a
+death reported by request 2 is consistent with replacement, one reported by
+request 26 with survival. Neither is worth stating from a single observation.
 
 ### Run 68: Pro traced end to end, and the 1102 given an instrument
 

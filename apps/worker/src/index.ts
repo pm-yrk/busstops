@@ -299,6 +299,15 @@ function beginResidency(ledger: ReadLedger, handler = "unnamed"): () => void {
         diedHandler: died.handler,
         diedPhase: died.phase,
         diedAtMs: died.atMs,
+        /*
+         * The reporting request's own number, so survival can be told from replacement.
+         *
+         * A fresh isolate starts its counter at 1. A death reported by request 2 is consistent
+         * with the isolate having been replaced; a death reported by request 26 is consistent
+         * with it having survived. Neither is worth stating from one observation, which is why
+         * the number is carried rather than interpreted here.
+         */
+        diedReportedBy: served,
         ...Object.fromEntries(Object.entries(died.detail ?? {}).map(([k, v]) => [`died_${k}`, v])),
       });
     }

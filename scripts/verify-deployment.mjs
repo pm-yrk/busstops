@@ -66,9 +66,18 @@ function describeDeath(artifact) {
     .filter(([key]) => key.startsWith("died_"))
     .map(([key, value]) => `${key.slice(5)}=${String(value)}`)
     .join(" ");
+  /*
+   * Worded as a position, not as a cause.
+   *
+   * "Last reached X" is what the breadcrumb knows. Which resource was exhausted it does not know,
+   * and a phase name read as a culprit is how a correlation becomes a conclusion — so the line
+   * carries the reporting request's number too, which is what tells a surviving isolate from a
+   * replaced one.
+   */
   return (
-    ` !! a previous request DIED: req#${artifact.diedRequest} ${artifact.diedHandler}` +
-    ` last reached "${artifact.diedPhase}" at ${artifact.diedAtMs}ms${extra ? ` (${extra})` : ""}`
+    ` !! a previous request DID NOT FINISH: req#${artifact.diedRequest} ${artifact.diedHandler}` +
+    ` last reached "${artifact.diedPhase}" at ${artifact.diedAtMs}ms` +
+    `, reported by req#${artifact.diedReportedBy}${extra ? ` (${extra})` : ""}`
   );
 }
 
