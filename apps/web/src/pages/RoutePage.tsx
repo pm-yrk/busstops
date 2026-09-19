@@ -121,6 +121,69 @@ export function RoutePage() {
         <DataAge seconds={ageSeconds} />
       </header>
 
+      {/*
+        What this route is, before the list of everywhere it stops.
+ 
+        The page opened with a badge and a heading and went straight into a stop sequence, so the
+        first thing a passenger met was two hundred place names. These six facts are the ones
+        somebody checks before reading any of them, and every one is a published field: where the
+        selected direction starts and ends, how many stops that is, how far, who runs it, and
+        whether anything is wrong with it right now.
+ 
+        There is deliberately no route line drawn here. `/v1/routes/:id` gives each variant its
+        stops by name, sequence and locality and no coordinates at all, so a shape would have to
+        be invented or a second read paid for; the honest version of this section is the one that
+        uses what the endpoint actually returns.
+      */}
+      {variant ? (
+        <section className="route-summary" aria-label="About this route">
+          <div className="route-summary__line">
+            <span className="route-summary__end">{variant.stops[0]?.name ?? "—"}</span>
+            <span className="route-summary__arrow" aria-hidden="true">
+              →
+            </span>
+            <span className="route-summary__end">
+              {variant.stops[variant.stops.length - 1]?.name ?? "—"}
+            </span>
+          </div>
+          <dl className="route-summary__facts">
+            <div>
+              <dt>Stops</dt>
+              <dd>{variant.stops.length}</dd>
+            </div>
+            <div>
+              <dt>Distance</dt>
+              <dd>
+                {variant.distanceMetres > 0
+                  ? `${(variant.distanceMetres / 1000).toFixed(1)} km`
+                  : "not published"}
+              </dd>
+            </div>
+            <div>
+              <dt>Direction</dt>
+              <dd>{variant.direction}</dd>
+            </div>
+            <div>
+              <dt>Buses now</dt>
+              {/*
+                Zero and "we cannot see" are different, and the live layer knows which. A route
+                with no bus on it at four in the morning is a fact; a route whose feed is down is
+                not the same fact wearing the same number.
+              */}
+              <dd>{activeVehicles.length > 0 ? activeVehicles.length : "none tracked"}</dd>
+            </div>
+            <div>
+              <dt>Disruption</dt>
+              <dd>
+                {incidents.length + disruptions.length > 0
+                  ? `${incidents.length + disruptions.length} reported`
+                  : "none reported"}
+              </dd>
+            </div>
+          </dl>
+        </section>
+      ) : null}
+
       <div className="route-page__actions">
         <button
           type="button"

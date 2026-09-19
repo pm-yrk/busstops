@@ -158,3 +158,58 @@
 .route-page__storage-note {
   margin: 0 0 var(--space-md);
 }
+
+/*
+ * The route summary: six published facts, above the place names.
+ *
+ * The origin-to-destination line is the heading of the section in everything but markup — it is
+ * the sentence a passenger reads to know they have the right route and the right direction — so
+ * it carries the weight, and the numbered facts sit under it as a row rather than a list.
+ */
+.route-summary {
+  margin: var(--space-md) 0;
+  padding: var(--space-md);
+  border: 1px solid var(--colour-hairline);
+  border-left: 3px solid var(--colour-red);
+  border-radius: var(--radius-md);
+  background: var(--colour-surface);
+}
+
+.route-summary__line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-xs) var(--space-sm);
+  font-size: var(--font-size-h3);
+  line-height: 1.2;
+}
+
+.route-summary__arrow {
+  color: var(--colour-red);
+  flex: none;
+}
+
+.route-summary__facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm) var(--space-lg);
+  margin: var(--space-md) 0 0;
+}
+
+.route-summary__facts div {
+  display: grid;
+  gap: 2px;
+}
+
+.route-summary__facts dt {
+  font-size: var(--font-size-small);
+  color: var(--colour-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.route-summary__facts dd {
+  margin: 0;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}

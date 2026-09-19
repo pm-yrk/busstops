@@ -53,8 +53,16 @@ export function OperatorPage() {
     );
   }
 
-  const { operator, routes, metrics, rankingEligible, rankingIneligibleReason, coverageCaveats } =
-    response.data;
+  const {
+    operator,
+    routes,
+    metrics,
+    rankingEligible,
+    rankingIneligibleReason,
+    coverageCaveats,
+    incidents,
+  } = response.data;
+  const undescribed = routes.filter((route) => !route.description).length;
 
   return (
     <article className="page operator-page">
@@ -70,6 +78,34 @@ export function OperatorPage() {
           </p>
         ) : null}
       </header>
+
+      {/*
+        What this operator is, in the fields the endpoint actually returns.
+ 
+        The page went straight from a name into a performance grid that is mostly suppressed and
+        then into a list of routes. None of that answers "how big is this operator and is anything
+        wrong with it", which is the question somebody arriving from a bus has.
+      */}
+      <section className="operator-summary" aria-label="About this operator">
+        <dl className="operator-summary__facts">
+          <div>
+            <dt>Routes published</dt>
+            <dd>{routes.length}</dd>
+          </div>
+          <div>
+            <dt>Disruption</dt>
+            <dd>{incidents.length > 0 ? `${incidents.length} reported` : "none reported"}</dd>
+          </div>
+          <div>
+            <dt>Comparable</dt>
+            {/*
+              Whether this operator's sample supports comparison at all, said once at the top
+              rather than discovered by reading a grid of dashes.
+            */}
+            <dd>{rankingEligible ? "yes" : "not yet"}</dd>
+          </div>
+        </dl>
+      </section>
 
       <section aria-labelledby="operator-metrics-heading" className="operator-page__section">
         <h2 id="operator-metrics-heading">Performance</h2>
@@ -105,7 +141,16 @@ export function OperatorPage() {
               <li key={route.id}>
                 <Link to={`/routes/${route.id}`}>
                   <RouteBadge name={route.publicName} />
-                  <span>{route.description ?? "No description published"}</span>
+                  {/*
+                    Nothing where there is nothing.
+ 
+                    Every route without a published description printed "No description
+                    published", so an operator with forty routes printed that sentence forty
+                    times — a wall of the same absence, which reads as a broken page rather than
+                    as a gap in the data. The badge is the route's name and is enough on its own;
+                    the count of how many lack a description is stated once, below.
+                  */}
+                  {route.description ? <span>{route.description}</span> : null}
                 </Link>
               </li>
             ))}
@@ -116,6 +161,14 @@ export function OperatorPage() {
             description="No routes for this operator appear in the published timetable data."
           />
         )}
+        {/* The absence, counted once, instead of printed once per route. */}
+        {undescribed > 0 ? (
+          <p className="muted small">
+            {undescribed === routes.length
+              ? "None of these routes has a description in the published data, so each is shown by its number."
+              : `${undescribed} of these routes have no description in the published data.`}
+          </p>
+        ) : null}
       </section>
 
       <section aria-labelledby="operator-coverage-heading" className="operator-page__section">

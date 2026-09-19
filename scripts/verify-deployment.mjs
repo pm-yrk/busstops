@@ -293,12 +293,37 @@ await check("a stop can be selected and returns a departure board", async () => 
 /** How many stops per city are asked for a board before concluding the city has none. */
 const SAMPLED_STOPS_PER_CITY = 5;
 
+/*
+ * England, not a Leeds demo with four witnesses.
+ *
+ * Leeds and Manchester are the technical stress cases — the densest viewports, the ones that
+ * find the CPU ceiling first — and proving a passenger feature there proves it for the hard
+ * case and nowhere else. The three at the bottom are chosen for the ways they differ rather
+ * than for being more of the same: a North East city on a different operator mix, a South Coast
+ * one, and a market town whose network is small enough that "no data" and "broken" are easy to
+ * confuse. Different places will hold different amounts of data and that is expected; what has
+ * to be the same everywhere is that the product says which of the two it is.
+ */
 const CITIES = [
   { name: "Leeds", bbox: "-1.57,53.78,-1.52,53.81" },
   { name: "Manchester", bbox: "-2.26,53.46,-2.21,53.50" },
   { name: "Birmingham", bbox: "-1.92,52.46,-1.87,52.49" },
   { name: "Bristol", bbox: "-2.61,51.44,-2.56,51.47" },
   { name: "York", bbox: "-1.10,53.95,-1.05,53.97" },
+  /*
+   * The three below carry `sparseOk`, which does not lower the bar — it moves it to the right
+   * question. A city centre that returns stops and names no route calling at any of them is a
+   * broken timetable. A market town on a Sunday that does the same may simply be a market town
+   * on a Sunday, and failing it would teach me to distrust the check rather than the data. So
+   * for these, an error is still an error — a bad status, no stops at all, a name the board and
+   * the map disagree about — and sparseness is reported instead of failed.
+   */
+  /* North East. */
+  { name: "Newcastle", bbox: "-1.63,54.96,-1.58,54.99", sparseOk: true },
+  /* South Coast. */
+  { name: "Brighton", bbox: "-0.16,50.81,-0.11,50.84", sparseOk: true },
+  /* A smaller, lower-density town: the case where an empty answer must still read as an answer. */
+  { name: "Shrewsbury", bbox: "-2.77,52.70,-2.72,52.73", sparseOk: true },
 ];
 
 /** What a board has to say for a row to be worth rendering, beyond merely existing. */
@@ -357,7 +382,7 @@ function assertDepartureIsPlausible(departure, stopName, city) {
   );
 }
 
-await check("five cities across England return their real routes and departures", async () => {
+await check("places across England return their real routes and departures", async () => {
   const lines = [];
   for (const city of CITIES) {
     const map = await getJson(`/v1/map?bbox=${city.bbox}&zoom=15`);
@@ -408,6 +433,13 @@ await check("five cities across England return their real routes and departures"
     }
 
     const served = boards.filter((board) => board.routes.length > 0);
+    if (city.sparseOk && served.length === 0) {
+      // Checked, answered, and genuinely quiet. Reported as what it is rather than failed.
+      lines.push(
+        `${city.name}: ${stops.length} stop(s), no route published at the ${boards.length} sampled`,
+      );
+      continue;
+    }
     assert(
       served.length > 0,
       `${city.name}: the published timetable names no route calling at any of ` +

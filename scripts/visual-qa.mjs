@@ -911,6 +911,64 @@ for (const size of WIDTHS) {
                   }`
                 : "no board opened",
           );
+
+          /*
+           * And the weather scene, measured on the path a passenger actually takes.
+           *
+           * The deep link proved the vignette can render; it did not prove that clicking a stop
+           * on the map gets you one, and those are different journeys through the same component.
+           * The brief is explicit that the normal interaction is the one that must be reliable,
+           * so this asks the same questions here: how big the scene is, whether it drew a real
+           * condition or said it had none, and whether the approaching bus is in it.
+           *
+           * The condition is reported, never asserted: a clear night has no effect layers and
+           * that is the truth about the sky, not a defect. What is asserted is that the scene is
+           * there and big enough to see.
+           */
+          if (board.open) {
+            const scene = await page.evaluate(() => {
+              const figure = document.querySelector(".selected-stop .vignette");
+              if (!figure) return null;
+              const box = figure.querySelector(".vignette__scene")?.getBoundingClientRect();
+              const panel = document.querySelector(".selected-stop")?.getBoundingClientRect();
+              const effects = [...figure.querySelectorAll(".vignette__effect")].map(
+                (node) => (node.className.match(/vignette__effect--(\w+)/) ?? [])[1],
+              );
+              return {
+                width: Math.round(box?.width ?? 0),
+                height: Math.round(box?.height ?? 0),
+                panelWidth: Math.round(panel?.width ?? 0),
+                /* Is any of it on screen, or has it been pushed below the panel's scroll? */
+                visible: (box?.top ?? 0) < globalThis.innerHeight && (box?.bottom ?? 0) > 0,
+                effects,
+                accessory: figure.querySelector(".vignette__accessory") !== null,
+                bus: figure.querySelector(".vignette__bus") !== null,
+                unavailable: figure.classList.contains("vignette--unavailable"),
+                reading:
+                  figure.querySelector(".vignette__reading")?.textContent?.trim().slice(0, 60) ??
+                  "",
+              };
+            });
+
+            record(
+              `${size.name}/live shows the weather scene when a stop is clicked`,
+              scene !== null && scene.width >= 176 * 2 && scene.visible,
+              scene === null
+                ? "the selected stop board carries no vignette at all"
+                : `${scene.width}x${scene.height} (scale ${Math.round(scene.width / 176)}) in a ` +
+                    `${scene.panelWidth}px panel, ${scene.visible ? "on screen" : "OFF SCREEN"}; ` +
+                    (scene.unavailable
+                      ? "no reading, neutral scene"
+                      : `reading "${scene.reading}", effects [${scene.effects.join(", ") || "none"}], ` +
+                        `accessory ${scene.accessory}, approaching bus ${scene.bus}`),
+            );
+
+            /* The panel as a passenger meets it, with the scene in the frame. */
+            await page.screenshot({
+              path: join(screenshotDir, `${size.name}-live-stop-weather.png`),
+              fullPage: false,
+            });
+          }
         } else {
           // Not a failure of the page: no stops in view is a data question, answered elsewhere.
           console.log("        no stop markers to click, so the board was not exercised");

@@ -230,6 +230,32 @@ describe("OperatorPage", () => {
     },
   };
 
+  /*
+   * An operator with forty undescribed routes printed "No description published" forty times.
+   * A wall of the same absence reads as a broken page rather than as a gap in the data, so the
+   * absence is counted once and the badge carries the route on its own.
+   */
+  it("counts the missing descriptions once instead of repeating the absence", async () => {
+    vi.spyOn(apiClient, "operator").mockResolvedValue({
+      ...response,
+      data: {
+        ...response.data,
+        routes: [
+          { id: "00000000-0000-5000-8000-000000000001", publicName: "72", description: null },
+          { id: "00000000-0000-5000-8000-000000000002", publicName: "16", description: null },
+        ],
+      },
+    });
+    renderAt("/operators/o1", "/operators/:operatorId", <OperatorPage />);
+
+    expect(await screen.findByText("First West Yorkshire")).toBeTruthy();
+    expect(screen.queryByText(/No description published/)).toBeNull();
+    expect(screen.getByText(/None of these routes has a description/)).toBeTruthy();
+    // The routes themselves are still there, named by their badge.
+    expect(screen.getByText("72")).toBeTruthy();
+    expect(screen.getByText("16")).toBeTruthy();
+  });
+
   it("shows a dash and the reason instead of a suppressed figure", async () => {
     vi.spyOn(apiClient, "operator").mockResolvedValue(response);
     renderAt("/operators/o1", "/operators/:operatorId", <OperatorPage />);

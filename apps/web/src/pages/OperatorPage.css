@@ -75,3 +75,38 @@
   display: grid;
   gap: var(--space-xs);
 }
+
+/* The operator overview: three published facts, before the grid of mostly-suppressed metrics. */
+.operator-summary {
+  margin: var(--space-md) 0;
+  padding: var(--space-md);
+  border: 1px solid var(--colour-hairline);
+  border-left: 3px solid var(--colour-red);
+  border-radius: var(--radius-md);
+  background: var(--colour-surface);
+}
+
+.operator-summary__facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm) var(--space-lg);
+  margin: 0;
+}
+
+.operator-summary__facts div {
+  display: grid;
+  gap: 2px;
+}
+
+.operator-summary__facts dt {
+  font-size: var(--font-size-small);
+  color: var(--colour-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.operator-summary__facts dd {
+  margin: 0;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
