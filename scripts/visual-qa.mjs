@@ -1285,6 +1285,45 @@ for (const size of WIDTHS) {
         );
       }
 
+      /*
+       * What each Pro section actually has to say, page by page.
+       *
+       * "dataMode=live" is a single figure from one endpoint and it has been true while every
+       * section underneath reported no observations — a live mode with no intelligence in it.
+       * The brief asks for this traced per page, so the sweep counts what is on each one: how
+       * many metric tiles carry a figure rather than a dash, how many are suppressed and say
+       * why, and how many rows the tables hold. Reported rather than asserted, because a section
+       * with genuinely nothing to show is a legitimate state — what is not legitimate is not
+       * knowing which of the two it is.
+       */
+      if (target.name.startsWith("pro")) {
+        const pro = await page.evaluate(() => {
+          const tiles = [...document.querySelectorAll(".pro-metric")];
+          const value = (tile) =>
+            tile.querySelector(".pro-metric__value")?.textContent?.trim() ?? "";
+          return {
+            mode:
+              document.querySelector("[data-testid='pro-data-mode'] strong")?.textContent?.trim() ??
+              "live",
+            tiles: tiles.length,
+            withFigure: tiles.filter((tile) => value(tile) !== "—" && value(tile) !== "").length,
+            suppressed: tiles.filter((tile) => tile.querySelector(".pro-metric__suppressed"))
+              .length,
+            rows: document.querySelectorAll(".pro-table tbody tr").length,
+            cards: document.querySelectorAll(".pro-card").length,
+            blocks: [...document.querySelectorAll(".state-block__title")].map((node) =>
+              node.textContent?.trim(),
+            ),
+          };
+        });
+
+        console.log(
+          `        ${target.name}: mode ${pro.mode}; ${pro.withFigure}/${pro.tiles} tile(s) ` +
+            `carry a figure, ${pro.suppressed} suppressed; ${pro.rows} table row(s), ` +
+            `${pro.cards} card(s)${pro.blocks.length > 0 ? `; states: ${pro.blocks.join(" / ")}` : ""}`,
+        );
+      }
+
       if (target.name === "search-results") {
         const results = await page.evaluate(() => {
           const items = [...document.querySelectorAll(".search-page__result")];
