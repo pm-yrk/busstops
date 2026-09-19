@@ -289,6 +289,37 @@ describe("GET /v1/map", () => {
     expect(response.status).toBe(400);
   });
 
+  /*
+   * Run 62 measured this one on the deployment: `projectionUsed=true`, every returned stop
+   * carrying its route list, and `degraded true (stop_routes_budget)` beside it. The projection
+   * reports `truncated` when the box holds more stops than the map draws, which is a statement
+   * about how many markers came back and not about whether their labels are trustworthy — the
+   * names arrive on the same row as the stop. Reading one as the other made every dense viewport
+   * call its own labels unreliable.
+   */
+  it("does not call its labels degraded merely because it drew the stops it can draw", async () => {
+    const store = await publishedStore();
+    const response = await worker.fetch(
+      get("/v1/map?bbox=-1.6,53.7,-1.5,53.85&zoom=14"),
+      makeEnv(store),
+      ctx,
+    );
+    expect(response.status).toBe(200);
+
+    const body = (await response.json()) as {
+      data: {
+        degraded: boolean;
+        degradationReason: string | null;
+        stops: Array<{ routePublicNames: string[] }>;
+      };
+      meta: { diagnostics?: { artifact?: { projectionUsed?: boolean } } };
+    };
+
+    expect(body.meta.diagnostics?.artifact?.projectionUsed).toBe(true);
+    expect(body.data.degradationReason).not.toBe("stop_routes_budget");
+    expect(body.data.degraded).toBe(false);
+  });
+
   it("returns stops for a valid viewport with a contract-valid envelope", async () => {
     const store = await publishedStore();
     const response = await worker.fetch(

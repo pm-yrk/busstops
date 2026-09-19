@@ -1145,7 +1145,21 @@ for (const size of WIDTHS) {
           }
         }
         const stateBlocks = [...main.querySelectorAll(".state-block")];
+        /*
+         * Controls are counted apart from content, because they answer a different question.
+         *
+         * Adding them to the same tally did not help: Search still had one element and Journey
+         * two, against a threshold of three. A search page is a heading and a search box, and
+         * that is the finished page rather than a thin one — so the rule is that a page offering
+         * something to use is never accidentally empty, and the count-and-words test applies to
+         * pages that offer only reading.
+         */
+        const controls = [...main.querySelectorAll("input, select, textarea")].filter(
+          (node) => !node.closest("nav, footer, header.app__header"),
+        ).length;
+
         return {
+          controls,
           items: counted.size,
           words: (main.textContent ?? "").trim().split(/\s+/).filter(Boolean).length,
           declared: stateBlocks.length > 0,
@@ -1157,16 +1171,17 @@ for (const size of WIDTHS) {
         };
       });
 
-      const looksEmpty = substance.items < 3 || substance.words < 40;
+      const looksEmpty = substance.controls === 0 && (substance.items < 3 || substance.words < 40);
       record(
         `${size.name}/${target.name} is not accidentally empty`,
         !looksEmpty || substance.declared,
         looksEmpty
           ? substance.declared
             ? `deliberately empty: ${substance.declaredTitles.join("; ") || "(state block, no title)"}`
-            : `${substance.items} content element(s) and ${substance.words} word(s) under ` +
-              `"${substance.heading || "(no heading)"}", and nothing saying why`
-          : `${substance.items} content element(s), ${substance.words} word(s)`,
+            : `${substance.items} content element(s), no controls and ${substance.words} ` +
+              `word(s) under "${substance.heading || "(no heading)"}", and nothing saying why`
+          : `${substance.items} content element(s), ${substance.controls} control(s), ` +
+              `${substance.words} word(s)`,
       );
 
       /*

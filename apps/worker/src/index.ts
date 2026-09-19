@@ -589,7 +589,19 @@ router.get("/v1/map", async (_request, { env, url }) => {
   const stopRoutes = projected
     ? {
         byStopId: new Map(projected.stops.map((stop) => [stop.id, stop.routePublicNames])),
-        complete: !projected.truncated,
+        /*
+         * Always complete, because the names arrive attached to the stops.
+         *
+         * `projected.truncated` answers a different question: did we return every stop in the
+         * box, or did we stop at the four hundred markers the map draws. A dense city always
+         * exceeds that, so this read `!truncated` and reported every Leeds viewport as degraded
+         * for `stop_routes_budget` — while every one of the four hundred stops it drew carried
+         * its full route list, from the same row it came in on. The map was calling its own
+         * labels unreliable on the strength of a display limit.
+         *
+         * How many stops were returned is reported honestly and separately, as `truncated.stops`.
+         */
+        complete: true,
         available: true,
       }
     : network
