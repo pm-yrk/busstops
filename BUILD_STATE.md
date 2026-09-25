@@ -1,8 +1,114 @@
 # Bus Stops. Build State
 
-Last updated: 2026-09-19 (run 69: the intelligence batch aggregates settled windows; more art landed)
+Last updated: 2026-09-19 (run 69 ran: Pro is populated, the 1102 has a position, the matcher is measured)
 
 ## Current status
+
+### Run 69 measured three things that were guesses
+
+Run 69 dispatched with `run_intelligence: true` and returned evidence on every
+open question. Nothing here is inferred from a screenshot or a passing test:
+each figure is from the deployed API, the job log or the batch report artifact.
+
+#### 1. Pro is populated, and the chain is proven end to end
+
+    33,180 observations in the closed window (of 65,253 read, 2 of 5 versions)
+      → 17,270 traces
+      → 247 segment samples
+      → 209 closed interval buckets (208 suppressed under minimumSamples)
+      → 3 artifacts published, atomic_publish rejected 0
+      → current pointer moved, outcome "published" (run 67: "rolled_back")
+      → Pro API: data mode live, 4 of 8 headline metrics over 741 observations
+      → populated: active_vehicles, segments_measured,
+        median_segment_traversal, abnormal_disruptions
+
+The closed-window architecture is what did it, and none of the thresholds moved:
+`minimumSamples` is still 5, the lateness grace is still 600 s, and open buckets
+are still refused — 208 of the 209 buckets published as counts only, exactly as
+designed.
+
+**Pro states its own freshness honestly.** The verifier prints what the
+deployment actually said: _"measured over 5-minute measurement windows ending
+14:25 UTC, closed 129 minutes ago"_. The 129 minutes is real and is not a bug in
+the window logic: the newest settled observations were run 67's, because run 68
+did not run the collector. The endpoint says so rather than implying the figure
+is current, and the verifier now fails any live metric still labelled "last N
+minutes" — the reader's scope rather than the measured period.
+
+Three things the summary shows that are worth watching, none of them fabricated
+away: `distinctRoutes: 0` (the vehicle→route map is not being populated),
+`medianSpeedMetresPerSecond: 0.57` (2 km/h, which is a bus in a queue or a very
+short run), and `segmentsMeasured: 1`.
+
+#### 2. The 1102 has a position for the first time
+
+The breadcrumb chase fired and returned:
+
+    probe 1: isolate req#1, 0.00 MiB resident, nothing unfinished to report
+    probe 2: isolate req#94, 2.48 MiB resident
+      !! a previous request DID NOT FINISH: req#93 route-detail
+         last reached "siri:parse:begin" at 704ms,
+         reported by req#94 (chars=674405)
+
+What this establishes:
+
+- **The isolate survives a 1102.** Request 94 ran on the isolate that had served
+  request 93, and carried its breadcrumb out. Per the rule written down before
+  the measurement, a surviving breadcrumb is positive diagnostic evidence.
+- **The killed request had begun parsing** a 674,405-character SIRI payload at
+  704 ms and never reached `siri:parse:done`.
+- **Why runs 66–68 saw nothing**: probe 1 landed on a _fresh_ isolate (req#1).
+  Without a deliberate chase, the breadcrumb is only ever read by accident.
+
+What this does **not** establish: that the parser caused it. `siri:parse:begin`
+is where the request was, not what was exhausted. One observation is not a
+reproducible pattern, and no refactor follows from it yet. The correlates are
+recorded: endpoint `/v1/routes/:id`, isolate request 93, 674,405 chars, fetch
+completed, parse started, parse never finished, response 503/1102.
+
+The journey planner died twice in the same run with nothing asked of it. Both
+journey checks now chase, for the same reason.
+
+The instrument also had a fault worth recording: the breadcrumb was cleared only
+at the end of a handler's happy path, so any early return (404, 400, 503) left
+one set and the next request reported a death that never happened. Clearing now
+happens in a `finally` on dispatch. Two tests assert it and both fail without it.
+A false death would have been indistinguishable from the thing being hunted.
+
+#### 3. The map-match stage is measured, and the floor was never the problem
+
+    processed 17,270 traces in 32,642 ms of a 300,000 ms budget
+    candidateSearchMs   26,563     decodeMs             5,944
+    candidatesPerTrace  14,468     candidatesMax       40,518
+    segmentsIndexed     76,312     tracesWithNoCandidates 5,333
+    projections         51,433     skippedByBounds  457,609,490
+    boundsSkipShare      0.9999    statesPerPoint        1.13
+    rejectedByCoverage   8,044     rejectedByDistance       66
+    rejectedByInstability 1,930    meanRejectedConfidence 0.002
+
+Five conclusions, each from a number rather than an argument:
+
+- **Finding candidates cost 4.5× the decode.** 81% of the stage was spent
+  building lists of roads, not matching against them.
+- **The grid was handing each trace 19% of the national road network.** A
+  quarter-degree cell plus its eight neighbours is a box roughly 83 km by 50 km.
+- **Lowering the confidence floor would have changed nothing.** Rejected traces
+  came back at a mean confidence of **0.002**, not near the 0.45 floor. And 80%
+  of rejections are _coverage_ — the roads are not under the buses — against 66
+  for distance.
+- **The precomputed extents were worth about 10×.** Run 67 processed 4,265
+  traces in a full 300 s budget; run 69 processed all 17,270 in 33 s, and the
+  bounding-box test skipped 99.989% of projections.
+- **The real bottleneck for Pro is the extracted road network.**
+  `tracesWithNoCandidates: 5,333` plus `rejectedByCoverage: 8,044` is 13,377 of
+  17,270 traces — 77% — failing because 76,312 segments is too sparse a network
+  for England. `statesPerPoint: 1.13` says most points see at most one candidate.
+
+Acting on the measurement, the grid is now **0.02°** rather than 0.25°: about
+2.2 km, so a lookup still reaches roughly 6.7 km by 4 km once neighbours are
+included — two orders of magnitude beyond the 60 m snap cap, so no road a bus
+could match can fall outside it. A test asserts a trace on a cell boundary still
+finds its road. The confidence floor is untouched.
 
 ### Run 69: the batch now aggregates a window that has closed
 

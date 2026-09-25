@@ -1313,10 +1313,21 @@ await check("a journey can be planned across real timetable data", async () => {
    * between a lead and a shrug.
    */
   const isHtml = text.trimStart().toLowerCase().startsWith("<!doctype") || /<html/i.test(text);
+  /*
+   * Chased before the assertion, exactly as route detail is.
+   *
+   * Run 69's chase produced the first positive evidence this investigation has had — a killed
+   * route-detail request reported by the next request on the same isolate — and the journey
+   * planner died twice in the same run with nothing asked of it. `journeys` sets a breadcrumb
+   * like every other instrumented handler, so the only reason it said nothing is that nobody
+   * went back and looked.
+   */
+  const chased = isHtml ? await chaseBreadcrumb(from) : "";
   assert(
     !isHtml,
     `the platform answered instead of the Worker: ${response.status}` +
-      describePlatformPage(response, text),
+      describePlatformPage(response, text) +
+      chased,
   );
   assert(response.status !== 500, `the Worker failed: ${describe(response, body, text)}`);
   assert(response.ok, `expected an answer, got ${describe(response, body, text)}`);
@@ -1591,9 +1602,10 @@ await check("a journey can be planned to a place found by searching for it", asy
     `/v1/journeys?fromLat=${from.lat}&fromLon=${from.lon}&toLat=${to.lat}&toLon=${to.lon}`,
   );
   const isHtml = text.trimStart().toLowerCase().startsWith("<!doctype") || /<html/i.test(text);
+  const chased = isHtml ? await chaseBreadcrumb(from) : "";
   assert(
     !isHtml,
-    `the platform answered instead of the Worker (${response.status}${describePlatformPage(response, text)})`,
+    `the platform answered instead of the Worker (${response.status}${describePlatformPage(response, text)})${chased}`,
   );
   assert(response.ok, `expected 2xx, got ${describe(response, body, text)}`);
 

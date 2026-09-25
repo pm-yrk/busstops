@@ -171,13 +171,27 @@ export function summariseSegmentMatchProfile(profile: SegmentMatchProfile): Reco
  * because their match was below the confidence floor. A matcher offered a bus in Leeds a road in
  * Bristol has no locality to reason from, and the confidence it returns reflects that.
  *
- * A quarter-degree grid — roughly 28 km north to south — is coarse enough that a segment lands in
- * a handful of cells and fine enough that a city trace sees a city's roads. A segment is filed
- * under every cell its path passes through, so a road crossing a boundary is found from either
- * side, and a lookup takes the cells the trace touches plus their neighbours, because a vehicle
- * near a cell edge is matched to roads just over it.
+ * A segment is filed under every cell its path passes through, so a road crossing a boundary is
+ * found from either side, and a lookup takes the cells the trace touches plus their neighbours,
+ * because a vehicle near a cell edge is matched to roads just over it.
+ *
+ * The cell was a quarter of a degree, and run 69 measured what that cost. With the eight
+ * neighbours it hands every trace point a box roughly 83 km by 50 km: 14,468 candidate segments
+ * on average and 40,518 at the worst, out of 76,312 nationally. Nineteen per cent of the road
+ * network is not a spatial index, it is a formality — and the profile priced it exactly:
+ * 26,563 ms finding candidates against 5,944 ms deciding between them, so four fifths of the
+ * stage was spent building lists of roads in other counties.
+ *
+ * The bounding-box test the matcher now applies says the same thing from the other side. It
+ * skipped 457,609,490 projections and let 51,433 through — 99.989 per cent of everything the
+ * grid offered could not have matched anything.
+ *
+ * Two hundredths of a degree is about 2.2 km north to south, so a lookup covers roughly 6.7 km
+ * by 4 km once the neighbours are included. That is still two orders of magnitude beyond the
+ * sixty-metre snap cap, so no road a bus could match to can fall outside it; what goes is the
+ * county.
  */
-const SEGMENT_GRID_DEGREES = 0.25;
+const SEGMENT_GRID_DEGREES = 0.02;
 
 function cellKey(lat: number, lon: number): string {
   return `${Math.floor(lat / SEGMENT_GRID_DEGREES)}:${Math.floor(lon / SEGMENT_GRID_DEGREES)}`;

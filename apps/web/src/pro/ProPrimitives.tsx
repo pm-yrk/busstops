@@ -56,6 +56,24 @@ export function formatMetricValue(metric: ProMetric): string {
   }
 }
 
+/**
+ * How old the figure is, in the units a person thinks in.
+ *
+ * This said "900s", which is both unreadable and about to become the normal case: a segment
+ * metric comes from a five-minute bucket that closes ten minutes after it ends, so every live
+ * figure Pro can honestly publish is a quarter of an hour old or more. A number that large in
+ * seconds reads as an error; in minutes it reads as what it is, which is a measurement that has
+ * settled rather than one still being revised.
+ */
+export function freshnessLabel(seconds: number | null): string {
+  if (seconds === null) return "not applicable";
+  if (seconds < 90) return `${Math.round(seconds)} seconds ago`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 90) return `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
+  const hours = Math.round(seconds / 3600);
+  return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+}
+
 function comparisonText(metric: ProMetric): string | null {
   if (metric.value === null || metric.baselineValue === null || metric.suppressed) return null;
   const difference = metric.value - metric.baselineValue;
@@ -160,12 +178,12 @@ export function ProMetricTile({ metric }: { metric: ProMetric }) {
           <dd>{(metric.coverage * 100).toFixed(0)}%</dd>
         </div>
         <div>
-          <dt>Freshness</dt>
-          <dd>
-            {metric.freshnessSeconds === null
-              ? "not applicable"
-              : `${Math.round(metric.freshnessSeconds)}s`}
-          </dd>
+          {/*
+            Named for what it answers. "Freshness: 900s" was a number nobody could act on; the
+            question a reader actually has is when the thing being described happened.
+          */}
+          <dt>Measured</dt>
+          <dd>{freshnessLabel(metric.freshnessSeconds)}</dd>
         </div>
       </dl>
 

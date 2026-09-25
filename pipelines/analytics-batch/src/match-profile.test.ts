@@ -62,6 +62,7 @@ describe("what the matching stage can say about itself", () => {
       road("b", 53.9, -1.56, -1.54),
       road("c", 51.5, -0.12, -0.1),
     ]);
+    // Leeds and London are worlds apart, and so now are two roads 11 km apart in Leeds.
     const profile = emptySegmentMatchProfile();
     sampleSegmentsForTrace(trace(53.8, -1.56, -1.54), index, "route-1", {}, profile);
 
@@ -82,8 +83,13 @@ describe("what the matching stage can say about itself", () => {
      */
     const index = indexSegments([
       road("near", 53.8, -1.56, -1.54),
-      // Same grid cell, therefore offered, but far enough that no point can snap to it.
-      road("far", 53.95, -1.56, -1.54),
+      /*
+       * A kilometre away: within the lookup's reach, so the grid offers it, and sixteen times
+       * beyond the sixty-metre snap cap, so no point can match it. That is the case the extents
+       * exist for, and the distance matters — at 0.15° the grid no longer offers the road at all
+       * and nothing is skipped, which is the grid doing the work rather than the extents.
+       */
+      road("far", 53.81, -1.56, -1.54),
     ]);
     const profile = emptySegmentMatchProfile();
     sampleSegmentsForTrace(trace(53.8, -1.56, -1.54), index, null, {}, profile);
@@ -99,7 +105,7 @@ describe("what the matching stage can say about itself", () => {
      * a bus was actually on would turn a cost saving into a wrong answer, which is the one thing
      * a matcher must not do quietly.
      */
-    const segments = [road("near", 53.8, -1.56, -1.54), road("far", 53.95, -1.56, -1.54)];
+    const segments = [road("near", 53.8, -1.56, -1.54), road("far", 53.81, -1.56, -1.54)];
     const withBounds = indexSegments(segments);
     const observations = trace(53.8, -1.56, -1.54);
 
@@ -113,6 +119,26 @@ describe("what the matching stage can say about itself", () => {
     expect(indexed.samples.map((sample) => sample.matchConfidence)).toEqual(
       plain.samples.map((sample) => sample.matchConfidence),
     );
+  });
+
+  it("still offers the road the bus is on, whatever the cell it fell in", () => {
+    /*
+     * The grid got a hundred and fifty times finer, and the only thing that must not change is
+     * this: a bus is always offered the road under it. The lookup reaches a cell either side of
+     * every point it touches, which at two hundredths of a degree is about three kilometres —
+     * two orders of magnitude past the sixty-metre snap cap, so there is a lot of room. But
+     * "there is a lot of room" is an argument, and a trace crossing a cell boundary is a test.
+     */
+    const target = road("target", 53.8, -1.58, -1.5);
+    const index = indexSegments([target, road("elsewhere", 51.5, -0.12, -0.1)]);
+
+    // A trace running the length of it, which at 0.02° spans several cells.
+    const result = sampleSegmentsForTrace(trace(53.8, -1.58, -1.5, 12), index, "route-1");
+    expect(result.samples.map((sample) => sample.segmentId)).toContain("target");
+
+    // And a trace sitting right on a cell boundary, where a coarser reach used to do the work.
+    const boundary = sampleSegmentsForTrace(trace(53.8, -1.5601, -1.5599, 6), index, "route-1");
+    expect(boundary.unmatchedTraces).toBe(0);
   });
 
   it("says a trace with no road near it is a coverage gap, not a weak match", () => {
