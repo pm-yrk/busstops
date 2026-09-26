@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Coordinate, VehicleObservation } from "@busstops/contracts";
 import { deterministicUuid } from "@busstops/adapters";
 import {
+  coverageGaps,
   emptySegmentMatchProfile,
   indexSegments,
   sampleSegmentsForTrace,
@@ -151,6 +152,42 @@ describe("what the matching stage can say about itself", () => {
     // Blaming the matcher for a road that was never extracted is how a coverage problem gets
     // mistaken for a threshold problem.
     expect(profile.rejectedByCoverage + profile.rejectedByDistance).toBe(0);
+  });
+
+  it("reports coverage as a map, not as a national total", () => {
+    /*
+     * Index performance and network coverage are different problems and only one of them is
+     * fixed by a finer grid. 77% of traces failing nationally could be an even thinning across
+     * England or a handful of places the extraction never reached, and those call for completely
+     * different work — so the failures are kept per cell rather than summed.
+     *
+     * Here Leeds has a road and Bristol does not.
+     */
+    const index = indexSegments([road("leeds", 53.8, -1.58, -1.5)]);
+    const profile = emptySegmentMatchProfile();
+    for (let run = 0; run < 30; run += 1) {
+      sampleSegmentsForTrace(trace(53.8, -1.56, -1.54), index, null, {}, profile);
+      sampleSegmentsForTrace(trace(51.45, -2.6, -2.58), index, null, {}, profile);
+    }
+
+    const gaps = coverageGaps(profile, { minimumTraces: 10 });
+    expect(gaps.length).toBe(2);
+    // Worst first: Bristol has no road under it at all.
+    expect(gaps[0]!.cell).toBe("51,-3");
+    expect(gaps[0]!.noCandidateShare).toBe(1);
+    expect(gaps[0]!.matchedShare).toBe(0);
+    // Leeds matched, and must not be dragged down by Bristol's failures.
+    expect(gaps[1]!.cell).toBe("53.5,-2");
+    expect(gaps[1]!.matchedShare).toBeGreaterThan(0.9);
+  });
+
+  it("does not call a cell a coverage gap on too few traces", () => {
+    // One unmatched bus in a rural cell is not an extraction gap, and naming it as one would
+    // send the road-network job chasing a field.
+    const index = indexSegments([road("leeds", 53.8, -1.58, -1.5)]);
+    const profile = emptySegmentMatchProfile();
+    sampleSegmentsForTrace(trace(51.45, -2.6, -2.58), index, null, {}, profile);
+    expect(coverageGaps(profile, { minimumTraces: 25 })).toEqual([]);
   });
 
   it("attributes a rejection to the weakest of the three confidence factors", () => {

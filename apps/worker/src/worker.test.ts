@@ -858,6 +858,7 @@ describe("Bus Stops Pro", () => {
           generatedAt: "2026-09-19T12:20:00.000Z",
           windowStart: "2026-09-19T11:55:00.000Z",
           windowEnd: "2026-09-19T12:05:00.000Z",
+          closedAt: "2026-09-19T12:15:00.000Z",
           bucketSeconds: 300,
           latenessGraceSeconds: 600,
           segmentsMeasured: 214,
@@ -896,6 +897,65 @@ describe("Bus Stops Pro", () => {
     expect(byKey.get("active_vehicles")?.window).toContain("12:05");
     expect(byKey.get("active_vehicles")?.window).not.toContain("last 60 minutes");
     expect(byKey.get("active_vehicles")?.freshnessSeconds).toBeGreaterThan(0);
+  });
+
+  it("serves a summary published before closedAt existed, rather than throwing", async () => {
+    /*
+     * The two deployables ship separately, and this record is their wire format. `closedAt` was
+     * added to it after artifacts carrying the older shape were already in the bucket — and the
+     * edge parsed it straight into a Date, so the first Pro request after that deploy answered
+     * 500 with "Invalid time value" and kept doing so until the next batch ran.
+     *
+     * It is derivable from the window end and the grace, which is what the batch itself does, so
+     * it is derived. This fixture is deliberately the *old* shape.
+     */
+    const store = await publishedStore();
+    const artifacts = new ArtifactStore(store);
+    await artifacts.publish({
+      dataset: "intelligence/incidents",
+      version: "v1",
+      records: [],
+      schemaVersion: "1.0.0",
+      minimumRecordCount: 0,
+      allowEmpty: true,
+    });
+    await artifacts.publish({
+      dataset: "intelligence/network-summary",
+      version: "v1",
+      records: [
+        {
+          generatedAt: "2026-09-19T12:20:00.000Z",
+          windowStart: "2026-09-19T11:55:00.000Z",
+          windowEnd: "2026-09-19T12:05:00.000Z",
+          // No closedAt: this is what the previous batch version wrote.
+          bucketSeconds: 300,
+          latenessGraceSeconds: 600,
+          segmentsMeasured: 3,
+          closedBuckets: 9,
+          suppressedBuckets: 6,
+          sampleCount: 120,
+          distinctVehicles: 44,
+          distinctRoutes: 7,
+          medianTraversalSeconds: 51,
+          p90TraversalSeconds: 130,
+          medianSpeedMetresPerSecond: 5.1,
+          meanMatchConfidence: 0.7,
+          coverage: 0.9,
+        },
+      ],
+      schemaVersion: "1.0.0",
+      minimumRecordCount: 1,
+    });
+
+    const response = await worker.fetch(get("/v1/pro/control-tower"), makeEnv(store), ctx);
+    expect(response.status).toBe(200);
+    const parsed = ControlTowerResponseSchema.parse(
+      ((await response.json()) as { data: unknown }).data,
+    );
+    const vehicles = parsed.headline.find((entry) => entry.key === "active_vehicles");
+    expect(vehicles?.value).toBe(44);
+    // Derived: 12:05 plus the 600-second grace is 12:15.
+    expect(vehicles?.window).toContain("settled 12:15");
   });
 
   it("says a figure is unmeasured rather than starved of observations", async () => {

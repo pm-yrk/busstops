@@ -319,6 +319,14 @@ function beginResidency(ledger: ReadLedger, handler = "unnamed"): () => void {
          * the number is carried rather than interpreted here.
          */
         diedReportedBy: served,
+        /*
+         * The path it took, not only where it stopped.
+         *
+         * One phase name is a position; the sequence with its timings is what says whether the
+         * request was already slow before the stage it died in, which is the difference between
+         * "the parse is expensive" and "everything on this isolate was".
+         */
+        diedTrail: (died.trail ?? []).join(" > "),
         ...Object.fromEntries(Object.entries(died.detail ?? {}).map(([k, v]) => [`died_${k}`, v])),
       });
     }

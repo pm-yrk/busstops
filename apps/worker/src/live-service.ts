@@ -319,7 +319,7 @@ export class LiveService {
 
         let normalized: NormalizedFeed;
         if (reused) {
-          mark("siri:cache-hit", { chars: fresh.chars });
+          mark("siri:cache-hit", { chars: fresh.chars, cached: true });
           normalized = fresh;
         } else {
           /*
@@ -331,10 +331,24 @@ export class LiveService {
            * answer this — a Worker's clock does not advance across pure computation — and the
            * distinction is the whole question: waiting costs no CPU, parsing costs nothing else.
            */
-          mark("siri:fetch:begin", { bounded });
+          mark("siri:fetch:begin", { bounded, cached: false, timeoutMs });
+          const fetchStartedAt = Date.now();
           const xml = await client.coalesce(cacheKey, () =>
             client.fetchText(url, { timeoutMs, ...(bounded ? { maxAttempts: 1 } : {}) }),
           );
+          /*
+           * A stamp of its own between the socket and the parser.
+           *
+           * Without it, `siri:parse:begin` was the first evidence the fetch had returned at all,
+           * so "died on the socket" and "died in the gap after it" were the same reading. This
+           * also carries the fetch's own duration into the breadcrumb, which is one of the
+           * correlates a pattern across several deaths needs and which a killed request could
+           * never report from its own ledger.
+           */
+          mark("siri:fetch:done", {
+            chars: xml.length,
+            elapsedMs: Date.now() - fetchStartedAt,
+          });
           mark("siri:parse:begin", { chars: xml.length });
           const parsed = normalizeSiriVm(xml, {
             retrievedAt: now.toISOString(),

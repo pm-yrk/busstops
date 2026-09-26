@@ -151,7 +151,7 @@ const PAGES = [
  * feature on screen, converts its position back to the page, and clicks there — which is what a
  * person does, and the only way the map's own click handler can be exercised.
  */
-async function clickPaintedStop(page) {
+async function clickPaintedStop(page, sink) {
   const point = await page.evaluate(() => {
     const map = globalThis.__busstopsMap;
     if (!map) return null;
@@ -162,7 +162,13 @@ async function clickPaintedStop(page) {
     const box = map.getCanvas().getBoundingClientRect();
     return { x: box.left + projected.x, y: box.top + projected.y };
   });
-  if (!point) throw new Error("no stop was painted, so none could be clicked");
+  if (!point) {
+    throw new Error(
+      `no stop was painted, so none could be clicked — ${describeVehicleLayers(
+        await vehicleLayerState(page),
+      )}${describeConsole(sink)}`,
+    );
+  }
   await page.mouse.click(point.x, point.y);
 }
 
@@ -188,7 +194,91 @@ async function clickPaintedStop(page) {
  * "what would this click hit", and a bus under something else is skipped for the next one rather
  * than clicked and reported as a broken panel.
  */
-async function clickPaintedBus(page) {
+/**
+ * Everything the renderer can be asked about the vehicle layers, in one call.
+ *
+ * "No bus was painted" was one message for several unrelated failures: no map object at all, a
+ * source with no features in it, features in the source that no layer drew, an icon the style
+ * never registered, or a zoom above the layer's `maxzoom`. Those have nothing in common but the
+ * symptom, and the sweep reported the symptom — so a run that failed said only that something
+ * about buses was wrong.
+ *
+ * This is deliberately read-only and returns numbers, so the failure message can name which of
+ * them it was. `querySourceFeatures` asks what the data has; `queryRenderedFeatures` asks what
+ * the renderer drew; the gap between the two is where an icon or a filter is at fault.
+ */
+/**
+ * What the browser complained about, attached to the failure it probably explains.
+ *
+ * The sweep already records console errors and reports them as their own check, which is a
+ * different line in a log of several hundred. A missing sprite or a rejected tile request is the
+ * likely cause of a layer drawing nothing, and the two being far apart in the output is how a
+ * cause gets read as an unrelated warning.
+ */
+function describeConsole(sink) {
+  const errors = sink?.consoleErrors ?? [];
+  const bad = sink?.failedRequests ?? [];
+  if (errors.length === 0 && bad.length === 0) return "; console clean";
+  return (
+    `; console: ${errors.slice(0, 2).join(" | ") || "clean"}` +
+    (bad.length > 0 ? `; failed requests: ${bad.slice(0, 2).join(", ")}` : "")
+  );
+}
+
+async function vehicleLayerState(page) {
+  return page.evaluate(() => {
+    const map = globalThis.__busstopsMap;
+    if (!map) return { map: false };
+    const rendered = (layers) => {
+      try {
+        return map.queryRenderedFeatures({ layers }).length;
+      } catch {
+        // A layer that does not exist throws rather than returning nothing, and "the layer is
+        // missing" is itself an answer worth keeping apart from "the layer drew nothing".
+        return -1;
+      }
+    };
+    let sourceFeatures = -1;
+    let clusters = 0;
+    try {
+      const features = map.querySourceFeatures("busstops-vehicles");
+      sourceFeatures = features.length;
+      clusters = features.filter((feature) => feature.properties?.point_count !== undefined).length;
+    } catch {
+      /* left at -1: the source itself is missing */
+    }
+    return {
+      map: true,
+      zoom: Number(map.getZoom().toFixed(2)),
+      styleLoaded: map.isStyleLoaded(),
+      sourceFeatures,
+      clusters,
+      renderedBuses: rendered(["vehicle-buses"]),
+      renderedPips: rendered(["vehicle-pips"]),
+      renderedClusters: rendered(["vehicle-clusters"]),
+      // The icons the style actually holds. A symbol layer whose `icon-image` is not in this
+      // list draws nothing at all and reports no error, which is how `vehicle-pips` was blank
+      // on the deployment once before.
+      images: typeof map.listImages === "function" ? map.listImages().sort() : [],
+      layers: (map.getStyle()?.layers ?? [])
+        .map((layer) => layer.id)
+        .filter((id) => id.startsWith("vehicle")),
+    };
+  });
+}
+
+function describeVehicleLayers(state) {
+  if (!state?.map) return "the map object was never attached to the page";
+  return (
+    `zoom ${state.zoom}, style ${state.styleLoaded ? "loaded" : "NOT loaded"}; ` +
+    `source held ${state.sourceFeatures} feature(s) of which ${state.clusters} cluster(s); ` +
+    `rendered buses=${state.renderedBuses} pips=${state.renderedPips} ` +
+    `clusters=${state.renderedClusters}; vehicle layers [${state.layers.join(", ") || "none"}]; ` +
+    `icons [${state.images.join(", ") || "none"}]`
+  );
+}
+
+async function clickPaintedBus(page, sink) {
   const point = await page.evaluate(() => {
     const map = globalThis.__busstopsMap;
     if (!map) return null;
@@ -210,7 +300,21 @@ async function clickPaintedBus(page) {
     return { blocked: covered, of: features.length };
   });
 
-  if (!point) throw new Error("no bus was painted, so none could be clicked");
+  if (!point) {
+    /*
+     * Ask the renderer what it actually had before calling this a product defect.
+     *
+     * We have had exactly this finding be false once already, from a stale preview server, and
+     * the message gave no way to tell. Now it says whether the data arrived, whether a layer
+     * drew it, and whether the icon it needs is registered — three different faults that were
+     * one sentence.
+     */
+    throw new Error(
+      `no bus was painted, so none could be clicked — ${describeVehicleLayers(
+        await vehicleLayerState(page),
+      )}${describeConsole(sink)}`,
+    );
+  }
   if (point.x === undefined) {
     throw new Error(
       `all ${point.of} painted bus(es) were under something else, so none could be clicked`,
@@ -914,7 +1018,7 @@ for (const size of WIDTHS) {
           let clickFailed = null;
           try {
             // Stops are painted by the renderer now, so the click goes to where one was drawn.
-            await clickPaintedStop(page);
+            await clickPaintedStop(page, sink);
           } catch (error) {
             clickFailed = error instanceof Error ? error.message.split("\n")[0] : String(error);
           }
@@ -1054,7 +1158,7 @@ for (const size of WIDTHS) {
 
           let busClickFailed = null;
           try {
-            await clickPaintedBus(page);
+            await clickPaintedBus(page, sink);
           } catch (error) {
             busClickFailed = error instanceof Error ? error.message.split("\n")[0] : String(error);
           }

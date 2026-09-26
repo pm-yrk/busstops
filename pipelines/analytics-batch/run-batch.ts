@@ -8,7 +8,7 @@
  */
 
 import { writeFileSync } from "node:fs";
-import type { VehicleObservation } from "@busstops/contracts";
+import type { Operator, ServiceRoute, VehicleObservation } from "@busstops/contracts";
 import { ArtifactStore, r2StoreFromEnv } from "@busstops/pipeline-core";
 import { classify } from "@busstops/governor";
 import { runAnalyticsBatch } from "./src/run.js";
@@ -17,6 +17,7 @@ import type { SegmentIntervalBucket } from "./src/aggregates.js";
 import { bucketKey } from "./src/aggregates.js";
 import { INTELLIGENCE_DATASETS, rollbackIntelligence } from "./src/publish.js";
 import { readClosedWindow, SETTLE_SECONDS } from "./src/closed-window.js";
+import { joinObservationsToRoutes } from "./src/route-join.js";
 
 const OBSERVATION_DATASET = "intelligence/observations";
 const SEGMENT_DATASET = "network/segments";
@@ -134,12 +135,51 @@ async function main(): Promise<number> {
     trace.sort((a, b) => a.observedAt.localeCompare(b.observedAt));
   }
 
+  /*
+   * The route each vehicle was working, resolved against the published network.
+   *
+   * This was `new Map()` — a literal empty map passed into the run — so every segment sample was
+   * built with `routeId: null` and run 69's national summary reported `distinctRoutes: 0` over
+   * 247 real vehicles. Zero was not a measurement; it was the only value the code could produce.
+   *
+   * Both national datasets are small (22 operators, ~13,000 services) and this is a Node process
+   * with no isolate ceiling, so reading them whole is the right shape here — unlike at the edge,
+   * where the same read would be a memory fault.
+   */
+  const operators = await artifacts.readCurrent<Operator>("network/operators");
+  const services = await artifacts.readCurrent<ServiceRoute>("network/services");
+  const join = joinObservationsToRoutes({
+    observations: observations.records,
+    operators: operators.records,
+    services: services.records,
+  });
+  report.routeJoin = {
+    ...join.counts,
+    operatorsAvailable: operators.records.length,
+    servicesAvailable: services.records.length,
+  };
+  console.log(
+    `Route join: ${join.counts.vehiclesMappedToRouteId} of ${join.counts.vehicles} vehicle(s) ` +
+      `mapped to a published route (${join.counts.vehiclesWithRouteRef} carried a line, ` +
+      `${join.counts.vehiclesWithOperatorRef} an operator); ${join.counts.distinctRouteIds} ` +
+      `distinct route id(s) over ${join.counts.distinctRouteNames} distinct line name(s); ` +
+      `unmapped: ${join.counts.unmappedOperatorRefs} operator code(s) ` +
+      `[${join.counts.sampleUnmappedOperators.join(", ") || "none"}], ` +
+      `${join.counts.unmappedLineRefs} line(s) ` +
+      `[${join.counts.sampleUnmappedLines.join(", ") || "none"}]; ` +
+      `against ${operators.records.length} operator(s) and ${services.records.length} service(s)`,
+  );
+
   const utilization = Number(process.env.BUDGET_UTILIZATION ?? "0");
   const result = await runAnalyticsBatch(
     {
       runId: startedAt.toISOString(),
       traces,
-      routeByVehicle: new Map(),
+      routeByVehicle: join.routeByVehicle,
+      routeJoin: {
+        distinctRouteNames: join.counts.distinctRouteNames,
+        vehiclesMappedToRouteId: join.counts.vehiclesMappedToRouteId,
+      },
       segments: segments.records,
       existingBuckets: new Map(
         existing.records.map((bucket) => [

@@ -5,6 +5,7 @@ export * from "./rollup.js";
 export * from "./inventory.js";
 export * from "./enrichment.js";
 export * from "./incidents.js";
+export * from "./route-join.js";
 export * from "./summary.js";
 export * from "./publish.js";
 export * from "./run.js";

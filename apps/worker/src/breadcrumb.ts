@@ -49,8 +49,22 @@ export interface Breadcrumb {
   phase: string;
   /** Milliseconds from the handler starting to that stage being stamped. */
   atMs: number;
-  /** Whatever the stage wanted to record: bytes in hand, records kept, a cache outcome. */
-  detail?: Record<string, number | string | boolean>;
+  /**
+   * Everything every stage recorded, accumulated rather than replaced.
+   *
+   * This used to hold only the last stage's detail, which threw away the correlates at exactly
+   * the moment they mattered: run 69's recovered death reported `chars=674405` from
+   * `siri:parse:begin` and nothing else, so whether the isolate was cold, how long the fetch had
+   * taken, and whether the read came from cache were all lost — and those are the fields that
+   * turn one observation into a pattern across several.
+   *
+   * Merged, so a request that dies in the parse still carries what the fetch and the reads
+   * before it recorded. Keys are namespaced by their stage, so two stages recording `chars`
+   * cannot overwrite each other.
+   */
+  detail: Record<string, number | string | boolean>;
+  /** Every phase this request reached, in order, so the path is visible and not just its end. */
+  trail: string[];
 }
 
 let current: Breadcrumb | null = null;
@@ -68,15 +82,35 @@ let unfinished: Breadcrumb | null = null;
 export function beginBreadcrumb(handler: string, request: number): void {
   if (current !== null) unfinished = current;
   startedAt = Date.now();
-  current = { request, handler, phase: "start", atMs: 0 };
+  current = { request, handler, phase: "start", atMs: 0, detail: {}, trail: [] };
 }
 
-/** Stamp progress. Cheap on purpose: one object, no allocation per field. */
+/**
+ * Stamp progress, keeping what earlier stages recorded.
+ *
+ * The phase is the position — the last place reached — and the detail is cumulative. A death is
+ * only useful across several observations, and comparing them needs the same fields present
+ * every time regardless of which phase the request happened to stop in.
+ *
+ * Keys are prefixed with the stage that wrote them, so `fetch.chars` and `parse.chars` are two
+ * facts rather than one overwriting the other. The trail is capped: a handler that marked in a
+ * loop would otherwise grow an unbounded array in module scope, which on a 128 MiB isolate is
+ * the sort of thing this instrument exists to investigate rather than to cause.
+ */
+const MAX_TRAIL = 24;
+
 export function mark(phase: string, detail?: Record<string, number | string | boolean>): void {
   if (current === null) return;
   current.phase = phase;
   current.atMs = Date.now() - startedAt;
-  if (detail) current.detail = detail;
+  if (current.trail.length < MAX_TRAIL) current.trail.push(`${phase}@${current.atMs}`);
+  if (detail) {
+    // Namespaced by the stage's own first token, so `siri:parse:begin` writes `parse.chars`.
+    const stage = phase.split(":")[1] ?? phase;
+    for (const [key, value] of Object.entries(detail)) {
+      current.detail[`${stage}.${key}`] = value;
+    }
+  }
 }
 
 /** The handler reached its response, so this request is not the one that died. */

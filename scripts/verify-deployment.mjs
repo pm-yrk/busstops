@@ -77,7 +77,9 @@ function describeDeath(artifact) {
   return (
     ` !! a previous request DID NOT FINISH: req#${artifact.diedRequest} ${artifact.diedHandler}` +
     ` last reached "${artifact.diedPhase}" at ${artifact.diedAtMs}ms` +
-    `, reported by req#${artifact.diedReportedBy}${extra ? ` (${extra})` : ""}`
+    `, reported by req#${artifact.diedReportedBy}${extra ? ` (${extra})` : ""}` +
+    // The path, so several recovered deaths can be compared as sequences rather than endpoints.
+    (artifact.diedTrail ? `; trail: ${artifact.diedTrail}` : "")
   );
 }
 
@@ -1703,12 +1705,28 @@ await check("Pro is reachable with no credential and states its data mode", asyn
     `; ${withValue.length} of ${headline.length} headline metric(s) carry a figure ` +
     `over ${denominator} observation(s)` +
     (windows.length > 0 ? `; measured over ${windows.join(" / ")}` : "") +
+    // Named for what it is. `freshnessSeconds` is the age of the *measurement* — now minus the
+    // window's end — and calling it "closed" was the run-69 wording bug: a window ending 14:25
+    // with a 600s grace closed at 14:35, ten minutes after the moment this number measures from.
     (oldestFreshness > 0
-      ? `; oldest contributing window closed ${Math.round(oldestFreshness / 60)} minute(s) ago`
+      ? `; oldest figure measured ${Math.round(oldestFreshness / 60)} minute(s) ago`
       : "") +
     // Named rather than counted: which figures are populated is the question, and "3 of 8" hides
     // whether the three are real measurements or the incident count three times over.
     (withValue.length > 0 ? `; populated: ${withValue.map((m) => m.key).join(", ")}` : "") +
+    /*
+     * And the pipeline's own age, which the summary now states separately.
+     *
+     * A measurement two hours old with a batch that ran three minutes ago is a collection gap; a
+     * measurement twenty minutes old with a batch that ran two hours ago is a stopped batch. One
+     * number cannot tell those apart, and run 69 reported one number.
+     */
+    (() => {
+      const line = (body?.data?.intelligenceSummary ?? []).find((entry) =>
+        /the batch that published it ran/.test(entry ?? ""),
+      );
+      return line ? `; ${line}` : "";
+    })() +
     (mode === "live" && withValue.length === 0
       ? " — live, and not yet enough observations to publish a single figure"
       : "")

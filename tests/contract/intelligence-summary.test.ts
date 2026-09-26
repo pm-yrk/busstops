@@ -5,8 +5,10 @@ import {
   INTELLIGENCE_SUMMARY_DATASET,
   ProService,
   resolveScope,
+  closureAgeSeconds,
   describeMeasuredWindow,
-  measuredFreshnessSeconds,
+  measurementAgeSeconds,
+  publicationAgeSeconds,
   type NetworkSummary,
 } from "../../apps/worker/src/pro-service.js";
 
@@ -89,23 +91,67 @@ describe("the summary the batch publishes is the summary the edge reads", () => 
     expect(segments?.value).toBe(2);
   });
 
-  it("dates every figure from the window, not from the batch that wrote it", () => {
+  it("keeps the six timestamps of a figure distinct", () => {
     /*
-     * These are fourteen minutes apart in the fixture, and it is the *window* that a reader is
-     * entitled to. A metric labelled with the batch's own timestamp would be three minutes old
-     * and describe measurements seventeen minutes old.
+     * Run 69 reported a five-minute window ending 14:25 as "closed 129 minutes ago", on a record
+     * the batch had written at 16:33. Three different clocks under one word, and the one named
+     * was not the one measured: a window ending 14:25 with a 600-second grace closes at 14:35,
+     * not 129 minutes before 16:34.
+     *
+     * So every boundary is pinned here against one worked example, in order.
      */
     const summary = buildNetworkSummary(
       { buckets: [closedBucket], samples: [sample], coverage: 0.9 },
+      // The batch runs at 12:16 — later than the window it is summarising, as it must be.
       new Date("2026-09-19T12:16:00.000Z"),
     );
-    const asEdgeReadsIt = summary as unknown as NetworkSummary;
-    const now = new Date("2026-09-19T12:14:00.000Z");
 
-    expect(describeMeasuredWindow(asEdgeReadsIt, now)).toBe(
-      "5-minute measurement windows ending 12:00 UTC, closed 14 minutes ago",
+    //  1. window start — the first instant any closed bucket covers
+    expect(summary?.windowStart).toBe("2026-09-19T11:55:00.000Z");
+    //  2. window end — the last instant covered, five minutes later
+    expect(summary?.windowEnd).toBe("2026-09-19T12:00:00.000Z");
+    //  3. lateness grace — 600 seconds, unchanged
+    expect(summary?.latenessGraceSeconds).toBe(600);
+    //  4. closedAt — window end plus the grace, so 12:10 and not 12:00
+    expect(summary?.closedAt).toBe("2026-09-19T12:10:00.000Z");
+    //  5. publication — when the batch wrote the record
+    expect(summary?.generatedAt).toBe("2026-09-19T12:16:00.000Z");
+
+    const asEdgeReadsIt = summary as unknown as NetworkSummary;
+    const now = new Date("2026-09-19T12:20:00.000Z");
+
+    // The three ages, each measured from its own boundary and never from another's.
+    expect(measurementAgeSeconds(asEdgeReadsIt, now), "now − windowEnd").toBe(1200);
+    expect(closureAgeSeconds(asEdgeReadsIt, now), "now − closedAt").toBe(600);
+    expect(publicationAgeSeconds(asEdgeReadsIt, now), "now − generatedAt").toBe(240);
+    // Closure age is always the measurement age minus the grace. That is the identity the old
+    // wording broke by naming one and computing the other.
+    expect(measurementAgeSeconds(asEdgeReadsIt, now) - closureAgeSeconds(asEdgeReadsIt, now)).toBe(
+      asEdgeReadsIt.latenessGraceSeconds,
     );
-    expect(measuredFreshnessSeconds(asEdgeReadsIt, now)).toBe(840);
+
+    //  6. what the UI says — the period, both boundaries, and the age, separately
+    expect(describeMeasuredWindow(asEdgeReadsIt, now)).toBe(
+      "5-minute window ending 12:00 UTC, settled 12:10; measured 20 minutes ago",
+    );
+  });
+
+  it("never dates a figure from the batch that wrote it", () => {
+    /*
+     * The failure this guards is the plausible one: a metric labelled with the record's age
+     * rather than the measurement's. In run 69 that would have read as four minutes old while
+     * describing buses from two hours earlier.
+     */
+    const summary = buildNetworkSummary(
+      { buckets: [closedBucket], samples: [sample], coverage: 0.9 },
+      new Date("2026-09-19T14:30:00.000Z"),
+    ) as unknown as NetworkSummary;
+    const now = new Date("2026-09-19T14:33:00.000Z");
+
+    expect(publicationAgeSeconds(summary, now)).toBe(180);
+    // The measurement is two and a half hours old and must say so, whatever the record's age.
+    expect(measurementAgeSeconds(summary, now)).toBe(9180);
+    expect(describeMeasuredWindow(summary, now)).toContain("measured 153 minutes ago");
   });
 
   it("publishes no summary, and says so, when no window has closed", async () => {

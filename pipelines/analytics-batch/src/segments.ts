@@ -96,7 +96,24 @@ export interface SegmentMatchProfile {
   rejectedConfidenceTotal: number;
   accepted: number;
   matcher: MapMatchProfile;
+  /**
+   * Match outcome by coarse geographic cell, so coverage can be read as a map rather than a
+   * total.
+   *
+   * Index performance and network coverage are different problems and run 69 reported one number
+   * for both. A finer grid makes the search cheaper everywhere; it does not put a road under a
+   * bus that has none. 77% of traces failing nationally could be an even thinning across England
+   * or three cities with no extraction at all, and those call for completely different work —
+   * the first for a better extraction everywhere, the second for a re-run over the places that
+   * were missed.
+   *
+   * Half a degree is roughly a county, which is the scale an extraction gap actually occurs at.
+   */
+  byCell: Map<string, { traces: number; noCandidates: number; accepted: number }>;
 }
+
+/** Roughly a county: fine enough to name a gap, coarse enough that the report stays readable. */
+const COVERAGE_CELL_DEGREES = 0.5;
 
 export function emptySegmentMatchProfile(): SegmentMatchProfile {
   return {
@@ -113,7 +130,31 @@ export function emptySegmentMatchProfile(): SegmentMatchProfile {
     rejectedConfidenceTotal: 0,
     accepted: 0,
     matcher: emptyMapMatchProfile(),
+    byCell: new Map(),
   };
+}
+
+/**
+ * Where the road network is thin, worst first.
+ *
+ * Reported separately from the performance counters because they answer different questions and
+ * only one of them is fixed by a better index. A cell is named only once it has enough traces to
+ * mean something — a single unmatched bus in a rural cell is not a coverage gap.
+ */
+export function coverageGaps(
+  profile: SegmentMatchProfile,
+  { minimumTraces = 25, limit = 8 } = {},
+): Array<{ cell: string; traces: number; matchedShare: number; noCandidateShare: number }> {
+  return [...profile.byCell.entries()]
+    .filter(([, counts]) => counts.traces >= minimumTraces)
+    .map(([cell, counts]) => ({
+      cell,
+      traces: counts.traces,
+      matchedShare: Number((counts.accepted / counts.traces).toFixed(3)),
+      noCandidateShare: Number((counts.noCandidates / counts.traces).toFixed(3)),
+    }))
+    .sort((a, b) => a.matchedShare - b.matchedShare || b.traces - a.traces)
+    .slice(0, limit);
 }
 
 /** The profile as a report reads it, with the derived figures the raw counters imply. */
@@ -309,6 +350,22 @@ export function sampleSegmentsForTrace(
         id: segment.id,
         path: segment.path,
       }));
+  /*
+   * The cell is taken from the trace's first point, not from every point: a trace is one bus in
+   * one place for the purposes of "was there a road here", and spreading it across cells would
+   * count a journey crossing a boundary as two half-failures.
+   */
+  const cell = `${Math.floor(trace[0]!.coordinate.lat / COVERAGE_CELL_DEGREES) * COVERAGE_CELL_DEGREES},${
+    Math.floor(trace[0]!.coordinate.lon / COVERAGE_CELL_DEGREES) * COVERAGE_CELL_DEGREES
+  }`;
+  const cellCounts = profile
+    ? (profile.byCell.get(cell) ?? { traces: 0, noCandidates: 0, accepted: 0 })
+    : null;
+  if (profile && cellCounts) {
+    cellCounts.traces += 1;
+    profile.byCell.set(cell, cellCounts);
+  }
+
   if (profile) {
     profile.traces += 1;
     profile.candidateSearchMs += performance.now() - searchStartedAt;
@@ -321,6 +378,7 @@ export function sampleSegmentsForTrace(
   if (geometries.length === 0) {
     result.unmatchedTraces += 1;
     if (profile) profile.tracesWithNoCandidates += 1;
+    if (cellCounts) cellCounts.noCandidates += 1;
     return result;
   }
 
@@ -362,6 +420,7 @@ export function sampleSegmentsForTrace(
     return result;
   }
   if (profile) profile.accepted += 1;
+  if (cellCounts) cellCounts.accepted += 1;
 
   // Group consecutive points that decoded onto the same segment; each run is one traversal.
   let runStart = 0;

@@ -19,6 +19,28 @@ export const VehicleObservationSchema = BaseEntitySchema.extend({
   bearingDegrees: z.number().min(0).max(359).optional(),
   sourceSpeedMetresPerSecond: z.number().nonnegative().optional(),
   observedAt: IsoInstantSchema,
+
+  /*
+   * What the feed said this vehicle was working, as it said it.
+   *
+   * These were extracted by the SIRI adapter and then thrown away one line later: the collector
+   * returned the observations and discarded the journey context they came with, so every
+   * published observation reached the analytics batch with no route identity on it and the
+   * national summary reported `distinctRoutes: 0` over hundreds of real observations. The
+   * identity belongs on the observation — it is what the publisher asserted about that vehicle
+   * at that moment — rather than in a side channel that does not survive being written to R2.
+   *
+   * Public route and operator identifiers only. The vehicle's own code is still never
+   * republished; `vehicleRef` remains salted and rotating, and nothing here identifies a person.
+   * All three are optional because a publisher that gives none is a real and common case, and an
+   * observation with no line is still a position.
+   */
+  /** The publisher's line identifier, e.g. "FLDS:36". Matched against, never shown. */
+  lineRef: z.string().min(1).optional(),
+  /** The line as a passenger would read it, e.g. "36", "X1". */
+  publishedLineName: z.string().min(1).optional(),
+  /** The operator's national code, e.g. "FLDS". Resolved against the published operators. */
+  operatorRef: z.string().min(1).optional(),
 });
 export type VehicleObservation = z.infer<typeof VehicleObservationSchema>;
 

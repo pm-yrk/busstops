@@ -71,6 +71,8 @@ export async function publishIntelligence(
     incidents: readonly TrackedIncident[];
     /** The samples the buckets were built from, for counts a bucket cannot carry. */
     samples?: readonly SegmentSample[];
+    /** What the observation→route join managed, carried onto the summary for Pro to qualify. */
+    routeJoin?: { distinctRouteNames: number; vehiclesMappedToRouteId: number };
   },
   options: IntelligencePublishOptions,
 ): Promise<IntelligencePublishResult> {
@@ -177,7 +179,12 @@ export async function publishIntelligence(
    * "degrade freshness, never correctness" rule the rest of this file follows.
    */
   const summary = buildNetworkSummary(
-    { buckets: input.buckets, samples: input.samples ?? [], coverage: options.coverage },
+    {
+      buckets: input.buckets,
+      samples: input.samples ?? [],
+      coverage: options.coverage,
+      ...(input.routeJoin === undefined ? {} : { routeJoin: input.routeJoin }),
+    },
     now(),
   );
   if (summary !== null) {

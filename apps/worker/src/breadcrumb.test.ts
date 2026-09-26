@@ -34,7 +34,60 @@ describe("the breadcrumb a dead request leaves behind", () => {
     const died = takeUnfinished();
     expect(died?.request).toBe(7);
     expect(died?.phase).toBe("siri:parse:begin");
-    expect(died?.detail?.chars).toBe(461_000);
+    expect(died?.detail?.["parse.chars"]).toBe(461_000);
+    /*
+     * And what the stages before it recorded, which used to be discarded.
+     *
+     * `mark` replaced the detail rather than merging it, so run 69's one recovered death
+     * reported the parse's byte count and nothing else — not whether the isolate was cold, not
+     * how long the fetch took, not whether the read came from cache. Those are precisely the
+     * fields that turn one observation into a pattern across several, which is the bar set for
+     * acting on this at all.
+     */
+    expect(died?.detail?.["fetch.bounded"]).toBe(true);
+  });
+
+  it("namespaces each stage's fields, so two stages cannot overwrite each other", () => {
+    // Both the fetch and the parse record a byte count, and they are two facts about a request,
+    // not one fact recorded twice.
+    beginBreadcrumb("route-detail", 21);
+    mark("siri:fetch:done", { chars: 674_405, elapsedMs: 512 });
+    mark("siri:parse:begin", { chars: 674_405 });
+    beginBreadcrumb("route-detail", 22);
+
+    const died = takeUnfinished();
+    expect(died?.detail?.["fetch.chars"]).toBe(674_405);
+    expect(died?.detail?.["fetch.elapsedMs"]).toBe(512);
+    expect(died?.detail?.["parse.chars"]).toBe(674_405);
+  });
+
+  it("carries the path it took, not only where it stopped", () => {
+    /*
+     * One phase name is a position. The sequence says whether the request was already slow
+     * before the stage it died in — which separates "the parse is expensive" from "everything on
+     * this isolate was", and those have different fixes.
+     */
+    beginBreadcrumb("route-detail", 31);
+    mark("reads:begin", { cold: false });
+    mark("statics:done", { objects: 6 });
+    mark("siri:fetch:begin", { bounded: true });
+    beginBreadcrumb("route-detail", 32);
+
+    const trail = takeUnfinished()?.trail ?? [];
+    expect(trail.map((entry) => entry.split("@")[0])).toEqual([
+      "reads:begin",
+      "statics:done",
+      "siri:fetch:begin",
+    ]);
+  });
+
+  it("bounds the trail, so a handler marking in a loop cannot grow module scope without end", () => {
+    // This instrument runs in a 128 MiB isolate and exists to investigate resource exhaustion.
+    // An unbounded array in module scope would be the instrument causing the fault it hunts.
+    beginBreadcrumb("map", 41);
+    for (let step = 0; step < 500; step += 1) mark(`stage:${step}`);
+    beginBreadcrumb("map", 42);
+    expect(takeUnfinished()!.trail.length).toBeLessThanOrEqual(24);
   });
 
   it("distinguishes dying on the socket from dying in the parse", () => {
@@ -58,6 +111,6 @@ describe("the breadcrumb a dead request leaves behind", () => {
     beginBreadcrumb("map", 1);
     mark("reads:begin", { cold: true, residentChars: 0 });
     beginBreadcrumb("map", 2);
-    expect(takeUnfinished()?.detail?.cold).toBe(true);
+    expect(takeUnfinished()?.detail?.["begin.cold"]).toBe(true);
   });
 });

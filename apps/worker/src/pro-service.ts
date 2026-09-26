@@ -49,9 +49,13 @@ export const INTELLIGENCE_SUMMARY_DATASET = "intelligence/network-summary";
  * on both sides and asserted by a contract test.
  */
 export interface NetworkSummary {
+  /** When the batch wrote this record. Not when anything in it was measured. */
   generatedAt: string;
   windowStart: string;
+  /** The last instant the figures describe. */
   windowEnd: string;
+  /** When the newest bucket became immutable: `windowEnd` plus the lateness grace. */
+  closedAt: string;
   bucketSeconds: number;
   latenessGraceSeconds: number;
   segmentsMeasured: number;
@@ -60,6 +64,9 @@ export interface NetworkSummary {
   sampleCount: number;
   distinctVehicles: number;
   distinctRoutes: number;
+  /** Line names seen, resolved or not. Optional: added after records were already published. */
+  distinctRouteNames?: number;
+  vehiclesMappedToRoute?: number;
   medianTraversalSeconds: number | null;
   p90TraversalSeconds: number | null;
   medianSpeedMetresPerSecond: number | null;
@@ -68,30 +75,89 @@ export interface NetworkSummary {
 }
 
 /**
- * How the window is described to a reader, in the window's own terms.
+ * Three clocks, three names, and never one label for all of them.
  *
- * Pro used to label every live figure "last 60 minutes", which was the scope the reader had
- * asked for and not the period the number was measured over. A segment metric is computed from a
- * five-minute bucket that closes ten minutes after it ends, so the newest figure available is
- * always at least a quarter of an hour old — and saying "last 60 minutes" over it claims a
- * currency the pipeline cannot provide. This says what was actually measured and when it ended.
+ * A figure from this pipeline has three distinct ages and the first version of this file printed
+ * one number under the word for another. Run 69 published a five-minute window ending 14:25 with
+ * a 600-second grace, written by a batch at 16:33, and the verifier reported "closed 129 minutes
+ * ago" — which is the age of the window's *end*, described with the word for its *closure*, on a
+ * record whose own age was different again. All three are useful and none substitutes for
+ * another:
+ *
+ *  - **measurement age** — how old the thing being described is (`now − windowEnd`). This is what
+ *    a reader looking at a number wants: the buses were doing this two hours ago.
+ *  - **closure age** — how long the figure has been immutable (`now − closedAt`). This is what
+ *    says whether it can still be revised, and it is always the measurement age minus the grace.
+ *  - **publication age** — how long ago the batch wrote the record (`now − generatedAt`). This is
+ *    the pipeline's own health: a small measurement age with a large publication age is
+ *    impossible, and a large one of each means collection has stopped.
+ *
+ * `windowEnd` is the last instant covered. `closedAt` is `windowEnd` plus the grace. They are ten
+ * minutes apart at the current settings and were being reported as the same moment.
+ */
+/**
+ * A summary record as the edge can safely use it, whatever version of the batch wrote it.
+ *
+ * The two sides deploy independently. `closedAt` was added to the record after artifacts had
+ * already been published without it, and the edge read it straight into `new Date(...)` — so the
+ * first Pro request after this deploy would have thrown "Invalid time value" and answered 500 on
+ * every control-tower call until the next batch ran. A field added to a wire format is a field
+ * that will be missing from something already in the bucket.
+ *
+ * `closedAt` is derivable, so it is derived rather than demanded: window end plus the grace is
+ * exactly what the batch computes. A record missing something that cannot be derived is rejected
+ * instead, because a figure with no window is not a figure.
+ */
+export function normaliseSummary(record: Partial<NetworkSummary> | null): NetworkSummary | null {
+  if (!record) return null;
+  const windowEnd = record.windowEnd;
+  const grace = record.latenessGraceSeconds;
+  if (
+    typeof windowEnd !== "string" ||
+    !Number.isFinite(Date.parse(windowEnd)) ||
+    typeof record.windowStart !== "string" ||
+    typeof record.generatedAt !== "string" ||
+    typeof grace !== "number"
+  ) {
+    return null;
+  }
+  const closedAt =
+    typeof record.closedAt === "string" && Number.isFinite(Date.parse(record.closedAt))
+      ? record.closedAt
+      : new Date(Date.parse(windowEnd) + grace * 1000).toISOString();
+  return { ...(record as NetworkSummary), closedAt };
+}
+
+export function measurementAgeSeconds(summary: NetworkSummary, now: Date): number {
+  return Math.max(0, (now.getTime() - Date.parse(summary.windowEnd)) / 1000);
+}
+
+/** How long the newest bucket has been immutable. Measurement age minus the lateness grace. */
+export function closureAgeSeconds(summary: NetworkSummary, now: Date): number {
+  return Math.max(0, (now.getTime() - Date.parse(summary.closedAt)) / 1000);
+}
+
+/** How long ago the batch wrote this record. The pipeline's age, not the measurement's. */
+export function publicationAgeSeconds(summary: NetworkSummary, now: Date): number {
+  return Math.max(0, (now.getTime() - Date.parse(summary.generatedAt)) / 1000);
+}
+
+/**
+ * How the window is described on a metric, in the window's own terms.
+ *
+ * Pro used to label every live figure "last 60 minutes", which was the scope the reader had asked
+ * for and not the period the number was measured over. This names the period, both of its
+ * boundaries, and — separately — how old it is, so no single phrase has to carry two clocks.
  */
 export function describeMeasuredWindow(summary: NetworkSummary, now: Date): string {
   const minutes = Math.round(summary.bucketSeconds / 60);
-  const endedMinutesAgo = Math.max(
-    0,
-    Math.round((now.getTime() - Date.parse(summary.windowEnd)) / 60_000),
-  );
   const ended = new Date(summary.windowEnd).toISOString().slice(11, 16);
+  const settled = new Date(summary.closedAt).toISOString().slice(11, 16);
+  const ageMinutes = Math.round(measurementAgeSeconds(summary, now) / 60);
   return (
-    `${minutes}-minute measurement windows ending ${ended} UTC` +
-    `, ${endedMinutesAgo === 0 ? "just closed" : `closed ${endedMinutesAgo} minutes ago`}`
+    `${minutes}-minute window ending ${ended} UTC, settled ${settled}` +
+    `; measured ${ageMinutes === 0 ? "just now" : `${ageMinutes} minutes ago`}`
   );
-}
-
-/** Seconds since the newest measured window ended. Never negative, never the batch's own age. */
-export function measuredFreshnessSeconds(summary: NetworkSummary, now: Date): number {
-  return Math.max(0, (now.getTime() - Date.parse(summary.windowEnd)) / 1000);
 }
 
 /** Below this, a metric is published as suppressed with its reason rather than as a figure. */
@@ -240,12 +306,16 @@ export class ProService {
        * reason the summary exists at all.
        */
       const summary = await artifacts
-        .readCurrent<NetworkSummary>(INTELLIGENCE_SUMMARY_DATASET)
+        .readCurrent<Partial<NetworkSummary>>(INTELLIGENCE_SUMMARY_DATASET)
         .catch(() => null);
       // A manifest is the signal that a run happened. Zero incidents with a manifest is a real
       // "nothing to report"; no manifest at all means nothing has ever run.
       if (incidents.manifest === null && segmentsManifest === null) return null;
-      return { incidents: incidents.records, summary: summary?.records[0] ?? null };
+      // Normalised at the boundary, so nothing downstream has to know which batch wrote it.
+      return {
+        incidents: incidents.records,
+        summary: normaliseSummary(summary?.records[0] ?? null),
+      };
     } catch {
       return null;
     }
@@ -329,7 +399,13 @@ export class ProService {
           }))
         : [],
       outlook: buildOutlook(incidents, healthSummary, usingDemo),
-      intelligenceSummary: buildIntelligenceSummary(incidents, healthSummary, coverage),
+      intelligenceSummary: buildIntelligenceSummary(
+        incidents,
+        healthSummary,
+        coverage,
+        summary,
+        now,
+      ),
       coverageWarning:
         coverage < 0.7
           ? `Only ${(coverage * 100).toFixed(0)}% of live sources are reporting normally. Read every figure below with that in mind: they describe the part of the network we can see, not the whole of it.`
@@ -730,6 +806,9 @@ function buildIntelligenceSummary(
   incidents: readonly Incident[],
   health: SourceHealthSummary,
   coverage: number,
+  /** The newest closed window, when one has been published. */
+  measured: NetworkSummary | null,
+  now: Date,
 ): string[] {
   const summary: string[] = [];
   const byType = new Map<string, number>();
@@ -744,6 +823,47 @@ function buildIntelligenceSummary(
   summary.push(`Live source coverage is ${(coverage * 100).toFixed(0)}%.`);
   for (const problem of health.problems.slice(0, 3)) {
     summary.push(`${problem.source} is ${problem.status}: ${problem.detail}.`);
+  }
+
+  /*
+   * The pipeline's own age, said separately from the measurement's.
+   *
+   * These two answer different questions and a reader needs both. A measurement two hours old
+   * with a batch that ran three minutes ago means collection has a gap; a measurement twenty
+   * minutes old with a batch that ran two hours ago means the batch has stopped. Reporting one
+   * number for both makes those indistinguishable, which is exactly what happened in run 69.
+   */
+  /*
+   * Why there is no route intelligence, when there is none.
+   *
+   * Run 69 mapped no vehicle to a published route, so Pro's route list was empty — and an empty
+   * list reads as "no route needs attention", which is the opposite of what was true. A count of
+   * zero mapped routes beside a positive count of named ones is a broken join, and saying so is
+   * the difference between an honest gap and a false all-clear.
+   */
+  if (measured && (measured.distinctRouteNames ?? 0) > 0 && measured.distinctRoutes === 0) {
+    summary.push(
+      `No route-level intelligence: ${measured.distinctRouteNames} line name(s) were observed ` +
+        "but none resolved to a published route, so route and operator figures are withheld " +
+        "rather than shown as empty.",
+    );
+  }
+
+  if (measured) {
+    const measuredMin = Math.round(measurementAgeSeconds(measured, now) / 60);
+    const publishedMin = Math.round(publicationAgeSeconds(measured, now) / 60);
+    summary.push(
+      `The newest settled measurement covers up to ${new Date(measured.windowEnd)
+        .toISOString()
+        .slice(11, 16)} UTC, ${measuredMin} minute(s) ago; the batch that published it ran ` +
+        `${publishedMin} minute(s) ago.`,
+    );
+    if (measuredMin - publishedMin > 30) {
+      summary.push(
+        "The gap between those two is collection, not analysis: the batch ran recently and " +
+          "found nothing newer that had settled.",
+      );
+    }
   }
   return summary;
 }
@@ -777,7 +897,8 @@ function buildHeadlineMetrics(input: {
 }): ProMetric[] {
   const { usingDemo, window, coverage, incidents, now } = input;
   const summary = input.summary ?? null;
-  const freshness = summary ? measuredFreshnessSeconds(summary, now) : null;
+  // The age of the measurement, not of the record that carries it. See the three clocks above.
+  const freshness = summary ? measurementAgeSeconds(summary, now) : null;
 
   const abnormalCount = incidents.filter(
     (incident) => incident.severity === "abnormal" || incident.severity === "highly_abnormal",

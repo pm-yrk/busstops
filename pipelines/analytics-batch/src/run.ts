@@ -4,6 +4,7 @@ import { toIso } from "@busstops/pipeline-core";
 import { activeDegradationSteps, isAtLeast } from "@busstops/governor";
 import { StageRunner, type Checkpoint, type RunReport } from "./stages.js";
 import {
+  coverageGaps,
   emptySegmentMatchProfile,
   indexSegments,
   sampleSegmentsForTrace,
@@ -34,6 +35,8 @@ export interface BatchInput {
   traces: ReadonlyMap<string, readonly VehicleObservation[]>;
   /** Route id per vehicle where matching established one; null where it did not. */
   routeByVehicle: ReadonlyMap<string, string | null>;
+  /** What that map cost to build, for the summary Pro reads. */
+  routeJoin?: { distinctRouteNames: number; vehiclesMappedToRouteId: number };
   segments: readonly RoadSegment[];
   existingBuckets: ReadonlyMap<string, SegmentIntervalBucket>;
   existingIncidents: readonly TrackedIncident[];
@@ -160,6 +163,11 @@ export async function runAnalyticsBatch(
               implausibleTraversals: implausible,
               segmentsIndexed: index.size,
               ...summariseSegmentMatchProfile(profile),
+              // Cells carrying enough traces to judge, and how many of those are badly covered.
+              coverageCellsJudged: coverageGaps(profile, { limit: 10_000 }).length,
+              coverageCellsBelowHalf: coverageGaps(profile, { limit: 10_000 }).filter(
+                (gap) => gap.matchedShare < 0.5,
+              ).length,
             },
             notes: [
               /*
@@ -172,6 +180,23 @@ export async function runAnalyticsBatch(
                 `${Math.round(profile.decodeMs)}ms decoding; rejections were ` +
                 `${profile.rejectedByCoverage} coverage / ${profile.rejectedByDistance} distance / ` +
                 `${profile.rejectedByInstability} instability`,
+              /*
+               * Coverage as a map, said separately from performance.
+               *
+               * The finer grid makes the search cheap everywhere and puts no road under a bus
+               * that has none. These two lines are deliberately not one: the first says whether
+               * the matcher is fast, the second says whether the extraction reached this part of
+               * England, and only the second is a reason to re-run the road-network job.
+               */
+              `road-network coverage, worst cells: ${
+                coverageGaps(profile)
+                  .map(
+                    (gap) =>
+                      `${gap.cell} ${(gap.matchedShare * 100).toFixed(0)}% matched of ` +
+                      `${gap.traces} trace(s), ${(gap.noCandidateShare * 100).toFixed(0)}% with no road at all`,
+                  )
+                  .join("; ") || "no cell carried enough traces to judge"
+              }`,
               ...(lowConfidence > 0
                 ? [
                     `${lowConfidence} traces produced no samples because their map match was below the confidence floor`,
@@ -257,7 +282,12 @@ export async function runAnalyticsBatch(
         run: async () => {
           const result = await publishIntelligence(
             options.store!,
-            { buckets: aggregation.buckets, incidents, samples },
+            {
+              buckets: aggregation.buckets,
+              incidents,
+              samples,
+              ...(input.routeJoin === undefined ? {} : { routeJoin: input.routeJoin }),
+            },
             {
               version: options.version ?? toIso(startedAt).replace(/[:.]/g, "-"),
               coverage: input.coverage,
