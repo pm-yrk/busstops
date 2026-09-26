@@ -92,9 +92,17 @@
   container-type: inline-size;
 }
 
-.pixel-vista__scene {
-  margin-inline-start: auto;
-}
+/*
+ * No auto margin pushing the scene right.
+ *
+ * On a row it shares with the text, `flex-grow` on the text already pushes the scene to the end,
+ * so the margin did nothing there. On a row of its own — which is what happens whenever the
+ * column is narrower than the text's basis plus the art, so on Route at 900px and Journey at 780
+ * — it pinned the scene hard right and left three or four hundred pixels of bare paper beside
+ * it. That reads as a layout that failed rather than a composition.
+ *
+ * Left-aligned, the scene sits under the title it belongs to and the block reads as one thing.
+ */
 
 @container (max-width: 600px) {
   .pixel-vista__scene {

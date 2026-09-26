@@ -399,6 +399,7 @@ jobs:
       # than bursting and hoping. Several passes, because one position per vehicle cannot yield a
       # traversal or a speed.
       - name: Collect live observations
+        id: collect
         if: ${{ !cancelled() && inputs.run_intelligence }}
         timeout-minutes: 15
         continue-on-error: true
@@ -421,23 +422,22 @@ jobs:
       # minutes is the cost of a deploy that can prove its own pipeline instead of reporting
       # `no_input` and leaving the question open. Skipped when the collector produced nothing,
       # because then there is nothing to wait for.
+      # Keyed off the collector's own step outcome, not off a file.
+      #
+      # Run 71's version read `collection-report.json` to decide, took one of its two early exits
+      # and returned in zero seconds — and because both exits are `exit 0`, the run looked like a
+      # successful wait. A guard that cannot be seen to have failed is worse than no guard: the
+      # batch reported `no_input` again and the sixteen minutes this step exists to spend were
+      # never spent. GitHub already knows whether the previous step succeeded.
       - name: Wait for the newest observations to settle
-        if: ${{ !cancelled() && inputs.run_intelligence && inputs.settle_before_batch }}
+        if: ${{ !cancelled() && inputs.run_intelligence && inputs.settle_before_batch && steps.collect.outcome == 'success' }}
         timeout-minutes: 20
         run: |
-          if [ ! -f collection-report.json ]; then
-            echo "No collection report, so nothing was collected and there is nothing to settle."
-            exit 0
-          fi
-          outcome=$(node -e "process.stdout.write(require('./collection-report.json').outcome ?? '')")
-          if [ "$outcome" != "collected" ]; then
-            echo "Collection outcome was '$outcome', so there is nothing to settle."
-            exit 0
-          fi
-          # 900s of grace plus a minute, measured from the newest bucket's end rather than from
-          # now; the collector finished moments ago so the two are within a bucket of each other.
-          echo "Waiting 960s for the newest bucket to close (bucket 300s + grace 600s)."
+          # 300s bucket + 600s grace + a minute of slack. Announced before and after, so a run
+          # that did not wait says so in the log rather than looking like one that did.
+          echo "Newest bucket closes 900s after it ends. Waiting 960s, from $(date -u +%H:%M:%S)."
           sleep 960
+          echo "Done waiting at $(date -u +%H:%M:%S); the batch can now see a closed window."
 
       - name: Run the analytics batch
         if: ${{ !cancelled() && inputs.run_intelligence }}

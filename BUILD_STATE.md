@@ -1,8 +1,70 @@
 # Bus Stops. Build State
 
-Last updated: 2026-09-25 (run 70: four recovered deaths, and they do not say what one said)
+Last updated: 2026-09-26 (five correctness checks; the client was not validating six of ten responses)
 
 ## Current status
+
+### The five correctness checks
+
+**1. The Pro freshness contradiction was real.** A five-minute window ending 14:25
+with 600 s of grace closes at 14:35; the label said "closed 129 minutes ago",
+which is the age of the window's _end_ printed under the word for its _closure_,
+on a record written at a third time. `closedAt` is now on the record, the edge has
+three separately named ages — measurement, closure, publication — and a test pins
+all six values against one worked example including the identity that closure age
+is measurement age minus the grace. Pro states measurement and publication age
+separately: a measurement two hours old with a batch that ran three minutes ago is
+a collection gap, the reverse is a stopped batch, and one number cannot tell them
+apart.
+
+That change surfaced a deploy hazard. `closedAt` is new, records without it were
+already in the bucket, and the edge parsed it straight into a `Date` — the first
+Pro request after deploying would have answered 500 until the next batch ran. It
+is derived at the read boundary now, with a test that publishes the old shape.
+
+**2. `distinctRoutes: 0` was not a weak join. There was no join.** The chain broke
+twice: the SIRI adapter extracted `LineRef`, `PublishedLineName` and `OperatorRef`
+into a journey context the collector discarded one line later, and the batch
+passed `routeByVehicle: new Map()`. Zero was the only value the code could
+produce. The identity now travels on the observation; the batch resolves it
+operator-code-first against the published network, never on the line name alone,
+because "36" is a route number in most towns in England. Seven counts are
+reported, unmapped operator codes and unmapped lines distinguished and sampled by
+name. Pro withholds route intelligence and says why when names were observed but
+none resolved.
+
+**3. The breadcrumb records enough to compare deaths now.** `mark` replaced its
+detail instead of merging, so run 69's one death reported the parse's byte count
+and nothing else. It accumulates, namespaced by stage, and carries the ordered
+trail with timings, bounded at 24 entries. A `siri:fetch:done` stamp separates
+dying on the socket from dying after it.
+
+**4. Coverage is reported as a map.** Match outcome accumulates per half-degree
+cell and the worst are named, so "77% of traces failed" can be read as an even
+thinning or as places the extraction never reached. Index performance and network
+coverage are printed as two separate lines.
+
+**5. The map bus-paint failure is not re-proven either way.** All vite processes
+killed, `dist` deleted, clean rebuild, `CI=1`: 12 local map-paint checks pass at
+four viewports. That does not clear the deployed sweep, which now reports zoom,
+style-loaded, source feature count, cluster count, rendered counts per layer,
+registered icon names and the vehicle layers present, with the console attached.
+
+### The bench could not see two of the priority pages, and that hid a crash
+
+Route and Vehicle had no fixtures, so the art bench had never rendered either.
+Both now have fixtures checked against their contracts, and both are in the bench.
+
+The vehicle page then crashed. `response.data.disruptions.length`, where
+`disruptions` carries `.default([])` — the server may omit it. A Zod default is
+applied by _parsing_, `vehicle()` passed no schema, so nothing parsed and the page
+read `undefined.length`. **Six of the ten calls in the client skipped validation
+the same way**, every one against a contract with defaulted fields. All six pass
+their schema now.
+
+It was caught because the bench's error assertion had been tightened to match the
+error component's class rather than one heading's words. It would have passed
+silently a commit earlier.
 
 ### Run 70: the parse hypothesis is not supported
 
