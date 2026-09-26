@@ -1,8 +1,55 @@
 # Bus Stops. Build State
 
-Last updated: 2026-09-26 (five correctness checks; the client was not validating six of ten responses)
+Last updated: 2026-09-26 (run 71 answered the map question; route detail did not 1102 under light load)
 
 ## Current status
+
+### Run 71: the bus-paint failure is a race in the sweep, not a painting defect
+
+The diagnostics said what four runs of "no bus was painted" could not. At the
+moment of the click:
+
+    zoom 12.39, style loaded;   source held 0 feature(s); rendered buses=0 pips=0;
+                                vehicle layers [none]
+    zoom 12.39, style NOT loaded; vehicle layers [vehicle-clusters, …, vehicle-buses]
+    failed requests: tiles.openfreemap.org/…/10/507/329.pbf — net::ERR_ABORTED
+
+Three distinct states, all previously reported as one sentence: the style had not
+finished loading; the layers had not been added; the viewport's vehicles had not
+reached the source. Plus real tile aborts from the tile host.
+
+**The sweep was clicking before the map had painted.** It waits for paint now,
+bounded at 15 s — which is the precondition of "a painted bus can be clicked",
+not a relaxation of it. A layer that never paints inside the bound still fails,
+and still fails with the whole diagnostic.
+
+Nothing here says the product does not paint buses: the API returned 71 vehicles
+in the same run, and 12 local map-paint checks pass at four viewports on a clean
+build.
+
+### Run 71: route detail survived 55 requests — under a fifth of the traffic
+
+    pass  40 dense map requests and 55 route-detail requests, no platform error pages
+
+Runs 69 and 70 both died here. **This is not evidence the 1102 is fixed.** Run 71
+ran at 07:03 UTC on a Saturday with **71 vehicles nationally**, against 181 in run 69. Less live data means a smaller SIRI payload and less work per request, and the
+absence of a failure under a fifth of the load says nothing about the failure
+under load. What it does add is that the 1102 correlates with live data volume,
+which is consistent with both the residency hypothesis and a per-request cost one.
+
+The journey planner's failure changed character: no longer 1102 but `no_data`,
+"0 of 2 shard(s) read, 2 missing". That is a published-data gap, not a resource
+limit, and it is a different problem from the one that was there before.
+
+### Run 71: the three clocks are correct on the deployment
+
+    measured over 5-minute window ending 14:25 UTC, settled 14:35; measured 9639 minutes ago
+    The newest settled measurement covers up to 14:25 UTC, 9639 minute(s) ago;
+    the batch that published it ran 9511 minute(s) ago.
+
+Window end 14:25, settled 14:35 — exactly the 600 s grace — and measurement age
+and publication age stated separately and differing by 128 minutes. That is the
+fix working on the deployed API.
 
 ### The five correctness checks
 

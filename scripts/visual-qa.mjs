@@ -152,6 +152,7 @@ const PAGES = [
  * person does, and the only way the map's own click handler can be exercised.
  */
 async function clickPaintedStop(page, sink) {
+  await waitForPaintedFeatures(page, ["stop-pips", "stop-flags", "stop-clusters"]);
   const point = await page.evaluate(() => {
     const map = globalThis.__busstopsMap;
     if (!map) return null;
@@ -278,7 +279,41 @@ function describeVehicleLayers(state) {
   );
 }
 
+/**
+ * Wait until the renderer has actually drawn something on these layers.
+ *
+ * Run 71's diagnostics said what four runs of "no bus was painted" could not. At the moment of
+ * the click the map reported `source held 0 feature(s)`, `rendered buses=0 pips=0`, and in two
+ * cases `vehicle layers [none]` or `style NOT loaded` — with the tile host aborting requests.
+ * The sweep was clicking before the style had finished loading, before the layers had been
+ * added, and before the viewport's vehicles had reached the source.
+ *
+ * So it waits for paint, which is the precondition of "a painted bus can be clicked" rather than
+ * a relaxation of it. A layer that never paints inside the bound still fails, and still fails
+ * with the full diagnostic — what changes is that a slow map is no longer reported as a missing
+ * one.
+ */
+async function waitForPaintedFeatures(page, layers, timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const drawn = await page.evaluate((names) => {
+      const map = globalThis.__busstopsMap;
+      if (!map || !map.isStyleLoaded()) return 0;
+      try {
+        return map.queryRenderedFeatures({ layers: names }).length;
+      } catch {
+        // The layers are not on the style yet, which is one of the states being waited out.
+        return 0;
+      }
+    }, layers);
+    if (drawn > 0) return drawn;
+    await page.waitForTimeout(500);
+  }
+  return 0;
+}
+
 async function clickPaintedBus(page, sink) {
+  await waitForPaintedFeatures(page, ["vehicle-buses", "vehicle-pips"]);
   const point = await page.evaluate(() => {
     const map = globalThis.__busstopsMap;
     if (!map) return null;
