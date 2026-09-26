@@ -49,6 +49,12 @@ on:
         description: "Collect live observations and run the analytics batch, so Pro reports live"
         type: boolean
         default: false
+      settle_before_batch:
+        description: "Wait 16 min after collecting so the newest window has closed before the batch runs"
+        type: boolean
+        # On by default: without it the batch correctly publishes nothing on a one-shot dispatch,
+        # which looks identical to the batch being broken.
+        default: true
       run_disruptions:
         description: "Ask the official disruption sources, so the page stops saying none was queried"
         type: boolean
@@ -404,6 +410,34 @@ jobs:
         run: |
           set -o pipefail
           npx tsx pipelines/live-collection/run-collect.ts 2>&1 | tee collection.log
+
+      # The batch aggregates windows that have *closed*, and a bucket closes 900 seconds after it
+      # ends. Collecting and batching back to back therefore produces nothing, correctly, every
+      # time: run 70 collected 20:16–20:19 and the batch at 20:19:33 found zero settled records
+      # of five available versions. That is the architecture working, and it also means a single
+      # dispatch could never demonstrate it.
+      #
+      # So the run waits out the horizon. Sixteen minutes of a public repository's free Actions
+      # minutes is the cost of a deploy that can prove its own pipeline instead of reporting
+      # `no_input` and leaving the question open. Skipped when the collector produced nothing,
+      # because then there is nothing to wait for.
+      - name: Wait for the newest observations to settle
+        if: ${{ !cancelled() && inputs.run_intelligence && inputs.settle_before_batch }}
+        timeout-minutes: 20
+        run: |
+          if [ ! -f collection-report.json ]; then
+            echo "No collection report, so nothing was collected and there is nothing to settle."
+            exit 0
+          fi
+          outcome=$(node -e "process.stdout.write(require('./collection-report.json').outcome ?? '')")
+          if [ "$outcome" != "collected" ]; then
+            echo "Collection outcome was '$outcome', so there is nothing to settle."
+            exit 0
+          fi
+          # 900s of grace plus a minute, measured from the newest bucket's end rather than from
+          # now; the collector finished moments ago so the two are within a bucket of each other.
+          echo "Waiting 960s for the newest bucket to close (bucket 300s + grace 600s)."
+          sleep 960
 
       - name: Run the analytics batch
         if: ${{ !cancelled() && inputs.run_intelligence }}

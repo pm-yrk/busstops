@@ -1,8 +1,67 @@
 # Bus Stops. Build State
 
-Last updated: 2026-09-19 (run 69 ran: Pro is populated, the 1102 has a position, the matcher is measured)
+Last updated: 2026-09-25 (run 70: four recovered deaths, and they do not say what one said)
 
 ## Current status
+
+### Run 70: the parse hypothesis is not supported
+
+The chase fired on all four failures, so there are now **four independent
+recovered deaths** rather than one — which was the bar set before acting on any
+of it. They do not agree:
+
+| #   | isolate req | handler      | last phase         | at       | detail                         |
+| --- | ----------- | ------------ | ------------------ | -------- | ------------------------------ |
+| 1   | 101         | route-detail | `siri:parse:begin` | 374 ms   | chars=610,393                  |
+| 2   | 103         | journeys     | `reads:begin`      | **0 ms** | cold=false, resident 4,104,838 |
+| 3   | 105         | stop-board   | `board:live:done`  | **0 ms** | departures=0                   |
+| 4   | 107         | journeys     | `reads:begin`      | **0 ms** | cold=false, resident 4,104,838 |
+
+**Three of the four died at 0 ms**, before any I/O had completed — a Worker's
+clock does not advance across pure computation, so 0 ms means the request never
+got past the synchronous work at the top of its handler. Only one stopped
+between parse-begin and parse-done.
+
+The condition set for acting on this was explicit: _if repeated deaths
+consistently stop between parse-begin and parse-done, isolate the XML parsing
+and reduce it._ **They do not, so that work is not being done.** Run 69's single
+observation looked like a parse problem and four observations say it is not.
+
+What the four do share is more interesting. Every death is an **odd** request
+number — 101, 103, 105, 107 — each reported by the **even** request after it on
+the same isolate, and every one carries roughly **3.9 MiB resident** (the two
+journeys deaths report an identical 4,104,838 characters). An isolate that is
+alive, serving, and failing roughly every other request at a stable residency
+looks far more like a per-isolate ceiling being brushed than like one expensive
+stage. That is a hypothesis and it is recorded as one; the next run's
+correlates — now accumulated across stages rather than overwritten — are what
+would confirm or kill it.
+
+### Run 70: the batch could not have published, and was right not to
+
+`outcome: "no_input"`, `versionsRead: 0`, `recordsInClosedWindow: 0` of five
+versions available. The collector ran 20:16–20:19 and the batch started at
+20:19:33 with a settle horizon of 20:04:33. Nothing collected in that run had
+closed, and everything from run 69 was six days old — outside the six-hour
+lookback.
+
+This is the closed-window architecture working exactly as designed, and it also
+means **a single dispatch can never demonstrate it**. The deploy now waits out
+the horizon (960 s) between collecting and batching, behind a `settle_before_batch`
+input that defaults on. Sixteen minutes of a public repository's free Actions
+minutes buys a run that proves its own pipeline rather than reporting `no_input`
+and leaving the question open.
+
+Pro continued to serve run 69's window and said so: _"closed 8996 minutes ago"_ —
+six days, stated rather than hidden. The wording was wrong (that is the
+measurement age, not the closure age) and is fixed; the honesty was not.
+
+### Run 70: the visual sweep is down to two failures
+
+341 passes and two FAILs, both "no bus was painted" on desktop/live — from
+thirteen in run 69. The journey, vehicle and weather-scene failures are gone.
+The bus-paint diagnostics that would say _which_ failure this is had not
+deployed yet; they are in the run after.
 
 ### Run 69 measured three things that were guesses
 
