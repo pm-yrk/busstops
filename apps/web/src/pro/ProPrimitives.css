@@ -63,6 +63,12 @@
 .pro-metric {
   /* A grid child sizes to its content unless told it may be narrower than that. */
   min-width: 0;
+  /*
+   * Every tile in a row is the same height, and the facts sit on the same line across all of
+   * them. Comparing four figures means comparing four tiles, and four different baselines makes
+   * that a scan rather than a glance.
+   */
+  height: 100%;
   display: grid;
   gap: var(--space-sm);
   padding: var(--space-md);
@@ -72,13 +78,67 @@
   align-content: start;
 }
 
+/*
+ * Three states, told apart by more than a sentence.
+ *
+ * A measured figure, one withheld for want of observations, and one this pipeline does not
+ * produce at all were the same tile with different words in it — and the third is permanent
+ * where the others are not. The left edge carries the difference: ink for a real measurement,
+ * amber for a figure that more data would fill, and a hairline for one that no amount of data
+ * will. Never colour alone; the suppression sentence is still there and still says which.
+ */
+.pro-metric[data-state="measured"] {
+  border-left: 3px solid var(--colour-ink);
+}
+
+.pro-metric[data-state="withheld"] {
+  border-left: 3px solid var(--colour-amber);
+}
+
+.pro-metric[data-state="unmeasured"] {
+  border-left: 3px solid var(--colour-hairline);
+  /* Recessive, because it is not news and it is not a fault: it is a stage that does not exist. */
+  background: color-mix(in srgb, var(--colour-surface) 92%, var(--colour-ink));
+}
+
 .pro-metric header {
   min-width: 0;
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: var(--space-sm);
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--space-xs);
   flex-wrap: wrap;
+}
+
+/* The mark sits on the label's line, at the label's weight, never above it. */
+.pro-metric__mark {
+  flex: none;
+  opacity: 0.75;
+}
+
+/*
+ * Confidence, under the figure it qualifies.
+ *
+ * It used to share the header row with the label, where at tile width it wrapped onto a line of
+ * its own and pushed the number down — so a row of four tiles had its four figures at four
+ * different heights, which is the one thing a row of comparable numbers must not do.
+ */
+.pro-metric__confidence {
+  margin: 0;
+}
+
+/*
+ * A dash, at label size rather than heading size.
+ *
+ * An em dash set at `--font-size-h2` is a rule right across the tile and reads as a loading
+ * skeleton. Nothing further is loading: this metric has no figure, now, for a reason the
+ * sentence underneath gives.
+ */
+.pro-metric__absent {
+  font-size: var(--font-size-h3);
+  /* Muted, not hairline: it has to be legible as a deliberate absence rather than look unpainted. */
+  color: var(--colour-muted);
+  letter-spacing: -0.1em;
 }
 
 .pro-metric h3 {
@@ -94,6 +154,29 @@
   font-size: var(--font-size-h2);
   font-variant-numeric: tabular-nums;
   line-height: 1;
+  /* Baseline-aligned so the unit sits on the digits' feet rather than floating beside them. */
+  display: flex;
+  align-items: baseline;
+  gap: 0.3ch;
+}
+
+/*
+ * The unit, small.
+ *
+ * "613" set large with "buses" beside it at the same size is two things competing for one
+ * glance. The number is what a reader is looking for; the unit qualifies it and should not have
+ * to be read first.
+ */
+.pro-metric__unit {
+  font-size: var(--font-size-small);
+  color: var(--colour-muted);
+  font-variant-numeric: normal;
+}
+
+/* A dash is not a figure and should not be set like one. */
+.pro-metric[data-state="withheld"] .pro-metric__value,
+.pro-metric[data-state="unmeasured"] .pro-metric__value {
+  color: var(--colour-muted);
 }
 
 .pro-metric__comparison,
@@ -105,6 +188,14 @@
 /* A suppressed figure must not look like a quiet success. */
 .pro-metric__suppressed {
   color: var(--colour-amber);
+}
+
+/*
+ * Except where more data is not the answer. Amber says "waiting would help"; this one is a
+ * statement about the pipeline, so it is set as ordinary muted prose.
+ */
+.pro-metric[data-state="unmeasured"] .pro-metric__suppressed {
+  color: var(--colour-muted);
 }
 
 /*

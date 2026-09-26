@@ -512,6 +512,161 @@ export const DISRUPTIONS_RESPONSE = {
   },
 };
 
+export const ROUTE_ID = "00000000-0000-5000-8000-0000000000d1";
+export const VEHICLE_REF = "veh-e2e-1";
+
+const OPERATOR_FIXTURE = {
+  id: "00000000-0000-5000-8000-0000000000e1",
+  provenance: { source: "naptan", retrievedAt: META.generatedAt, externalIds: [] },
+  ingestedAt: META.generatedAt,
+  qualityFlags: [],
+  name: "First West Yorkshire",
+  licenceRegistryIds: ["FLDS"],
+  ticketDomains: [],
+  serviceAreas: ["non_london"],
+  active: true,
+};
+
+/**
+ * A route page with enough of a route on it to be looked at.
+ *
+ * Route and vehicle were two of the pages named as visual priorities and neither had a fixture,
+ * so neither had ever been screenshotted locally — the art bench went home, stop, live, journey,
+ * disruptions, notfound, search, saved, pro and stopped. Improving a composition nobody can see
+ * is guesswork, and the deployed sweep is the only other place these render.
+ *
+ * Twelve stops, because the route strip draws eleven intermediate marks and a terminus at each
+ * end: fewer and the diagram never reaches the shape it is built for.
+ */
+const ROUTE_STOPS = [
+  "Leeds City Bus Station",
+  "Vicar Lane",
+  "Eastgate",
+  "St Peter's Street",
+  "Mabgate",
+  "Burmantofts Street",
+  "Stoney Rock Lane",
+  "Harehills Lane",
+  "Roundhay Road",
+  "Gipton Approach",
+  "Oakwood Lane",
+  "Roundhay Park",
+].map((name, index) => ({
+  stopId: `00000000-0000-5000-8000-${String(index + 200).padStart(12, "0")}`,
+  atcoCode: `450010${String(index + 100).padStart(3, "0")}`,
+  name,
+  locality: "Leeds",
+  sequence: index,
+}));
+
+export const ROUTE_DETAIL = {
+  meta: META,
+  data: {
+    complete: true,
+    route: {
+      id: ROUTE_ID,
+      provenance: { source: "bods", retrievedAt: META.generatedAt, externalIds: [] },
+      ingestedAt: META.generatedAt,
+      qualityFlags: [],
+      operatorId: OPERATOR_FIXTURE.id,
+      publicName: "36",
+      mode: "bus",
+      description: "Leeds — Roundhay Park",
+      coverageArea: "non_london",
+      validFrom: "2026-09-01T00:00:00.000Z",
+      validTo: null,
+    },
+    operator: OPERATOR_FIXTURE,
+    variants: [
+      {
+        patternId: "00000000-0000-5000-8000-0000000000f2",
+        direction: "outbound",
+        description: "Leeds City Bus Station to Roundhay Park",
+        distanceMetres: 8400,
+        stops: ROUTE_STOPS,
+      },
+    ],
+    // Three live vehicles, so the per-vehicle sprite row is drawn more than once.
+    activeVehicles: [
+      {
+        vehicleRef: VEHICLE_REF,
+        destinationName: "Roundhay Park",
+        delaySeconds: 124,
+        observedAt: META.generatedAt,
+        coordinate: { lat: 53.8, lon: -1.53 },
+      },
+      {
+        vehicleRef: "veh-e2e-2",
+        destinationName: "Roundhay Park",
+        delaySeconds: -40,
+        observedAt: META.generatedAt,
+        coordinate: { lat: 53.81, lon: -1.52 },
+      },
+      {
+        vehicleRef: "veh-e2e-3",
+        destinationName: "Leeds City Bus Station",
+        delaySeconds: null,
+        observedAt: META.generatedAt,
+        coordinate: { lat: 53.82, lon: -1.51 },
+      },
+    ],
+    headwaySummary: "About every 12 minutes, Monday to Saturday daytime",
+    reliability: [],
+    incidents: [],
+    disruptions: [],
+    ticketUrl: null,
+  },
+};
+
+/** A vehicle page with a bus on a journey, so the hero and the next-stop list both draw. */
+export const VEHICLE_DETAIL = {
+  meta: META,
+  data: {
+    vehicle: {
+      id: "00000000-0000-5000-8000-0000000000f5",
+      provenance: { source: "bods", retrievedAt: META.generatedAt, externalIds: [] },
+      ingestedAt: META.generatedAt,
+      qualityFlags: [],
+      vehicleRef: VEHICLE_REF,
+      matchedRoutePatternId: "00000000-0000-5000-8000-0000000000f2",
+      matchedScheduledJourneyId: null,
+      position: { lat: 53.8, lon: -1.53 },
+      bearingDegrees: 45,
+      delaySeconds: 124,
+      motionState: "moving",
+      nextStopId: ROUTE_STOPS[4]!.stopId,
+      freshnessSeconds: 18,
+      matchConfidence: { level: "high", score: 0.88, reasons: [] },
+    },
+    routePublicName: "36",
+    routeId: ROUTE_ID,
+    routePatternId: "00000000-0000-5000-8000-0000000000f2",
+    destinationName: "Roundhay Park",
+    nextStops: ROUTE_STOPS.slice(3, 9).map((stop, index) => ({
+      stopId: stop.stopId,
+      name: stop.name,
+      atcoCode: stop.atcoCode,
+      scheduledTime: new Date(Date.parse(META.generatedAt) + index * 180_000).toISOString(),
+      expectedTimeLow: new Date(Date.parse(META.generatedAt) + index * 180_000).toISOString(),
+      expectedTimeHigh: new Date(
+        Date.parse(META.generatedAt) + index * 180_000 + 120_000,
+      ).toISOString(),
+      passed: index === 0,
+    })),
+    recentTrace: [
+      { coordinate: { lat: 53.796, lon: -1.54 }, observedAt: META.generatedAt },
+      { coordinate: { lat: 53.798, lon: -1.535 }, observedAt: META.generatedAt },
+      { coordinate: { lat: 53.8, lon: -1.53 }, observedAt: META.generatedAt },
+    ],
+    scheduledShape: [
+      { lat: 53.796, lon: -1.54 },
+      { lat: 53.81, lon: -1.52 },
+    ],
+    incidents: [],
+    operatorName: OPERATOR_FIXTURE.name,
+  },
+};
+
 /** Routes every API call to a fixture, so no test depends on an upstream being reachable. */
 export async function mockApi(page: Page, overrides: Record<string, unknown> = {}): Promise<void> {
   await page.route("**/api/**", async (route) => {
@@ -575,11 +730,15 @@ export async function mockApi(page: Page, overrides: Record<string, unknown> = {
                         }
                       : path === "/v1/disruptions"
                         ? DISRUPTIONS_RESPONSE
-                        : path === "/v1/map"
-                          ? EMPTY_MAP
-                          : path === "/v1/search" || path === "/v1/nearby"
-                            ? { meta: META, data: { results: [] } }
-                            : { meta: META, data: {} });
+                        : path.startsWith("/v1/routes/")
+                          ? ROUTE_DETAIL
+                          : path.startsWith("/v1/vehicles/")
+                            ? VEHICLE_DETAIL
+                            : path === "/v1/map"
+                              ? EMPTY_MAP
+                              : path === "/v1/search" || path === "/v1/nearby"
+                                ? { meta: META, data: { results: [] } }
+                                : { meta: META, data: {} });
 
     await route.fulfill({
       status: 200,

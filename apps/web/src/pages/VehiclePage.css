@@ -38,6 +38,20 @@
   margin: 0;
 }
 
+/*
+ * The destination gets the room, and the timestamp gives it up.
+ *
+ * "Roundhay Park" broke onto two lines with three hundred pixels of white space to its right:
+ * the last column is `auto`, so "Last seen 18 seconds ago" took its full natural width out of a
+ * row the heading was sharing. The destination is the subject of this page and the age is a
+ * footnote, so the footnote wraps first.
+ */
+.vehicle-page__header > :last-child {
+  max-width: 12ch;
+  text-align: end;
+  justify-self: end;
+}
+
 .vehicle-page__facts {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));

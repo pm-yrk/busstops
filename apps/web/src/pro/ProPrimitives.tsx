@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { ProMetric, ProProvenance } from "@busstops/contracts";
 import { StateLozenge } from "../components/primitives.js";
 import { PixelClock, PixelWarning } from "../components/pixel/PixelArt.js";
+import { SECTION_MARKS, type SectionMark } from "../components/pixel/PixelSectionHeading.js";
 import "./ProPrimitives.css";
 
 /**
@@ -36,6 +37,52 @@ export function DataModeBanner({ provenance }: { provenance: ProProvenance }) {
       {provenance.notice ? <p>{provenance.notice}</p> : null}
     </div>
   );
+}
+
+/**
+ * A mark per figure, from the same sixteen-unit vocabulary the section headings use.
+ *
+ * Pro's tiles were a bordered box with a number in it, which is the one place on this site where
+ * nothing said which design system it belonged to. These are chosen from the metric's own key —
+ * a bus for the vehicles observed, a route for the segments, a clock for a duration — so the
+ * mark is a property of what is being counted rather than decoration applied on top.
+ *
+ * Unknown keys get no mark rather than a generic one. A shape that means nothing in particular
+ * is worse than none: it reads as a category the reader is failing to recognise.
+ */
+const METRIC_MARKS: Record<string, SectionMark> = {
+  network_health: "chart",
+  active_vehicles: "bus",
+  punctuality: "clock",
+  reliability: "chart",
+  median_delay: "clock",
+  median_segment_traversal: "clock",
+  segments_measured: "route",
+  abnormal_disruptions: "warning",
+};
+
+/**
+ * The value split from its unit, so the number is the thing you read first.
+ *
+ * "613" set large with "buses" small beside it is a figure; "613" alone is a number in a box,
+ * and the unit crammed into the same type size competes with the digits for the same glance.
+ */
+function splitMetricValue(metric: ProMetric): { value: string; unit: string | null } {
+  if (metric.value === null) return { value: "—", unit: null };
+  switch (metric.unit) {
+    case "percent":
+      return { value: `${(metric.value * 100).toFixed(metric.value < 0.1 ? 1 : 0)}`, unit: "%" };
+    case "seconds":
+      return { value: `${Math.round(metric.value)}`, unit: "sec" };
+    case "minutes":
+      return { value: `${Math.round(metric.value)}`, unit: "min" };
+    case "vehicle_minutes":
+      return { value: metric.value.toFixed(1), unit: "bus-min" };
+    case "points":
+      return { value: `${Math.round(metric.value)}`, unit: "/100" };
+    case "count":
+      return { value: metric.value.toLocaleString("en-GB"), unit: null };
+  }
 }
 
 export function formatMetricValue(metric: ProMetric): string {
@@ -89,12 +136,60 @@ function comparisonText(metric: ProMetric): string | null {
 export function ProMetricTile({ metric }: { metric: ProMetric }) {
   const [showDefinition, setShowDefinition] = useState(false);
   const comparison = comparisonText(metric);
+  const { value, unit } = splitMetricValue(metric);
+  const mark = METRIC_MARKS[metric.key];
+  const Mark = mark ? SECTION_MARKS[mark] : null;
+
+  /*
+   * Three states, not two.
+   *
+   * A figure can be measured, withheld because too few observations support it, or not measured
+   * by this pipeline at all — and the third is permanent where the first two are not. They read
+   * identically as "amber text under a dash", which tells a reader that waiting would help when
+   * for one of them it never will. The state is on the element, so the stylesheet can make the
+   * difference visible rather than leaving it to the sentence.
+   */
+  const state = !metric.suppressed
+    ? "measured"
+    : /does not read the timetable/.test(metric.suppressionReason ?? "")
+      ? "unmeasured"
+      : "withheld";
 
   return (
-    <article className="pro-metric" data-testid={`metric-${metric.key}`}>
+    <article className="pro-metric" data-state={state} data-testid={`metric-${metric.key}`}>
       <header>
+        {Mark ? <Mark size={16} className="pro-metric__mark" /> : null}
         <h3>{metric.label}</h3>
-        {metric.confidence ? (
+      </header>
+
+      <p className="pro-metric__value">
+        {/*
+          A dash is not a figure and must not be set like one. At heading size an em dash is a
+          rule across the tile — it read as a loading skeleton, which is the one thing it is not:
+          nothing further is coming for this metric right now.
+        */}
+        {metric.value === null ? (
+          <span className="pro-metric__absent" aria-label="no figure">
+            —
+          </span>
+        ) : (
+          <>
+            {value}
+            {unit ? <span className="pro-metric__unit">{unit}</span> : null}
+          </>
+        )}
+      </p>
+
+      {/*
+        Confidence sits under the figure it qualifies, not beside the label.
+ 
+        In the header it competed with the label for one row and wrapped onto its own line at
+        tile width, which pushed the number down and left the four tiles in a row with their
+        figures at four different heights. It belongs with the number anyway: it is a statement
+        about the value, not about what the value is called.
+      */}
+      {metric.confidence ? (
+        <p className="pro-metric__confidence">
           <StateLozenge
             tone={
               metric.confidence.level === "high"
@@ -106,10 +201,8 @@ export function ProMetricTile({ metric }: { metric: ProMetric }) {
           >
             {metric.confidence.level} confidence
           </StateLozenge>
-        ) : null}
-      </header>
-
-      <p className="pro-metric__value">{formatMetricValue(metric)}</p>
+        </p>
+      ) : null}
 
       {metric.suppressed ? (
         <p className="pro-metric__suppressed">{metric.suppressionReason}</p>

@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { MAP_WITH_TRAFFIC, META, mockApi, STOP_ID } from "./fixtures.js";
+import { MAP_WITH_TRAFFIC, META, mockApi, ROUTE_ID, STOP_ID, VEHICLE_REF } from "./fixtures.js";
 
 /**
  * A style with one background layer. MapLibre draws a blank ground and puts the markers on it,
@@ -31,6 +31,21 @@ test("art bench", async ({ page }, testInfo) => {
     // The home page is the first thing anyone sees, so it is the first thing this looks at.
     ["home", "/"],
     ["stop", `/stops/${STOP_ID}`],
+    /*
+     * Route and vehicle, which had never been in this bench.
+     *
+     * Both are named visual priorities and neither had a fixture, so the only place either had
+     * ever been rendered was the deployed sweep — which this container cannot reach. A
+     * composition nobody can look at cannot be improved except by guessing.
+     */
+    ["route", `/routes/${ROUTE_ID}`],
+    /*
+     * With a viewport, which the page requires: buses are looked up inside the part of the map
+     * you were looking at, because the live feeds are area-based. Without it the page correctly
+     * answers "this link needs a map area" — which is a real state worth having, but it is not
+     * the vehicle page, and it is what the deployed sweep has been reporting as empty.
+     */
+    ["vehicle", `/vehicles/${VEHICLE_REF}?bbox=-1.60,53.78,-1.48,53.86`],
     ["live", "/live"],
     ["journey", "/journey"],
     ["disruptions", "/disruptions"],

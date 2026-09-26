@@ -42,6 +42,14 @@ const MARKS = {
 
 export type SectionMark = keyof typeof MARKS;
 
+/**
+ * The same map, for anything that wants a mark without a heading around it.
+ *
+ * Pro's metric tiles need one beside a figure rather than above a section, and copying the list
+ * would be two vocabularies that drift. Exported rather than duplicated.
+ */
+export const SECTION_MARKS = MARKS;
+
 export interface PixelSectionHeadingProps {
   children: ReactNode;
   mark: SectionMark;

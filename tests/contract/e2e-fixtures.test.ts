@@ -3,11 +3,15 @@ import {
   ControlTowerResponseSchema,
   DisruptionsResponseSchema,
   MapResponseSchema,
+  RouteDetailResponseSchema,
   StopDeparturesResponseSchema,
+  VehicleDetailResponseSchema,
 } from "@busstops/contracts";
 import {
   DISRUPTIONS_RESPONSE,
   EMPTY_MAP,
+  ROUTE_DETAIL,
+  VEHICLE_DETAIL,
   MAP_WITH_TRAFFIC,
   PRO_CONTROL_TOWER,
   STOP_RESPONSE,
@@ -53,6 +57,16 @@ describe("end-to-end fixtures match the published contracts", () => {
      * error state, whatever it is called.
      */
     const result = DisruptionsResponseSchema.safeParse(DISRUPTIONS_RESPONSE);
+    expect(result.success ? [] : result.error.issues).toEqual([]);
+  });
+
+  it("route detail", () => {
+    const result = RouteDetailResponseSchema.safeParse(ROUTE_DETAIL);
+    expect(result.success ? [] : result.error.issues).toEqual([]);
+  });
+
+  it("vehicle detail", () => {
+    const result = VehicleDetailResponseSchema.safeParse(VEHICLE_DETAIL);
     expect(result.success ? [] : result.error.issues).toEqual([]);
   });
 });

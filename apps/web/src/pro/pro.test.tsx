@@ -48,10 +48,52 @@ function metric(overrides: Partial<ProMetric> = {}): ProMetric {
 describe("ProMetricTile", () => {
   it("shows the denominator, window and coverage beside the figure", () => {
     render(<ProMetricTile metric={metric()} />);
-    expect(screen.getByText("72%")).toBeTruthy();
+    /*
+     * The figure and its unit are two elements now — "72" set large with "%" small beside it, so
+     * the number is what the eye lands on — so this reads the tile's text the way a person does
+     * rather than looking for one node containing both.
+     */
+    const tile = screen.getByTestId("metric-punctuality");
+    expect(tile.querySelector(".pro-metric__value")?.textContent).toBe("72%");
     expect(screen.getByText("1,103")).toBeTruthy();
     expect(screen.getByText("last 60 minutes")).toBeTruthy();
     expect(screen.getByText("86%")).toBeTruthy();
+  });
+
+  it("tells a withheld figure from one this pipeline does not produce", () => {
+    /*
+     * Two different suppressions that read identically as "amber text under a dash", and only
+     * one of them would be filled by waiting. A reader who cannot tell them apart will keep
+     * waiting for a number that is never coming.
+     */
+    const withheld = metric({
+      value: null,
+      suppressed: true,
+      suppressionReason: "Based on 3 observations; 20 are needed before a figure is published.",
+    });
+    const { unmount } = render(<ProMetricTile metric={withheld} />);
+    expect(screen.getByTestId("metric-punctuality").dataset.state).toBe("withheld");
+    unmount();
+
+    const unmeasured = metric({
+      value: null,
+      suppressed: true,
+      suppressionReason:
+        "Not measured yet. This figure compares actual against scheduled time, and the " +
+        "intelligence pipeline currently measures road-segment traversals only — it does not " +
+        "read the timetable.",
+    });
+    render(<ProMetricTile metric={unmeasured} />);
+    expect(screen.getByTestId("metric-punctuality").dataset.state).toBe("unmeasured");
+  });
+
+  it("marks a measured figure as measured", () => {
+    render(<ProMetricTile metric={metric()} />);
+    expect(screen.getByTestId("metric-punctuality").dataset.state).toBe("measured");
+    // And carries the mark from the shared vocabulary, so Pro reads as the same design system.
+    expect(
+      screen.getByTestId("metric-punctuality").querySelector(".pro-metric__mark"),
+    ).toBeTruthy();
   });
 
   it("compares against the baseline rather than presenting the figure alone", () => {

@@ -2,6 +2,11 @@ import {
   AnalyticsResponseSchema,
   CongestionResponseSchema,
   ControlTowerResponseSchema,
+  DisruptionsResponseSchema,
+  JourneyPlanResponseSchema,
+  OperatorDetailResponseSchema,
+  RouteDetailResponseSchema,
+  VehicleDetailResponseSchema,
   LiveOperationsResponseSchema,
   MapResponseSchema,
   OperatorsResponseSchema,
@@ -116,9 +121,18 @@ export class ApiClient {
 
     const body = (await response.json()) as unknown;
 
-    // Validated at the boundary when a schema is supplied. Rendering an unvalidated payload is
-    // how a malformed response becomes a blank white page instead of an error state — and the
-    // person looking at it has no idea whether the bus is coming or the site is broken.
+    /*
+     * Validated at the boundary when a schema is supplied. Rendering an unvalidated payload is
+     * how a malformed response becomes a blank white page instead of an error state — and the
+     * person looking at it has no idea whether the bus is coming or the site is broken.
+     *
+     * Six of the ten calls here skipped it, which is how the vehicle page came to crash on a
+     * response the contract explicitly permits. `disruptions` and `operator` on vehicle detail
+     * both carry `.default()`, meaning the server may omit them — but a default is applied by
+     * *parsing*, and nothing parsed, so the page read `undefined.length` and the error boundary
+     * caught it. Every call that has a schema now passes it: validation and defaults are the
+     * same act, and skipping it leaves each page to guess which optional fields arrived.
+     */
     if (schema) {
       const parsed = schema.safeParse(body);
       if (!parsed.success) {
@@ -206,15 +220,24 @@ export class ApiClient {
     return this.request<VehicleDetailResponse>(
       `/v1/vehicles/${encodeURIComponent(ref)}?bbox=${encodeURIComponent(bboxParam)}`,
       signal,
+      VehicleDetailResponseSchema,
     );
   }
 
   route(id: string, signal?: AbortSignal): Promise<RouteDetailResponse> {
-    return this.request<RouteDetailResponse>(`/v1/routes/${encodeURIComponent(id)}`, signal);
+    return this.request<RouteDetailResponse>(
+      `/v1/routes/${encodeURIComponent(id)}`,
+      signal,
+      RouteDetailResponseSchema,
+    );
   }
 
   operator(id: string, signal?: AbortSignal): Promise<OperatorDetailResponse> {
-    return this.request<OperatorDetailResponse>(`/v1/operators/${encodeURIComponent(id)}`, signal);
+    return this.request<OperatorDetailResponse>(
+      `/v1/operators/${encodeURIComponent(id)}`,
+      signal,
+      OperatorDetailResponseSchema,
+    );
   }
 
   /**
@@ -237,11 +260,15 @@ export class ApiClient {
       params.set("departAt", String(Math.round(options.departAtSeconds)));
     }
     if (options.serviceDate) params.set("date", options.serviceDate);
-    return this.request<JourneyPlanResponse>(`/v1/journeys?${params.toString()}`, signal);
+    return this.request<JourneyPlanResponse>(
+      `/v1/journeys?${params.toString()}`,
+      signal,
+      JourneyPlanResponseSchema,
+    );
   }
 
   disruptions(signal?: AbortSignal): Promise<DisruptionsResponse> {
-    return this.request<DisruptionsResponse>("/v1/disruptions", signal);
+    return this.request<DisruptionsResponse>("/v1/disruptions", signal, DisruptionsResponseSchema);
   }
 
   /**
