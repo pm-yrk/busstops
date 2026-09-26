@@ -137,6 +137,39 @@ async function chaseBreadcrumb(coordinate, probes = 5) {
   return ` — breadcrumb chase: ${seen.join(" | ")}`;
 }
 
+/**
+ * How old the published network is, and why that is the whole of some failures.
+ *
+ * Departure shards are `departures/<serviceDate>/<bucket>` and the planner's trips are
+ * `pattern-trips/<serviceDate>/<window>/<tile>` — both keyed by the day they describe. So an
+ * artifact published a week ago contains shards for a week ago, and every non-London board reads
+ * a key that does not exist. Run 71 reported that as "5 stops carry routes but none has anything
+ * due at 8:00 Sat", which reads as a live-data problem and is not one: the timetable was fine
+ * when it was built and is simply for the wrong day.
+ *
+ * The same cause fails the journey planner with `no_data` and "0 of 2 shard(s) read, 2 missing",
+ * and leaves London passing throughout, because TfL arrivals are live predictions rather than
+ * date-keyed shards.
+ *
+ * This does not soften any assertion. It attaches the artifact's age to the failure so the next
+ * person does not go looking at the live feeds.
+ */
+function describeArtifactAge(now = Date.now()) {
+  const version = observed.networkArtifactVersion;
+  if (!version) return "";
+  const ageHours = (now - Date.parse(version)) / 3_600_000;
+  if (!Number.isFinite(ageHours)) return "";
+  const days = Math.floor(ageHours / 24);
+  return (
+    ` — the published network artifact is ${version} (${days} day(s) old)` +
+    (days >= 1
+      ? `; departure shards and planner trips are keyed by service date, so a ${days}-day-old ` +
+        "artifact holds no shard for today and this is a staleness problem rather than a live " +
+        "one. Re-run the deploy with bootstrap_data, or refresh the date-keyed shards."
+      : "")
+  );
+}
+
 function describeResidency(residency) {
   if (!residency) return "";
   return (
@@ -321,6 +354,13 @@ await check("the live map returns real stops for a real viewport", async () => {
   assert(inBox.length === stops.length, "some stops fall outside the requested viewport");
   observed.stop = stops[0];
   /*
+   * The published network's version, captured on the first map read.
+   *
+   * It is what every later failure about missing departures or an unplannable journey needs, and
+   * the map is the earliest response that carries it. See `describeArtifactAge`.
+   */
+  observed.networkArtifactVersion = body?.meta?.diagnostics?.artifact?.version ?? null;
+  /*
    * A stop the map says has a service, if there is one. Timetables come from the BODS datasets a
    * build ingested and stops come from all of NaPTAN, so a stop with no routes is a coverage
    * figure rather than a broken endpoint — and picking one arbitrarily would test the wrong
@@ -381,7 +421,8 @@ await check("a stop can be selected and returns a departure board", async () => 
     assert(
       departures.length > 0,
       `${stop.name} has ${observed.routes.length} routes but nothing due at ` +
-        `${SERVICE_HOURS.hour}:00 ${SERVICE_HOURS.weekday} London time`,
+        `${SERVICE_HOURS.hour}:00 ${SERVICE_HOURS.weekday} London time` +
+        describeArtifactAge(),
     );
   }
 
@@ -1421,7 +1462,8 @@ await check("a journey can be planned across real timetable data", async () => {
     assert(
       options.length > 0,
       `Leeds to Leeds Bradford Airport gave no option at ${SERVICE_HOURS.hour}:00 ` +
-        `${SERVICE_HOURS.weekday} London time — ${unavailable} — ${explained}`,
+        `${SERVICE_HOURS.weekday} London time — ${unavailable} — ${explained}` +
+        describeArtifactAge(),
     );
   }
 

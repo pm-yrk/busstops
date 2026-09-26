@@ -1,8 +1,34 @@
 # Bus Stops. Build State
 
-Last updated: 2026-09-26 (run 71 answered the map question; route detail did not 1102 under light load)
+Last updated: 2026-09-26 (the zero-departures failure is a stale artifact, and one cause covers three failures)
 
 ## Current status
+
+### Zero departures, no journey, London fine — one cause
+
+Run 71 failed three checks that looked like three problems:
+
+    FAIL  Piccadilly has 2 routes but nothing due at 8:00 Sat London time
+    FAIL  Leeds: 5 stop(s) carry routes but none has anything due
+    FAIL  a journey … no_data: 0 of 2 shard(s) read, 2 missing
+    pass  a London stop returns real TfL arrival predictions — 7 live from TfL
+
+They are one problem. Departure shards are `departures/<serviceDate>/<bucket>`
+and the planner's trips are `pattern-trips/<serviceDate>/<window>/<tile>` —
+**both keyed by the day they describe**. The deployed artifact is
+`2026-09-19T03:55:05.251Z`, seven days old, so every non-London board and every
+journey plan reads a key that does not exist. London passes throughout because
+TfL arrivals are live predictions rather than date-keyed shards.
+
+**Nothing was ever going to refresh it.** `static-network-daily.yml` has run
+exactly once, on 4 September, and it writes to `busstops-artifacts` — the
+production bucket — not `busstops-artifacts-preview`. The preview's only source
+of a current artifact is the deploy workflow's `bootstrap_data` input, which is
+off by default because the national GTFS build takes about 45 minutes.
+
+The verification now attaches the artifact's age and this explanation to both
+failures, so the next person does not go looking at the live feeds. No assertion
+was softened: they still fail.
 
 ### Run 71: the bus-paint failure is a race in the sweep, not a painting defect
 
