@@ -973,6 +973,14 @@ router.get("/v1/stops/:id", async (_request, { env, params }) => {
    * degradation `normal`. That is the single most misleading thing this API did.
    */
   let timetableFailures: Array<{ dataset: string; reason: string }> = [];
+  /*
+   * Whether a timetable for today exists at all, which the board needs and never had.
+   *
+   * The reader has always counted missing shards and the response has always thrown the count
+   * away, so "nothing is due" and "we published no timetable for today" arrived at the screen
+   * identical. They are not the same statement and only one of them is about buses.
+   */
+  let timetableCoverage: { read: number; missing: number; serviceDates: string[] } | undefined;
   if (departures.length === 0 && !isLondonAtcoCode(stop.atcoCode)) {
     const serviceDates = serviceDatesForBoard(now);
     const fromSeconds = Math.floor(now.getTime() / 1000) - DEPARTURE_GRACE_MINUTES * 60;
@@ -988,6 +996,11 @@ router.get("/v1/stops/:id", async (_request, { env, params }) => {
       : { rows: [], shardsRead: 0, shardsMissing: 0, failures: [] };
 
     timetableFailures = read.failures;
+    timetableCoverage = {
+      read: read.shardsRead,
+      missing: read.shardsMissing,
+      serviceDates: [...serviceDates],
+    };
     departures = departuresFromRows({
       stop,
       rows: read.rows,
@@ -1057,6 +1070,7 @@ router.get("/v1/stops/:id", async (_request, { env, params }) => {
         departures,
         routes,
         accessibility: stopAccessibility(stop),
+        ...(timetableCoverage === undefined ? {} : { timetableCoverage }),
         disruptions: snapshot
           ? noticesFor(snapshot.notices, {
               atcoCodes: [stop.atcoCode],

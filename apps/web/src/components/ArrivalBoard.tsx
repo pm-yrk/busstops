@@ -22,6 +22,15 @@ export interface ArrivalBoardProps {
   maxRows?: number;
   onViewAll?: () => void;
   degraded?: boolean;
+  /**
+   * Whether a timetable for today was published at all.
+   *
+   * Without it the board had one empty state for two different facts, and chose the misleading
+   * one: "No departures in the next hour" is a statement about the bus service, and a passenger
+   * reads it as "don't wait here". When the timetable for today was never published, the truth
+   * is about us, not about the buses.
+   */
+  timetableCoverage?: { read: number; missing: number; serviceDates: string[] };
 }
 
 export function ArrivalBoard({
@@ -33,8 +42,21 @@ export function ArrivalBoard({
   maxRows = 4,
   onViewAll,
   degraded = false,
+  timetableCoverage,
 }: ArrivalBoardProps) {
   const rows = departures.slice(0, maxRows);
+  /*
+   * A gap in our data, not a quiet stop.
+   *
+   * Every shard the reader asked for was absent and none answered: there is no timetable
+   * published for today at this stop, so we cannot say whether a bus is coming. Saying "no
+   * departures" here would be reporting our own staleness as a fact about the service.
+   */
+  const noTimetablePublished =
+    rows.length === 0 &&
+    timetableCoverage !== undefined &&
+    timetableCoverage.missing > 0 &&
+    timetableCoverage.read === 0;
 
   return (
     <section className="arrival-board" aria-labelledby="arrival-board-heading">
@@ -56,9 +78,11 @@ export function ArrivalBoard({
       <div className="arrival-board__screen">
         {rows.length === 0 ? (
           <p className="arrival-board__empty">
-            {degraded
-              ? "No live departures available right now. Timetabled departures are shown below where we have them."
-              : "No departures in the next hour."}
+            {noTimetablePublished
+              ? "We have no timetable published for today at this stop, so we cannot say what is due. This is a gap in our data, not a gap in the service."
+              : degraded
+                ? "No live departures available right now. Timetabled departures are shown below where we have them."
+                : "No departures in the next hour."}
           </p>
         ) : (
           <table className="arrival-board__table">

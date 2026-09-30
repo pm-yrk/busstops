@@ -172,6 +172,7 @@ export function SelectedStopBoard({ atcoCode, onClose, onResolved }: SelectedSto
             now={now}
             ageSeconds={ageSeconds}
             degraded={response.meta.degradation !== "normal"}
+            timetableCoverage={response.data.timetableCoverage}
           />
           {/*
             No weather scene here, deliberately.

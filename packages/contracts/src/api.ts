@@ -173,6 +173,31 @@ export const StopDeparturesResponseSchema = apiEnvelope(
     /** Official notices naming this stop or a route that calls here. */
     disruptions: z.array(DisruptionNoticeSchema),
     /**
+     * Whether a timetable for today was published at all.
+     *
+     * The board said "No departures in the next hour" in two completely different situations:
+     * the timetable is published and genuinely has nothing due, and no timetable for today was
+     * ever published. The first is information; the second is the board reporting a gap in our
+     * own data as a fact about the bus service, which is the worst thing a departure board can
+     * do — a passenger reads it as "don't wait here".
+     *
+     * Departure shards are keyed `departures/<serviceDate>/<bucket>`, so a stale artifact has no
+     * shard for today and every stop outside London reads a key that is simply absent. The
+     * reader already counted that; nothing carried it to the screen.
+     *
+     * Optional so an older client is unaffected; the Worker always sends it.
+     */
+    timetableCoverage: z
+      .object({
+        /** Shards that answered. */
+        read: z.number().int().nonnegative(),
+        /** Shards the reader asked for and did not find — a published-data gap, not a quiet day. */
+        missing: z.number().int().nonnegative(),
+        /** The service dates the board asked about, so the gap can be named precisely. */
+        serviceDates: z.array(z.string()).default([]),
+      })
+      .optional(),
+    /**
      * What it is like standing here, or null.
      *
      * Null is a real answer and a common one: the weather job publishes a degree square at a

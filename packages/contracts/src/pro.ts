@@ -69,6 +69,19 @@ export const ProMetricSchema = z.object({
   baselineValue: z.number().nullable(),
   /** What a reader can click through to in order to check the figure. */
   evidence: z.array(z.string()).default([]),
+  /**
+   * True when this figure is an illustration, not a measurement.
+   *
+   * Pro's live path produces four of its eight headline figures today; the rest wait on pipeline
+   * stages that do not exist yet, and an empty card teaches a reader nothing about what the
+   * product is for. So a card may carry an example value — but the reader must never be able to
+   * mistake one for the other, which is what this flag exists to make impossible: it drives a
+   * visible badge on the card and is set per figure, never per page, so a real measurement
+   * sitting beside an illustration is still unambiguously real.
+   *
+   * Default false. A figure is measured unless it says otherwise.
+   */
+  illustrative: z.boolean().default(false),
 });
 export type ProMetric = z.infer<typeof ProMetricSchema>;
 

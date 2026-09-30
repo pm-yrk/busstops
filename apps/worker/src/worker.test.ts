@@ -1845,6 +1845,78 @@ describe("the departure board reads the published index", () => {
     }
   });
 
+  it("never reports our own missing timetable as 'no departures'", async () => {
+    /*
+     * The recruiter-demo regression, in one test.
+     *
+     * The national build publishes exactly `[today, tomorrow]` of departure shards, so an
+     * artifact more than a day or two old has no shard for today and every stop outside London
+     * reads a key that is simply absent. The board showed "No departures in the next hour" —
+     * a statement about buses, which a passenger reads as "don't wait here" — when the true
+     * statement was about us.
+     *
+     * Run 73 is the proof that the code was never wrong: a same-day artifact returned real
+     * departures at eight stops across England, and the identical code returned none four days
+     * later. So the fix is not to the reader; it is to stop the board claiming something it
+     * cannot know.
+     */
+    const store = await publishedStore(); // published network, but no departure shard for today
+    resetWorkerState();
+
+    const response = await worker.fetch(get(`/v1/stops/${ATCO}`), makeEnv(store), ctx);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      data: {
+        departures: unknown[];
+        timetableCoverage?: { read: number; missing: number; serviceDates: string[] };
+      };
+    };
+
+    expect(body.data.departures).toHaveLength(0);
+    // The shards were asked for and were not there. That is the fact the board needs.
+    expect(body.data.timetableCoverage).toBeDefined();
+    expect(body.data.timetableCoverage!.read).toBe(0);
+    expect(body.data.timetableCoverage!.missing).toBeGreaterThan(0);
+    // And it names which days it asked about, so the gap can be described precisely.
+    expect(body.data.timetableCoverage!.serviceDates).toContain(today);
+  });
+
+  it("says nothing is due only when the timetable is actually there", async () => {
+    /*
+     * The other half, and the one that stops the fix becoming its own lie: with a shard
+     * published for today that genuinely holds nothing inside the window, "no departures" is
+     * the correct and useful answer, and the board must still be allowed to say it.
+     */
+    const store = await storeWithDepartures([departureRow(600, "16")]); // far outside the window
+    resetWorkerState();
+
+    const response = await worker.fetch(get(`/v1/stops/${ATCO}`), makeEnv(store), ctx);
+    const body = (await response.json()) as {
+      data: {
+        departures: unknown[];
+        timetableCoverage?: { read: number; missing: number };
+      };
+    };
+
+    expect(body.data.departures).toHaveLength(0);
+    // A shard answered, so this is a quiet stop rather than a missing timetable.
+    expect(body.data.timetableCoverage!.read).toBeGreaterThan(0);
+  });
+
+  it("returns the departures when the timetable for today is published", async () => {
+    // The acceptance condition stated plainly: stop exists + future journeys in the index
+    // ⇒ the board must not be empty.
+    const store = await storeWithDepartures([departureRow(4, "4"), departureRow(11, "16A")]);
+    resetWorkerState();
+
+    const response = await worker.fetch(get(`/v1/stops/${ATCO}`), makeEnv(store), ctx);
+    const body = (await response.json()) as {
+      data: { departures: Array<{ serviceRoutePublicName: string }> };
+    };
+    expect(body.data.departures.length).toBeGreaterThan(0);
+    expect(body.data.departures.map((row) => row.serviceRoutePublicName)).toEqual(["4", "16A"]);
+  });
+
   it("says the timetable could not be read rather than showing an empty board", async () => {
     const store = await storeWithDepartures([departureRow(6, "72")]);
     const bucket = bucketFrom(store);

@@ -165,6 +165,7 @@ export function StopPage() {
         now={now}
         ageSeconds={ageSeconds}
         degraded={response.meta.degradation !== "normal"}
+        timetableCoverage={response.data.timetableCoverage}
       />
 
       {response.data.disruptions.length > 0 ? (
