@@ -88,6 +88,19 @@ describe("ProMetricTile", () => {
     expect(screen.getByTestId("metric-punctuality").dataset.state).toBe("unmeasured");
   });
 
+  it("makes an example figure impossible to mistake for a measurement", () => {
+    /*
+     * This badge is the whole safety mechanism for the demo preview. If it ever stops rendering,
+     * simulated numbers sit on the page looking exactly like measured ones — so it is asserted
+     * by its own words, not only by a class.
+     */
+    render(<ProMetricTile metric={metric({ illustrative: true })} />);
+    const tile = screen.getByTestId("metric-punctuality");
+    expect(tile.dataset.state).toBe("illustrative");
+    expect(screen.getByText("Example figure")).toBeInTheDocument();
+    expect(screen.getByText(/Illustrative value, not a measurement/i)).toBeInTheDocument();
+  });
+
   it("marks a measured figure as measured", () => {
     render(<ProMetricTile metric={metric()} />);
     expect(screen.getByTestId("metric-punctuality").dataset.state).toBe("measured");
