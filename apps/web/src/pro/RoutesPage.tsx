@@ -4,7 +4,12 @@ import { LoadingBus } from "../components/LoadingBus.js";
 import { EmptyState, ErrorState, RouteBadge } from "../components/primitives.js";
 import { apiClient } from "../lib/api.js";
 import { useFetch } from "../lib/use-fetch.js";
-import { DataModeBanner, ScopeFilters, formatMetricValue } from "./ProPrimitives.js";
+import {
+  DataModeBanner,
+  IllustrativeBanner,
+  ScopeFilters,
+  formatMetricValue,
+} from "./ProPrimitives.js";
 import { PixelSectionHeading } from "../components/pixel/PixelSectionHeading.js";
 
 /**
@@ -43,6 +48,7 @@ export function RoutesPage() {
   return (
     <>
       <DataModeBanner provenance={routes.provenance} />
+      <IllustrativeBanner metrics={routes.rows.flatMap((row) => row.metrics)} />
       <ScopeFilters windowMinutes={windowMinutes} onWindowChange={setWindowMinutes} />
 
       {routes.comparabilityWarning ? (

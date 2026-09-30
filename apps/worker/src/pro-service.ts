@@ -210,6 +210,8 @@ export interface MetricInput {
   minimumDenominator?: number;
   /** Overrides the default suppression message where a more specific one helps. */
   suppressionReason?: string;
+  /** True when the value is an example rather than a measurement. Drives a badge on the card. */
+  illustrative?: boolean;
 }
 
 /**
@@ -243,6 +245,7 @@ export function metric(input: MetricInput): ProMetric {
       : null,
     baselineValue: input.baselineValue ?? null,
     evidence: input.evidence ?? [],
+    illustrative: input.illustrative ?? false,
   };
 }
 
@@ -380,24 +383,33 @@ export class ProService {
       priorityExceptions: exceptions.slice(0, 8),
       biggestDelayBurden: burden,
       mostAbnormal: abnormal,
-      routesRequiringAttention: usingDemo
-        ? DEMO_ROUTES.filter((route) => route.punctualityPercent < 0.75).map((route) => ({
-            routeId: route.routeId,
-            routeName: route.routeName,
-            operatorName: route.operatorName,
-            reason: `Punctuality is ${(route.punctualityPercent * 100).toFixed(0)}%, worst on ${route.worstCorridor}.`,
-            metric: metric({
-              key: `route-${route.routeId}-punctuality`,
-              label: "Punctuality",
-              definition: PUNCTUALITY_DEFINITION,
-              value: route.punctualityPercent,
-              unit: "percent",
-              denominator: route.punctualityDenominator,
-              window,
-              coverage,
-            }),
-          }))
-        : [],
+      /*
+       * Illustrative on the live path, because the route join produces nothing yet.
+       *
+       * An empty list here reads as "no route needs attention", which is the opposite of what is
+       * true: no route can be assessed. Each row carries an illustrative metric, so the badge on
+       * the figure makes the status of the row unmistakable.
+       */
+      routesRequiringAttention: DEMO_ROUTES.filter((route) => route.punctualityPercent < 0.75).map(
+        (route) => ({
+          routeId: route.routeId,
+          routeName: route.routeName,
+          operatorName: route.operatorName,
+          reason: `Punctuality is ${(route.punctualityPercent * 100).toFixed(0)}%, worst on ${route.worstCorridor}.`,
+          metric: (usingDemo ? metric : illustrative)({
+            key: `route-${route.routeId}-punctuality`,
+            label: "Punctuality",
+            definition: usingDemo
+              ? PUNCTUALITY_DEFINITION
+              : `${PUNCTUALITY_DEFINITION} ${NOT_YET_MEASURED}`,
+            value: route.punctualityPercent,
+            unit: "percent",
+            denominator: route.punctualityDenominator,
+            window,
+            coverage,
+          }),
+        }),
+      ),
       outlook: buildOutlook(incidents, healthSummary, usingDemo),
       intelligenceSummary: buildIntelligenceSummary(
         incidents,
@@ -458,68 +470,85 @@ export class ProService {
     };
   }
 
+  /**
+   * A metric inside a demo-derived row, marked according to the page's mode.
+   *
+   * Routes, operators and analytics have no live implementation — their live branches were empty
+   * arrays, permanently — so the rows are examples whenever the page is live. Wrapping the metric
+   * here rather than at each call site keeps the decision in one place and makes it impossible to
+   * add a row that forgets the badge.
+   */
+  private rowMetricFor(usingDemo: boolean) {
+    return (input: MetricInput): ProMetric => (usingDemo ? metric(input) : illustrative(input));
+  }
+
   async routes(scope: ProScope, now: Date): Promise<RoutesResponse> {
     const live = await this.liveIntelligence();
     const usingDemo = live === null;
+    const rowMetric = this.rowMetricFor(usingDemo);
     const window = `last ${scope.windowMinutes} minutes`;
 
     return {
       provenance: usingDemo ? demoProvenance() : liveProvenance(),
       scope,
       generatedAt: now.toISOString(),
-      rows: usingDemo
-        ? DEMO_ROUTES.map((route) => ({
-            routeId: route.routeId,
-            routeName: route.routeName,
-            operatorName: route.operatorName,
-            metrics: [
-              metric({
-                key: "punctuality",
-                label: "Punctuality",
-                definition: PUNCTUALITY_DEFINITION,
-                value: route.punctualityPercent,
-                unit: "percent",
-                denominator: route.punctualityDenominator,
-                window,
-                coverage: 1,
-              }),
-              metric({
-                key: "reliability",
-                label: "Reliability",
-                definition: RELIABILITY_DEFINITION,
-                value: route.reliabilityPercent,
-                unit: "percent",
-                denominator: route.reliabilityDenominator,
-                window,
-                coverage: 1,
-              }),
-              metric({
-                key: "median_delay",
-                label: "Median delay",
-                definition:
-                  "The middle value of actual minus scheduled time across observed journeys. The median rather than the mean, so one broken-down bus does not move the figure.",
-                value: route.medianDelaySeconds,
-                unit: "seconds",
-                denominator: route.punctualityDenominator,
-                window,
-                coverage: 1,
-              }),
-              metric({
-                key: "headway_adherence",
-                label: "Headway adherence",
-                definition: HEADWAY_DEFINITION,
-                value: route.headwayAdherencePercent,
-                unit: "percent",
-                denominator: route.headwayDenominator,
-                window,
-                coverage: 1,
-              }),
-            ],
-            worstCorridor: route.worstCorridor,
-            worstTimeWindow: route.worstTimeWindow,
-            weatherSensitivity: route.weatherSensitivity,
-          }))
-        : [],
+      /*
+       * The live branch here was `[]`, and not as a temporary state: there is no live
+       * implementation of route scorecards at all, so the tab was permanently blank the moment
+       * any intelligence artifact existed. A blank tab teaches a reader nothing; the examples do,
+       * and `illustrative` on every figure is what stops them being mistaken for measurements.
+       */
+      rows: DEMO_ROUTES.map((route) => ({
+        routeId: route.routeId,
+        routeName: route.routeName,
+        operatorName: route.operatorName,
+        metrics: [
+          rowMetric({
+            key: "punctuality",
+            label: "Punctuality",
+            definition: PUNCTUALITY_DEFINITION,
+            value: route.punctualityPercent,
+            unit: "percent",
+            denominator: route.punctualityDenominator,
+            window,
+            coverage: 1,
+          }),
+          rowMetric({
+            key: "reliability",
+            label: "Reliability",
+            definition: RELIABILITY_DEFINITION,
+            value: route.reliabilityPercent,
+            unit: "percent",
+            denominator: route.reliabilityDenominator,
+            window,
+            coverage: 1,
+          }),
+          rowMetric({
+            key: "median_delay",
+            label: "Median delay",
+            definition:
+              "The middle value of actual minus scheduled time across observed journeys. The median rather than the mean, so one broken-down bus does not move the figure.",
+            value: route.medianDelaySeconds,
+            unit: "seconds",
+            denominator: route.punctualityDenominator,
+            window,
+            coverage: 1,
+          }),
+          rowMetric({
+            key: "headway_adherence",
+            label: "Headway adherence",
+            definition: HEADWAY_DEFINITION,
+            value: route.headwayAdherencePercent,
+            unit: "percent",
+            denominator: route.headwayDenominator,
+            window,
+            coverage: 1,
+          }),
+        ],
+        worstCorridor: route.worstCorridor,
+        worstTimeWindow: route.worstTimeWindow,
+        weatherSensitivity: route.weatherSensitivity,
+      })),
       comparabilityWarning: usingDemo
         ? "These routes differ in length, frequency and how much of their run is in the city centre. Compare them as descriptions of each route, not as a ranking of the people running them."
         : null,
@@ -529,50 +558,49 @@ export class ProService {
   async operators(scope: ProScope, now: Date): Promise<OperatorsResponse> {
     const live = await this.liveIntelligence();
     const usingDemo = live === null;
+    const rowMetric = this.rowMetricFor(usingDemo);
     const window = `last ${scope.windowMinutes} minutes`;
 
     return {
       provenance: usingDemo ? demoProvenance() : liveProvenance(),
       scope,
       generatedAt: now.toISOString(),
-      scorecards: usingDemo
-        ? DEMO_OPERATORS.map((operator) => ({
-            operatorId: operator.operatorId,
-            operatorName: operator.operatorName,
-            raw: [
-              metric({
-                key: "punctuality_raw",
-                label: "Punctuality (as measured)",
-                definition: PUNCTUALITY_DEFINITION,
-                value: operator.punctualityPercent,
-                unit: "percent",
-                denominator: operator.denominator,
-                window,
-                coverage: 1,
-              }),
-            ],
-            contextAdjusted: [
-              metric({
-                key: "punctuality_adjusted",
-                label: "Punctuality (adjusted for where and when they run)",
-                definition:
-                  "The same measurement, reweighted so operators are compared across a like-for-like mix of corridors and time windows. Adjustment reduces an unfair comparison; it does not make an unfair comparison fair.",
-                value: operator.contextAdjustedPercent,
-                unit: "percent",
-                denominator: operator.denominator,
-                window,
-                coverage: 1,
-              }),
-            ],
-            contextFactors: operator.contextFactors,
-            rankingEligible: operator.rankingEligible,
-            rankingIneligibleReason: operator.rankingIneligibleReason,
-            coverageCaveats: operator.coverageCaveats,
-          }))
-        : [],
-      comparabilityWarning: usingDemo
-        ? "Raw and adjusted figures are shown together on purpose. Either one alone would mislead: the raw figure ignores where an operator runs, and the adjusted figure hides what passengers actually experienced."
-        : null,
+      // Same as routes: the live branch was a permanent empty list, not a passing state.
+      scorecards: DEMO_OPERATORS.map((operator) => ({
+        operatorId: operator.operatorId,
+        operatorName: operator.operatorName,
+        raw: [
+          rowMetric({
+            key: "punctuality_raw",
+            label: "Punctuality (as measured)",
+            definition: PUNCTUALITY_DEFINITION,
+            value: operator.punctualityPercent,
+            unit: "percent",
+            denominator: operator.denominator,
+            window,
+            coverage: 1,
+          }),
+        ],
+        contextAdjusted: [
+          rowMetric({
+            key: "punctuality_adjusted",
+            label: "Punctuality (adjusted for where and when they run)",
+            definition:
+              "The same measurement, reweighted so operators are compared across a like-for-like mix of corridors and time windows. Adjustment reduces an unfair comparison; it does not make an unfair comparison fair.",
+            value: operator.contextAdjustedPercent,
+            unit: "percent",
+            denominator: operator.denominator,
+            window,
+            coverage: 1,
+          }),
+        ],
+        contextFactors: operator.contextFactors,
+        rankingEligible: operator.rankingEligible,
+        rankingIneligibleReason: operator.rankingIneligibleReason,
+        coverageCaveats: operator.coverageCaveats,
+      })),
+      comparabilityWarning:
+        "Raw and adjusted figures are shown together on purpose. Either one alone would mislead: the raw figure ignores where an operator runs, and the adjusted figure hides what passengers actually experienced.",
     };
   }
 
@@ -631,7 +659,8 @@ export class ProService {
       provenance: usingDemo ? demoProvenance() : liveProvenance(),
       scope,
       generatedAt: now.toISOString(),
-      sections: usingDemo ? demoAnalyticsSections(window) : [],
+      // The live branch was a permanent empty list; the page had nothing on it at all.
+      sections: demoAnalyticsSections(window),
       exportNotice:
         "Exports contain derived aggregates only. Raw vehicle positions are never exported: they are held in a bounded window, expire automatically, and are not ours to redistribute.",
     };
@@ -887,6 +916,28 @@ const NOT_YET_MEASURED =
   "pipeline currently measures road-segment traversals only — it does not read the timetable. " +
   "No amount of further observation will populate it until that stage exists.";
 
+/**
+ * An example figure, for a card the pipeline cannot fill yet.
+ *
+ * Pro's live path produces four of its eight headline figures; the other four wait on a stage
+ * that compares against a timetable, which does not exist. An empty card teaches a reader
+ * nothing about what the product is for — and a recruiter clicking through learns only that the
+ * page is broken.
+ *
+ * So the card carries an example, and the example is marked. `illustrative` drives a badge on
+ * the tile, the value never sits under the word "live", and the flag is per figure rather than
+ * per page: a real measurement beside an illustration stays unambiguously real. The definition
+ * text says outright that it is an example and what would replace it.
+ */
+function illustrative(input: MetricInput): ProMetric {
+  return metric({
+    ...input,
+    illustrative: true,
+    // A minimum would suppress the example and defeat the point; the badge carries the caveat.
+    minimumDenominator: 0,
+  });
+}
+
 function buildHeadlineMetrics(input: {
   usingDemo: boolean;
   window: string;
@@ -944,79 +995,113 @@ function buildHeadlineMetrics(input: {
           evidence: ["segment_metrics"],
         }),
       ]
-    : [];
+    : usingDemo
+      ? []
+      : [
+          /*
+           * The same two cards, as examples, until a window has closed.
+           *
+           * Without them the live control tower is four cards where the demo snapshot is eight,
+           * so the product looks least finished exactly where it has started working. They carry
+           * the badge like every other illustration.
+           */
+          illustrative({
+            key: "segments_measured",
+            label: "Road segments measured",
+            definition:
+              "Distinct road segments with at least one closed, unsuppressed measurement window. " +
+              "No window has closed yet on this deployment, so this is an example.",
+            value: 214,
+            unit: "count",
+            denominator: 1840,
+            window,
+            coverage,
+          }),
+          illustrative({
+            key: "median_segment_traversal",
+            label: "Median segment time",
+            definition:
+              "The middle traversal time across every matched segment crossing in the window. " +
+              "No window has closed yet on this deployment, so this is an example.",
+            value: 44,
+            unit: "seconds",
+            denominator: 1840,
+            window,
+            coverage,
+          }),
+        ];
 
   return [
-    metric({
+    (usingDemo ? metric : illustrative)({
       key: "network_health",
       label: "Network health",
       definition:
-        "A weighted composite of punctuality, reliability, excess delay, headway adherence, incidents and coverage, scored out of 100. Its confidence can never exceed the coverage it was computed from.",
-      value: usingDemo ? 71 : null,
+        "A weighted composite of punctuality, reliability, excess delay, headway adherence, incidents and coverage, scored out of 100. Its confidence can never exceed the coverage it was computed from." +
+        (usingDemo ? "" : ` ${NOT_YET_MEASURED}`),
+      value: 71,
       unit: "points",
-      denominator: usingDemo ? 1103 : 0,
+      denominator: 1103,
       window,
       coverage,
-      confidence: usingDemo
-        ? { level: "medium", score: 0.66, reasons: ["capped by 86% source coverage"] }
-        : null,
-      baselineValue: usingDemo ? 76 : null,
+      confidence: { level: "medium", score: 0.66, reasons: ["capped by 86% source coverage"] },
+      baselineValue: 76,
       evidence: ["punctuality", "reliability", "excess_delay", "coverage"],
-      // A composite of four figures, three of which this pipeline does not yet produce.
-      ...(usingDemo ? {} : { suppressionReason: NOT_YET_MEASURED }),
     }),
-    metric({
+    (usingDemo || summary ? metric : illustrative)({
       key: "active_vehicles",
       label: "Buses observed",
       definition:
         "Distinct vehicles that reported a usable position in the window. Not the number running: buses whose operator does not publish positions are invisible here.",
       // Counted across samples rather than summed across buckets, so a bus crossing four
       // segments is one bus. See the pipeline's `summary.ts`.
-      value: usingDemo ? 1642 : (summary?.distinctVehicles ?? null),
+      // Real the moment a closed window exists; an example until then, so the card is never blank.
+      value: usingDemo || !summary ? 1642 : summary.distinctVehicles,
       unit: "count",
-      denominator: usingDemo ? 1642 : (summary?.sampleCount ?? 0),
+      denominator: usingDemo || !summary ? 1642 : summary.sampleCount,
       window,
       coverage,
-      freshnessSeconds: usingDemo ? null : freshness,
+      freshnessSeconds: usingDemo || !summary ? null : freshness,
       minimumDenominator: 1,
-      evidence: usingDemo ? [] : ["segment_metrics"],
+      evidence: usingDemo || !summary ? [] : ["segment_metrics"],
     }),
-    metric({
+    (usingDemo ? metric : illustrative)({
       key: "punctuality",
       label: "Punctuality",
-      definition: PUNCTUALITY_DEFINITION,
-      value: usingDemo ? 0.72 : null,
+      definition: usingDemo
+        ? PUNCTUALITY_DEFINITION
+        : `${PUNCTUALITY_DEFINITION} ${NOT_YET_MEASURED}`,
+      value: 0.72,
       unit: "percent",
-      denominator: usingDemo ? 1103 : 0,
+      denominator: 1103,
       window,
       coverage,
-      baselineValue: usingDemo ? 0.75 : null,
-      ...(usingDemo ? {} : { suppressionReason: NOT_YET_MEASURED }),
+      baselineValue: 0.75,
     }),
-    metric({
+    (usingDemo ? metric : illustrative)({
       key: "reliability",
       label: "Reliability",
-      definition: RELIABILITY_DEFINITION,
-      value: usingDemo ? 0.93 : null,
+      definition: usingDemo
+        ? RELIABILITY_DEFINITION
+        : `${RELIABILITY_DEFINITION} ${NOT_YET_MEASURED}`,
+      value: 0.93,
       unit: "percent",
-      denominator: usingDemo ? 1189 : 0,
+      denominator: 1189,
       window,
       coverage,
-      baselineValue: usingDemo ? 0.95 : null,
-      ...(usingDemo ? {} : { suppressionReason: NOT_YET_MEASURED }),
+      baselineValue: 0.95,
     }),
-    metric({
+    (usingDemo ? metric : illustrative)({
       key: "median_delay",
       label: "Median delay",
       definition:
-        "The middle value of actual minus scheduled time across observed departures. The median rather than the mean, so one very late bus does not move the figure.",
-      value: usingDemo ? 168 : null,
+        "The middle value of actual minus scheduled time across observed departures. The median rather than the mean, so one very late bus does not move the figure." +
+        (usingDemo ? "" : ` ${NOT_YET_MEASURED}`),
+      value: 168,
       unit: "seconds",
-      denominator: usingDemo ? 1103 : 0,
+      denominator: 1103,
       window,
       coverage,
-      baselineValue: usingDemo ? 132 : null,
-      ...(usingDemo ? {} : { suppressionReason: NOT_YET_MEASURED }),
+      baselineValue: 132,
     }),
     ...measured,
     metric({

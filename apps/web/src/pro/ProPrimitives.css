@@ -14,6 +14,12 @@
   background: var(--colour-amber-pale);
 }
 
+/* Same shape as the other two notices, in the amber the example badges use. */
+.pro-mode--illustrative {
+  border-left-color: var(--colour-amber);
+  background: var(--colour-amber-pale);
+}
+
 .pro-mode--unavailable {
   border-left-color: var(--colour-critical);
   background: var(--colour-critical-pale);
@@ -93,6 +99,38 @@
 
 .pro-metric[data-state="withheld"] {
   border-left: 3px solid var(--colour-amber);
+}
+
+/*
+ * An illustration, marked so it cannot be mistaken for a measurement.
+ *
+ * A dashed edge and a badge rather than a colour alone: the difference between an example and a
+ * real figure is the single most important thing on this page to get across, and colour is the
+ * one channel a reader may not have.
+ */
+.pro-metric[data-state="illustrative"] {
+  border-left: 3px dashed var(--colour-amber);
+  background: var(--colour-amber-pale);
+}
+
+.pro-metric__demo-badge {
+  margin-inline-start: auto;
+  font-family: var(--font-pixel);
+  font-size: var(--font-size-small);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 0.1rem 0.4rem;
+  border: 1px solid var(--colour-amber);
+  border-radius: var(--radius-sm);
+  color: var(--colour-ink);
+  background: var(--colour-surface);
+  white-space: nowrap;
+}
+
+.pro-metric__illustrative {
+  margin: 0;
+  font-size: var(--font-size-small);
+  color: var(--colour-ink);
 }
 
 .pro-metric[data-state="unmeasured"] {

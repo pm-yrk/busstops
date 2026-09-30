@@ -14,6 +14,31 @@ import "./ProPrimitives.css";
  * eleven journeys looks exactly like one from nine hundred unless the component refuses to let it.
  */
 
+/**
+ * Says so at the top of the page when anything below it is an illustration.
+ *
+ * The per-card badge is what makes an individual figure unmistakable; this is what stops a
+ * reader forming an impression of the whole page before they read a single card. It appears only
+ * when at least one illustrative figure is actually on the page, so a fully measured Pro carries
+ * no caveat it does not need.
+ */
+export function IllustrativeBanner({ metrics }: { metrics: readonly ProMetric[] }) {
+  const count = metrics.filter((entry) => entry.illustrative).length;
+  if (count === 0) return null;
+
+  return (
+    <div className="pro-mode pro-mode--illustrative" role="status" data-testid="pro-illustrative">
+      <PixelWarning size={18} className="pro-mode__mark" />
+      <strong>Demo preview — live analytics pipeline still being connected</strong>
+      <p>
+        {count} figure{count === 1 ? " on this page is" : "s on this page are"} marked{" "}
+        <em>Example figure</em>: illustrative values shown so the layout can be understood. Every
+        other figure here is measured from real observations and says how and when.
+      </p>
+    </div>
+  );
+}
+
 export function DataModeBanner({ provenance }: { provenance: ProProvenance }) {
   if (provenance.dataMode === "live") return null;
 
@@ -149,17 +174,29 @@ export function ProMetricTile({ metric }: { metric: ProMetric }) {
    * for one of them it never will. The state is on the element, so the stylesheet can make the
    * difference visible rather than leaving it to the sentence.
    */
-  const state = !metric.suppressed
-    ? "measured"
-    : /does not read the timetable/.test(metric.suppressionReason ?? "")
-      ? "unmeasured"
-      : "withheld";
+  const state = metric.illustrative
+    ? "illustrative"
+    : !metric.suppressed
+      ? "measured"
+      : /does not read the timetable/.test(metric.suppressionReason ?? "")
+        ? "unmeasured"
+        : "withheld";
 
   return (
     <article className="pro-metric" data-state={state} data-testid={`metric-${metric.key}`}>
       <header>
         {Mark ? <Mark size={16} className="pro-metric__mark" /> : null}
         <h3>{metric.label}</h3>
+        {/*
+          The badge that makes the figure below unmistakable.
+ 
+          It sits in the header rather than under the value so it is read before the number, and
+          it says "example" rather than anything that could be skimmed as a data mode. A reader
+          must not be able to take an illustration for a measurement at a glance.
+        */}
+        {metric.illustrative ? (
+          <span className="pro-metric__demo-badge">Example figure</span>
+        ) : null}
       </header>
 
       <p className="pro-metric__value">
@@ -204,7 +241,12 @@ export function ProMetricTile({ metric }: { metric: ProMetric }) {
         </p>
       ) : null}
 
-      {metric.suppressed ? (
+      {metric.illustrative ? (
+        <p className="pro-metric__illustrative">
+          Illustrative value, not a measurement — shown so the card can be understood while this
+          part of the pipeline is still being connected.
+        </p>
+      ) : metric.suppressed ? (
         <p className="pro-metric__suppressed">{metric.suppressionReason}</p>
       ) : (
         <p className="pro-metric__comparison">

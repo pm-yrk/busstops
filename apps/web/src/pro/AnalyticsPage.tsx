@@ -4,7 +4,12 @@ import { LoadingBus } from "../components/LoadingBus.js";
 import { EmptyState, ErrorState } from "../components/primitives.js";
 import { apiClient } from "../lib/api.js";
 import { useFetch } from "../lib/use-fetch.js";
-import { DataModeBanner, ProMetricTile, ScopeFilters } from "./ProPrimitives.js";
+import {
+  DataModeBanner,
+  IllustrativeBanner,
+  ProMetricTile,
+  ScopeFilters,
+} from "./ProPrimitives.js";
 import { PixelSectionHeading } from "../components/pixel/PixelSectionHeading.js";
 
 /**
@@ -46,6 +51,9 @@ export function AnalyticsPage() {
   return (
     <>
       <DataModeBanner provenance={analytics.provenance} />
+      <IllustrativeBanner
+        metrics={analytics.sections.flatMap((section) => section.metrics ?? [])}
+      />
       <ScopeFilters windowMinutes={windowMinutes} onWindowChange={setWindowMinutes} />
 
       {analytics.sections.length > 0 ? (

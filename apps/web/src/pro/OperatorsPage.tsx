@@ -4,7 +4,12 @@ import { LoadingBus } from "../components/LoadingBus.js";
 import { EmptyState, ErrorState, StateLozenge } from "../components/primitives.js";
 import { apiClient } from "../lib/api.js";
 import { useFetch } from "../lib/use-fetch.js";
-import { DataModeBanner, ProMetricTile, ScopeFilters } from "./ProPrimitives.js";
+import {
+  DataModeBanner,
+  IllustrativeBanner,
+  ProMetricTile,
+  ScopeFilters,
+} from "./ProPrimitives.js";
 import { PixelSectionHeading } from "../components/pixel/PixelSectionHeading.js";
 
 /**
@@ -52,6 +57,9 @@ export function OperatorsPage() {
   return (
     <>
       <DataModeBanner provenance={operators.provenance} />
+      <IllustrativeBanner
+        metrics={operators.scorecards.flatMap((card) => [...card.raw, ...card.contextAdjusted])}
+      />
       <ScopeFilters windowMinutes={windowMinutes} onWindowChange={setWindowMinutes} />
 
       {operators.comparabilityWarning ? (

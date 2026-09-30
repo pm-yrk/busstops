@@ -41,6 +41,7 @@ function metric(overrides: Partial<ProMetric> = {}): ProMetric {
     suppressionReason: null,
     baselineValue: 0.75,
     evidence: [],
+    illustrative: false,
     ...overrides,
   };
 }

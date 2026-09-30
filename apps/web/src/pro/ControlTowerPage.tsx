@@ -8,6 +8,7 @@ import {
   BandStrip,
   CoverageWarning,
   DataModeBanner,
+  IllustrativeBanner,
   ProMetricTile,
   ScopeFilters,
 } from "./ProPrimitives.js";
@@ -50,6 +51,7 @@ export function ControlTowerPage() {
   return (
     <>
       <DataModeBanner provenance={tower.provenance} />
+      <IllustrativeBanner metrics={tower.headline} />
       <CoverageWarning message={tower.coverageWarning} />
 
       <ScopeFilters windowMinutes={windowMinutes} onWindowChange={setWindowMinutes} />

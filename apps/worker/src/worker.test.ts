@@ -958,12 +958,16 @@ describe("Bus Stops Pro", () => {
     expect(vehicles?.window).toContain("settled 12:15");
   });
 
-  it("says a figure is unmeasured rather than starved of observations", async () => {
+  it("fills the live control tower, and marks every figure it could not measure", async () => {
     /*
-     * Punctuality, reliability and delay are comparisons against a schedule, and this pipeline
-     * never reads a timetable. They used to carry the default suppression text — "No observations
-     * have been published for this scope and window" — which tells a reader that more data would
-     * fill the tile. It would not. Only a stage that does not exist yet would.
+     * The recruiter-demo problem: Pro looked *emptier* in live mode than in demo mode. Once any
+     * intelligence artifact exists the page switches to live, where four of the eight headline
+     * figures came back null because the stage that would compute them — a comparison against a
+     * timetable — does not exist. Four empty cards teach a reader nothing about the product.
+     *
+     * So the cards carry examples, and each example is marked. The rule that makes this safe is
+     * per figure, not per page: a measured figure sitting beside an illustration must still be
+     * unambiguously measured, so nothing that came from real observations may carry the flag.
      */
     const store = await publishedStore();
     const artifacts = new ArtifactStore(store);
@@ -980,11 +984,131 @@ describe("Bus Stops Pro", () => {
     const parsed = ControlTowerResponseSchema.parse(
       ((await response.json()) as { data: unknown }).data,
     );
-    for (const key of ["punctuality", "reliability", "median_delay", "network_health"]) {
+    expect(parsed.provenance.dataMode).toBe("live");
+
+    // Every headline card now carries a figure a reader can look at.
+    expect(parsed.headline.length).toBeGreaterThanOrEqual(6);
+    for (const entry of parsed.headline) {
+      expect(entry.value, `${entry.key} has nothing to show`).not.toBeNull();
+    }
+
+    /*
+     * The four that need a timetable comparison are always marked, whatever else is published:
+     * no amount of observation fills them, so they can never become measurements here.
+     */
+    const marked = new Set(
+      parsed.headline.filter((entry) => entry.illustrative).map((entry) => entry.key),
+    );
+    for (const key of ["network_health", "punctuality", "reliability", "median_delay"]) {
+      expect(marked.has(key), `${key} must be marked as an example`).toBe(true);
+    }
+
+    /*
+     * And the one figure here that IS measured must not be marked. `abnormal_disruptions` is
+     * counted from the published incidents, so a badge on it would be a lie in the other
+     * direction — telling a reader a real measurement is an example.
+     */
+    const abnormal = parsed.headline.find((entry) => entry.key === "abnormal_disruptions");
+    expect(abnormal?.illustrative).toBe(false);
+
+    // Route attention is populated rather than an empty list reading as "nothing needs attention".
+    expect(parsed.routesRequiringAttention.length).toBeGreaterThan(0);
+    for (const route of parsed.routesRequiringAttention) {
+      expect(route.metric.illustrative).toBe(true);
+    }
+  });
+
+  it("stops marking a figure as an example the moment it can be measured", async () => {
+    /*
+     * The other direction, and the one that keeps the badge meaningful. Once a closed window is
+     * published, buses observed and the two segment figures are real measurements and must lose
+     * the badge — otherwise the mark degrades into decoration that appears on everything and a
+     * reader learns to ignore it.
+     */
+    const store = await publishedStore();
+    const artifacts = new ArtifactStore(store);
+    await artifacts.publish({
+      dataset: "intelligence/incidents",
+      version: "v1",
+      records: [],
+      schemaVersion: "1.0.0",
+      minimumRecordCount: 0,
+      allowEmpty: true,
+    });
+    await artifacts.publish({
+      dataset: "intelligence/network-summary",
+      version: "v1",
+      records: [
+        {
+          generatedAt: "2026-09-19T12:20:00.000Z",
+          windowStart: "2026-09-19T11:55:00.000Z",
+          windowEnd: "2026-09-19T12:05:00.000Z",
+          closedAt: "2026-09-19T12:15:00.000Z",
+          bucketSeconds: 300,
+          latenessGraceSeconds: 600,
+          segmentsMeasured: 214,
+          closedBuckets: 380,
+          suppressedBuckets: 166,
+          sampleCount: 1840,
+          distinctVehicles: 613,
+          distinctRoutes: 88,
+          medianTraversalSeconds: 44,
+          p90TraversalSeconds: 121,
+          medianSpeedMetresPerSecond: 6.4,
+          meanMatchConfidence: 0.71,
+          coverage: 0.82,
+        },
+      ],
+      schemaVersion: "1.0.0",
+      minimumRecordCount: 1,
+    });
+
+    const response = await worker.fetch(get("/v1/pro/control-tower"), makeEnv(store), ctx);
+    const parsed = ControlTowerResponseSchema.parse(
+      ((await response.json()) as { data: unknown }).data,
+    );
+    const byKey = new Map(parsed.headline.map((entry) => [entry.key, entry]));
+
+    for (const key of ["active_vehicles", "segments_measured", "median_segment_traversal"]) {
+      expect(byKey.get(key)?.illustrative, `${key} is measured and must not be marked`).toBe(false);
+    }
+    // And the real numbers, not the examples.
+    expect(byKey.get("active_vehicles")?.value).toBe(613);
+    // The timetable four are still examples, because a summary does not give them a timetable.
+    expect(byKey.get("punctuality")?.illustrative).toBe(true);
+  });
+
+  it("still tells a reader that no amount of observation will fill these figures", async () => {
+    /*
+     * This used to assert that punctuality, reliability, delay and network health were
+     * *suppressed* with a reason saying the pipeline does not read the timetable. They now carry
+     * an example value instead, because four blank cards taught a reader nothing — but the
+     * original point must survive the change, and it is the more important half: a reader must
+     * not come away thinking more data would fill them.
+     *
+     * So the guarantee moved rather than went. Each one is marked as an example, and each one's
+     * definition still says outright that this pipeline measures road-segment traversals and
+     * does not read the timetable.
+     */
+    const store = await publishedStore();
+    const artifacts = new ArtifactStore(store);
+    await artifacts.publish({
+      dataset: "intelligence/incidents",
+      version: "v1",
+      records: [],
+      schemaVersion: "1.0.0",
+      minimumRecordCount: 0,
+      allowEmpty: true,
+    });
+
+    const response = await worker.fetch(get("/v1/pro/control-tower"), makeEnv(store), ctx);
+    const parsed = ControlTowerResponseSchema.parse(
+      ((await response.json()) as { data: unknown }).data,
+    );
+    for (const key of ["punctuality", "reliability", "median_delay"]) {
       const found = parsed.headline.find((entry) => entry.key === key);
-      expect(found?.suppressed, key).toBe(true);
-      expect(found?.suppressionReason, key).toMatch(/does not read the timetable/);
-      expect(found?.suppressionReason, key).not.toMatch(/No observations have been published/);
+      expect(found?.illustrative, key).toBe(true);
+      expect(found?.definition, key).toMatch(/does not read the timetable/);
     }
   });
 
