@@ -28,6 +28,17 @@ on:
         # the one already in the bucket; rebuilding it is a deliberate data task, asked for by
         # turning this on.
         default: false
+      refresh_departures:
+        description: "Carry the timetable forward (departures + pattern trips only, ~70 min, no rebuild)"
+        type: boolean
+        # The cheap half of a rebuild, and the half that expires. Shards are keyed by service date,
+        # so an artifact stops answering outside London once its horizon runs out; this republishes
+        # only the two dated families, at the version already live.
+        default: false
+      horizon_days:
+        description: "Service dates to publish, counting today (max 8)"
+        type: string
+        default: "4"
       prune_artifacts:
         description: "Network artifact retention: report | apply | skip"
         type: choice
@@ -497,6 +508,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           FORCE_REBUILD: "true"
+          SERVICE_DATE_HORIZON_DAYS: ${{ inputs.horizon_days || '4' }}
           # Headroom for the indexes the streamed build holds — stops, routes, the calendar and
           # the trips inside the horizon — not for file contents: the GTFS archive is read as a
           # stream and the journeys spill to disk. Node's default heap is a fraction of the
@@ -537,6 +549,53 @@ jobs:
         with:
           name: preview-bootstrap-report
           path: build-report.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+      # Carrying the timetable forward without rebuilding the country.
+      #
+      # Everything except these two families is keyed by nothing and never expires; these two are
+      # keyed by service date and are the entire reason a healthy artifact stops answering. So this
+      # streams the archive once and republishes only them, at the version already serving traffic,
+      # which needs no new pointer and no index swap. It runs after the bootstrap rather than instead
+      # of it, so asking for both is harmless: the second pass simply finds the days already there.
+      - name: Carry the timetable forward
+        id: refresh_departures
+        if: ${{ !cancelled() && inputs.refresh_departures }}
+        timeout-minutes: 110
+        env:
+          BODS_API_KEY: ${{ secrets.BODS_API_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          DEPARTURES_ONLY: "true"
+          SERVICE_DATE_HORIZON_DAYS: ${{ inputs.horizon_days || '4' }}
+          NODE_OPTIONS: "--max-old-space-size=12288"
+        run: |
+          set -o pipefail
+          df -h /
+          npx tsx pipelines/static-network/run-daily.ts 2>&1 | tee refresh.log && STATUS=0 || STATUS=$?
+          echo "--- last 40 lines from the refresh (exit $STATUS) ---"
+          tail -40 refresh.log || true
+          df -h /
+          exit "$STATUS"
+
+      # Whether this run bootstrapped or not, say how many days of timetable the live artifact can
+      # actually answer for. An artifact goes blank outside London the moment its horizon runs out,
+      # and the only honest way to know how close that is is to count the objects in the bucket.
+      - name: How many days of timetable the preview holds
+        if: ${{ !cancelled() }}
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          SERVICE_DATE_HORIZON_DAYS: ${{ inputs.horizon_days || '4' }}
+        run: npx tsx pipelines/static-network/prove-horizon.ts
+
+      - name: Upload the horizon report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: preview-horizon-report
+          path: horizon-report.json
           retention-days: 7
           if-no-files-found: ignore
 

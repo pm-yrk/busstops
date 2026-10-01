@@ -7,16 +7,11 @@ import { boundsFromParam, clampBoundsToMaxArea, vehicleHref, type Bounds } from 
 import { delayLabel, distanceLabel, freshnessLabel } from "../lib/format.js";
 import { LoadingBus } from "../components/LoadingBus.js";
 import { MapView } from "../components/MapView.js";
+import { fetchMapWithFallback, type MapAttemptOutcome } from "../lib/map-fallback.js";
 import { SelectedStopBoard } from "../components/SelectedStopBoard.js";
 import { SelectedVehicleBoard } from "../components/SelectedVehicleBoard.js";
 import { describeEmptyVehicles, emptyVehicleReason } from "../components/mapLayers.js";
-import {
-  DataAge,
-  EmptyState,
-  ErrorState,
-  ServiceBanner,
-  StateLozenge,
-} from "../components/primitives.js";
+import { DataAge, EmptyState, ServiceBanner, StateLozenge } from "../components/primitives.js";
 import "./LiveMapPage.css";
 import { PixelSectionHeading } from "../components/pixel/PixelSectionHeading.js";
 
@@ -119,19 +114,33 @@ export function LiveMapPage() {
     Math.max(MAP_QUERY_LIMITS.minZoom, Math.round(zoom)),
   );
 
+  /*
+   * The map asks up to three times, because one refusal is not an answer.
+   *
+   * `/v1/map` is the request that error 1102 lands on, and in a browser that arrives as a blocked
+   * fetch rather than a status — so the page used to show nothing at all: no basemap, no stops, no
+   * way to open a stop. See map-fallback.ts: ask again, then ask for a quarter of the view, and only
+   * then report a failure.
+   */
   const fetcher = useCallback(
-    (signal: AbortSignal) => apiClient.map(clamped, safeZoom, signal),
+    (signal: AbortSignal) =>
+      fetchMapWithFallback(
+        (bounds, inner) => apiClient.map(bounds, safeZoom, inner),
+        clamped,
+        signal,
+      ),
     // The bounds object is recreated each render, so depend on its values, not its identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [clamped.west, clamped.south, clamped.east, clamped.north, safeZoom],
   );
 
   const {
-    data: response,
+    data: outcome,
     error,
     loading,
     reload,
-  } = useFetch<MapResponse>(fetcher, { refreshMs: REFRESH_INTERVAL_MS });
+  } = useFetch<MapAttemptOutcome<MapResponse>>(fetcher, { refreshMs: REFRESH_INTERVAL_MS });
+  const response = outcome?.response ?? null;
 
   const now = useTicker();
 
@@ -219,18 +228,42 @@ export function LiveMapPage() {
 
         {loading && !response && <LoadingBus label="Loading the live map" />}
 
+        {/*
+         * A failed data request is a notice beside the map, not instead of it.
+         *
+         * This was an `ErrorState` *replacing* the whole canvas, so one refused `/v1/map` left the
+         * page with no basemap, no attribution, no stops and nothing to click — the deployed sweep
+         * measured 0 bytes of rendered map and 0 stops drawn. The basemap and the camera do not
+         * depend on our API at all, and a person can still pan, zoom and read where they are while
+         * we retry. So the map stays and this says what is missing.
+         */}
         {error && (
-          <ErrorState
-            description={
-              error instanceof ApiError && error.code === "bbox_too_large"
+          <div className="live-map__notice state-block state-block--error" role="status">
+            <p>
+              {error instanceof ApiError && error.code === "bbox_too_large"
                 ? "That area is too large to load at once. Zoom in and the map will update."
-                : "We could not load live data for this area."
-            }
-            onRetry={reload}
-          />
+                : "We could not load stops and buses for this area. The map below is still yours to " +
+                  "move; we tried three times, including a smaller area."}
+            </p>
+            <button type="button" className="button button--secondary" onClick={reload}>
+              Try again
+            </button>
+          </div>
         )}
 
-        {response && (
+        {/*
+         * Narrowed means the Worker refused the full view twice and answered for a quarter of it.
+         * Said out loud, because a map that silently covers less than the screen is a map that
+         * looks like a part of England with no buses in it.
+         */}
+        {outcome?.narrowed && (
+          <p className="live-map__notice small" role="status">
+            Only the middle of this view could be loaded, so stops near the edges are missing. Zoom
+            in, or try again, for the rest.
+          </p>
+        )}
+
+        {
           <>
             <div className="live-map__canvas">
               <MapView
@@ -240,7 +273,7 @@ export function LiveMapPage() {
                 vehicles={vehicles}
                 selectedStopId={selectedStop}
                 selectedVehicleRef={selectedVehicle}
-                degraded={response.data.degraded}
+                degraded={response?.data.degraded ?? false}
                 intent={
                   selectedStop ? { kind: "stop", atcoCode: selectedStop } : { kind: "explore" }
                 }
@@ -299,121 +332,131 @@ export function LiveMapPage() {
             {/*
               The list is the map's equal, not its fallback: it carries the same objects in the
               same order, with the same freshness and delay information.
-            */}
-            {layers.vehicles && (
-              <section aria-labelledby="vehicles-heading" className="live-map__section">
-                <PixelSectionHeading
-                  mark="bus"
-                  id="vehicles-heading"
-                  aside={<StateLozenge tone="live">{vehicles.length}</StateLozenge>}
-                >
-                  Buses in view
-                </PixelSectionHeading>
 
-                {vehicles.length === 0 ? (
-                  <EmptyState
-                    art="bus"
-                    title={
-                      emptyVehicleReason(response.meta.sources, response.meta.degradation) ===
-                      "london_has_no_positions"
-                        ? "London does not put buses on the map"
-                        : "No buses in view"
-                    }
-                    description={describeEmptyVehicles(
-                      emptyVehicleReason(response.meta.sources, response.meta.degradation),
-                    )}
-                  />
-                ) : (
-                  <ul className="live-map__list">
-                    {vehicles.map((vehicle) => (
-                      <li key={vehicle.vehicleRef} className="live-map__item surface">
-                        <span className="route-badge route-badge--inline">
-                          {vehicle.routePublicName ?? "—"}
-                        </span>
-                        <span className="live-map__item-main">
-                          {/*
+              It needs an answer to describe, though — every line of it reports what the API said
+              about this viewport — so unlike the canvas it waits for one. The canvas does not: a
+              basemap a person can move is worth having while we ask again.
+            */}
+            {response && (
+              <>
+                {layers.vehicles && (
+                  <section aria-labelledby="vehicles-heading" className="live-map__section">
+                    <PixelSectionHeading
+                      mark="bus"
+                      id="vehicles-heading"
+                      aside={<StateLozenge tone="live">{vehicles.length}</StateLozenge>}
+                    >
+                      Buses in view
+                    </PixelSectionHeading>
+
+                    {vehicles.length === 0 ? (
+                      <EmptyState
+                        art="bus"
+                        title={
+                          emptyVehicleReason(response.meta.sources, response.meta.degradation) ===
+                          "london_has_no_positions"
+                            ? "London does not put buses on the map"
+                            : "No buses in view"
+                        }
+                        description={describeEmptyVehicles(
+                          emptyVehicleReason(response.meta.sources, response.meta.degradation),
+                        )}
+                      />
+                    ) : (
+                      <ul className="live-map__list">
+                        {vehicles.map((vehicle) => (
+                          <li key={vehicle.vehicleRef} className="live-map__item surface">
+                            <span className="route-badge route-badge--inline">
+                              {vehicle.routePublicName ?? "—"}
+                            </span>
+                            <span className="live-map__item-main">
+                              {/*
                             The list is the map's equal, so a bus in it opens the same way a bus on
                             the map does. It is a link rather than a button so it can be opened in
                             a new tab and read by anything that lists a page's links — and it
                             carries the viewport, because the live feeds are area-scoped.
                           */}
-                          <Link
-                            to={vehicleHref(vehicle.vehicleRef, {
-                              bounds: clamped,
-                              coordinate: vehicle.coordinate,
-                            })}
-                            className="live-map__item-title"
-                          >
-                            {vehicle.destinationName ?? "Destination unknown"}
-                          </Link>
-                          <span className="muted small">
-                            {delayLabel(vehicle.delaySeconds)} ·{" "}
-                            {vehicle.motionState === "stationary"
-                              ? "not moving"
-                              : vehicle.motionState === "moving"
-                                ? "moving"
-                                : "movement unknown"}
-                          </span>
-                        </span>
-                        <span className="muted small live-map__item-age">
-                          {freshnessLabel(vehicle.freshnessSeconds)}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
+                              <Link
+                                to={vehicleHref(vehicle.vehicleRef, {
+                                  bounds: clamped,
+                                  coordinate: vehicle.coordinate,
+                                })}
+                                className="live-map__item-title"
+                              >
+                                {vehicle.destinationName ?? "Destination unknown"}
+                              </Link>
+                              <span className="muted small">
+                                {delayLabel(vehicle.delaySeconds)} ·{" "}
+                                {vehicle.motionState === "stationary"
+                                  ? "not moving"
+                                  : vehicle.motionState === "moving"
+                                    ? "moving"
+                                    : "movement unknown"}
+                              </span>
+                            </span>
+                            <span className="muted small live-map__item-age">
+                              {freshnessLabel(vehicle.freshnessSeconds)}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {response.data.truncated.vehicles && (
+                      <p className="muted small">
+                        Showing the closest buses only. Zoom in to see the rest.
+                      </p>
+                    )}
+                  </section>
                 )}
-                {response.data.truncated.vehicles && (
-                  <p className="muted small">
-                    Showing the closest buses only. Zoom in to see the rest.
-                  </p>
+
+                {layers.stops && (
+                  <section aria-labelledby="stops-heading" className="live-map__section">
+                    <PixelSectionHeading
+                      mark="stop"
+                      id="stops-heading"
+                      aside={<StateLozenge tone="neutral">{stops.length}</StateLozenge>}
+                    >
+                      Stops in view
+                    </PixelSectionHeading>
+
+                    {stops.length === 0 ? (
+                      <EmptyState
+                        art="stop"
+                        title="No stops in view"
+                        description="There are no bus stops in this area. Try panning the map or searching for a place."
+                      />
+                    ) : (
+                      <ul className="live-map__list">
+                        {stops.map((stop) => (
+                          <li key={stop.id} className="live-map__item surface">
+                            <Link to={`/stops/${stop.atcoCode}`} className="live-map__item-link">
+                              <span className="live-map__item-title">{stop.name}</span>
+                              {stop.indicator && (
+                                <span className="muted small"> {stop.indicator}</span>
+                              )}
+                            </Link>
+                            {!stop.hasLiveCoverage && (
+                              <StateLozenge tone="warning">Timetable only</StateLozenge>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {response.data.truncated.stops && (
+                      <p className="muted small">
+                        Showing the stops closest to the centre of the map. Zoom in to see them all.
+                      </p>
+                    )}
+                  </section>
                 )}
-              </section>
+
+                <p className="live-map__attribution micro muted">
+                  {response.meta.attribution.join(" · ")}
+                </p>
+              </>
             )}
-
-            {layers.stops && (
-              <section aria-labelledby="stops-heading" className="live-map__section">
-                <PixelSectionHeading
-                  mark="stop"
-                  id="stops-heading"
-                  aside={<StateLozenge tone="neutral">{stops.length}</StateLozenge>}
-                >
-                  Stops in view
-                </PixelSectionHeading>
-
-                {stops.length === 0 ? (
-                  <EmptyState
-                    art="stop"
-                    title="No stops in view"
-                    description="There are no bus stops in this area. Try panning the map or searching for a place."
-                  />
-                ) : (
-                  <ul className="live-map__list">
-                    {stops.map((stop) => (
-                      <li key={stop.id} className="live-map__item surface">
-                        <Link to={`/stops/${stop.atcoCode}`} className="live-map__item-link">
-                          <span className="live-map__item-title">{stop.name}</span>
-                          {stop.indicator && <span className="muted small"> {stop.indicator}</span>}
-                        </Link>
-                        {!stop.hasLiveCoverage && (
-                          <StateLozenge tone="warning">Timetable only</StateLozenge>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-                {response.data.truncated.stops && (
-                  <p className="muted small">
-                    Showing the stops closest to the centre of the map. Zoom in to see them all.
-                  </p>
-                )}
-              </section>
-            )}
-
-            <p className="live-map__attribution micro muted">
-              {response.meta.attribution.join(" · ")}
-            </p>
           </>
-        )}
+        }
       </div>
     </div>
   );

@@ -142,3 +142,13 @@
     height: clamp(360px, calc(100vh - 250px), 780px);
   }
 }
+
+/*
+ * A notice above the canvas, not in place of it.
+ *
+ * When `/v1/map` is refused the page keeps its basemap and says what is missing beside it. Margin
+ * below so the notice never sits flush against the map it is talking about.
+ */
+.live-map__notice {
+  margin: 0 0 var(--space-sm);
+}

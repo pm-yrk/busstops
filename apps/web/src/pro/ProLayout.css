@@ -140,6 +140,15 @@
   overflow-x: auto;
 }
 
+/*
+ * The wrapper takes focus so a keyboard can scroll it, so it has to show that it has focus. An
+ * invisible focus stop is a worse bug than the one it fixes.
+ */
+.pro-table-wrap:focus-visible {
+  outline: 2px solid var(--colour-red);
+  outline-offset: 2px;
+}
+
 .pro-table {
   width: 100%;
   border-collapse: collapse;

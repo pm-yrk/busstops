@@ -126,11 +126,24 @@ export default [
     rules: {
       ...reactHooks.configs.recommended.rules,
       ...jsxA11y.flatConfigs.recommended.rules,
+      /*
+       * A scrollable region must take focus, and the rule has to know that.
+       *
+       * axe's `scrollable-region-focusable` fails any element that scrolls without being reachable
+       * by keyboard — a wide table in an overflow container hides its right-hand columns from anyone
+       * not using a mouse. The fix is the element the rule objects to: `role="region"`, a name, and
+       * `tabindex="0"`. `tabpanel` is allowed by default for the same reason; `region` belongs with
+       * it, and leaving it out would mean satisfying one tool by failing the other.
+       */
+      "jsx-a11y/no-noninteractive-tabindex": [
+        "error",
+        { tags: [], roles: ["tabpanel", "region"], allowExpressionValues: true },
+      ],
     },
   },
   {
     // Pipeline and script entry points: their console output is the operator-facing interface.
-    files: ["pipelines/*/run-*.ts", "scripts/**"],
+    files: ["pipelines/*/run-*.ts", "pipelines/*/prove-*.ts", "scripts/**"],
     rules: {
       "no-console": "off",
     },

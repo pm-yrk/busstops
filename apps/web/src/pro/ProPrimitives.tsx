@@ -1,4 +1,5 @@
 import { useState } from "react";
+import type { ReactNode } from "react";
 import type { ProMetric, ProProvenance } from "@busstops/contracts";
 import { StateLozenge } from "../components/primitives.js";
 import { PixelClock, PixelWarning } from "../components/pixel/PixelArt.js";
@@ -520,5 +521,26 @@ export function BandStrip({ bands, label }: { bands: readonly Band[]; label: str
         ))}
       </figcaption>
     </figure>
+  );
+}
+
+/*
+ * A table that scrolls sideways, reachable by keyboard.
+ *
+ * Every Pro table is wider than a phone, so its wrapper scrolls. A sighted mouse user drags it; a
+ * keyboard user could not reach it at all, because a plain overflow container takes no focus and
+ * holds nothing focusable — the columns past the fold were simply unavailable. That is axe's
+ * scrollable-region-focusable, and it only appeared once the tables had rows in live mode: an empty
+ * table does not overflow, so populating Pro is what exposed it.
+ *
+ * `role="region"` plus a name makes it an announced landmark rather than an anonymous focus stop,
+ * and the name repeats the caption the table already carries so a screen reader hears the same
+ * words either way.
+ */
+export function ProTableWrap({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="pro-table-wrap" role="region" aria-label={label} tabIndex={0}>
+      {children}
+    </div>
   );
 }

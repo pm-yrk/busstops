@@ -8,6 +8,7 @@ import {
   DataModeBanner,
   IllustrativeBanner,
   ProMetricTile,
+  ProTableWrap,
   ScopeFilters,
 } from "./ProPrimitives.js";
 import { PixelSectionHeading } from "../components/pixel/PixelSectionHeading.js";
@@ -87,7 +88,7 @@ function Section({ section }: { section: AnalyticsSection }) {
       ) : null}
 
       {section.columns.length > 0 && section.rows.length > 0 ? (
-        <div className="pro-table-wrap">
+        <ProTableWrap label={section.title}>
           <table className="pro-table">
             <caption className="visually-hidden">{section.title}</caption>
             <thead>
@@ -109,7 +110,7 @@ function Section({ section }: { section: AnalyticsSection }) {
               ))}
             </tbody>
           </table>
-        </div>
+        </ProTableWrap>
       ) : null}
 
       {/* Rendered verbatim. Paraphrasing these sentences would change what is being claimed. */}

@@ -1,8 +1,90 @@
 # Bus Stops. Build State
 
-Last updated: 2026-09-26 (the zero-departures failure is a stale artifact, and one cause covers three failures)
+Last updated: 2026-10-01 (recruiter-demo rescue: the horizon that expires, and a map that no longer vanishes)
 
 ## Current status
+
+### Run 75 (deployed): departures are back at eight cities, Pro carries eight of eight figures
+
+`https://preview.busstops.pages.dev`, commit `739aedd`, artifact version
+`2026-09-30T16:56:04.815Z`. From the run log:
+
+    pass  places across England return their real routes and departures —
+          Leeds: Blackman Lane — 6 routes, 13 due, next 23 to Leeds City Bus Station;
+          Manchester: Piccadilly — 2 routes, 6 due, next 1 to Manchester Piccadilly Rail Station;
+          Birmingham: Bromsgrove Street — 3 routes, 9 due, next 45 to Longbridge Island;
+          Bristol: Lamb Street — 15 routes, 20 due, next 41 to Millers Drive;
+          Newcastle: Newcastle St James — 2 routes, 2 due, next 685 to Eldon Square;
+          Brighton: Port Hall Road — 6 routes, 4 due, next 27 to Whitethorn Drive
+    pass  a journey can be planned across real timetable data — Leeds → Leeds Bradford Airport
+    pass  Pro … data mode live; 8 of 8 headline metric(s) carry a figure over 5239 observation(s)
+
+### The horizon, which is the regression's real cause
+
+Two days of timetable — `[today, tomorrow]` in `run-daily.ts` — is an artifact
+that stops being able to say what is due at any stop in England on its third
+day, with nothing having failed. The preview had no scheduled refresh at all
+(`static-network-daily.yml` writes to the _production_ bucket and allows itself
+30 minutes for a build that takes 103), so that is exactly what happened.
+
+Three things now, not one:
+
+- **A configurable horizon**, default four days (`SERVICE_DATE_HORIZON_DAYS`),
+  bounded at eight. The bound is the free tier, measured on the 30 September
+  build: 15.2M departure rows a day at ~70 encoded bytes is 1.06 GB, plus 400k
+  pattern trips at ~533 bytes, so **every extra service date costs ~1.27 GB of
+  R2 against a 10 GB account allowance**, on top of 2.0 GB of undated families.
+  Disk bites at about the same point — both spills are written during the one
+  GTFS pass and published afterwards, so peak disk is the whole horizon.
+- **A departures-only refresh** (`DEPARTURES_ONLY=true`), which streams the
+  archive and republishes _only_ the two date-keyed families, at the version
+  already serving traffic. That is ~1,850 objects a day against the 11,594 an
+  undated rebuild writes, and none of the undated families ever expires, so
+  republishing them would be paying for nothing. No index swap, no new pointer.
+- **A daily schedule that targets the preview bucket**
+  (`preview-departures-refresh.yml`), which is what did not exist. It proves what
+  it published afterwards by reading the bucket back
+  (`pipelines/static-network/prove-horizon.ts`) and counting the objects present
+  for each date _at the live version_ — a date covered only by a stale version's
+  objects would read as covered while the edge saw nothing.
+
+Past dates are deleted on every run (`prune-service-dates.ts`), keeping
+yesterday: a bus that left at 23:50 is still running after midnight and is
+carried on the service date it started. Without that an artifact only ever
+gains dates, at 1.27 GB each.
+
+### The live map no longer vanishes when the platform refuses one request
+
+`/v1/map` is the request error 1102 lands on, and in a browser it arrives as a
+bare `TypeError` rather than a 503, because Cloudflare's error page carries no
+`Access-Control-Allow-Origin` header. The whole canvas sat behind
+`{response && …}`, so one refusal left **no basemap, no attribution, no stops
+and nothing to click** — the sweep measured 0 bytes of rendered map, 0 stops
+drawn, 0 tile responses at tablet width while the same endpoint answered with
+400 stops at desktop width seconds earlier.
+
+The canvas does not depend on our API, so it no longer waits for it. Beside it,
+`map-fallback.ts` asks three times: the view, the view again, then a quarter of
+it around the same centre (strictly fewer tiles to read, and the page says the
+answer is partial rather than implying coverage). A considered answer from the
+Worker — `bbox_too_large`, a bad zoom — is never retried.
+
+**On the cause, still a hypothesis.** The recovered breadcrumbs put every death
+at `atMs: 0` with ~3.4M resident chars. A Worker's clock does not advance across
+pure computation, so `atMs: 0` means the request never got past synchronous work
+— which fits the free plan's **10 ms CPU** limit rather than the 128 MB memory
+limit, nowhere near which these isolates are. A map viewport parses ~2.08 MiB of
+map-stop text to keep 490 records, because the tiles are half a degree. Finer
+tiles would cut the parse roughly in proportion, and that is the next thing to
+test — it needs a rebuild to publish, so it is not in this sprint.
+
+### Two Pro accessibility regressions, introduced by populating the tables
+
+`scrollable-region-focusable` (serious) on `.pro-table-wrap` at `pro-routes`
+(tablet, phone) and `pro-analytics` (phone). An empty table does not overflow,
+so filling Pro for the demo is what exposed it: a wide table in an overflow
+container hides its right-hand columns from anyone not using a mouse. The
+wrapper is now a named, focusable `region` with a visible focus ring.
 
 ### Zero departures, no journey, London fine — one cause
 

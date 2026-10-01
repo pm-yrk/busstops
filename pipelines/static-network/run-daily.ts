@@ -7,7 +7,7 @@
  */
 
 import { writeFileSync } from "node:fs";
-import { ArtifactStore, r2StoreFromEnv } from "@busstops/pipeline-core";
+import { ArtifactStore, r2StoreFromEnv, type ObjectStore } from "@busstops/pipeline-core";
 import { assembleGtfsNetwork } from "./src/gtfs-assemble.js";
 import { discardGtfsArchive, fetchGtfsArchive } from "./src/gtfs-sources.js";
 import {
@@ -23,6 +23,9 @@ import {
 } from "./src/publish-spilled-journeys.js";
 import { encodeDepartureShardFromJsonl } from "./src/departures-index.js";
 import { MAX_PUBLISH_BYTES, publishNetworkShards } from "./src/publish-shards.js";
+import { serviceDateHorizonFromEnv } from "./src/service-dates.js";
+import { earliestServiceDateToKeep, pruneExpiredServiceDates } from "./src/prune-service-dates.js";
+import { SHARDED } from "./src/shards.js";
 import { fetchStaticSources } from "./src/sources.js";
 
 const FINGERPRINT_DATASET = "network/fingerprints";
@@ -44,9 +47,65 @@ function throughput(result: SpilledJourneyPublishResult): string {
   );
 }
 
+/**
+ * Deleting the days that have already happened, and the copies no version serves.
+ *
+ * A refresh joins new dates to the version already live rather than replacing it, and dated shards
+ * are written as plain objects rather than published artifacts — so `prune-versions`, which works
+ * from manifests, has never been able to see them. Between them those two facts mean an artifact
+ * only ever grows, at about 1.27 GB a service date against a 10 GB free allowance for the account.
+ *
+ * Yesterday is kept: the board reads it for the buses that left before midnight and are still
+ * running. So is the version the index names as its predecessor, because that is what a rollback
+ * restores, and a rollback to an artifact with a map and no departures is not a rollback.
+ */
+async function prunePastServiceDates(
+  store: ObjectStore,
+  artifacts: ArtifactStore,
+  startedAt: Date,
+  report: Record<string, unknown>,
+): Promise<void> {
+  const liveIndex = await artifacts.readManifest(SHARDED.index);
+  const pruned = await pruneExpiredServiceDates(store, {
+    keepFrom: earliestServiceDateToKeep(startedAt),
+    keepVersions:
+      liveIndex === null
+        ? undefined
+        : [liveIndex.version, liveIndex.previousVersion].filter(
+            (candidate): candidate is string => typeof candidate === "string",
+          ),
+  });
+  report.prunedServiceDates = pruned;
+  if (pruned.keysDeleted > 0) {
+    console.log(
+      `Pruned ${pruned.keysDeleted} dated object(s): ${pruned.datesDeleted.length} past service ` +
+        `date(s) (${pruned.datesDeleted.join(", ") || "none"}) and ` +
+        `${pruned.staleVersionKeysDeleted} left by a version nothing serves.`,
+    );
+  }
+  if (pruned.failed.length > 0) {
+    console.error(
+      `${pruned.failed.length} expired object(s) could not be deleted; they cost storage but ` +
+        `nothing reads them. First: ${pruned.failed[0]?.key} (${pruned.failed[0]?.reason}).`,
+    );
+  }
+}
+
 async function main(): Promise<number> {
   const startedAt = new Date();
   const report: Record<string, unknown> = { startedAt: startedAt.toISOString() };
+
+  /*
+   * Two modes, because the expensive half of a build is not the half that goes stale.
+   *
+   * Everything except departures and pattern trips — stops, patterns, the search index, the stop
+   * detail buckets — is 11,594 objects and about 48 minutes of publishing, and none of it is keyed
+   * by a service date, so none of it expires. The two families that *are* keyed by date are 1,852
+   * objects a day and cost minutes. A refresh that republishes only those extends a live artifact's
+   * timetable without rebuilding the country, at a fraction of the metered writes, and publishes at
+   * the version already serving traffic so the edge needs no new pointer.
+   */
+  const departuresOnly = process.env.DEPARTURES_ONLY === "true";
 
   const storeResult = r2StoreFromEnv(process.env);
   if (!storeResult.ok) {
@@ -136,7 +195,12 @@ async function main(): Promise<number> {
   const forceRebuild = process.env.FORCE_REBUILD === "true";
   const changed = comparisons.some((c) => c.changed);
 
-  if (!changed && !forceRebuild) {
+  /*
+   * A departures refresh runs even when nothing upstream changed, because nothing upstream has to:
+   * what changed is the date. Short-circuiting on an unchanged fingerprint is exactly how an
+   * artifact with two days of timetable reaches its third day still believing it is current.
+   */
+  if (!changed && !forceRebuild && !departuresOnly) {
     // Record the check so "unchanged" is distinguishable from "did not run".
     await artifacts.publish({
       dataset: FINGERPRINT_DATASET,
@@ -152,15 +216,42 @@ async function main(): Promise<number> {
   }
 
   /*
-   * Today and tomorrow.
-   *
-   * Tomorrow is not decoration: a board consulted at 23:50 needs the journeys that leave after
-   * midnight, and a journey planner asked for "first bus" at any hour needs somewhere to look.
-   * Going further costs a multiple of the largest table for service dates nobody is asking about.
+   * How many days of timetable this artifact will be able to answer for. See service-dates.ts: the
+   * horizon used to be today and tomorrow, which is why boards across England went blank on an
+   * artifact's third day without anything having failed.
    */
-  const today = startedAt.toISOString().slice(0, 10);
-  const tomorrow = new Date(startedAt.getTime() + 86_400_000).toISOString().slice(0, 10);
-  const serviceDates = [today, tomorrow];
+  const horizon = serviceDateHorizonFromEnv(startedAt, process.env);
+  const serviceDates = horizon.serviceDates;
+  report.horizon = { days: horizon.days, offsetDays: horizon.offsetDays, serviceDates };
+  console.log(
+    `Service-date horizon: ${serviceDates.length} day(s), ${serviceDates[0]} to ` +
+      `${serviceDates[serviceDates.length - 1]}.`,
+  );
+
+  /*
+   * In refresh mode, the version is the one already live rather than a new one.
+   *
+   * Shards are addressed at the version the index names, so writing today's new dates at
+   * `startedAt` would publish them where nothing will ever look. Reading the index's own manifest
+   * is the only honest source for that string, and a missing index means there is no artifact to
+   * extend — which is a configuration mistake, not something to paper over with a new version.
+   */
+  let version = startedAt.toISOString();
+  if (departuresOnly) {
+    const index = await artifacts.readManifest(SHARDED.index);
+    if (!index) {
+      report.outcome = "no_artifact_to_refresh";
+      console.error(
+        `Departures-only refresh asked for, but ${SHARDED.index} has no published version to ` +
+          `extend. Run a full build first.`,
+      );
+      writeReport(report);
+      return 1;
+    }
+    version = index.version;
+    report.refreshedVersion = version;
+    console.log(`Refreshing departures at the live artifact version ${version}.`);
+  }
 
   const assembled = await assembleGtfsNetwork({
     naptanCsv: sources.naptanCsv,
@@ -219,12 +310,23 @@ async function main(): Promise<number> {
     );
   }
 
-  const result = await publishNetwork(store, network, {
-    version: startedAt.toISOString(),
-    journeyCount: assembled.journeyCount,
-  });
-  report.published = result.published.map((m) => ({ dataset: m.dataset, records: m.recordCount }));
-  report.failed = result.failed;
+  /*
+   * The national datasets, skipped by a refresh: none of them is keyed by a service date, so none
+   * of them is what expired.
+   */
+  const result = departuresOnly
+    ? null
+    : await publishNetwork(store, network, {
+        version,
+        journeyCount: assembled.journeyCount,
+      });
+  if (result) {
+    report.published = result.published.map((m) => ({
+      dataset: m.dataset,
+      records: m.recordCount,
+    }));
+    report.failed = result.failed;
+  }
 
   /*
    * Journey tiles are not published any more.
@@ -248,7 +350,7 @@ async function main(): Promise<number> {
    * a whole-tile transform and so cannot happen as each row is emitted.
    */
   const departureResult = await publishSpilledJourneyTiles(store, assembled.departureSpill, {
-    version: startedAt.toISOString(),
+    version,
     datasetFor: (dataset) => dataset,
     encode: (lines, dataset) => encodeDepartureShardFromJsonl(dataset, lines),
   });
@@ -270,7 +372,7 @@ async function main(): Promise<number> {
    * reason the departures are: derived once as each journey streams past, never re-read.
    */
   const tripResult = await publishSpilledJourneyTiles(store, assembled.patternTripSpill, {
-    version: startedAt.toISOString(),
+    version,
     datasetFor: (dataset) => dataset,
   });
   report.patternTrips = {
@@ -301,13 +403,42 @@ async function main(): Promise<number> {
     );
   }
 
+  /*
+   * A refresh ends here: the two date-keyed families are written at the live version, so the edge
+   * can answer for the new dates from the next request onwards with no pointer to move.
+   *
+   * It fails loudly on a partial write rather than reporting success, because a half-written
+   * horizon is a board that works in Leeds and not in Bristol — which looks like a Bristol problem.
+   */
+  if (departuresOnly) {
+    const broken = [...departureResult.failed, ...tripResult.failed];
+    if (broken.length > 0 || departureResult.oversized.length > 0) {
+      report.outcome = "refresh_incomplete";
+      console.error(
+        `Departures refresh wrote ${departureResult.tiles.length} departure and ` +
+          `${tripResult.tiles.length} pattern-trip shard(s), but ${broken.length} failed. The ` +
+          `previous dates are untouched; the new ones are incomplete.`,
+      );
+      writeReport(report);
+      return 1;
+    }
+    await prunePastServiceDates(store, artifacts, startedAt, report);
+
+    report.outcome = "departures_refreshed";
+    console.log(
+      `Refreshed ${serviceDates.length} service date(s) (${serviceDates.join(", ")}) at version ` +
+        `${version}: ${departureResult.tiles.length} departure and ${tripResult.tiles.length} ` +
+        `pattern-trip shard(s). The rest of the artifact was not touched.`,
+    );
+    writeReport(report);
+    return 0;
+  }
+
   // The edge reads shards, never the national datasets: measured against real data those are
   // 292 MiB of journeys, 198 MiB of stops and 100 MiB of patterns, against a 128 MiB isolate.
   // Published after the national datasets and before the fingerprints, so a failure here is a
   // failed run rather than a live index pointing at shards that do not exist.
-  const shardResult = await publishNetworkShards(store, network, {
-    version: startedAt.toISOString(),
-  });
+  const shardResult = await publishNetworkShards(store, network, { version });
   report.shards = {
     published: shardResult.published,
     failed: shardResult.failed.slice(0, 10),
@@ -361,7 +492,7 @@ async function main(): Promise<number> {
     );
   }
 
-  if (!result.complete) {
+  if (result && !result.complete) {
     /*
      * A partial publish is worse than no publish: restore the previous consistent version.
      *
@@ -388,7 +519,7 @@ async function main(): Promise<number> {
 
   await artifacts.publish({
     dataset: FINGERPRINT_DATASET,
-    version: startedAt.toISOString(),
+    version,
     records: currentFingerprints,
     schemaVersion: "1.0.0",
     sources: ["naptan", "bods"],
@@ -399,6 +530,8 @@ async function main(): Promise<number> {
     writeReport(report);
     return 1;
   }
+
+  await prunePastServiceDates(store, artifacts, startedAt, report);
 
   report.outcome = "published";
   console.log(

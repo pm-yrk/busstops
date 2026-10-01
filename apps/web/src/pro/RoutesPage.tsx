@@ -7,6 +7,7 @@ import { useFetch } from "../lib/use-fetch.js";
 import {
   DataModeBanner,
   IllustrativeBanner,
+  ProTableWrap,
   ScopeFilters,
   formatMetricValue,
 } from "./ProPrimitives.js";
@@ -60,7 +61,7 @@ export function RoutesPage() {
           Route comparison
         </PixelSectionHeading>
         {routes.rows.length > 0 ? (
-          <div className="pro-table-wrap">
+          <ProTableWrap label="Route performance, with denominators and suppression reasons">
             <table className="pro-table">
               <caption className="visually-hidden">
                 Route performance, with denominators and suppression reasons
@@ -109,7 +110,7 @@ export function RoutesPage() {
                 ))}
               </tbody>
             </table>
-          </div>
+          </ProTableWrap>
         ) : (
           <EmptyState
             title="No route analysis published"

@@ -1,0 +1,115 @@
+name: Preview departures — daily refresh
+
+# Why this workflow exists.
+#
+# Departure shards are keyed `network/departures/<serviceDate>/<bucket>` and the planner's trips
+# `network/pattern-trips/<serviceDate>/<window>/<tile>`. An artifact can only answer for the days it
+# was built for, so an artifact nobody refreshes stops being able to say what is due at any stop in
+# England the moment its horizon runs out — which is what happened to the preview: the only
+# scheduled rebuild (static-network-daily.yml) writes to the *production* bucket, and the preview's
+# only route to a current artifact was a manual deploy with bootstrap_data on.
+#
+# This refreshes the two date-keyed families only, at the version already serving traffic. Those are
+# about 1,850 objects a day against the 11,594 an undated rebuild writes, and nothing undated — the
+# stops, the patterns, the search index — ever expires, so republishing it would be paying for
+# nothing. The run then proves what it published by reading the bucket back.
+
+on:
+  schedule:
+    # 04:37 UTC. Deliberately not on the hour: scheduled runs bunch up at :00 and get delayed.
+    - cron: "37 4 * * *"
+  workflow_dispatch:
+    inputs:
+      horizon_days:
+        description: "Service dates to publish, counting today (max 8)"
+        type: string
+        default: "4"
+      offset_days:
+        description: "Days to skip before the first one, for extending a horizon in a second pass"
+        type: string
+        default: "0"
+      bucket:
+        description: "Artifact bucket to refresh"
+        type: choice
+        default: busstops-artifacts-preview
+        options:
+          - busstops-artifacts-preview
+          - busstops-artifacts
+
+permissions:
+  contents: read
+
+# Never two at once: both would stream the same national archive and write the same keys.
+concurrency:
+  group: preview-departures-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    # The single GTFS pass over 5.3 GB of stop_times is about an hour of it; publishing the two
+    # families is minutes. Well under the 6-hour ceiling, well over the 30 minutes the production
+    # schedule allows itself — which is part of why that one has never completed a build.
+    timeout-minutes: 150
+    env:
+      R2_BUCKET_ARTIFACTS: ${{ inputs.bucket || 'busstops-artifacts-preview' }}
+      SERVICE_DATE_HORIZON_DAYS: ${{ inputs.horizon_days || '4' }}
+      SERVICE_DATE_OFFSET_DAYS: ${{ inputs.offset_days || '0' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - run: npm ci --no-audit --no-fund
+
+      - name: Free-tier preflight
+        run: npm run preflight
+
+      # Printed because the horizon is bounded by this number as much as by storage: both spills are
+      # written during the one GTFS pass and published afterwards, so peak disk is the whole horizon.
+      - name: Disk before
+        run: df -h /
+
+      - name: Refresh the date-keyed timetable families
+        env:
+          BODS_API_KEY: ${{ secrets.BODS_API_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          DEPARTURES_ONLY: "true"
+          # Headroom for the indexes the streamed build holds, not for file contents: the archive is
+          # read as a stream and both families spill to disk. The runner's memory is already paid for.
+          NODE_OPTIONS: "--max-old-space-size=12288"
+        run: |
+          set -o pipefail
+          npx tsx pipelines/static-network/run-daily.ts 2>&1 | tee refresh.log && STATUS=0 || STATUS=$?
+          echo "--- last 40 lines from the refresh (exit $STATUS) ---"
+          tail -40 refresh.log || true
+          exit "$STATUS"
+
+      - name: Disk after
+        if: always()
+        run: df -h /
+
+      # The step that makes this provable rather than claimed: it reads the bucket the deployed API
+      # serves from and counts the objects actually present for each date at the live version.
+      - name: Prove the horizon is physically present
+        if: always()
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: npx tsx pipelines/static-network/prove-horizon.ts
+
+      - name: Upload the reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: preview-departures-refresh
+          path: |
+            build-report.json
+            horizon-report.json
+            refresh.log
+          retention-days: 7
+          if-no-files-found: ignore

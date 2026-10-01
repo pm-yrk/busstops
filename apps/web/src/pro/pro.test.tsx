@@ -11,7 +11,7 @@ import type {
 import { ControlTowerPage } from "./ControlTowerPage.js";
 import { OperatorsPage } from "./OperatorsPage.js";
 import { ProLayout } from "./ProLayout.js";
-import { BandStrip, DataModeBanner, ProMetricTile } from "./ProPrimitives.js";
+import { BandStrip, DataModeBanner, ProMetricTile, ProTableWrap } from "./ProPrimitives.js";
 import { apiClient } from "../lib/api.js";
 
 afterEach(() => {
@@ -370,5 +370,30 @@ describe("BandStrip", () => {
       />,
     );
     expect(container.querySelector(".pro-severity")).toBeNull();
+  });
+});
+
+describe("ProTableWrap", () => {
+  /*
+   * The regression this exists for: every Pro table is wider than a phone, so its wrapper scrolls,
+   * and a wrapper that scrolls without taking focus hides its right-hand columns from a keyboard
+   * entirely. It only surfaced once the tables had rows — an empty table does not overflow — so
+   * populating Pro for the demo is what introduced it.
+   */
+  it("can be reached and scrolled by keyboard, and says what it is", () => {
+    render(
+      <ProTableWrap label="Route performance">
+        <table>
+          <tbody>
+            <tr>
+              <td>4</td>
+            </tr>
+          </tbody>
+        </table>
+      </ProTableWrap>,
+    );
+
+    const region = screen.getByRole("region", { name: "Route performance" });
+    expect(region.tabIndex).toBe(0);
   });
 });

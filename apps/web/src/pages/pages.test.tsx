@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactElement } from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
@@ -16,7 +16,7 @@ import { LiveMapPage } from "./LiveMapPage.js";
 import { OperatorPage } from "./OperatorPage.js";
 import { RoutePage } from "./RoutePage.js";
 import { SearchPage } from "./SearchPage.js";
-import { apiClient } from "../lib/api.js";
+import { ApiError, apiClient } from "../lib/api.js";
 
 const meta: ResponseMeta = {
   generatedAt: "2026-09-03T09:00:00.000Z",
@@ -583,6 +583,60 @@ describe("the live map's deep link", () => {
   ])("ignores a bbox that is %s", (_why, path) => {
     renderLive(path);
     expect(bboxFromFirstCall()).toBe("-1.6,53.775,-1.49,53.825");
+  });
+});
+
+/*
+ * The map survives the platform refusing it.
+ *
+ * `/v1/map` is the request error 1102 lands on, and because Cloudflare's error page carries no CORS
+ * header a browser reports it as a bare `TypeError` rather than a status. The page used to render
+ * the whole canvas behind `{response && ...}`, so one refusal left no basemap, no attribution, no
+ * stops and nothing to click: the deployed sweep measured 0 bytes of rendered map and 0 stops drawn
+ * at tablet width while the same endpoint answered fine at desktop width seconds earlier.
+ */
+describe("the live map when the platform refuses the data", () => {
+  it("keeps a basemap on the screen and says what is missing", async () => {
+    vi.spyOn(apiClient, "map").mockRejectedValue(new TypeError("Failed to fetch"));
+
+    const { container } = renderAt("/live", "/live", <LiveMapPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/could not load stops and buses/i)).toBeTruthy();
+    });
+    // The canvas is the point: it does not depend on our API, so it does not wait for it.
+    expect(container.querySelector(".live-map__canvas")).not.toBeNull();
+    expect(screen.getByRole("button", { name: /try again/i })).toBeTruthy();
+  });
+
+  /*
+   * Three attempts, and the third asks for a quarter of the view. Deaths cluster on a warm isolate
+   * and fall roughly every other request, so asking again is the cheapest fix there is; asking for
+   * less is the fallback when asking again does not work.
+   */
+  it("asks again, then asks for a smaller area", async () => {
+    const map = vi.spyOn(apiClient, "map").mockRejectedValue(new TypeError("Failed to fetch"));
+
+    renderAt("/live?bbox=-1.12,53.94,-1.03,53.99", "/live", <LiveMapPage />);
+
+    await waitFor(() => expect(map).toHaveBeenCalledTimes(3), { timeout: 5000 });
+
+    const first = map.mock.calls[0]?.[0] as { west: number; east: number };
+    const third = map.mock.calls[2]?.[0] as { west: number; east: number };
+    expect(third.east - third.west).toBeLessThan(first.east - first.west);
+  });
+
+  it("stops asking when the Worker has given a considered answer", async () => {
+    const map = vi
+      .spyOn(apiClient, "map")
+      .mockRejectedValue(new ApiError("Requested area is too large", 400, "bbox_too_large"));
+
+    renderAt("/live", "/live", <LiveMapPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/too large to load at once/i)).toBeTruthy();
+    });
+    expect(map).toHaveBeenCalledTimes(1);
   });
 });
 

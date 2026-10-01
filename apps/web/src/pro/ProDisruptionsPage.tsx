@@ -4,7 +4,7 @@ import { LoadingBus } from "../components/LoadingBus.js";
 import { EmptyState, ErrorState, StateLozenge } from "../components/primitives.js";
 import { apiClient } from "../lib/api.js";
 import { useFetch, useTicker } from "../lib/use-fetch.js";
-import { BandStrip, DataModeBanner, ScopeFilters } from "./ProPrimitives.js";
+import { BandStrip, DataModeBanner, ProTableWrap, ScopeFilters } from "./ProPrimitives.js";
 import { PixelSectionHeading } from "../components/pixel/PixelSectionHeading.js";
 
 /**
@@ -136,7 +136,7 @@ export function ProDisruptionsPage() {
         <SeveritySummary items={items} />
 
         {items.length > 0 ? (
-          <div className="pro-table-wrap">
+          <ProTableWrap label="Current exceptions with severity, status, confidence and source">
             <table className="pro-table">
               <caption className="visually-hidden">
                 Current exceptions with severity, status, confidence and source
@@ -160,7 +160,7 @@ export function ProDisruptionsPage() {
                 ))}
               </tbody>
             </table>
-          </div>
+          </ProTableWrap>
         ) : (
           <EmptyState
             title="Nothing in the inbox"
