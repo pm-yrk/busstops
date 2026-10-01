@@ -87,47 +87,57 @@ export async function publishSpilledJourneyTiles(
   let records = 0;
   let largest: SpilledJourneyPublishResult["largest"] = null;
 
-  const outcomes = await mapWithConcurrency(
-    spill.tiles(),
-    TILE_PUBLISH_CONCURRENCY,
-    async (entry) => {
-      const dataset = datasetFor(entry.tile);
-      try {
-        const lines: string[] = [];
-        for await (const line of spill.read(entry.tile)) lines.push(line);
-        if (lines.length === 0) {
-          return { tile: entry.tile, error: null, records: 0, bytes: 0, oversized: false };
-        }
-
-        const body = encode(lines, dataset);
-        const bytes = Buffer.byteLength(body, "utf8");
-        /*
-         * Measured before the put, not discovered by it. R2 answering 413 tells you afterwards
-         * and tells you nothing about which shard key was wrong; this refuses the write, names
-         * the shard and lets the build report it as a layout problem.
-         */
-        if (bytes > maxBytes) {
-          return { tile: entry.tile, error: null, records: lines.length, bytes, oversized: true };
-        }
-        await store.put(objectKeyFor(dataset, options.version), body);
-        return {
-          tile: entry.tile,
-          error: null,
-          oversized: false,
-          records: lines.length,
-          bytes,
-        };
-      } catch (error) {
-        return {
-          tile: entry.tile,
-          error: error instanceof Error ? error.message : String(error),
-          records: 0,
-          bytes: 0,
-          oversized: false,
-        };
-      }
-    },
+  /*
+   * Earliest service date first, because a publish that does not finish should fail usefully.
+   *
+   * The spill hands tiles back in the order journeys streamed past, which interleaves every date in
+   * the horizon. A step that runs out of time halfway through then leaves *every* date half-written:
+   * boards work in Leeds and not in Bristol on all four days, which reads as a Bristol problem. These
+   * keys begin `network/departures/<serviceDate>/`, so sorting them is sorting by date, and a publish
+   * cut short has today complete and the far end of the horizon missing — which is the shape a reader
+   * never notices and the next run repairs.
+   */
+  const ordered = [...spill.tiles()].sort((a, b) =>
+    a.tile < b.tile ? -1 : a.tile > b.tile ? 1 : 0,
   );
+
+  const outcomes = await mapWithConcurrency(ordered, TILE_PUBLISH_CONCURRENCY, async (entry) => {
+    const dataset = datasetFor(entry.tile);
+    try {
+      const lines: string[] = [];
+      for await (const line of spill.read(entry.tile)) lines.push(line);
+      if (lines.length === 0) {
+        return { tile: entry.tile, error: null, records: 0, bytes: 0, oversized: false };
+      }
+
+      const body = encode(lines, dataset);
+      const bytes = Buffer.byteLength(body, "utf8");
+      /*
+       * Measured before the put, not discovered by it. R2 answering 413 tells you afterwards
+       * and tells you nothing about which shard key was wrong; this refuses the write, names
+       * the shard and lets the build report it as a layout problem.
+       */
+      if (bytes > maxBytes) {
+        return { tile: entry.tile, error: null, records: lines.length, bytes, oversized: true };
+      }
+      await store.put(objectKeyFor(dataset, options.version), body);
+      return {
+        tile: entry.tile,
+        error: null,
+        oversized: false,
+        records: lines.length,
+        bytes,
+      };
+    } catch (error) {
+      return {
+        tile: entry.tile,
+        error: error instanceof Error ? error.message : String(error),
+        records: 0,
+        bytes: 0,
+        oversized: false,
+      };
+    }
+  });
 
   const tiles: string[] = [];
   const oversized: SpilledJourneyPublishResult["oversized"] = [];

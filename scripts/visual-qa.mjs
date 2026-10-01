@@ -1060,12 +1060,35 @@ for (const size of WIDTHS) {
           await page.waitForTimeout(3_000);
           const board = await page.evaluate(() => {
             const panel = document.querySelector(".selected-stop");
+            const text = (row, selector) =>
+              row.querySelector(selector)?.textContent?.trim().replace(/\s+/g, " ") ?? "";
             return {
               open: !!panel,
               heading: panel?.querySelector(".arrival-board__stop")?.textContent?.trim() ?? "",
               label: panel?.querySelector(".arrival-board__next")?.textContent?.trim() ?? "",
               rows: panel?.querySelectorAll(".arrival-board__table tbody tr").length ?? 0,
               error: panel?.querySelector(".selected-stop__error")?.textContent?.trim() ?? "",
+              /*
+               * What the board actually says, not how many rows it has.
+               *
+               * A row count proves a table was drawn. "4F to Acomb, 7 min, Timetable" proves a
+               * reader was told when their bus is coming, which is the thing the product is for —
+               * and it is the evidence a row count could never be, because an empty board and a
+               * board full of blanks both count the same.
+               */
+              departures: [...(panel?.querySelectorAll(".arrival-board__table tbody tr") ?? [])]
+                .slice(0, 3)
+                .map((row) =>
+                  [
+                    text(row, ".arrival-board__route"),
+                    `to ${text(row, ".arrival-board__destination") || "(no destination)"}`,
+                    text(row, ".arrival-board__countdown") || "(no time)",
+                    text(row, ".arrival-board__clock"),
+                    text(row, ".arrival-board__state"),
+                  ]
+                    .filter(Boolean)
+                    .join(" "),
+                ),
             };
           });
           await page.screenshot({
@@ -1078,9 +1101,9 @@ for (const size of WIDTHS) {
             clickFailed !== null
               ? `the click did not land: ${clickFailed}`
               : board.open
-                ? `${board.label || "(no label)"} — ${board.heading || "(no stop)"}, ${board.rows} row(s)${
-                    board.error ? `, error: ${board.error}` : ""
-                  }`
+                ? `${board.label || "(no label)"} — ${board.heading || "(no stop)"}, ${board.rows} row(s)` +
+                  (board.departures.length > 0 ? `: ${board.departures.join("; ")}` : "") +
+                  (board.error ? `, error: ${board.error}` : "")
                 : "no board opened",
           );
 
