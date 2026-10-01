@@ -71,6 +71,26 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * The ways a request can fail that asking again might fix.
+ *
+ * A `TypeError` from `fetch` is the browser's report of a blocked or dropped response, which is what
+ * a Worker that died looks like from the outside: Cloudflare's error 1102 page carries no
+ * `Access-Control-Allow-Origin` header, so the browser never lets the client see the 503 that a
+ * `curl` would. 502 and 503 are the same event when the platform does send the header.
+ *
+ * It lives here rather than beside the map's retry ladder because `ApiError` is here, and the one
+ * thing worse than two copies of this predicate is a circular import between them.
+ */
+export function isPlatformFailure(error: unknown): boolean {
+  if (error instanceof ApiError) return error.status === 503 || error.status === 502;
+  if (error instanceof DOMException && error.name === "AbortError") return false;
+  return error instanceof TypeError;
+}
+
+/** Long enough for the isolate that refused to be replaced, short enough that nobody notices. */
+const RETRY_DELAY_MS = 350;
+
 export interface ProScopeQuery {
   areaId?: string | null;
   operatorId?: string | null;
@@ -92,7 +112,40 @@ export class ApiClient {
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
   }
 
+  /**
+   * One retry, for the platform refusing rather than the Worker answering.
+   *
+   * `/v1/search`, `/v1/nearby`, the stop weather and the place-journey were all measured answering
+   * Cloudflare's error 1102 page on the deployed preview — "Worker exceeded resource limits" — which
+   * in a browser arrives as a blocked fetch rather than a status, because that page carries no
+   * `Access-Control-Allow-Origin` header. A recruiter typing "Bullring" got no results, from a search
+   * index that holds Bull Ring. The deaths cluster on a warm isolate and fall roughly every other
+   * request, so asking once more is the whole fix for most of them.
+   *
+   * Every call here is a GET, so a second attempt cannot do anything a first one did not. An answer
+   * the Worker meant — a 404, a 400, a rate limit — is never retried: it would be the same answer,
+   * more slowly, and a retry on a 429 is an attack on ourselves.
+   */
   private async request<T>(
+    path: string,
+    signal?: AbortSignal,
+    schema?: { safeParse: (value: unknown) => { success: boolean; data?: unknown } },
+    options: { retries?: number } = {},
+  ): Promise<T> {
+    const retries = options.retries ?? 1;
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await this.attempt<T>(path, signal, schema);
+      } catch (error) {
+        if (attempt >= retries) throw error;
+        if (signal?.aborted === true) throw error;
+        if (!isPlatformFailure(error)) throw error;
+        await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+      }
+    }
+  }
+
+  private async attempt<T>(
     path: string,
     signal?: AbortSignal,
     schema?: { safeParse: (value: unknown) => { success: boolean; data?: unknown } },
@@ -160,6 +213,9 @@ export class ApiClient {
       `/v1/map?bbox=${encodeURIComponent(bboxParam)}&zoom=${Math.round(zoom)}`,
       signal,
       MapResponseSchema,
+      // The live map runs its own ladder — the view, the view again, then a quarter of it — so a
+      // retry here would turn three requests into six against a Worker already over its limit.
+      { retries: 0 },
     );
   }
 

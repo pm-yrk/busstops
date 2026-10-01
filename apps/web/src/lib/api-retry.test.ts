@@ -1,0 +1,105 @@
+import { describe, expect, it, vi } from "vitest";
+import { ApiClient, ApiError } from "./api.js";
+
+/**
+ * One retry, for the platform refusing rather than the Worker answering.
+ *
+ * Measured on the deployed preview: `/v1/search` for "Bullring" came back as Cloudflare's error 1102
+ * page, so a recruiter typing a landmark got "no results" from an index that holds Bull Ring. The
+ * same happened to `/v1/nearby`, the stop weather and the place-journey. The deaths cluster on a warm
+ * isolate and fall roughly every other request, so one more attempt is most of the fix.
+ */
+function clientWith(fetchImpl: typeof fetch): ApiClient {
+  return new ApiClient({ baseUrl: "https://api.example", fetchImpl });
+}
+
+const META = {
+  generatedAt: "2026-10-01T08:00:00.000Z",
+  observedAt: null,
+  sources: [],
+  coverage: 1,
+  degradation: "normal",
+  governorState: "green",
+  attribution: ["NaPTAN"],
+};
+
+/** A valid empty answer: the retry is the subject here, not the payload. */
+function emptyResults(): Response {
+  return new Response(JSON.stringify({ meta: META, data: { results: [] } }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+describe("asking again when the platform refuses", () => {
+  it("retries a blocked fetch, which is what error 1102 looks like in a browser", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockResolvedValue(emptyResults());
+
+    const client = clientWith(fetchImpl as unknown as typeof fetch);
+    await client.search("Bullring");
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries a 503, and gives the answer the second attempt produced", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("", { status: 503 }))
+      .mockResolvedValue(emptyResults());
+
+    const client = clientWith(fetchImpl as unknown as typeof fetch);
+    const answer = await client.nearby({ lat: 53.8, lon: -1.5 }, 800);
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(answer).toBeTruthy();
+  });
+
+  /*
+   * An answer the Worker meant is not a failure to retry: it would be the same answer more slowly,
+   * and retrying a rate limit is an attack on ourselves.
+   */
+  it.each([
+    ["not found", 404],
+    ["a bad request", 400],
+    ["a rate limit", 429],
+  ])("does not retry %s", async (_why, status) => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: { code: "no", message: "no" } }), {
+        status,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    const client = clientWith(fetchImpl as unknown as typeof fetch);
+    await expect(client.search("anything")).rejects.toBeInstanceOf(ApiError);
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("gives up after one retry rather than hammering a Worker already over its limit", async () => {
+    const fetchImpl = vi.fn().mockRejectedValue(new TypeError("Failed to fetch"));
+
+    const client = clientWith(fetchImpl as unknown as typeof fetch);
+    await expect(client.search("Bullring")).rejects.toThrow("Failed to fetch");
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  /*
+   * The map is the exception, because it runs its own ladder — the view, the view again, then a
+   * quarter of it. A retry here as well would make that six requests instead of three.
+   */
+  it("leaves the map to its own ladder", async () => {
+    const fetchImpl = vi.fn().mockRejectedValue(new TypeError("Failed to fetch"));
+
+    const client = clientWith(fetchImpl as unknown as typeof fetch);
+    await expect(
+      client.map({ west: -1.6, south: 53.775, east: -1.49, north: 53.825 }, 15),
+    ).rejects.toThrow("Failed to fetch");
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+});

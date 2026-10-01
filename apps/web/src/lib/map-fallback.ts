@@ -1,4 +1,6 @@
-import { ApiError } from "./api.js";
+import { isPlatformFailure } from "./api.js";
+
+export { isPlatformFailure };
 
 /**
  * Keeping a map on the screen when the platform refuses one request.
@@ -20,18 +22,6 @@ export interface Bounds {
   south: number;
   east: number;
   north: number;
-}
-
-/** The ways a request can fail that asking again might fix. */
-export function isPlatformFailure(error: unknown): boolean {
-  /*
-   * A `TypeError` from `fetch` is the browser's report of a blocked or dropped response, which is
-   * what a Worker that died looks like from the outside. 503 and 502 are the same thing when the
-   * platform does send CORS headers, as it does through a plain `curl`.
-   */
-  if (error instanceof ApiError) return error.status === 503 || error.status === 502;
-  if (error instanceof DOMException && error.name === "AbortError") return false;
-  return error instanceof TypeError;
 }
 
 /**
