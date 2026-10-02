@@ -323,16 +323,36 @@ async function clickPaintedBus(page, sink) {
     const canvas = map.getCanvas();
     const box = canvas.getBoundingClientRect();
     let covered = 0;
+    let offscreen = 0;
+    /*
+     * What blocked it, not merely that something did.
+     *
+     * "All 113 painted buses were under something else" has been reported three runs running with
+     * no way to tell an overlay from an off-screen projection from a quirk of `elementFromPoint`
+     * over a canvas. Naming the element it hit, and counting the ones that were simply not on the
+     * screen, separates three different faults that read as one sentence.
+     */
+    const blockers = [];
     for (const feature of features) {
       const projected = map.project(feature.geometry.coordinates);
       const x = box.left + projected.x;
       const y = box.top + projected.y;
-      if (x < 0 || y < 0 || x > globalThis.innerWidth || y > globalThis.innerHeight) continue;
+      if (x < 0 || y < 0 || x > globalThis.innerWidth || y > globalThis.innerHeight) {
+        offscreen += 1;
+        continue;
+      }
       const hit = document.elementFromPoint(x, y);
-      if (hit === canvas || canvas.contains(hit)) return { x, y, covered, of: features.length };
+      if (hit === canvas || canvas.contains(hit)) {
+        return { x, y, covered, offscreen, of: features.length };
+      }
       covered += 1;
+      if (blockers.length < 3 && hit) {
+        blockers.push(
+          `${hit.tagName.toLowerCase()}${hit.className ? `.${String(hit.className).split(/\s+/).slice(0, 2).join(".")}` : ""}`,
+        );
+      }
     }
-    return { blocked: covered, of: features.length };
+    return { blocked: covered, offscreen, of: features.length, blockers };
   });
 
   if (!point) {
@@ -352,7 +372,9 @@ async function clickPaintedBus(page, sink) {
   }
   if (point.x === undefined) {
     throw new Error(
-      `all ${point.of} painted bus(es) were under something else, so none could be clicked`,
+      `none of the ${point.of} painted bus(es) could be clicked: ${point.blocked} were under ` +
+        `something else${point.blockers.length > 0 ? ` (${point.blockers.join(", ")})` : ""}` +
+        `, ${point.offscreen} were off the screen`,
     );
   }
   await page.mouse.click(point.x, point.y);
