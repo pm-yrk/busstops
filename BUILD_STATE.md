@@ -4,6 +4,87 @@ Last updated: 2026-10-01 (recruiter-demo rescue: the horizon that expires, and a
 
 ## Current status
 
+### 2 October, deployed: departures work at eight cities, and 1102 is CPU
+
+Run 79 (`becc1b9`) on `https://preview.busstops.pages.dev`:
+
+    pass  a stop can be selected and returns a departure board — Piccadilly: 19 departures, 2 routes, scheduled_only
+    pass  places across England return their real routes and departures —
+          Leeds: Blackman Lane — 6 routes, 18 due, next 23 to Leeds City Bus Station (5/5 stops served)
+          Manchester: Piccadilly — 2 routes, 19 due, next 2 to Manchester Piccadilly Rail Station (4/5)
+          Birmingham: Bromsgrove Street — 3 routes, 20 due, next 47 to Longbridge Island (3/5)
+          Bristol: Lamb Street — 15 routes, 20 due, next 6 to Cecil Road (5/5)
+          York: Ninth Avenue — 2 routes, 2 due, next 20 to The Mitre (5/5)
+          Newcastle: Newcastle Percy Street — 3 routes, 7 due, next 32A to Scrogg Road (2/5)
+          Brighton: Port Hall Road — 6 routes, 6 due, next 27 to Whitethorn Drive (4/5)
+          Shrewsbury: Belvidere Lane Jct — 1 routes, 1 due, next 23 to Bus Station (4/5)
+    pass  search finds a real stop by name — "Piccadilly" → 20 results
+    pass  live vehicles are reported for a covered area — 203 vehicles; bods: healthy; normal
+    pass  a journey can be planned across real timetable data — Leeds → Leeds Bradford Airport, 3 legs
+    pass  route detail answers without the Worker falling over
+
+All eight cities, including York and Shrewsbury, which had none the day before.
+The 4-day horizon published on 1 October covers today, so the regression that
+started this is closed on the deployed site. The visual sweep went from 433
+passes / 19 failures to **457 / 11**, and every whole-map failure is gone: the
+basemap paints, stops draw, attribution shows and the stop-click board opens at
+desktop, tablet and phone.
+
+### 1102 is CPU, and the budgets were sized for memory
+
+Run 78 and run 79 agree, and the breadcrumbs are specific:
+
+    route-detail  died at siri:parse:begin   802ms   parse.chars=499188
+    journeys      died at reads:begin          0ms   residentChars=3646975
+    stop-board    died at board:live:done      0ms   residentChars=3646975
+
+A Worker's clock only advances across I/O, so `0 ms` means the request never got
+past synchronous work. Cheap probe requests on the _same_ isolate at the _same_
+residency answered fine, so it is not memory — nothing here is near 128 MiB.
+Workers Free allows **10 ms of CPU an invocation** and charges nothing for
+waiting on I/O, and walking shard text measures at about 3 ms a mebibyte. Every
+byte budget in the Worker was a fraction of 128 MiB: the reader held 12 MiB, the
+planner 12 MiB of trips on top of 6 MiB of pattern index, search had none at all.
+They were set three times above the only limit that kills a request.
+
+What is done about it, in order of effect:
+
+- **Parse fewer rows, rather than read fewer bytes.** Scanning text is cheap and
+  `JSON.parse` is not. A corridor tile holds every pattern crossing a half-degree
+  square: run 75 parsed 3,130 trip rows to keep 479, each discarded one having
+  built two arrays of thirty departure times first. The pattern is now read off
+  the line with an `indexOf` before anything is built, and an unrecognised line
+  falls through to the full parse rather than being dropped.
+- **Search was the worst path and the first one a visitor takes.** Up to twelve
+  prefix buckets, read in parallel, no budget, no ledger, every line built into an
+  object. A bucket reaches 1,644,719 bytes, so nineteen mebibytes was reachable
+  from a 120-character query — which is why "Piccadilly" answered and "Leeds
+  Station" returned Cloudflare's error page. It now filters the parse on the first
+  three characters of each word typed (generous on purpose: a filter stricter than
+  the ranking it feeds starts deciding results) and reads in word order against a
+  2 MiB budget.
+- **One budget per request, in characters**, on `ReadLedger` alongside the clock,
+  counting only reads because a cache hit decodes nothing. The tile reader clamps
+  each family's budget by what the whole request has left — a journey spends three
+  of them in sequence and every one was respected while fifteen mebibytes went by.
+- **Smaller caches, because collection is charged to the invocation that triggers
+  it.** Re-reading a tile costs a free R2 operation and no compute; holding it
+  taxes whichever request is parsing when the collector runs. Shard cache 12 MiB →
+  3, trip cache 8 → 2, pre-request trim floor 4 MiB → 1.
+- **Route detail keeps 1.2 MiB back for the SIRI parse or skips the live layer**
+  and says so. The stop sequence is what the page is for.
+
+### Known blocker: no schedule can fire from this branch
+
+`preview-departures-refresh.yml` and `prove-horizon.yml` exist and are correct,
+but GitHub runs `schedule` only from the **default branch**, and all of this work
+is on `claude/bus-stops-platform-build-f7qztb` — `main` still carries the old
+workflow set. Dispatching them also 404s for the same reason. So the daily refresh
+that keeps the timetable from expiring **cannot run until the branch is merged**.
+Until then the horizon is 4 days of slack and the refresh has to be dispatched
+through `deploy-preview.yml`, which is registered on `main` and therefore
+dispatchable with this branch's version of the file.
+
 ### Run 75 (deployed): departures are back at eight cities, Pro carries eight of eight figures
 
 `https://preview.busstops.pages.dev`, commit `739aedd`, artifact version

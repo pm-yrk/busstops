@@ -202,12 +202,21 @@ export function searchLineFilter(
 /**
  * How much search-tile text a "stops near me" answers from.
  *
- * Search entries are filed on the stop grid, so a quarter-degree tile in a city holds tens of
- * thousands of them — all decoded to answer a question about eight hundred metres, which is what
- * put `nearby` over the limit in run 44. Five mebibytes is the same cap the map's stops get,
- * because it is the same shape of question asked of the same grid.
+ * Search entries are filed on the stop grid, so a tile in a city holds tens of thousands of them —
+ * all decoded to answer a question about eight hundred metres, which is what put `nearby` over the
+ * limit in run 44. The parse is filtered to the box now, so that part is fixed.
+ *
+ * The *scan* is not free, though, and that is what is left. A published search tile reaches
+ * 1,832,129 bytes, and an eight-hundred-metre box that happens to straddle a tile corner wants
+ * four of them — seven mebibytes of text to walk, against the 10 ms of CPU a free invocation gets
+ * at roughly 3 ms a mebibyte. Run 79 measured the result: `nearby` answered Cloudflare's error
+ * page for a real point in central Manchester.
+ *
+ * Two mebibytes is one tile, and `readTiles` reads outwards from the middle of the box, so what a
+ * corner loses is the far side of a neighbouring square — stops that are mostly further away than
+ * the ones it keeps. A shorter list of real stops beats an error page.
  */
-const NEARBY_READ_CHARS = 5 * 1024 * 1024;
+const NEARBY_READ_CHARS = 2 * 1024 * 1024;
 
 /** The most tiles read at once, once their size is known. */
 const TILE_READ_BATCH = 6;
