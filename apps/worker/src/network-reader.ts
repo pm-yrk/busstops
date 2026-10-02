@@ -155,7 +155,7 @@ const MAX_PATTERN_REQUEST_CHARS = 3 * 1024 * 1024;
  * How many search buckets one query may open. A hundred and twenty characters of query is a lot
  * of words, and each word is at least one object; the bound is on the reading, not on the typing.
  */
-const MAX_SEARCH_BUCKETS_PER_QUERY = 6;
+const MAX_SEARCH_BUCKETS_PER_QUERY = 8;
 
 /**
  * How much prefix-bucket text one query may open.
@@ -448,6 +448,7 @@ export class NetworkReader {
    * cost falls with what was asked rather than with how much of England has a name.
    */
   private placeLinesCache: string[] | null = null;
+  private placesCache: SearchIndexEntry[] | null = null;
   private routeTilesCache: Map<string, string[]> | null = null;
 
   constructor(
@@ -1772,18 +1773,29 @@ export class NetworkReader {
     return this.placeLinesCache;
   }
 
-  /** The gazetteer entries a query could want, built from the cached text. */
-  private async placeEntries(keep?: (line: string) => boolean): Promise<SearchIndexEntry[]> {
+  /**
+   * The gazetteer, parsed once per isolate and then held.
+   *
+   * Not filtered by the query, and that was a mistake worth recording: filtering it cost run 82
+   * three of its five landmarks — Manchester Arndale, Bullring and Bristol Temple Meads stopped
+   * being found — for a saving the text cache had already made. The expensive part of the old path
+   * was `readCurrent`, which hashes the whole multi-megabyte object with FNV-1a *and* parses every
+   * record; skipping the hash and parsing 3,178 lines once an isolate is cheap, and the entries are
+   * then shared by every later search. A query's filter belongs on the 1.6 MB prefix buckets, where
+   * the volume actually is.
+   */
+  private async placeEntries(): Promise<SearchIndexEntry[]> {
+    if (this.placesCache) return this.placesCache;
     const lines = await this.placeLines();
     const entries: SearchIndexEntry[] = [];
     for (const line of lines) {
-      if (keep && !keep(line)) continue;
       try {
         entries.push(placeAsSearchEntry(JSON.parse(line) as PlaceRecord));
       } catch {
         // One unreadable line is one missing landmark, not a failed search.
       }
     }
+    this.placesCache = entries;
     return entries;
   }
 
@@ -1864,6 +1876,65 @@ export class NetworkReader {
           } catch {
             // A line that will not parse is a line this reader has no service for; the caller
             // already copes with a service it cannot name.
+          }
+        }
+      }
+      start = end + 1;
+    }
+    return found;
+  }
+
+  /**
+   * The national operators text, held without being parsed — the same treatment `services` got, for
+   * the same measured reason.
+   *
+   * `readCurrent` runs an FNV-1a hash over the whole object *and* `JSON.parse`s every record before
+   * a caller sees one. Both are pure computation, which is the resource a free invocation has ten
+   * milliseconds of. A stop board wanted the operators of about two routes and was paying for all
+   * 631 — and run 81's breadcrumb puts the cold board's death immediately after
+   * `board:services:done`, which is exactly where `await network.operators()` sits.
+   */
+  private operatorsTextCache: string | null = null;
+
+  private async operatorsText(): Promise<string | null> {
+    if (this.operatorsTextCache !== null) return this.operatorsTextCache;
+    const artifacts = new ArtifactStore(this.store);
+    const manifest = await artifacts.readManifest(DATASETS.operators);
+    if (!manifest) return null;
+    const raw = await this.store.get(manifest.objectKey);
+    if (raw === null) return null;
+    this.operatorsTextCache = raw;
+    return raw;
+  }
+
+  /** Only the operators asked for, built by one pass over the text. */
+  async operatorsByIds(ids: ReadonlySet<string>): Promise<Map<string, Operator>> {
+    const found = new Map<string, Operator>();
+    if (ids.size === 0) return found;
+
+    // A warm isolate that has already read them all for some other reason should use that.
+    if (this.operatorsCache) {
+      for (const id of ids) {
+        const operator = this.operatorsCache.get(id);
+        if (operator) found.set(id, operator);
+      }
+      return found;
+    }
+
+    const text = await this.operatorsText();
+    if (text === null) return found;
+
+    let start = 0;
+    while (start < text.length && found.size < ids.size) {
+      let end = text.indexOf("\n", start);
+      if (end < 0) end = text.length;
+      if (end > start) {
+        const id = valueAt(text, start, end, "id");
+        if (id !== null && ids.has(id)) {
+          try {
+            found.set(id, JSON.parse(text.slice(start, end)) as Operator);
+          } catch {
+            // A line that will not parse is an operator this reader cannot name; the caller copes.
           }
         }
       }
@@ -1993,7 +2064,7 @@ export class NetworkReader {
      * scoring them together is what lets the station come first when it deserves to. Two lists
      * concatenated would put whichever happened to be first ahead of a better match.
      */
-    for (const entry of await this.placeEntries(keep)) {
+    for (const entry of await this.placeEntries()) {
       unique.set(`${entry.kind}:${entry.id}`, entry);
     }
 

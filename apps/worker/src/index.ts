@@ -1046,7 +1046,23 @@ router.get("/v1/stops/:id", async (_request, { env, params }) => {
    */
   const observedAt = live.observedAt ?? null;
 
-  const routes = routesServingStop(patterns, stop.id, services, await network.operators());
+  /*
+   * The operators of this stop's routes, not all 631 of them.
+   *
+   * `await network.operators()` sat here, and `readCurrent` hashes the whole national object with
+   * FNV-1a and parses every record before returning one. Run 81's cold board died immediately after
+   * `board:services:done`, which is this line. A board shows a handful of routes, so it asks for a
+   * handful of operators and one pass over the text answers.
+   */
+  const operatorIds = new Set(
+    [...services.values()].map((service) => service.operatorId).filter(Boolean),
+  );
+  const routes = routesServingStop(
+    patterns,
+    stop.id,
+    services,
+    await boardLedger.stage("operators", () => network!.operatorsByIds(operatorIds)),
+  );
   const snapshot = await boardLedger.stage("disruptions", async () =>
     disruptions ? ((await disruptions.snapshot()) ?? null) : null,
   );
