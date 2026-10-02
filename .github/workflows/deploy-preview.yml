@@ -765,6 +765,12 @@ jobs:
         run: |
           echo "--- visual sweep failures (repeated at end of job) ---"
           grep -E "^\s*FAIL" visual.log 2>/dev/null || echo "no FAIL lines"
+          # The one set of *passes* worth repeating: what a reader is actually told when they click a
+          # stop, at every screen size. A pass count says a check ran; this says "4F to Acomb, 7 min,
+          # Timetable", which is the only evidence that the product works.
+          echo "--- what a clicked stop showed, at each size ---"
+          grep -E "opens the arrival board when a stop is clicked|real departures" visual.log 2>/dev/null \
+            || echo "no board lines"
           echo "--- visual sweep totals ---"
           grep -cE "^\s*pass" visual.log 2>/dev/null || echo "no visual.log was written"
           echo "--- end visual sweep ---"
