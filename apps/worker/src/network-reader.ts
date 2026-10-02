@@ -158,6 +158,48 @@ const MAX_PATTERN_REQUEST_CHARS = 3 * 1024 * 1024;
 const MAX_SEARCH_BUCKETS_PER_QUERY = 12;
 
 /**
+ * How much prefix-bucket text one query may open.
+ *
+ * Measured: a published bucket reaches 1,644,719 bytes, and twelve of those is nineteen mebibytes of
+ * text to answer "Leeds Station". Even scanning that much costs more than the 10 ms of CPU a free
+ * Worker invocation is allowed, before a single entry is built. Two mebibytes is two or three real
+ * buckets, which is what a two or three word query actually needs; a longer query loses its tail
+ * rather than losing its answer.
+ */
+const MAX_SEARCH_READ_CHARS = 2 * 1024 * 1024;
+
+/** Characters of a typed word the text filter tests. Generous on purpose; see `searchLineFilter`. */
+const SEARCH_STEM_LENGTH = 3;
+
+/**
+ * Which index lines are worth building, tested as text.
+ *
+ * A bucket filed under "le" holds every entry whose word starts with those letters — Leeds, Leicester,
+ * Lewisham, Leyland — and a query for "leeds" wants a fraction of them. The test is the first three
+ * characters of each word typed rather than the whole word, which is deliberately generous: "lee"
+ * keeps Leeds, Leedstown and a misspelt "Lees", and the ranker decides between them. Testing the
+ * whole word would make the filter stricter than the ranking it feeds, which is how a filter starts
+ * deciding results instead of reducing work.
+ *
+ * The line is tested whole, so an entry matching on a token rather than on its title survives.
+ *
+ * A one-letter word is no test at all, which is correct: there is nothing to narrow by, and
+ * narrowing on nothing would mean dropping the bucket's contents.
+ */
+export function searchLineFilter(
+  words: readonly string[],
+): ((line: string) => boolean) | undefined {
+  const stems = words
+    .map((word) => word.toLowerCase().slice(0, SEARCH_STEM_LENGTH))
+    .filter((stem) => stem.length >= 2);
+  if (stems.length === 0) return undefined;
+  return (line: string) => {
+    const lower = line.toLowerCase();
+    return stems.some((stem) => lower.includes(stem));
+  };
+}
+
+/**
  * How much search-tile text a "stops near me" answers from.
  *
  * Search entries are filed on the stop grid, so a quarter-degree tile in a city holds tens of
@@ -1838,6 +1880,7 @@ export class NetworkReader {
     query: string,
     options: { limit: number; near?: Coordinate },
     now: number = Date.now(),
+    ledger?: ReadLedger,
   ): Promise<{ hits: SearchHit[]; builtAt: string } | null> {
     const index = await this.networkIndex(now);
     if (!index) return null;
@@ -1863,11 +1906,38 @@ export class NetworkReader {
     const wanted = [
       ...new Set(lookups.flatMap((word) => searchPrefixesForWord(word, available))),
     ].slice(0, MAX_SEARCH_BUCKETS_PER_QUERY);
-    const buckets = await Promise.all(
-      wanted.map((prefix) =>
-        this.readShard<SearchIndexEntry>(searchPrefixDataset(prefix), index.version, now),
-      ),
-    );
+    /*
+     * The parse is filtered, and the read is bounded. This was the most expensive path in the
+     * Worker and it is a path a visitor takes first.
+     *
+     * A published prefix bucket reaches 1,644,719 bytes, twelve were opened in parallel, every line
+     * of every one was turned into an object, and then the whole set was ranked. "Piccadilly" is one
+     * word and one bucket and answered fine; "Leeds Station" is two, and run 79 measured the result —
+     * Cloudflare error 1102, which a browser reports as a CORS failure, so a visitor searching for a
+     * landmark got nothing at all.
+     *
+     * Two bounds, in the currency that runs out. The lines are tested as text before anything is
+     * built, on the first few characters of each word typed, so a bucket filed under "le" costs its
+     * "leeds" entries rather than all of them. And the buckets are read in word order until a byte
+     * budget is spent, rather than all at once: words are taken in the order they were meant, so what
+     * is dropped is the tail of a long query and not the subject of it.
+     */
+    const keep = searchLineFilter(lookups);
+    const buckets: SearchIndexEntry[][] = [];
+    let searchChars = 0;
+    for (const prefix of wanted) {
+      if (searchChars >= MAX_SEARCH_READ_CHARS) break;
+      if (ledger && !ledger.withinBudget) break;
+      const bucket = await this.readShardSized<SearchIndexEntry>(
+        searchPrefixDataset(prefix),
+        index.version,
+        now,
+        ledger ? { ledger, family: "search", budgetReason: "search_read_budget" } : undefined,
+        keep,
+      );
+      searchChars += bucket.chars;
+      buckets.push(bucket.records);
+    }
 
     // One entry can sit in several buckets when its words start differently; dedupe before
     // ranking so a multi-word match is not counted twice.

@@ -153,6 +153,15 @@ const JOURNEY_PATTERN_READ_CHARS = 6 * 1024 * 1024;
 const NEARBY_BUDGET_MS = 1_500;
 
 /**
+ * And the same for a search, which had no budget at all.
+ *
+ * A visitor's first act is to type a place name, and until run 79 that read up to twelve prefix
+ * buckets in parallel with nothing counting them. The clock is short for the same reason the
+ * reads are: a search that takes two seconds has already failed as a search.
+ */
+const SEARCH_BUDGET_MS = 1_500;
+
+/**
  * The stop board's clock.
  *
  * This endpoint had no ledger at all, which is why run 68's weather failure could be seen from
@@ -2194,11 +2203,25 @@ router.get("/v1/search", async (_request, { env, url }) => {
       ? { lat: Number(latParam), lon: Number(lonParam) }
       : undefined;
 
-  // Only the prefix buckets this query's words fall in are read. The national search index is
-  // 87 MiB; the buckets a query touches are a few hundred kilobytes.
+  /*
+   * Only the prefix buckets this query's words fall in are read, and now with a ledger.
+   *
+   * A published bucket reaches 1.6 MB and "Leeds Station" opened several of them; the ledger is what
+   * stops the read before the platform does, and what makes the cost visible afterwards. The budget
+   * is short because a search has to answer in one invocation's compute, not because the index is
+   * large — the national index is 87 MiB and a query touches a few hundred kilobytes of it.
+   */
+  const searchLedger = new ReadLedger(SEARCH_BUDGET_MS);
+  const endSearchResidency = beginResidency(searchLedger, "search");
   const found = network
-    ? await network.search(query, { limit: 20, ...(near === undefined ? {} : { near }) })
+    ? await network.search(
+        query,
+        { limit: 20, ...(near === undefined ? {} : { near }) },
+        Date.now(),
+        searchLedger,
+      )
     : null;
+  endSearchResidency();
   if (!found) {
     return errorResponse("upstream_unavailable", "The search index is not available yet.", 503, 60);
   }
