@@ -1,0 +1,51 @@
+name: Prove the departure horizon
+
+# A one-minute question with a two-hour answer everywhere else.
+#
+# Departure shards are keyed by service date, so "can the site say what is due today?" is answered by
+# the bucket, not by the code. This lists it and counts the objects physically present for each date
+# at the version the index names. It writes nothing, so it is safe against any bucket at any time, and
+# it exists so that question never again requires a rebuild to answer.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bucket:
+        description: "Artifact bucket to inspect"
+        type: choice
+        default: busstops-artifacts-preview
+        options:
+          - busstops-artifacts-preview
+          - busstops-artifacts
+      horizon_days:
+        description: "Service dates to ask about, counting today"
+        type: string
+        default: "4"
+  schedule:
+    # 06:12 UTC, after the daily refresh, so a refresh that silently did nothing is visible by morning.
+    - cron: "12 6 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  prove:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - run: npm ci --no-audit --no-fund
+      - name: Count what is actually in the bucket
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          R2_BUCKET_ARTIFACTS: ${{ inputs.bucket || 'busstops-artifacts-preview' }}
+          SERVICE_DATE_HORIZON_DAYS: ${{ inputs.horizon_days || '4' }}
+        run: npx tsx pipelines/static-network/prove-horizon.ts
+      - name: Repeat the answer where the log can reach it
+        if: always()
+        run: cat horizon-report.json || echo "no horizon-report.json was written"

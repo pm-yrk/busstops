@@ -12,7 +12,11 @@
 
 import { writeFileSync } from "node:fs";
 import { ArtifactStore, r2StoreFromEnv } from "@busstops/pipeline-core";
-import { DEPARTURES_PREFIX, PATTERN_TRIPS_PREFIX } from "./src/departures-index.js";
+import {
+  DEPARTURE_BUCKETS,
+  DEPARTURES_PREFIX,
+  PATTERN_TRIPS_PREFIX,
+} from "./src/departures-index.js";
 import { SHARDED } from "./src/shards.js";
 import { serviceDateHorizonFromEnv } from "./src/service-dates.js";
 
@@ -61,18 +65,39 @@ async function main(): Promise<number> {
     console.log(
       `${date}  ${String(departures).padStart(5)} departure shard(s)  ` +
         `${String(patternTrips).padStart(5)} pattern-trip shard(s)` +
-        (departures === 0 ? "   <-- no board outside London can answer for this day" : ""),
+        (departures === 0
+          ? "   <-- no board outside London can answer for this day"
+          : departures < DEPARTURE_BUCKETS
+            ? `   <-- ${DEPARTURE_BUCKETS - departures} bucket(s) missing of ${DEPARTURE_BUCKETS}`
+            : ""),
     );
   }
   report.coverage = rows;
 
-  const empty = rows.filter((row) => row.departures === 0);
-  report.datesWithoutDepartures = empty.map((row) => row.date);
-  if (empty.length > 0) {
+  /*
+   * A count, not merely a presence.
+   *
+   * The first version of this failed only a date with *no* shards, which is a check a partially
+   * written date passes: the publish is bucketed 512 ways by a hash of the stop, so a date holding
+   * 200 buckets answers for two fifths of the country's stops and says nothing at the rest. That is
+   * precisely the failure this tool exists to catch — run 78's refresh was killed at its step limit
+   * partway through, and "every date has at least one object" would have called that covered.
+   */
+  const expected = DEPARTURE_BUCKETS;
+  const floor = Math.floor(expected * 0.95);
+  const short = rows.filter((row) => row.departures < floor);
+  report.expectedDepartureShardsPerDate = expected;
+  report.datesShortOfFullCoverage = short.map((row) => ({
+    date: row.date,
+    departures: row.departures,
+  }));
+  if (short.length > 0) {
     report.outcome = "horizon_incomplete";
     console.error(
-      `${empty.length} of ${rows.length} service date(s) hold no departure shards at this ` +
-        `version: ${empty.map((row) => row.date).join(", ")}.`,
+      `${short.length} of ${rows.length} service date(s) hold fewer than ${floor} of ${expected} ` +
+        `departure shards at this version: ` +
+        short.map((row) => `${row.date} (${row.departures})`).join(", ") +
+        `. A date short of its buckets answers for some of England's stops and not the rest.`,
     );
     write(report);
     return 1;
@@ -81,7 +106,8 @@ async function main(): Promise<number> {
   report.outcome = "covered";
   console.log(
     `Every one of the ${rows.length} date(s) from ${serviceDates[0]} to ` +
-      `${serviceDates[serviceDates.length - 1]} is physically present at version ${index.version}.`,
+      `${serviceDates[serviceDates.length - 1]} holds its full ${expected} departure shards at ` +
+      `version ${index.version}.`,
   );
   write(report);
   return 0;
