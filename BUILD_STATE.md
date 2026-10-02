@@ -74,6 +74,44 @@ What is done about it, in order of effect:
 - **Route detail keeps 1.2 MiB back for the SIRI parse or skips the live layer**
   and says so. The stop sequence is what the page is for.
 
+### Correction: the visual sweep was not slow
+
+The commit that split it into its own job says the sweep had become "the best part
+of an hour". That was wrong — I was reading my own elapsed time badly, and run 81's
+sweep took about nine minutes, as it always has. The split still earns its keep for
+the reason that does hold: GitHub serves no log for a job still running, so an API
+verification that finishes in ninety seconds could not be read until two hundred
+visual checks finished behind it. The claim about the cause was the error, not the
+change.
+
+### Still open after run 81, with the evidence
+
+Recovered: `nearby` (25 stops within 800 m), the journey plan (5 legs), and the
+isolate residency the breadcrumbs report, which fell from 3.90 MiB to 0.87 and
+0.00 — the smaller caches and the 1 MiB trim floor doing exactly what they were
+for.
+
+Still dying, and the breadcrumbs are specific about where:
+
+- **The stop board with weather asked for.** `req#96 stop-board last reached
+"board:services:done" at 88ms` with `residentChars=414654`. The next stage is
+  `routesServingStop`, which awaits the national **operators** dataset (631
+  records), and then the **disruptions** snapshot (788 notices). Both go through
+  `ArtifactStore.readCurrent`, which records nothing to the ledger — so the three
+  national datasets (operators, places, disruptions) are the budget's blind spot.
+  Places is fixed; the other two are not. The plain board passes, so this is the
+  cold-isolate case only.
+  Not fixed yet on purpose: the honest fix is a text prefilter like the one search
+  and the trip reader now use, but `noticesFor` matches route names
+  case- and space-insensitively ("X1", "x1", "X 1"), and a text filter that misses
+  a space variant would silently drop a disruption a passenger should see. A
+  stop-scoped disruptions index at build time is the right answer.
+- **The London `/v1/map` viewport**, which reads TfL rather than the shards.
+- **The place journey**, which is a search and a plan in one request:
+  `req#98 journeys last reached "reads:begin" at 0ms` with `residentChars=0` — a
+  completely cold isolate, dying on its own first read, so the journey's 1.76 MiB
+  of pattern index plus its trips is over the limit unaided.
+
 ### Known blocker: no schedule can fire from this branch
 
 `preview-departures-refresh.yml` and `prove-horizon.yml` exist and are correct,
