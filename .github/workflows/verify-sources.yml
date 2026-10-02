@@ -11,6 +11,20 @@ name: Verify sources and artifacts
 
 on:
   workflow_dispatch:
+    inputs:
+      what:
+        description: "upstreams | deployment | both"
+        type: choice
+        default: deployment
+        options: [deployment, upstreams, both]
+      api_url:
+        description: "Worker URL to verify (blank = the preview Worker)"
+        type: string
+        default: ""
+      site_url:
+        description: "Site URL to verify (blank = the preview site)"
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -29,6 +43,7 @@ jobs:
   # timings, never a credential or a source vehicle reference.
   diagnose:
     name: Ask every upstream directly
+    if: ${{ inputs.what == 'upstreams' || inputs.what == 'both' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -226,3 +241,53 @@ jobs:
             cat basemap.log
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # Verifying the *already deployed* preview, without redeploying it.
+  #
+  # This lives here for a practical reason rather than a tidy one. The deploy workflow holds the
+  # verification, and when that deploy also carries a departures refresh the verification waits two
+  # hours behind it — while the Worker and the site it would be checking went live in the first four
+  # minutes. A workflow of its own would be the right home, but GitHub only registers
+  # `workflow_dispatch` for files on the default branch, and all of this work is on a feature branch,
+  # so a new file cannot be dispatched at all. This one is registered, manual, and has its own
+  # concurrency group, so it can answer "is the deployed preview healthy?" in two minutes at any time.
+  verify-deployment:
+    name: Verify the deployed preview
+    if: ${{ inputs.what == 'deployment' || inputs.what == 'both' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - run: npm ci --no-audit --no-fund
+
+      - name: Verify real data through the deployed API
+        id: verify
+        env:
+          BODS_API_KEY: ${{ secrets.BODS_API_KEY }}
+          TFL_APP_KEY: ${{ secrets.TFL_APP_KEY }}
+        run: |
+          set -o pipefail
+          node scripts/verify-deployment.mjs \
+            "${{ inputs.api_url || 'https://busstops-api-preview.paulmurrin13.workers.dev' }}" \
+            "${{ inputs.site_url || 'https://preview.busstops.pages.dev' }}" \
+            2>&1 | tee verify.log
+
+      - name: How many days of timetable the preview holds
+        if: ${{ !cancelled() }}
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          R2_BUCKET_ARTIFACTS: busstops-artifacts-preview
+          SERVICE_DATE_HORIZON_DAYS: "4"
+        run: npx tsx pipelines/static-network/prove-horizon.ts
+
+      - name: What the verification actually said
+        if: always()
+        run: |
+          echo "--- verification results ---"
+          grep -E "^\s*(FAIL|pass)" verify.log 2>/dev/null || echo "no verify.log was written"
+          echo "--- end verification results ---"
