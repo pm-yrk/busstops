@@ -85,3 +85,26 @@ describe("keeping stops on the map when the platform refuses", () => {
     expect(load).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("not laddering on a refresh", () => {
+  /*
+   * The page polls. A ladder on every poll turns one failing viewport into a standing stream of
+   * requests against a Worker already over its limit, and keeps the page from ever settling — which
+   * is why the live map is handed one attempt once it has stops on screen.
+   */
+  it("makes exactly one request when told it already has a map", async () => {
+    const load = vi.fn().mockRejectedValue(new TypeError("Failed to fetch"));
+    await expect(
+      fetchMapWithFallback(load, VIEW, signal(), { ...nowait, attempts: 1 }),
+    ).rejects.toThrow("Failed to fetch");
+    expect(load).toHaveBeenCalledTimes(1);
+  });
+
+  it("still ladders when it has nothing to show", async () => {
+    const load = vi.fn().mockRejectedValue(new TypeError("Failed to fetch"));
+    await expect(
+      fetchMapWithFallback(load, VIEW, signal(), { ...nowait, attempts: 3 }),
+    ).rejects.toThrow("Failed to fetch");
+    expect(load).toHaveBeenCalledTimes(3);
+  });
+});

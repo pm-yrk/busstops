@@ -100,8 +100,22 @@ export interface ReadTrack {
  * are several times the size of the text they came from and a request needs room to work on top of
  * whatever is resident.
  */
-const MAX_CACHED_SHARDS = 24;
-const MAX_CACHED_SHARD_CHARS = 12 * 1024 * 1024;
+const MAX_CACHED_SHARDS = 8;
+/*
+ * Three mebibytes, down from twelve, and the reason is CPU rather than memory.
+ *
+ * Workers Free charges 10 ms of CPU per invocation and charges nothing for waiting on I/O. Garbage
+ * collection is not free, though, and it is paid for by whichever invocation triggers it — so a
+ * large warm cache does not merely occupy memory the isolate has plenty of, it taxes the request
+ * that happens to be parsing when the collector runs. Run 78 is consistent with exactly that: the
+ * journey that decoded 4.0 MiB answered fine on runs 74 and 75 and died on run 78 on an isolate
+ * already holding 2.42 MiB across twenty-six served requests, with the clock reading 0 ms.
+ *
+ * Re-reading a tile costs a metered R2 operation and some wall-clock, of which there are 10 million
+ * free a month and 1,800 ms to spend. Holding it costs the one thing in short supply. So the cache
+ * is now small enough to help a repeat request without being large enough to tax the next one.
+ */
+const MAX_CACHED_SHARD_CHARS = 3 * 1024 * 1024;
 
 /**
  * How much shard text one request will open.
@@ -618,6 +632,17 @@ export class NetworkReader {
     const present = new Set(available);
     const wanted = tiles.filter((tile) => present.has(tile));
 
+    /*
+     * Clamped by what the whole request has left, not only by what this family is allowed.
+     *
+     * Every budget passed in here is per-family and sized against the isolate's memory, so a
+     * request that spends three of them in sequence — a journey reads stops, then the pattern
+     * index, then trips — could decode fifteen mebibytes while every individual budget was
+     * respected. The resource that actually runs out is CPU, it is spent per *request*, and
+     * `ReadLedger` is the only object that spans the stages. So this is where the two meet.
+     */
+    const ceiling = track ? Math.min(budgetChars, track.ledger.remainingChars) : budgetChars;
+
     const records: T[] = [];
     let chars = 0;
     let read = 0;
@@ -657,14 +682,14 @@ export class NetworkReader {
        * stops a request being stopped for it: a reader that only counts bytes will happily spend
        * two seconds doing so, and error 1102 does not care which resource ran out.
        */
-      if (chars >= budgetChars || track?.ledger.withinBudget === false) {
+      if (chars >= ceiling || track?.ledger.withinBudget === false) {
         const ranOut = start < wanted.length;
         if (ranOut && track && !track.ledger.withinBudget) track.ledger.stop(track.budgetReason);
         return { records, truncated: ranOut };
       }
 
       const averageChars = Math.max(1, Math.ceil(chars / Math.max(1, read)));
-      const affordable = Math.floor((budgetChars - chars) / averageChars);
+      const affordable = Math.floor((ceiling - chars) / averageChars);
       batchSize = Math.max(1, Math.min(TILE_READ_BATCH, affordable));
     }
     return { records, truncated: false };

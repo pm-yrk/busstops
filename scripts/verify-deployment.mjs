@@ -243,7 +243,21 @@ function assert(condition, message) {
  * bounded, so a genuinely rate-limited deployment still fails the run rather than hanging it.
  */
 async function fetchOnce(path) {
-  const response = await fetch(`${apiUrl}${path}`, { signal: AbortSignal.timeout(20_000) });
+  /*
+   * The abort says which request aborted.
+   *
+   * Run 78's city sweep failed with "The operation was aborted due to timeout" and nothing else —
+   * forty-eight requests across eight cities and no clue which of them took twenty seconds. The
+   * timeout is a real failure worth keeping, but a failure that does not name its request costs a
+   * whole run to localise.
+   */
+  let response;
+  try {
+    response = await fetch(`${apiUrl}${path}`, { signal: AbortSignal.timeout(20_000) });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`${message} — on ${path}`);
+  }
   const text = await response.text();
   let body = null;
   try {

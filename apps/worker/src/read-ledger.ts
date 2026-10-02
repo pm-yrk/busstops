@@ -15,6 +15,30 @@
  * bodies, no credentials.
  */
 
+/**
+ * How much shard text one request may decode, derived from CPU rather than from memory.
+ *
+ * Every byte budget in this Worker was sized against the isolate's 128 MiB — a reader held 12 MiB,
+ * the journey planner 12 MiB of trips on top of 6 MiB of pattern index. Memory was never the
+ * constraint. Workers Free allows **10 ms of CPU per invocation**, waiting on I/O costs none of it,
+ * and walking shard text was measured at about 3 ms a mebibyte before an object is even built. So
+ * 12 MiB is three times the CPU a request is allowed, and the budgets that were supposed to protect
+ * the request were set above the only limit that kills it.
+ *
+ * Run 78 is the arithmetic: a journey decoded 1.76 MiB of pattern index and 2.24 MiB of trips and
+ * died at `reads:begin` with the clock still reading 0ms, because a Worker's clock does not advance
+ * across pure computation. Route detail died at `siri:parse:begin` holding 499 KB of XML on top of
+ * 0.87 MiB already parsed. The map, which decodes 2.08 MiB, answers every time.
+ *
+ * It is a backstop, not a throttle, and the number says so. Bytes alone do not separate the paths
+ * that die from the ones that do not: the map decodes 2.08 MiB of stop text plus up to 2 MiB of
+ * route text and answers every time, because it filters its parse and builds 788 objects out of
+ * 23,806 lines. Scanning text is cheap; `JSON.parse` is not. So the real work is done by parsing
+ * fewer rows — see `patternIdInTripLine` — and this exists to stop a request that has somehow
+ * opened six mebibytes from opening a seventh.
+ */
+export const REQUEST_TEXT_BUDGET_CHARS = 6 * 1024 * 1024;
+
 /** The artifact families a request can spend its budget on. */
 export type ArtifactFamily =
   | "index"
@@ -107,6 +131,12 @@ export interface ReadDiagnostics {
   /** Stated in the payload so nobody reads the number above as headroom. */
   budgetMeasures: "wall-clock-io";
   /**
+   * The budget that does bind: characters of shard text this request was allowed to decode, and
+   * what it spent. Cache hits are excluded, because they decode nothing.
+   */
+  budgetChars: number;
+  charsDecoded: number;
+  /**
    * What the published index says this artifact can answer with, and what was used.
    *
    * Three runs read the same 490 records at 1.97 MiB — full `Stop` records, not the projection —
@@ -148,19 +178,42 @@ export class ReadLedger {
   private residencyReport: IsolateResidency | null = null;
   private artifactNotes: Record<string, string | number | boolean> | null = null;
 
+  private decodedChars = 0;
+
   constructor(
     readonly budgetMs: number,
     private readonly clock: () => number = () => Date.now(),
     private readonly startedAt: number = clock(),
+    readonly budgetChars: number = REQUEST_TEXT_BUDGET_CHARS,
   ) {}
 
   get elapsedMs(): number {
     return this.clock() - this.startedAt;
   }
 
-  /** Whether optional work should still be attempted. */
+  /**
+   * Whether optional work should still be attempted.
+   *
+   * Both resources, because a request can be well inside its wall-clock budget and already past the
+   * compute it is allowed — that is exactly how a request reports "254ms of 1800ms, degraded false"
+   * and is killed in the same breath.
+   */
   get withinBudget(): boolean {
-    return this.stoppedReason === null && this.elapsedMs < this.budgetMs;
+    return (
+      this.stoppedReason === null &&
+      this.elapsedMs < this.budgetMs &&
+      this.decodedChars < this.budgetChars
+    );
+  }
+
+  /** Characters of shard text this request may still decode. Never negative. */
+  get remainingChars(): number {
+    return Math.max(0, this.budgetChars - this.decodedChars);
+  }
+
+  /** What has been decoded so far, which is the figure that predicts a 1102. */
+  get charsDecoded(): number {
+    return this.decodedChars;
   }
 
   /** Milliseconds left before optional work should stop. Never negative. */
@@ -204,6 +257,9 @@ export class ReadLedger {
     cost.records += entry.records ?? 0;
     cost.ms += entry.ms ?? 0;
     this.families.set(family, cost);
+    // Only a read spends compute. A cache hit returns objects that are already built, which is the
+    // whole reason the two outcomes are counted apart.
+    if (entry.outcome === "read") this.decodedChars += entry.chars ?? 0;
   }
 
   /** What the isolate was holding, recorded once the request has finished its reads. */
@@ -254,6 +310,8 @@ export class ReadLedger {
       elapsedMs: this.elapsedMs,
       budgetMs: this.budgetMs,
       budgetMeasures: "wall-clock-io",
+      budgetChars: this.budgetChars,
+      charsDecoded: this.decodedChars,
       objectsRequested,
       objectsRead,
       objectsCached,

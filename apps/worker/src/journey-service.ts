@@ -205,7 +205,37 @@ export type JourneyPlanOutcome =
  * sharding exists to prevent, just slower.
  */
 const MAX_CACHED_TRIP_SHARDS = 16;
-const MAX_CACHED_TRIP_CHARS = 8 * 1024 * 1024;
+/**
+ * The pattern id out of a spilled trip line, without building the row.
+ *
+ * This is the whole fix for the journey planner's CPU. A corridor tile holds every pattern that
+ * crosses a half-degree square, and run 75 measured the consequence: 3,130 trip rows parsed to keep
+ * 479, with 2,651 thrown away immediately after being built. `JSON.parse` on one of these lines also
+ * builds two numeric arrays of thirty-odd departure times each, so five sixths of the planner's parse
+ * cost went to rows it discarded in the next statement.
+ *
+ * Scanning text is cheap and parsing it is not — the same asymmetry that makes the map's filtered
+ * parse affordable at 2.08 MiB. A trip line is `{"p":"<id>","j":…}`, so the pattern can be read with
+ * an indexOf and a slice. Pattern ids are UUIDs, so there is no escaping to get wrong.
+ *
+ * Returns null rather than guessing when the shape is not what it expects, and a null falls through
+ * to the full parse: dropping a trip because a scan did not understand its line would silently
+ * remove buses from a journey, which is far worse than parsing one row too many.
+ */
+export function patternIdInTripLine(line: string): string | null {
+  const at = line.indexOf('"p":"');
+  if (at === -1) return null;
+  const from = at + 5;
+  const end = line.indexOf('"', from);
+  return end === -1 ? null : line.slice(from, end);
+}
+
+/*
+ * Two mebibytes, down from eight, for the reason in network-reader.ts: a warm cache is paid for in
+ * the CPU of whichever request triggers collection, and CPU is the resource this platform rations.
+ * A corridor's trips are re-read from R2 instead, which costs a free operation and no compute.
+ */
+const MAX_CACHED_TRIP_CHARS = 2 * 1024 * 1024;
 
 /**
  * How much trip shard text one plan will open.
@@ -642,6 +672,17 @@ export class JourneyService {
         const parsed: PatternTripRow[] = [];
         for (const line of result.raw.split("\n")) {
           if (line.length === 0) continue;
+          /*
+           * The pattern test first, off the text, before anything is built. Five sixths of what this
+           * loop used to construct was discarded by `keep` one statement later.
+           */
+          if (patternIds !== null) {
+            const pattern = patternIdInTripLine(line);
+            if (pattern !== null && !patternIds.has(pattern)) {
+              tripsFiltered += 1;
+              continue;
+            }
+          }
           const row = JSON.parse(line) as PatternTripRow;
           if (keep(row)) parsed.push(row);
           else tripsFiltered += 1;

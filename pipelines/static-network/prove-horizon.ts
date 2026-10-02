@@ -11,7 +11,7 @@
  */
 
 import { writeFileSync } from "node:fs";
-import { ArtifactStore, r2StoreFromEnv } from "@busstops/pipeline-core";
+import { ArtifactStore, r2StoreFromEnv, type ObjectStore } from "@busstops/pipeline-core";
 import {
   DEPARTURE_BUCKETS,
   DEPARTURES_PREFIX,
@@ -19,6 +19,66 @@ import {
 } from "./src/departures-index.js";
 import { SHARDED } from "./src/shards.js";
 import { serviceDateHorizonFromEnv } from "./src/service-dates.js";
+import { serviceDateInKey } from "./src/prune-service-dates.js";
+
+/** 80% of R2's free 10 GiB. Past this, the horizon is the thing to shorten. */
+const FREE_STORAGE_WARN_BYTES = 8 * 1024 * 1024 * 1024;
+
+function gib(bytes: number): string {
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GiB`;
+}
+
+/**
+ * What the bucket actually occupies, split into the part that scales with the horizon and the part
+ * that does not.
+ *
+ * `listDetailed` is optional on the interface because a store may not expose sizes; without it this
+ * reports zeroes rather than estimating, because an invented storage figure is how a £0 deployment
+ * stops being one.
+ */
+async function measureStorage(store: ObjectStore): Promise<{
+  objects: number;
+  totalBytes: number;
+  datedObjects: number;
+  datedBytes: number;
+  dates: number;
+  bytesPerDate: number;
+  measured: boolean;
+}> {
+  const empty = {
+    objects: 0,
+    totalBytes: 0,
+    datedObjects: 0,
+    datedBytes: 0,
+    dates: 0,
+    bytesPerDate: 0,
+    measured: false,
+  };
+  if (!store.listDetailed) return empty;
+
+  const all = await store.listDetailed("data/");
+  const dates = new Set<string>();
+  let datedObjects = 0;
+  let datedBytes = 0;
+  let totalBytes = 0;
+  for (const object of all) {
+    totalBytes += object.sizeBytes;
+    const date = serviceDateInKey(object.key);
+    if (date === null) continue;
+    datedObjects += 1;
+    datedBytes += object.sizeBytes;
+    dates.add(date);
+  }
+  return {
+    objects: all.length,
+    totalBytes,
+    datedObjects,
+    datedBytes,
+    dates: dates.size,
+    bytesPerDate: dates.size === 0 ? 0 : Math.round(datedBytes / dates.size),
+    measured: true,
+  };
+}
 
 async function main(): Promise<number> {
   const startedAt = new Date();
@@ -101,6 +161,29 @@ async function main(): Promise<number> {
     );
     write(report);
     return 1;
+  }
+
+  /*
+   * And what the bucket costs, because the horizon is bounded by storage rather than by taste.
+   *
+   * Every figure about this so far has been arithmetic from a build report: 15.2M departure rows a
+   * day at about 70 encoded bytes. R2's free allowance is 10 GB for the account, so the difference
+   * between four days and six is the difference between free and not, and that is too important to
+   * keep estimating. This measures it.
+   */
+  const inventory = await measureStorage(store);
+  report.storage = inventory;
+  console.log(
+    `Bucket holds ${gib(inventory.totalBytes)} across ${inventory.objects} object(s): ` +
+      `${gib(inventory.datedBytes)} in the ${inventory.datedObjects} date-keyed object(s), ` +
+      `${gib(inventory.totalBytes - inventory.datedBytes)} in everything else. ` +
+      `A further service date would cost about ${gib(inventory.bytesPerDate)}.`,
+  );
+  if (inventory.totalBytes > FREE_STORAGE_WARN_BYTES) {
+    console.error(
+      `That is past ${gib(FREE_STORAGE_WARN_BYTES)} of R2's 10 GiB free allowance. Shorten the ` +
+        `horizon rather than paying for storage.`,
+    );
   }
 
   report.outcome = "covered";

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { MAP_QUERY_LIMITS, type MapResponse } from "@busstops/contracts";
 import { apiClient, ApiError } from "../lib/api.js";
@@ -122,12 +122,24 @@ export function LiveMapPage() {
    * way to open a stop. See map-fallback.ts: ask again, then ask for a quarter of the view, and only
    * then report a failure.
    */
+  /*
+   * The ladder is for the first load, not for every refresh.
+   *
+   * A blank map is worth three attempts. A map that already has stops on it is not: the page polls
+   * every refresh interval, and retrying three times on each poll turns one failing viewport into a
+   * standing stream of requests against a Worker that is already over its limit — and makes the page
+   * never settle, which is its own bug. Once there is something on screen, one attempt is enough and
+   * the stops already drawn stay drawn.
+   */
+  const hasMapData = useRef(false);
+
   const fetcher = useCallback(
     (signal: AbortSignal) =>
       fetchMapWithFallback(
         (bounds, inner) => apiClient.map(bounds, safeZoom, inner),
         clamped,
         signal,
+        { attempts: hasMapData.current ? 1 : 3 },
       ),
     // The bounds object is recreated each render, so depend on its values, not its identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -141,6 +153,11 @@ export function LiveMapPage() {
     reload,
   } = useFetch<MapAttemptOutcome<MapResponse>>(fetcher, { refreshMs: REFRESH_INTERVAL_MS });
   const response = outcome?.response ?? null;
+  // In an effect, not during render: the fetcher reads this on its next call, which is always after
+  // a commit, so there is nothing to gain from assigning it a moment earlier and a lint rule to break.
+  useEffect(() => {
+    hasMapData.current = response !== null;
+  }, [response]);
 
   const now = useTicker();
 

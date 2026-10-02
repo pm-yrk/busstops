@@ -63,7 +63,18 @@ export async function fetchMapWithFallback<T>(
   load: (bounds: Bounds, signal: AbortSignal) => Promise<T>,
   bounds: Bounds,
   signal: AbortSignal,
-  options: { delayMs?: number; sleep?: (ms: number) => Promise<void> } = {},
+  options: {
+    delayMs?: number;
+    sleep?: (ms: number) => Promise<void>;
+    /**
+     * How many attempts this load may make. One means no ladder at all.
+     *
+     * A blank map is worth three attempts; a map that already has stops on it is not. The page polls
+     * on an interval, and a ladder on every poll turns one failing viewport into a standing stream of
+     * requests against a Worker already over its limit — and keeps the page from ever settling.
+     */
+    attempts?: number;
+  } = {},
 ): Promise<MapAttemptOutcome<T>> {
   const delayMs = options.delayMs ?? 350;
   const sleep =
@@ -73,7 +84,7 @@ export async function fetchMapWithFallback<T>(
     { bounds, narrowed: false },
     { bounds, narrowed: false },
     { bounds: narrowBounds(bounds), narrowed: true },
-  ];
+  ].slice(0, Math.max(1, options.attempts ?? 3));
 
   let attempts = 0;
   let last: unknown;

@@ -278,7 +278,17 @@ const rateLimiter = new RateLimiter();
  * memory, and this is the measurement that would show it if it is — or rule it out if the counts
  * come back flat and the request that dies is no different from the five before it.
  */
-const RESIDENT_FLOOR_CHARS = 4 * 1024 * 1024;
+const RESIDENT_FLOOR_CHARS = 1 * 1024 * 1024;
+
+/**
+ * What a route page keeps back for the live feed, or skips it.
+ *
+ * National SIRI-VM was measured at 499,188 characters on the request that died parsing it. XML
+ * costs more per character to walk than JSONL, and the page is worth more than the buses on it, so
+ * a route detail that cannot afford the parse says the live layer was skipped and serves the stop
+ * sequence — which is what the page is for.
+ */
+const SIRI_PARSE_RESERVE_CHARS = 1_200_000;
 let requestsServed = 0;
 
 /**
@@ -1876,6 +1886,18 @@ router.get("/v1/routes/:id", async (_request, { env, params }) => {
     if (!routeLedger.withinBudget) {
       liveSkipped = true;
       routeLedger.stop("route_live_budget");
+    } else if (routeLedger.remainingChars < SIRI_PARSE_RESERVE_CHARS) {
+      /*
+       * And the same refusal in the currency that actually kills this request.
+       *
+       * Run 78's route detail died at `siri:parse:begin` holding 499,188 characters of SIRI XML on
+       * top of 0.87 MiB of route patterns and stops already parsed — inside its wall-clock budget,
+       * with 1,046 ms still to spend, which is why the check above let it through. XML is dearer per
+       * character than the JSONL everything else reads, so the reserve is larger than the payload:
+       * a feed that answers with twice the usual is not a reason to lose the page.
+       */
+      liveSkipped = true;
+      routeLedger.stop("route_live_char_budget");
     } else {
       /*
        * With whatever time the request has left, not with the map's own limit.

@@ -109,7 +109,7 @@ jobs:
     #
     # A normal deploy without the bootstrap finishes in about five minutes and never approaches
     # either number.
-    timeout-minutes: 150
+    timeout-minutes: 240
     outputs:
       worker_url: ${{ steps.worker.outputs.url }}
       pages_url: ${{ steps.pages.outputs.url }}
@@ -562,7 +562,7 @@ jobs:
       - name: Carry the timetable forward
         id: refresh_departures
         if: ${{ !cancelled() && inputs.refresh_departures }}
-        timeout-minutes: 110
+        timeout-minutes: 170
         env:
           BODS_API_KEY: ${{ secrets.BODS_API_KEY }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
