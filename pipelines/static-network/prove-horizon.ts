@@ -135,6 +135,33 @@ async function main(): Promise<number> {
   report.coverage = rows;
 
   /*
+   * What the bucket costs, measured before the verdict rather than after it.
+   *
+   * The horizon is bounded by storage rather than by taste, and this used to print only on the
+   * success path — so the one run that most needed the number, the one reporting a date short of its
+   * shards, was the run that did not get it.
+   *
+   * Every figure about this so far has been arithmetic from a build report: 15.2M departure rows a
+   * day at about 70 encoded bytes. R2's free allowance is 10 GB for the account, so the difference
+   * between four days and six is the difference between free and not, and that is too important to
+   * keep estimating. This measures it.
+   */
+  const inventory = await measureStorage(store);
+  report.storage = inventory;
+  console.log(
+    `Bucket holds ${gib(inventory.totalBytes)} across ${inventory.objects} object(s): ` +
+      `${gib(inventory.datedBytes)} in the ${inventory.datedObjects} date-keyed object(s), ` +
+      `${gib(inventory.totalBytes - inventory.datedBytes)} in everything else. ` +
+      `A further service date would cost about ${gib(inventory.bytesPerDate)}.`,
+  );
+  if (inventory.totalBytes > FREE_STORAGE_WARN_BYTES) {
+    console.error(
+      `That is past ${gib(FREE_STORAGE_WARN_BYTES)} of R2's 10 GiB free allowance. Shorten the ` +
+        `horizon rather than paying for storage.`,
+    );
+  }
+
+  /*
    * A count, not merely a presence.
    *
    * The first version of this failed only a date with *no* shards, which is a check a partially
@@ -161,29 +188,6 @@ async function main(): Promise<number> {
     );
     write(report);
     return 1;
-  }
-
-  /*
-   * And what the bucket costs, because the horizon is bounded by storage rather than by taste.
-   *
-   * Every figure about this so far has been arithmetic from a build report: 15.2M departure rows a
-   * day at about 70 encoded bytes. R2's free allowance is 10 GB for the account, so the difference
-   * between four days and six is the difference between free and not, and that is too important to
-   * keep estimating. This measures it.
-   */
-  const inventory = await measureStorage(store);
-  report.storage = inventory;
-  console.log(
-    `Bucket holds ${gib(inventory.totalBytes)} across ${inventory.objects} object(s): ` +
-      `${gib(inventory.datedBytes)} in the ${inventory.datedObjects} date-keyed object(s), ` +
-      `${gib(inventory.totalBytes - inventory.datedBytes)} in everything else. ` +
-      `A further service date would cost about ${gib(inventory.bytesPerDate)}.`,
-  );
-  if (inventory.totalBytes > FREE_STORAGE_WARN_BYTES) {
-    console.error(
-      `That is past ${gib(FREE_STORAGE_WARN_BYTES)} of R2's 10 GiB free allowance. Shorten the ` +
-        `horizon rather than paying for storage.`,
-    );
   }
 
   report.outcome = "covered";
