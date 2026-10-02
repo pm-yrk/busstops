@@ -298,6 +298,16 @@ const RESIDENT_FLOOR_CHARS = 1 * 1024 * 1024;
  * sequence — which is what the page is for.
  */
 const SIRI_PARSE_RESERVE_CHARS = 1_200_000;
+
+/**
+ * Whether a route page filters the national live feed for its own buses.
+ *
+ * Off. It is the one stage that has killed this page in every run that measured it, it costs half a
+ * mebibyte of XML to produce at most sixty pins, and the live map already shows the same buses for a
+ * viewport without filtering a national feed. The page reports `liveSkipped`, so a reader is told
+ * the live layer is not on rather than being shown an empty one.
+ */
+const ROUTE_PAGE_SHOWS_LIVE_BUSES = false;
 let requestsServed = 0;
 
 /**
@@ -1895,16 +1905,24 @@ router.get("/v1/routes/:id", async (_request, { env, params }) => {
     if (!routeLedger.withinBudget) {
       liveSkipped = true;
       routeLedger.stop("route_live_budget");
-    } else if (routeLedger.remainingChars < SIRI_PARSE_RESERVE_CHARS) {
+    } else if (!ROUTE_PAGE_SHOWS_LIVE_BUSES) {
       /*
-       * And the same refusal in the currency that actually kills this request.
+       * The live layer is off on this page, deliberately, and the page says so.
        *
-       * Run 78's route detail died at `siri:parse:begin` holding 499,188 characters of SIRI XML on
-       * top of 0.87 MiB of route patterns and stops already parsed — inside its wall-clock budget,
-       * with 1,046 ms still to spend, which is why the check above let it through. XML is dearer per
-       * character than the JSONL everything else reads, so the reserve is larger than the payload:
-       * a feed that answers with twice the usual is not a reason to lose the page.
+       * Run 78 and run 81 both killed route detail at `siri:parse:begin`, holding 499,188 characters
+       * of national SIRI-VM on top of the route's own patterns and stops — inside its wall-clock
+       * budget with a second still to spend, which is why a clock-based check let it through. XML is
+       * far dearer per character to walk than the JSONL everything else reads, and a reserve sized in
+       * characters did not help either: the request had plenty of characters left and no compute.
+       *
+       * So the page gives up the buses and keeps the route. A stop sequence a passenger can read beats
+       * Cloudflare's error page with some vehicle pins on it, and the map is where live buses belong —
+       * it answers for a viewport rather than filtering a national feed down to one line. The flag is
+       * here rather than deleted because the fix is a cheaper feed, not the absence of this feature.
        */
+      liveSkipped = true;
+      routeLedger.stop("route_live_disabled");
+    } else if (routeLedger.remainingChars < SIRI_PARSE_RESERVE_CHARS) {
       liveSkipped = true;
       routeLedger.stop("route_live_char_budget");
     } else {

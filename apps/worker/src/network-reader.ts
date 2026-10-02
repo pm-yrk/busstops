@@ -155,7 +155,7 @@ const MAX_PATTERN_REQUEST_CHARS = 3 * 1024 * 1024;
  * How many search buckets one query may open. A hundred and twenty characters of query is a lot
  * of words, and each word is at least one object; the bound is on the reading, not on the typing.
  */
-const MAX_SEARCH_BUCKETS_PER_QUERY = 12;
+const MAX_SEARCH_BUCKETS_PER_QUERY = 6;
 
 /**
  * How much prefix-bucket text one query may open.
@@ -166,7 +166,7 @@ const MAX_SEARCH_BUCKETS_PER_QUERY = 12;
  * buckets, which is what a two or three word query actually needs; a longer query loses its tail
  * rather than losing its answer.
  */
-const MAX_SEARCH_READ_CHARS = 2 * 1024 * 1024;
+const MAX_SEARCH_READ_CHARS = 1_200_000;
 
 /** Characters of a typed word the text filter tests. Generous on purpose; see `searchLineFilter`. */
 const SEARCH_STEM_LENGTH = 3;
@@ -193,10 +193,16 @@ export function searchLineFilter(
     .map((word) => word.toLowerCase().slice(0, SEARCH_STEM_LENGTH))
     .filter((stem) => stem.length >= 2);
   if (stems.length === 0) return undefined;
-  return (line: string) => {
-    const lower = line.toLowerCase();
-    return stems.some((stem) => lower.includes(stem));
-  };
+  /*
+   * No `toLowerCase` on the line, which is the point.
+   *
+   * Lowercasing a line allocates a copy of it, and a 1.6 MB bucket holds some six thousand lines —
+   * so the first version of this filter traded one allocation per line for the parse it was meant to
+   * avoid, and search got *worse*. It does not need to: every entry's `tokens` are built by
+   * `tokenize`, which lowercases, so a lowercase stem matches the published text as it stands. A
+   * mixed-case title is not the thing being matched on; its tokens are.
+   */
+  return (line: string) => stems.some((stem) => line.includes(stem));
 }
 
 /**
@@ -430,7 +436,18 @@ export class NetworkReader {
 
   private operatorsCache: Map<string, Operator> | null = null;
   private servicesCache: Map<string, ServiceRoute> | null = null;
-  private placesCache: SearchIndexEntry[] | null = null;
+  /*
+   * The national gazetteer, cached as *text* rather than as objects.
+   *
+   * There are 3,178 places and a search needs a handful of them, but the whole list was parsed on
+   * the first search an isolate served — which is the search most likely to die, because a cold
+   * isolate has no cache to spare it anything. Scanning 3,178 lines is cheap; building 3,178 objects
+   * is not, and the ones built were thrown away by the ranking a moment later.
+   *
+   * So the lines are kept and the query's filter decides which become objects. Same answer, and the
+   * cost falls with what was asked rather than with how much of England has a name.
+   */
+  private placeLinesCache: string[] | null = null;
   private routeTilesCache: Map<string, string[]> | null = null;
 
   constructor(
@@ -632,7 +649,7 @@ export class NetworkReader {
       records,
       operators: this.operatorsCache?.size ?? 0,
       services: this.servicesCache?.size ?? 0,
-      places: this.placesCache?.length ?? 0,
+      places: this.placeLinesCache?.length ?? 0,
       routeTiles: this.routeTilesCache?.size ?? 0,
     };
   }
@@ -1741,17 +1758,33 @@ export class NetworkReader {
    * Absent is a normal answer: a bucket the places job has not run against has no gazetteer, and
    * search then finds stops, routes and operators exactly as it did before.
    */
-  private async placeEntries(): Promise<SearchIndexEntry[]> {
-    if (this.placesCache) return this.placesCache;
+  private async placeLines(): Promise<string[]> {
+    if (this.placeLinesCache) return this.placeLinesCache;
     const artifacts = new ArtifactStore(this.store);
     try {
-      const result = await artifacts.readCurrent<PlaceRecord>(PLACES_DATASET);
-      this.placesCache = result.records.map(placeAsSearchEntry);
+      const manifest = await artifacts.readManifest(PLACES_DATASET);
+      const raw = manifest === null ? null : await this.store.get(manifest.objectKey);
+      this.placeLinesCache = raw === null ? [] : raw.split("\n").filter((line) => line.length > 0);
     } catch {
       // A gazetteer that cannot be read costs a search its landmarks, not its answer.
-      this.placesCache = [];
+      this.placeLinesCache = [];
     }
-    return this.placesCache;
+    return this.placeLinesCache;
+  }
+
+  /** The gazetteer entries a query could want, built from the cached text. */
+  private async placeEntries(keep?: (line: string) => boolean): Promise<SearchIndexEntry[]> {
+    const lines = await this.placeLines();
+    const entries: SearchIndexEntry[] = [];
+    for (const line of lines) {
+      if (keep && !keep(line)) continue;
+      try {
+        entries.push(placeAsSearchEntry(JSON.parse(line) as PlaceRecord));
+      } catch {
+        // One unreadable line is one missing landmark, not a failed search.
+      }
+    }
+    return entries;
   }
 
   async operators(now: number = Date.now()): Promise<Map<string, Operator>> {
@@ -1960,7 +1993,7 @@ export class NetworkReader {
      * scoring them together is what lets the station come first when it deserves to. Two lists
      * concatenated would put whichever happened to be first ahead of a better match.
      */
-    for (const entry of await this.placeEntries()) {
+    for (const entry of await this.placeEntries(keep)) {
       unique.set(`${entry.kind}:${entry.id}`, entry);
     }
 
