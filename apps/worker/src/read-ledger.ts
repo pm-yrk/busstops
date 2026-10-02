@@ -30,14 +30,19 @@
  * across pure computation. Route detail died at `siri:parse:begin` holding 499 KB of XML on top of
  * 0.87 MiB already parsed. The map, which decodes 2.08 MiB, answers every time.
  *
- * It is a backstop, not a throttle, and the number says so. Bytes alone do not separate the paths
- * that die from the ones that do not: the map decodes 2.08 MiB of stop text plus up to 2 MiB of
- * route text and answers every time, because it filters its parse and builds 788 objects out of
- * 23,806 lines. Scanning text is cheap; `JSON.parse` is not. So the real work is done by parsing
- * fewer rows — see `patternIdInTripLine` — and this exists to stop a request that has somehow
- * opened six mebibytes from opening a seventh.
+ * Three mebibytes, and the number comes from the deployed runs rather than from arithmetic. A Leeds
+ * viewport decodes 2.08 MiB and has answered every time across six runs. Everything measured dying
+ * was above about three: a journey at 1.76 MiB of pattern index plus 2.24 MiB of trips, route detail
+ * at 0.87 MiB plus half a mebibyte of XML, `nearby` scanning four 1.8 MiB search tiles at a tile
+ * corner. Six was a backstop so loose it never fired — run 82's `/v1/map` over central Bristol
+ * reached Cloudflare's error page with the budget still reporting room.
+ *
+ * Bytes are not the whole story, because scanning text is cheap and `JSON.parse` is not: the real
+ * work is done by parsing fewer rows (see `patternIdInTripLine` and `searchLineFilter`). But bytes
+ * are the only thing a budget can count before the fact, and a dense viewport that comes back with
+ * the stops nearest the middle and says so is a map. Cloudflare's error page is not.
  */
-export const REQUEST_TEXT_BUDGET_CHARS = 6 * 1024 * 1024;
+export const REQUEST_TEXT_BUDGET_CHARS = 3 * 1024 * 1024;
 
 /** The artifact families a request can spend its budget on. */
 export type ArtifactFamily =
