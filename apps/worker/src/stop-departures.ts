@@ -47,17 +47,66 @@ export interface ScheduledDepartureInput {
 }
 
 /**
- * The service dates a board at `now` must consider.
+ * The service dates a board at `now` must consider — which is usually one, not three.
  *
- * Yesterday matters: a journey that began at 23:40 and calls here at 00:20 is published under
- * yesterday's service date, and a board that only asked for today's would show the small hours as
- * having no buses at all.
+ * Yesterday matters in the small hours: a journey that began at 23:40 and calls here at 00:20 is
+ * published under yesterday's service date, and a board that only asked for today's would show the
+ * small hours as having no buses at all. Tomorrow matters late at night, for the same reason seen
+ * from the other side: a board at 23:50 showing the next hour is mostly showing tomorrow.
+ *
+ * In the middle of the day neither is of any use, and asking for both is not free. A departure shard
+ * reaches 2.6 MB, and reading one costs a scan of that text plus a parse of its header — the intern
+ * tables of every route, destination and pattern id in the bucket. Three dates is three of those,
+ * and a Workers Free invocation has ten milliseconds of CPU for everything. Run 9 of the deployed
+ * check measured the consequence at 18:16 UTC: a board for a Manchester stop reached
+ * `board:live:done` and died, on a cold isolate holding nothing, two dates of which it had no use
+ * for.
+ *
+ * So the window is asked rather than assumed. Four in the morning and eight at night are generous
+ * either side of the real need — a bus that left before midnight has long finished by 04:00, and no
+ * board shows an hour that reaches tomorrow before 20:00 — and the cost of being generous is one
+ * extra shard at the quietest times of day rather than two at the busiest.
  */
 export function serviceDatesForBoard(now: Date): string[] {
-  const day = 24 * 60 * 60 * 1000;
-  return [new Date(now.getTime() - day), now, new Date(now.getTime() + day)].map((d) =>
-    d.toISOString().slice(0, 10),
-  );
+  const london = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Europe/London",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "numeric",
+    hour12: false,
+  }).formatToParts(now);
+  const part = (type: string) => london.find((entry) => entry.type === type)?.value ?? "";
+  const londonDate = `${part("year")}-${part("month")}-${part("day")}`;
+  const hour = Number(part("hour"));
+
+  /*
+   * Both the passenger's date and the publisher's, because they are not always the same one.
+   *
+   * Shards are keyed by a service date the pipeline derives in UTC, and a passenger lives on a
+   * London clock. For most of the year and most of the day those agree; at 23:00 UTC on the night
+   * the clocks go forward it is already the 30th in London and still the 29th in UTC, and a board
+   * that asked for only one of them would be asking for a day nobody is in. This was the bug the
+   * BST test caught in the first version of this narrowing, which is exactly what that test is for.
+   */
+  const dates = new Set<string>([londonDate, now.toISOString().slice(0, 10)]);
+  if (!Number.isFinite(hour)) {
+    // An unreadable clock falls back to the full span: a wrong answer about what is due is worse
+    // than a slow one.
+    dates.add(shiftDate(londonDate, -1));
+    dates.add(shiftDate(londonDate, 1));
+  } else {
+    if (hour < 4) dates.add(shiftDate(londonDate, -1));
+    if (hour >= 20) dates.add(shiftDate(londonDate, 1));
+  }
+  return [...dates].sort();
+}
+
+/** A service date, days later or earlier. Midday UTC, so no clock change can move the calendar day. */
+function shiftDate(date: string, days: number): string {
+  const at = new Date(`${date}T12:00:00Z`);
+  at.setUTCDate(at.getUTCDate() + days);
+  return at.toISOString().slice(0, 10);
 }
 
 function destinationFor(

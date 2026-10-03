@@ -1451,9 +1451,7 @@ router.get("/v1/journeys", async (_request, { env, url }) => {
           diagnostics: {
             code: "incomplete_read" as const,
             layout: (journeyIndex.layout ? "compatible" : "undeclared") as
-              | "compatible"
-              | "undeclared"
-              | "mismatch",
+              "compatible" | "undeclared" | "mismatch",
             corridorTiles: 0,
             windows: [],
             shardsRead: 0,

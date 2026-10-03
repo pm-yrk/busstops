@@ -559,7 +559,7 @@ export class NetworkReader {
        * substrings before the filter saw any of them, which is the allocation this path exists to
        * avoid; only the records that survive the test are ever built.
        */
-      for (let start = 0; start < raw.length; ) {
+      for (let start = 0; start < raw.length;) {
         const newline = raw.indexOf("\n", start);
         const end = newline < 0 ? raw.length : newline;
         if (end > start && keep(raw, start, end)) {

@@ -209,10 +209,10 @@ describe("scheduled departures", () => {
    * having no buses at all.
    */
   it("asks for yesterday as well, so after-midnight journeys are not lost", () => {
+    // 01:20 London (BST) on 4 September: the journey that left at 23:40 is filed under the 3rd.
     expect(serviceDatesForBoard(new Date("2026-09-04T00:20:00.000Z"))).toEqual([
       "2026-09-03",
       "2026-09-04",
-      "2026-09-05",
     ]);
   });
 });
