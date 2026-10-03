@@ -136,11 +136,7 @@ export class ArtifactValidationError extends Error {
   constructor(
     message: string,
     readonly reason:
-      | "empty"
-      | "below_minimum"
-      | "excessive_shrink"
-      | "record_invalid"
-      | "checksum_mismatch",
+      "empty" | "below_minimum" | "excessive_shrink" | "record_invalid" | "checksum_mismatch",
   ) {
     super(message);
     this.name = "ArtifactValidationError";

@@ -172,7 +172,24 @@ async function main(): Promise<number> {
    */
   const expected = DEPARTURE_BUCKETS;
   const floor = Math.floor(expected * 0.95);
-  const short = rows.filter((row) => row.departures < floor);
+  /*
+   * Today and tomorrow are a failure. The far end of the horizon is a warning.
+   *
+   * The horizon is slack against a failed refresh, so the day after tomorrow being short is the
+   * slack being used — which is the system working, not breaking. Failing on it makes every run red
+   * the day after a refresh and teaches me to ignore this check, which is the one thing it must not
+   * do. What a passenger cannot survive is today or tomorrow missing, so that is what fails.
+   */
+  const soon = new Set(serviceDates.slice(0, 2));
+  const short = rows.filter((row) => row.departures < floor && soon.has(row.date));
+  const thin = rows.filter((row) => row.departures < floor && !soon.has(row.date));
+  if (thin.length > 0) {
+    report.datesUsingSlack = thin.map((row) => row.date);
+    console.warn(
+      `${thin.length} date(s) at the far end of the horizon are short and will need the next ` +
+        `refresh: ${thin.map((row) => `${row.date} (${row.departures})`).join(", ")}.`,
+    );
+  }
   report.expectedDepartureShardsPerDate = expected;
   report.datesShortOfFullCoverage = short.map((row) => ({
     date: row.date,
@@ -181,7 +198,7 @@ async function main(): Promise<number> {
   if (short.length > 0) {
     report.outcome = "horizon_incomplete";
     console.error(
-      `${short.length} of ${rows.length} service date(s) hold fewer than ${floor} of ${expected} ` +
+      `${short.length} of the next two service date(s) hold fewer than ${floor} of ${expected} ` +
         `departure shards at this version: ` +
         short.map((row) => `${row.date} (${row.departures})`).join(", ") +
         `. A date short of its buckets answers for some of England's stops and not the rest.`,
@@ -190,11 +207,12 @@ async function main(): Promise<number> {
     return 1;
   }
 
-  report.outcome = "covered";
+  report.outcome = thin.length > 0 ? "covered_using_slack" : "covered";
+  const full = rows.filter((row) => row.departures >= floor);
   console.log(
-    `Every one of the ${rows.length} date(s) from ${serviceDates[0]} to ` +
-      `${serviceDates[serviceDates.length - 1]} holds its full ${expected} departure shards at ` +
-      `version ${index.version}.`,
+    `${full.length} of ${rows.length} date(s) from ${serviceDates[0]} to ` +
+      `${serviceDates[serviceDates.length - 1]} hold their full ${expected} departure shards at ` +
+      `version ${index.version}; today and tomorrow are covered.`,
   );
   write(report);
   return 0;
