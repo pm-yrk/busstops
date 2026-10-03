@@ -112,6 +112,7 @@ export function RoutePage() {
     reliability,
     incidents,
     disruptions,
+    complete,
   } = response.data;
   const dominantVariant = variants.reduce(
     (best, candidate, index) =>
@@ -345,16 +346,41 @@ export function RoutePage() {
                 className={index === selectedVariant ? "is-selected" : ""}
                 onClick={() => setChosenVariant(index)}
               >
+                {/*
+                  The direction is named, not implied by the tab's position.
+                  The tablist is labelled "Route directions" and the tabs said only where the
+                  pattern starts and ends — so a reader comparing two short workings in the same
+                  direction had the word "outbound" nowhere on the page, and a circular route
+                  looked like an ordinary one going nowhere in particular.
+                */}
+                <span className="route-page__variant-direction">{candidate.direction}</span>
                 {candidate.description}
               </button>
             ))}
           </div>
         ) : null}
 
+        {/*
+         * A route read short is not a route.
+         *
+         * The Worker has always sent `complete`, and its own comment says why: "a read that hit
+         * its byte budget must not publish the part it managed as the extent of the route". This
+         * page then destructured everything except that flag, so a truncated sequence was drawn
+         * with the same confident line of dots as a whole one — a stop missing from the list reads
+         * as a stop the bus does not call at, which is the worst thing this page can say.
+         */}
+        {complete === false ? (
+          <p className="route-page__notice" role="status">
+            We could not read the whole of this route in one request, so the sequence below may be
+            missing stops. It is not a statement that the bus skips them.
+          </p>
+        ) : null}
+
         {variant ? (
           <>
             <p className="muted small">
-              {variant.stops.length} stops, about {(variant.distanceMetres / 1000).toFixed(1)} km.
+              {variant.stops.length} stops, about {(variant.distanceMetres / 1000).toFixed(1)} km
+              {variants.length === 1 ? `, ${variant.direction}` : ""}.
             </p>
             <ol className="route-page__stops">
               {variant.stops.map((stop) => (

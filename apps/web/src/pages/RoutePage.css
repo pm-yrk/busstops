@@ -376,3 +376,26 @@
     background: CanvasText;
   }
 }
+
+/*
+ * A read that stopped short, said once, above the sequence it affects.
+ *
+ * Deliberately the same shape as the journey page's notice rather than an alarm: the page is still
+ * useful and most of the route is on it. What it must not do is look identical to a whole one.
+ */
+.route-page__notice {
+  margin: 0 0 var(--space-md);
+  padding: var(--space-sm) var(--space-md);
+  background: var(--colour-canvas);
+  border-left: 3px solid var(--colour-red);
+  font-size: var(--font-size-small);
+}
+
+/* The direction, set small and quiet above the termini so the tab still reads as a place. */
+.route-page__variant-direction {
+  display: block;
+  font-size: var(--font-size-small);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.7;
+}

@@ -152,6 +152,34 @@ describe("RoutePage", () => {
     expect(screen.getAllByText(/3 stops/).length).toBeGreaterThan(0);
   });
 
+  it("says so when the route was read short, instead of drawing it as whole", async () => {
+    /*
+     * The Worker has always sent `complete`, and the page destructured every field except that
+     * one. A sequence cut off by a byte budget was drawn with the same line of dots as a whole
+     * route, so a stop missing from the list read as a stop the bus does not call at.
+     */
+    vi.spyOn(apiClient, "route").mockResolvedValue({
+      ...response,
+      data: { ...response.data, complete: false },
+    });
+    renderAt("/routes/r1", "/routes/:routeId", <RoutePage />);
+
+    expect(await screen.findByText(/may be missing stops/)).toBeTruthy();
+    // And it says what the gap is not, because a missing stop reads as a skipped one.
+    expect(screen.getByText(/not a statement that the bus skips them/)).toBeTruthy();
+  });
+
+  it("draws no such warning on a route that came back whole", async () => {
+    vi.spyOn(apiClient, "route").mockResolvedValue({
+      ...response,
+      data: { ...response.data, complete: true },
+    });
+    renderAt("/routes/r1", "/routes/:routeId", <RoutePage />);
+
+    await screen.findByRole("heading", { name: /Where it goes/i });
+    expect(screen.queryByText(/may be missing stops/)).toBeNull();
+  });
+
   it("says the frequency is ours to work out, not the timetable's to support", async () => {
     /*
      * The wording this asserts used to be "this route's timetable does not support a meaningful
