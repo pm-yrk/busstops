@@ -13,6 +13,8 @@
  *   node scripts/verify-deployment.mjs <api-url> [site-url]
  */
 
+import { annotateResults } from "./annotate.mjs";
+
 const [, , apiUrlArg, siteUrlArg] = process.argv;
 
 if (!apiUrlArg) {
@@ -2054,6 +2056,13 @@ for (const result of results) {
     `${result.ok ? "  pass" : "  FAIL"}  ${result.name}${result.detail ? ` — ${result.detail}` : ""}`,
   );
 }
+
+/*
+ * The same lines as annotations, which is the only form of this a reader outside the runner can
+ * get at: a job's log and its uploaded artifacts are both served from a storage host this
+ * project's container cannot reach, and so is the preview itself. See scripts/annotate.mjs.
+ */
+annotateResults("deployment", results);
 
 console.log(
   failures === 0

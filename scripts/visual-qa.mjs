@@ -24,6 +24,7 @@ import { join } from "node:path";
 import AxeBuilder from "@axe-core/playwright";
 // From @playwright/test rather than `playwright`, which is only a transitive dependency.
 import { chromium } from "@playwright/test";
+import { annotateResults } from "./annotate.mjs";
 
 /*
  * The bodies passed to page.evaluate are serialised and run inside the browser, not here, so the
@@ -1769,5 +1770,11 @@ const failures = results.filter((result) => !result.ok);
 console.log(
   `\nVisual QA: ${results.length - failures.length} of ${results.length} checks passed against ${baseUrl}.`,
 );
+/*
+ * As annotations too. The sweep's own screenshots are uploaded as an artifact, which is exactly
+ * the thing that cannot be fetched from the container this work happens in — so what the sweep
+ * *said* has to come back some other way. See scripts/annotate.mjs.
+ */
+annotateResults("visual", results);
 console.log(`Screenshots in ${screenshotDir}/.`);
 process.exit(failures.length > 0 ? 1 : 0);
