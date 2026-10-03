@@ -163,6 +163,32 @@ describe("the edge never reads a national dataset", () => {
     expect(serving.patterns.every((pattern) => pattern.stopSequence.includes(stop!.id))).toBe(true);
   });
 
+  /*
+   * A board that has already spent its budget declines this read instead of starting it.
+   *
+   * Run 89's Manchester board died inside the old version of this call, at `atMs: 0`, having
+   * already read its live departures — and it died because the read was on no ledger at all, so
+   * nothing could tell it the request was nearly over. Declining is what turns that into a board
+   * with departures and a short route list; the alternative is Cloudflare's error page, which
+   * carries no CORS header and so reaches the browser as a bare network failure.
+   */
+  it("declines to read the patterns at all when the board has no budget left", async () => {
+    const { reader } = await publishedReader();
+    const built = network();
+    const stop = built.stops.find((candidate) =>
+      built.patterns.some((pattern) => pattern.stopSequence.includes(candidate.id)),
+    )!;
+
+    // Zero milliseconds: a ledger that is over before it is asked anything.
+    const spent = new ReadLedger(0);
+    const serving = await reader.patternsCallingAtStop(stop, Date.now(), spent);
+
+    expect(serving.patterns).toEqual([]);
+    // And it says so, rather than reporting an empty list as the whole truth about the stop.
+    expect(serving.complete).toBe(false);
+    expect(spent.toJSON().degradationReason).toBe("pattern_enrichment_budget");
+  });
+
   it("finds a stop whose letter had to be split into deeper buckets", async () => {
     /*
      * The publisher splits a two-character bucket that would overflow, and only the index says
