@@ -1,8 +1,64 @@
 # Bus Stops. Build State
 
-Last updated: 2026-10-01 (recruiter-demo rescue: the horizon that expires, and a map that no longer vanishes)
+Last updated: 2026-10-03 (route detail verified on five real cities; the last three 1102s root-caused)
 
 ## Current status
+
+### 3 October, run 89 deployed: the route stop sequence is real, on five cities
+
+This is the headline. `/v1/routes/:id` answers with the ordered stops the timetable itself
+publishes, and the deployed check reads them back rather than trusting the code:
+
+    pass  a route page gives its stops in travel order —
+      Leeds:      X10 (Arriva Yorkshire)                    2 variants [inbound/outbound]  17 stops
+                  Leeds University Steps → Wakefield Bus Station     #9  Station E          12 due
+      Manchester: 1 (Bee Network)                           1 variant  [outbound]          20 stops
+                  Manchester Piccadilly Rail Station → Manchester Piccadilly Rail Station
+                                                                      #11 Lower Byrom Street 10 due
+      Birmingham: 35 (National Express West Midlands)       2 variants [inbound/outbound]  56 stops
+                  Moor St Selfridges → Ridgemount Drive              #29 Pineapple Bridge    7 due
+      Bristol:    5 (First Bristol, Bath & the West)        5 variants [inbound/outbound]  34 stops
+                  Chapel Way → Transport Hub                         #18 The Centre         20 due
+      York:       20 (Coastliner)                           6 variants [inbound/outbound]  74 stops
+                  The Mitre → Cavendish Grove                        #38 Huntington School   7 due
+
+What makes that evidence rather than a screenshot: the check asserts `sequence` is strictly
+increasing from zero, and separately flags a sequence whose stop _names_ are in alphabetical
+order — neither warning fired on any of the five, so the ordering is the pattern's own
+`stopSequence` and not geography or a sort. None of the five reported a truncated read, so
+every sequence is whole. And the numbered stop in each row is a link that was followed: the
+middle stop of each route opened its own board with that many departures due.
+
+Multi-variant services are covered by the same evidence. Bristol's 5 has five patterns and
+York's 20 has six; X10 and the 35 each carry both directions. The page opens on the pattern
+with the most stops and offers the rest as tabs, with the stop count appended where two
+variants would otherwise read as the same words.
+
+### Run 89's three failures, each root-caused from its own breadcrumb
+
+19 of 22. All three were Cloudflare error 1102 — CPU, not memory — and `f625a38` fixes the
+cause of each rather than widening a limit.
+
+**A cold stop board** (`a real stop carries real weather`, ATCO `1800EB06161`) died with the
+trail `reads:begin@0 > board:stop:done@0 > board:live:done@0`. The line after that crumb was
+`patternsServingStop`, which read the pattern tiles around the stop _whole_ and filtered to
+this stop afterwards — on no ledger at all. A city pattern tile holds hundreds of patterns and
+the polylines they share, so a cold board built thousands of coordinate objects to keep about
+ten stop sequences. It is now `patternsCallingAtStop`: the filter is an `indexOf` on the raw
+line in front of the parse, the shape lines a board never draws are never built, and the read
+runs on the board's own budget so a board that has already spent it declines rather than dying
+part way. `routesServingStop` now takes patterns, not geometries, which is all it ever read.
+
+**Both journey checks** died at `reads:begin@0` — the endpoint's only crumb, which is why this
+took two runs to localise. Two things were wrong. The index-tile pattern read threw away the
+pattern ids the planner handed it and turned every row in every corridor tile into an object;
+it now passes them as a line filter. And `JOURNEY_TEXT_CHARS` goes from the 5 MiB of `c79a672`
+back to the 4 MiB runs 82 and 85 answered at: widening it past that converted an honest
+`incomplete_read` refusal into a platform error page and took the neighbouring stop board with
+it. Five stage crumbs were added so the next failure names its own stage.
+
+Both text filters are tested against lines the publisher actually writes, and the tests were
+verified by mutation — removing the per-line bound fails three of them.
 
 ### 3 October, run 87 deployed: 20 of 21 checks pass
 
@@ -38,6 +94,50 @@ with 1,287 trips loaded and none matched to a pattern, so the planner refused wi
 `incomplete_read` — correctly. A journey now has its own 5 MiB budget. A viewport
 asked a hundred times a minute and a journey asked deliberately should not share one
 number.
+
+### Merging to main: checked, and what it would and would not do
+
+Tested with `git merge-tree --write-tree origin/main HEAD`, which merges without touching the
+working tree. **No conflicts.** Main carries 49 commits the branch does not (all README and
+screenshot work), the branch carries 212 main does not, and the merged tree keeps all three
+README workflows that live only on main — a merge adds, it does not delete them.
+
+- **Would production deploy?** No. `deploy.yml` is `workflow_dispatch` only; there is no `push`
+  trigger anywhere in the merged tree. Merging deploys nothing.
+- **Would production behaviour change?** No, and `a697d36` is what makes that true: the
+  production daily pins `SERVICE_DATE_HORIZON_DAYS: "2"`, so a merge cannot widen production's
+  horizon, and service-date pruning is gated behind `PRUNE_SERVICE_DATES` so it stays off unless
+  asked for.
+- **Which workflows would start on their own?** Four schedules newly activate, because
+  `schedule` only fires from the default branch. Every one of them resolves to the _preview_
+  bucket on a schedule event, since `inputs.bucket` is empty there and each defaults to
+  `busstops-artifacts-preview`:
+
+      preview-departures-refresh.yml   04:37 daily   writes preview
+      prove-horizon.yml                06:12 daily   read-only
+      disruptions.yml                  */10          writes preview
+      weather.yml                      */30          writes preview
+
+- **Any risk to the production bucket or site?** No new writer of `busstops-artifacts` and no
+  new writer of the production Pages project. The only workflows naming the production bucket
+  on a schedule are the three already scheduled on main today — `static-network-daily`,
+  `intelligence-collection`, `intelligence-batch`, `daily-brief` — and the merge does not change
+  what any of them does.
+- **Free-tier arithmetic on the new schedules.** Weather computes its own figure from
+  `WEATHER_REFRESH_MINUTES` and refuses a schedule that would not fit: about 25 requests a run,
+  ~1,200 a day against Open-Meteo's 10,000 non-commercial allowance. Disruptions at */10 is 144
+  runs a day against public official feeds, each writing a handful of R2 objects — nowhere near
+  the 1M/month Class A allowance.
+
+**What I cannot do.** The merge means pushing to `main`, and this session is restricted to
+`claude/bus-stops-platform-build-f7qztb`. So the one action that needs a human:
+
+> Merge `claude/bus-stops-platform-build-f7qztb` into `main`.
+
+Everything else continues on the branch meanwhile; the branch's own deployment and verification
+loop does not depend on the merge. What the merge buys is the departures refresh firing on its
+own schedule instead of needing a dispatch, which is the one thing that cannot be fixed from
+here.
 
 ### Storage is over the free tier, and the fix is measured
 
