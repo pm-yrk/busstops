@@ -289,6 +289,54 @@ const INDEX_TTL_MS = 5 * 60 * 1000;
  */
 type LineFilter = (body: string, start: number, end: number) => boolean;
 
+/**
+ * Whether one stored line mentions a stop id, tested without building anything.
+ *
+ * A pattern tile line carries its stop sequence as quoted ids, so the quoted id is the needle and
+ * `indexOf` bounded to this line is the test. Zero allocations per line is the point: the previous
+ * version of this read allocated an object per line and that is what killed a cold board.
+ */
+/**
+ * The pattern id at the head of a pattern-index line, read off the raw text.
+ *
+ * A row is stored as `["<id>",{...}]`, so the id is between the second character and the next
+ * quote. Reading it this way costs one small string where `JSON.parse` of the row costs an object,
+ * an array of stop ids, and the strings inside it.
+ */
+export function patternIdInIndexLine(body: string, start: number, end: number): string | null {
+  if (body.charCodeAt(start) !== 0x5b /* [ */ || body.charCodeAt(start + 1) !== 0x22 /* " */) {
+    return null;
+  }
+  const to = body.indexOf('"', start + 2);
+  return to < 0 || to > end ? null : body.slice(start + 2, to);
+}
+
+/**
+ * Keep only the pattern-index rows a request actually named.
+ *
+ * The comment on `patternsInIndexTiles` said a corridor wants most of what is in its tiles, and
+ * that was the wrong way round: the trips name the patterns first, so the planner knows exactly
+ * which rows it needs before the read starts. Run 89's journeys died inside this read with no
+ * stage reached, and run 87's stopped itself at `pattern_index_budget` having resolved none of
+ * 1,287 trips. Parsing the rows nobody asked for is the cost being removed.
+ */
+export function wantedPatternLineFilter(ids: readonly string[]): LineFilter | undefined {
+  if (ids.length === 0) return undefined;
+  const wanted = new Set(ids);
+  return (body, start, end) => {
+    const id = patternIdInIndexLine(body, start, end);
+    return id !== null && wanted.has(id);
+  };
+}
+
+export function stopMentionedInLine(stopId: string): LineFilter {
+  const needle = `"${stopId}"`;
+  return (body, start, end) => {
+    const at = body.indexOf(needle, start);
+    return at >= 0 && at < end;
+  };
+}
+
 function valueAt(body: string, start: number, end: number, field: string): string | null {
   const needle = `"${field}":"`;
   const at = body.indexOf(needle, start);
@@ -1569,6 +1617,15 @@ export class NetworkReader {
     now: number = Date.now(),
     ledger?: ReadLedger,
     budgetChars?: number,
+    /**
+     * The patterns the caller came for, so the rest are never built.
+     *
+     * Optional because an older caller that wants the whole tile still works, but the planner
+     * always knows: it reads its trips first and the trips name their patterns. Without this the
+     * read turned every row in every corridor tile into an object with an array of stop ids in it
+     * — hundreds of patterns per tile to keep the couple of hundred a corridor runs on.
+     */
+    wantedPatternIds?: readonly string[],
   ): Promise<{ patterns: Map<string, RoutePattern>; complete: boolean; available: boolean }> {
     const index = await this.networkIndex(now);
     const published = index?.patternIndexTiles;
@@ -1584,6 +1641,7 @@ export class NetworkReader {
       now,
       Math.min(budgetChars ?? this.requestChars, this.requestChars),
       ledger ? { ledger, family: "patterns", budgetReason: "pattern_index_budget" } : undefined,
+      wantedPatternIds ? wantedPatternLineFilter(wantedPatternIds) : undefined,
     );
 
     const patterns = new Map<string, RoutePattern>();
@@ -1741,10 +1799,67 @@ export class NetworkReader {
     return new Map([...stops].map(([key, stop]) => [key, stop.name]));
   }
 
-  /** Patterns calling at a stop, found from the tiles around it rather than nationally. */
-  async patternsServingStop(stop: Stop, now: number = Date.now()): Promise<PatternGeometry[]> {
-    const geometries = await this.patternsInBoundingBox(boxAround(stop.locationCoordinate), now);
-    return geometries.filter((geometry) => geometry.pattern.stopSequence.includes(stop.id));
+  /**
+   * The patterns that call at one stop, without their geometry and without parsing the rest.
+   *
+   * This was `patternsInBoundingBox(...).filter(calls here)`, and the filter was the whole problem:
+   * it ran *after* every line in the surrounding pattern tiles had been turned into an object. A
+   * pattern tile in a city holds hundreds of patterns and, worse, the polylines they share — so a
+   * cold board built thousands of coordinate objects and a few hundred stop sequences in order to
+   * keep about ten. Run 89 measured the consequence: a Manchester stop board died immediately
+   * after `board:live:done`, at `atMs: 0`, which is this call and nothing else.
+   *
+   * Three things change. The filter moves in front of the parse — a pattern's stop sequence is a
+   * list of quoted ids, so "does this line mention this stop" is an `indexOf` on the raw text, and
+   * only the surviving lines are built. The shape lines are never parsed at all, because a board
+   * draws no route line: it names routes and destinations. And the read is on the board's own
+   * ledger, so a board that has already spent its budget on departures declines to start rather
+   * than being killed part way through.
+   *
+   * Returns `RoutePattern` rather than `PatternGeometry` deliberately. There is no shape here, and
+   * handing back a geometry with an empty polyline would invite a caller to draw nothing.
+   */
+  async patternsCallingAtStop(
+    stop: Stop,
+    now: number = Date.now(),
+    ledger?: ReadLedger,
+  ): Promise<{ patterns: RoutePattern[]; complete: boolean }> {
+    const index = await this.networkIndex(now);
+    if (!index) return { patterns: [], complete: false };
+
+    if (ledger && !ledger.withinBudget) {
+      ledger.stop("pattern_enrichment_budget");
+      return { patterns: [], complete: false };
+    }
+
+    const result = await this.readTiles<PatternTileLine>(
+      patternTileDataset,
+      patternTilesForBoundingBox(boxAround(stop.locationCoordinate)),
+      index.patternTiles,
+      index.version,
+      now,
+      Math.min(this.patternChars, this.requestChars),
+      ledger
+        ? { ledger, family: "patterns", budgetReason: "pattern_enrichment_budget" }
+        : undefined,
+      stopMentionedInLine(stop.id),
+    );
+
+    const patterns: RoutePattern[] = [];
+    const seen = new Set<string>();
+    for (const line of result.records) {
+      // Shape lines cannot mention a stop id and so should not survive the filter; a shapeRef that
+      // happened to collide with one would, and is simply not a pattern.
+      if (line.kind !== "pattern") continue;
+      // The text test says the line mentions this stop somewhere. Calling here is a stronger
+      // claim, and it is the claim the board makes.
+      if (!line.pattern.stopSequence.includes(stop.id)) continue;
+      if (seen.has(line.pattern.id)) continue;
+      seen.add(line.pattern.id);
+      patterns.push(line.pattern);
+    }
+    ledger?.count({ patterns: patterns.length });
+    return { patterns, complete: !result.truncated };
   }
 
   /**

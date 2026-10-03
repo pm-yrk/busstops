@@ -156,8 +156,11 @@ describe("the edge never reads a national dataset", () => {
     const viewport = await reader.stopsInBoundingBox(box, 400);
     expect(viewport.stops.map((s) => s.id)).toContain(stop!.id);
 
-    const serving = await reader.patternsServingStop(stop!);
-    expect(serving.length).toBeGreaterThan(0);
+    const serving = await reader.patternsCallingAtStop(stop!);
+    expect(serving.patterns.length).toBeGreaterThan(0);
+    expect(serving.complete).toBe(true);
+    // Every pattern it returns calls here, which is the claim the board makes from this list.
+    expect(serving.patterns.every((pattern) => pattern.stopSequence.includes(stop!.id))).toBe(true);
   });
 
   it("finds a stop whose letter had to be split into deeper buckets", async () => {

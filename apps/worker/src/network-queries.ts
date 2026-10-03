@@ -117,16 +117,23 @@ export function distinguishVariantDescriptions(variants: readonly RouteVariant[]
 }
 
 /** Services that call at a stop, derived from the patterns read around it. */
+/**
+ * Takes patterns rather than geometries, because a board names routes and draws no line.
+ *
+ * The caller used to hand over `PatternGeometry[]`, which meant the read behind it had to produce
+ * polylines nothing here looks at — and in a city that is thousands of coordinate objects per
+ * board. The signature is the honest one now: a stop sequence and a service id are all this uses.
+ */
 export function routesServingStop(
-  patterns: readonly PatternGeometry[],
+  patterns: readonly RoutePattern[],
   stopId: string,
   services: ReadonlyMap<string, ServiceRoute>,
   operators: ReadonlyMap<string, Operator>,
 ): Array<{ id: string; publicName: string; operatorName: string }> {
   const serviceIds = new Set<string>();
-  for (const geometry of patterns) {
-    if (geometry.pattern.stopSequence.includes(stopId)) {
-      serviceIds.add(geometry.pattern.serviceRouteId);
+  for (const pattern of patterns) {
+    if (pattern.stopSequence.includes(stopId)) {
+      serviceIds.add(pattern.serviceRouteId);
     }
   }
 

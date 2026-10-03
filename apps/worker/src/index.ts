@@ -119,7 +119,7 @@ const JOURNEY_BUDGET_MS = 6_000;
 const JOURNEY_STOP_READ_CHARS = 5 * 1024 * 1024;
 
 /** What one plan may decode in total, against the 3 MiB every other request gets. See the ledger. */
-const JOURNEY_TEXT_CHARS = 5 * 1024 * 1024;
+const JOURNEY_TEXT_CHARS = 4 * 1024 * 1024;
 /**
  * Above this many pattern tiles, a corridor asks the index instead of reading the tiles.
  *
@@ -972,8 +972,20 @@ router.get("/v1/stops/:id", async (_request, { env, params }) => {
   );
   mark("board:live:done", { departures: live.departures.length });
 
-  const patterns = await boardLedger.stage("patterns", () => network!.patternsServingStop(stop));
-  mark("board:patterns:done", { patterns: patterns.length });
+  /*
+   * Which patterns call here, read without building the ones that do not.
+   *
+   * `patternsServingStop` read the surrounding pattern tiles whole — every pattern in them and
+   * every shared polyline — and *then* filtered to this stop, on no ledger at all. Run 89 watched
+   * a Manchester board die here: last crumb `board:live:done` at `atMs: 0`, which is the line
+   * immediately above. The read is now filtered before the parse, skips the shapes a board never
+   * draws, and runs on the board's budget so a board that has already spent it declines instead.
+   */
+  const patternRead = await boardLedger.stage("patterns", () =>
+    network!.patternsCallingAtStop(stop, Date.now(), boardLedger),
+  );
+  const patterns = patternRead.patterns;
+  mark("board:patterns:done", { patterns: patterns.length, complete: patternRead.complete });
   /*
    * The services these patterns belong to, not all 13,593 of them.
    *
@@ -982,7 +994,7 @@ router.get("/v1/stops/:id", async (_request, { env, params }) => {
    * names about ten services, and asking for those is one pass over the text instead.
    */
   const services = await boardLedger.stage("services", () =>
-    network!.servicesByIds(new Set(patterns.map((geometry) => geometry.pattern.serviceRouteId))),
+    network!.servicesByIds(new Set(patterns.map((pattern) => pattern.serviceRouteId))),
   );
   mark("board:services:done", { services: services.size });
 
@@ -1376,6 +1388,7 @@ router.get("/v1/journeys", async (_request, { env, url }) => {
    */
   const journeyLedger = new ReadLedger(JOURNEY_BUDGET_MS, undefined, undefined, JOURNEY_TEXT_CHARS);
   const endJourneyResidency = beginResidency(journeyLedger, "journeys");
+  mark("journey:begin", { serviceDate });
   const journeyIndexForSlice = await journeyLedger.stage("index", () => network!.networkIndex());
   /*
    * Which way to get the patterns, decided from what each one actually costs.
@@ -1419,6 +1432,11 @@ router.get("/v1/journeys", async (_request, { env, url }) => {
       patternBudgetChars: JOURNEY_PATTERN_READ_CHARS,
     }),
   );
+  mark("journey:slice:done", {
+    stops: slice.stopsById.size,
+    patterns: slice.patternsById.size,
+    complete: slice.complete,
+  });
   journeyLedger.count({ stops: slice.stopsById.size, patterns: slice.patternsById.size });
 
   const journeyIndex = journeyIndexForSlice;
@@ -1500,6 +1518,10 @@ router.get("/v1/journeys", async (_request, { env, url }) => {
     );
   }
 
+  mark("journey:plan:begin", {
+    corridorPatternTiles,
+    patternSource: useIndexTiles ? "index-tiles" : usePatternIndex ? "index-hashed" : "tiles",
+  });
   const outcome = await journeyLedger.stage("plan", () =>
     journeyService!.planJourney(slice, {
       origin,
@@ -1513,13 +1535,18 @@ router.get("/v1/journeys", async (_request, { env, url }) => {
       ...(usePatternIndex
         ? {
             resolvePatterns: useIndexTiles
-              ? () =>
-                  network!.patternsInIndexTiles(
+              ? (patternIds: readonly string[]) => {
+                  mark("journey:patterns:begin", { wanted: patternIds.length });
+                  return network!.patternsInIndexTiles(
                     corridorPatternTileList,
                     Date.now(),
                     journeyLedger,
                     JOURNEY_PATTERN_READ_CHARS,
-                  )
+                    // The ids the trips named. Without them this parsed every row in every
+                    // corridor tile to keep the ones a corridor runs on.
+                    patternIds,
+                  );
+                }
               : (patternIds: readonly string[]) =>
                   network!.patternsByIds(patternIds, Date.now(), journeyLedger),
           }
@@ -1527,6 +1554,7 @@ router.get("/v1/journeys", async (_request, { env, url }) => {
     }),
   );
 
+  mark("journey:plan:done", { ok: outcome.ok });
   endJourneyResidency();
   const meta = buildMeta({
     sources: [],
