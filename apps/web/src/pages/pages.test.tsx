@@ -112,6 +112,46 @@ describe("RoutePage", () => {
     expect(screen.getByRole("link", { name: "Leeds City Bus Station" })).toBeTruthy();
   });
 
+  /*
+   * The page opens on the route, not on whichever pattern the API happened to list first.
+   *
+   * `variants` is sorted by direction before length, so a service whose inbound short working sorts
+   * first opened on its shortest pattern while the real one sat behind a tab. A passenger means the
+   * long one by "the route".
+   */
+  it("opens on the pattern with the most stops, whatever order they arrive in", async () => {
+    const shortWorking = {
+      patternId: "00000000-0000-5000-8000-0000000000b2",
+      direction: "inbound" as const,
+      description: "Leeds City Bus Station to Bradford Interchange",
+      distanceMetres: 4200,
+      stops: response.data.variants[0]!.stops.slice(0, 2),
+    };
+    const fullRoute = {
+      ...response.data.variants[0]!,
+      stops: [
+        ...response.data.variants[0]!.stops,
+        {
+          stopId: "00000000-0000-5000-8000-0000000000c3",
+          atcoCode: "450010003",
+          name: "Pudsey Market",
+          locality: "Pudsey",
+          sequence: 2,
+        },
+      ],
+    };
+    // Inbound first, which is the order the API's own sort produces.
+    vi.spyOn(apiClient, "route").mockResolvedValue({
+      ...response,
+      data: { ...response.data, variants: [shortWorking, fullRoute] },
+    });
+    renderAt("/routes/r1", "/routes/:routeId", <RoutePage />);
+
+    // The third stop only exists on the full pattern, so finding it is the whole assertion.
+    expect(await screen.findByRole("link", { name: "Pudsey Market" })).toBeTruthy();
+    expect(screen.getAllByText(/3 stops/).length).toBeGreaterThan(0);
+  });
+
   it("says why no frequency is shown rather than inventing one", async () => {
     vi.spyOn(apiClient, "route").mockResolvedValue(response);
     renderAt("/routes/r1", "/routes/:routeId", <RoutePage />);

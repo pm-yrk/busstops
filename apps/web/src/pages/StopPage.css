@@ -133,3 +133,39 @@
 .stop-page__weather {
   margin-bottom: var(--space-xl);
 }
+
+/*
+ * Routes calling here: a badge and who runs it, one per line.
+ *
+ * A list rather than a row of chips, because the operator name belongs beside each badge and a
+ * wrapped row of two-part chips reads as noise. The whole line is the link, so the target is the
+ * row rather than the four characters of a route number.
+ */
+.stop-page__route-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.stop-page__route-list a {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm);
+  text-decoration: none;
+  color: inherit;
+  border-bottom: 1px solid var(--colour-hairline);
+}
+
+.stop-page__route-list a:hover,
+.stop-page__route-list a:focus-visible {
+  background: var(--colour-surface-raised, rgba(0, 0, 0, 0.04));
+}
+
+.stop-page__route-operator {
+  font-size: var(--font-size-small);
+  color: var(--colour-ink-secondary);
+}

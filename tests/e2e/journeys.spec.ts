@@ -52,6 +52,24 @@ test.describe("stop page", () => {
     await expect(page.getByText(/Timetable/).first()).toBeVisible();
   });
 
+  /*
+   * A stop leads to the routes that call at it.
+   *
+   * The map's selected-stop panel has linked to each route since it was built; this page did not
+   * link to one at all, so the only way to reach a service's stop sequence was to find it on the map
+   * first — backwards, because the stop page is the one a search result, a journey leg and
+   * "Everything about this stop" all land on.
+   */
+  test("leads to the routes that call here", async ({ page }) => {
+    await mockApi(page);
+    await page.goto(`/stops/${STOP_ID}`);
+
+    const routeLink = page.getByRole("link", { name: /72/ }).first();
+    await expect(routeLink).toBeVisible();
+    await expect(routeLink).toHaveAttribute("href", "/routes/00000000-0000-5000-8000-0000000000e1");
+    await expect(page.getByText("First West Yorkshire").first()).toBeVisible();
+  });
+
   test("a favourite is saved with no account and survives a reload", async ({ page }) => {
     await mockApi(page);
     await page.goto(`/stops/${STOP_ID}`);

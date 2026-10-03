@@ -156,6 +156,14 @@ export default [
       "**/.wrangler/**",
       "**/coverage/**",
       "tests/fixtures/raw/**",
+      /*
+       * Playwright's own output. Both are gitignored, so CI never sees them — but a developer who
+       * has run the end-to-end suite locally gets nine hundred lint errors from the HTML reporter's
+       * bundled JavaScript, which is a confusing way to find out that lint does not read
+       * .gitignore.
+       */
+      "playwright-report/**",
+      "test-results/**",
     ],
   },
   prettier,

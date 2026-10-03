@@ -303,6 +303,33 @@ export function StopPage() {
         />
       </section>
 
+      {/*
+        Where the buses that call here actually go.
+        
+        The map's selected-stop panel has linked to each route since it was built; this page — the
+        one a passenger reaches from a search result, from a journey leg, or from "Everything about
+        this stop" — did not link to a route at all. So the only way to see a service's stop sequence
+        was to find it on the map first, which is backwards: the stop page is the page somebody lands
+        on. Every route calling here is a link to its own ordered stop list.
+      */}
+      {response.data.routes.length > 0 ? (
+        <section className="stop-page__routes" aria-labelledby="stop-routes-heading">
+          <PixelSectionHeading mark="route" id="stop-routes-heading">
+            Routes calling here
+          </PixelSectionHeading>
+          <ul className="stop-page__route-list">
+            {response.data.routes.map((route) => (
+              <li key={route.id}>
+                <Link to={`/routes/${encodeURIComponent(route.id)}`}>
+                  <span className="route-badge route-badge--inline">{route.publicName}</span>
+                  <span className="stop-page__route-operator">{route.operatorName}</span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
       <AccessibilityCard accessibility={response.data.accessibility} />
 
       <section className="stop-page__details" aria-labelledby="stop-details-heading">
