@@ -100,22 +100,24 @@ export interface ReadTrack {
  * are several times the size of the text they came from and a request needs room to work on top of
  * whatever is resident.
  */
-const MAX_CACHED_SHARDS = 8;
+const MAX_CACHED_SHARDS = 16;
 /*
- * Three mebibytes, down from twelve, and the reason is CPU rather than memory.
+ * Twenty-four mebibytes, up from three, and the reason is the same CPU the old number was defending.
  *
- * Workers Free charges 10 ms of CPU per invocation and charges nothing for waiting on I/O. Garbage
- * collection is not free, though, and it is paid for by whichever invocation triggers it — so a
- * large warm cache does not merely occupy memory the isolate has plenty of, it taxes the request
- * that happens to be parsing when the collector runs. Run 78 is consistent with exactly that: the
- * journey that decoded 4.0 MiB answered fine on runs 74 and 75 and died on run 78 on an isolate
- * already holding 2.42 MiB across twenty-six served requests, with the clock reading 0 ms.
+ * The three-mebibyte version argued that a warm cache taxes whichever request triggers garbage
+ * collection, from one run where a journey died on an isolate holding 2.42 MiB. Three more runs
+ * have now measured the other side of it, and it is much larger: at 3 MiB a single city stop tile
+ * — `network/stops-tile/103_-1` is 8.1 MiB — could not be held *at all*, so every viewport, every
+ * route page and every board re-fetched and re-decoded megabytes that the isolate had already
+ * decoded minutes earlier. A cache hit costs no parse, and the parse is the thing a Workers Free
+ * invocation has ten milliseconds of.
  *
- * Re-reading a tile costs a metered R2 operation and some wall-clock, of which there are 10 million
- * free a month and 1,800 ms to spend. Holding it costs the one thing in short supply. So the cache
- * is now small enough to help a repeat request without being large enough to tax the next one.
+ * Twenty-four mebibytes of source text is a large fraction of the isolate once parsed, which is
+ * why it is a ceiling with LRU eviction under it rather than an invitation. It is deliberately
+ * well short of the national datasets — `network/stops` alone is 197.7 MiB — so the thing this
+ * bound exists to prevent, the national network arriving a tile at a time, is still prevented.
  */
-const MAX_CACHED_SHARD_CHARS = 3 * 1024 * 1024;
+export const MAX_CACHED_SHARD_CHARS = 24 * 1024 * 1024;
 
 /**
  * How much shard text one request will open.
@@ -1985,6 +1987,17 @@ export class NetworkReader {
     return entries;
   }
 
+  /**
+   * The whole national operator table. **Nothing on a request path may call this.**
+   *
+   * Kept because the tests use it as an oracle — "the filtered read agrees with the whole table"
+   * is only checkable against the whole table — and because deleting it would not stop the next
+   * caller, only hide what it costs. `readCurrent` runs an FNV-1a hash over the entire object and
+   * `JSON.parse`s every record before returning one, which is tens of milliseconds against the
+   * ten a Workers Free invocation gets. Three handlers called it, each for a single operator, and
+   * each of them answered Cloudflare's error page on the first request in a fresh isolate and
+   * worked on every one after. Ask `operatorsByIds` instead.
+   */
   async operators(now: number = Date.now()): Promise<Map<string, Operator>> {
     if (this.operatorsCache) return this.operatorsCache;
     const artifacts = new ArtifactStore(this.store);
@@ -1994,6 +2007,16 @@ export class NetworkReader {
     return this.operatorsCache;
   }
 
+  /**
+   * The whole national service table, 13,626 records. **Nothing on a request path may call this.**
+   *
+   * The same warning as `operators()` above, and this is the one that was actually doing the
+   * damage: `/v1/map` read it for every viewport holding a vehicle with no line name, and the
+   * journey planner's corridor slice read it unconditionally. The map's own diagnostics printed
+   * `services=13626` on the runs where half the endpoints answered error 1102. Ask
+   * `servicesByIds` or `servicesForOperator`, both of which scan the text and parse only what was
+   * asked for.
+   */
   async services(now: number = Date.now()): Promise<Map<string, ServiceRoute>> {
     if (this.servicesCache) return this.servicesCache;
     const artifacts = new ArtifactStore(this.store);

@@ -177,6 +177,16 @@ async function main(): Promise<void> {
    * is precisely the question the GTFS rebuild exists to answer.
    */
   const stopsByArea: Array<{ name: string; stops: unknown[] }> = [];
+  /*
+   * What the isolate was holding, carried out of here.
+   *
+   * `/v1/map` reports its own residency in `meta.diagnostics` — how much shard text the isolate
+   * held when the request began, and whether the national service and place tables had been
+   * parsed into it. That is the single most useful number for the 1102s, and the only check that
+   * printed it is one of the ones that keeps dying, so it was unreadable exactly when it mattered.
+   * Collected from every viewport that answers, so one surviving request is enough.
+   */
+  const mapDiagnostics: unknown[] = [];
 
   for (const area of AREAS) {
     const param = bboxParam(area.bbox);
@@ -220,6 +230,18 @@ async function main(): Promise<void> {
           console.log(`        rejected ${asText(count)} × ${reason}`);
         }
       }
+    }
+
+    const mapDiag = at(map.json, "meta", "diagnostics");
+    if (mapDiag !== undefined && mapDiag !== null) {
+      mapDiagnostics.push({
+        area: area.name,
+        status: map.status,
+        ms: map.ms,
+        diagnostics: mapDiag,
+      });
+    } else {
+      mapDiagnostics.push({ area: area.name, status: map.status, ms: map.ms, diagnostics: null });
     }
 
     const isLondon = area.name.startsWith("London");
@@ -538,7 +560,7 @@ async function main(): Promise<void> {
   annotate(
     failures.length === 0 ? "notice" : "error",
     `passenger probe (${failures.length} failure(s), ${notes.length} note(s))`,
-    JSON.stringify({ failures, notes, routePages: report.routePages }, null, 2),
+    JSON.stringify({ failures, notes, routePages: report.routePages, mapDiagnostics }, null, 2),
   );
 
   console.log("");

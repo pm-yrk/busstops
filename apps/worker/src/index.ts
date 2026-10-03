@@ -28,7 +28,7 @@ import {
   sourcesForBoundingBox,
   toMapVehicle,
 } from "./live-service.js";
-import { NetworkReader } from "./network-reader.js";
+import { MAX_CACHED_SHARD_CHARS, NetworkReader } from "./network-reader.js";
 import { ReadLedger } from "./read-ledger.js";
 import { beginBreadcrumb, endBreadcrumb, mark, takeUnfinished } from "./breadcrumb.js";
 import {
@@ -291,7 +291,25 @@ const rateLimiter = new RateLimiter();
  * memory, and this is the measurement that would show it if it is — or rule it out if the counts
  * come back flat and the request that dies is no different from the five before it.
  */
-const RESIDENT_FLOOR_CHARS = 1 * 1024 * 1024;
+/**
+ * How much shard text survives the trim at the start of each request — now the cache's own
+ * ceiling, which is to say: nothing is trimmed.
+ *
+ * The trim was introduced as a measurement and then kept as a fix, and the measurement it produced
+ * says it should not have been. Every residency figure the deployed runs have reported is between
+ * 0.00 and 0.79 MiB against an isolate of 128 MiB. Memory was never close, and the trim was
+ * therefore buying nothing while costing two things that are real: a discarded tile has to be
+ * fetched and decoded again on the next request, which is the CPU the ten-millisecond budget is
+ * short of, and discarding one every request makes garbage that some later request pays to
+ * collect.
+ *
+ * What the runs show is an isolate that answers its first requests and kills its later ones —
+ * `/v1/map` passing as check one and answering error 1102 as check nine — which is the signature
+ * of an isolate that never gets to keep anything. So nothing is trimmed, and the shard cache's own
+ * LRU eviction is the only bound. It is raised with it, below, because at 3 MiB a single city stop
+ * tile could not be held at all.
+ */
+const RESIDENT_FLOOR_CHARS = MAX_CACHED_SHARD_CHARS;
 
 /**
  * What a route page keeps back for the live feed, or skips it.
