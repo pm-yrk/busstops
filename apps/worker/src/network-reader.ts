@@ -77,8 +77,16 @@ export interface ReadTrack {
  *
  * So nothing here reads a national dataset. A viewport reads the tiles it covers, a stop page
  * reads one locator bucket and one tile, a search reads the prefix buckets its words fall in.
- * The only whole datasets are operators and services, which are 22 and 1,043 records — and a test
- * asserts they stay small rather than trusting that they will.
+ *
+ * Operators and services were the exception, held whole, and that stopped being true on 3 October
+ * because the exception was the problem. `services()` is 13,626 records behind an FNV-1a hash of a
+ * 4.7 MiB object; `/v1/map` called it for any viewport holding a bus with no line name and the
+ * journey planner's corridor slice called it unconditionally, so the first request in any isolate
+ * to reach either line answered Cloudflare's error page and every request after it, reading the
+ * result out of the isolate's cache, was fine. Both are read by id now — `servicesByIds`,
+ * `operatorsByIds` — and the two whole-table methods carry a warning saying nothing on a request
+ * path may call them. The record counts in that old sentence had also drifted: 1,043 services had
+ * become 13,626, which is how a comment stops being a measurement.
  *
  * **Versioning.** The index record is read first and names the version; every shard is then read
  * at that exact version rather than through its own manifest pointer. A publish writes shards
