@@ -124,7 +124,11 @@ export function stopTileNamesFromKeys(keys: readonly string[]): string[] {
 const BETWEEN_BATCHES_MS = 2_000;
 
 export type CollectWeatherOutcome =
-  "published" | "network_not_published" | "budget_exceeded" | "too_many_cells" | "no_answer";
+  | "published"
+  | "network_not_published"
+  | "budget_exceeded"
+  | "too_many_cells"
+  | "no_answer";
 
 export interface WeatherBatchOutcome {
   cells: number;

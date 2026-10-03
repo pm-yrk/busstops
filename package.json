@@ -2,7 +2,7 @@
   "name": "busstops",
   "private": true,
   "version": "0.1.0",
-  "description": "Bus Stops. \u2014 England-wide live bus intelligence platform (Bus Stops Live + Bus Stops Pro).",
+  "description": "Bus Stops. — England-wide live bus intelligence platform (Bus Stops Live + Bus Stops Pro).",
   "license": "UNLICENSED",
   "engines": {
     "node": ">=20.0.0"

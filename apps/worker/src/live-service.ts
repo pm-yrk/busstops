@@ -559,7 +559,8 @@ export function oldestObservedAt(observations: readonly { observedAt: string }[]
 export function toMapVehicle(
   observation: VehicleObservation,
   context:
-    { publishedLineName?: string | undefined; destinationName?: string | undefined } | undefined,
+    | { publishedLineName?: string | undefined; destinationName?: string | undefined }
+    | undefined,
   now: Date,
   motionState: MapVehicleSummary["motionState"] = "unknown",
   delaySeconds: number | null = null,
