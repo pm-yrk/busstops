@@ -34,6 +34,82 @@ York's 20 has six; X10 and the 35 each carry both directions. The page opens on 
 with the most stops and offers the rest as tabs, with the stop count appended where two
 variants would otherwise read as the same words.
 
+### 3 October, run 94: five route pages verified, and the filter that never filtered
+
+**The headline, from the passenger probe on the deployed preview.** Five cities, five routes
+reached the way a passenger reaches them — viewport, stop, its first route, the ordered stops,
+then the stop from the middle of that list opened on its own board:
+
+    Route 19 — Leeds            First Leeds                      3 variants   83 stops
+      Ireland Wood → Inverness Road
+      Stop sequence verified from timetable pattern
+      Stop #42 (Shaftesbury Junction C) opens its live board successfully
+
+    Route 101 — Manchester      Bee Network                      3 variants   56 stops
+      Wythenshawe Town Centre → Piccadilly Gardens
+      Stop #29 (Princess Parkway) opens its live board successfully
+
+    Route 2 — Birmingham        National Express West Midlands   6 variants   43 stops
+      Moor Street Station → Maypole Shops
+      Stop #22 (Billesley Fire Station) opens its live board successfully, 4 due
+
+    Route 25 — Bristol          First Bristol, Bath & the West   2 variants   23 stops
+      Durnford Street → Eastgate Centre
+      Stop #12 (Broadmead) opens its live board successfully, 5 due
+
+    Route 13 — York             Connexions Buses                 4 variants   51 stops
+      West Nooks → Station Cottages
+      Stop #26 (Ramsay Close) opens its live board successfully
+
+Every one reported `ordered: true`, `alphabetical: false` and `complete: true` — the order is the
+pattern's own `stopSequence`, it is not a name sort wearing a travel order, and nothing was
+truncated. The zero departures at three of the middle stops are 22:48 UTC, not a fault; Birmingham
+and Bristol had 4 and 5 due at the same moment.
+
+**The filter that never filtered.** `searchLineFilter` returned `(line: string) => boolean` and
+was passed where a `LineFilter` — `(body, start, end)` — was expected. TypeScript accepts a
+function of fewer parameters there, so it compiled; at run time it received the _whole object body_
+as its "line", so the test it ran was "does this three-letter stem occur anywhere in this 5.1 MiB
+bucket", which for any real query it does. **The filter kept every line and every search parsed
+all twenty thousand records of every bucket it opened.** Its own comment about not allocating a
+copy of each line was describing code that never ran, and the only test that called it passed a
+single line, which is why nothing caught it. Fixing the signature made TypeScript reject the test
+immediately. Audited the other seven filter sites: this was the only one.
+
+**The trim that was costing what it was meant to save.** `beginResidency` trimmed the shard cache
+to 1 MiB before every request, introduced as a measurement and kept as a fix. Every residency
+figure the deployed runs have ever reported is between 0.00 and 2.15 MiB against an isolate of
+128 MiB — memory was never close — while the trim guaranteed a re-fetch and re-decode on the next
+request and made garbage for a later one to collect.
+
+Together those took the deployed verification from 10 of 23 to **14 of 23**, and the passenger
+probe from four failures to one.
+
+**What the run also ruled out.** The retention pass did not break the artifact: the horizon proof
+reports 512 of 512 departure shards for today, tomorrow and the 5th at the live version, and the
+bucket at 64,351 objects / 16.14 GB — the prune hit its 35-minute budget having removed 8,843
+objects and 1.85 GB of the 41,094 and 7.38 GB it had planned, so it needs two or three more
+passes and the free allowance is still exceeded.
+
+**What is still red.** Route detail dies on roughly the fifth rapid repetition in a dense city;
+the stop boards in the rapid stop-to-route check die; the London viewport, landmark search and the
+weather lookup each still answer error 1102. The surviving requests are _cheap_ — a York route
+page decoded 0.51 MiB across two objects, a Leeds viewport 772,595 characters across two — which
+means the dying ones are not dying of the work the diagnostics can see.
+
+One premise has to be retired to make progress on the rest: `atMs: 0` was read as "died during
+synchronous work", because a Worker's clock only advances across I/O. But the stop board's trail
+reaches `board:stop:done` — which is after a read that certainly did I/O — and still reports 0, so
+an R2 binding read does not advance it. The breadcrumb's own documentation warns against reading a
+phase as a cause, and this is that warning coming true. The next measurement has to be of work
+done, not of where the clock stopped.
+
+Also found: every read in this Worker is filtered, and `readShardSized` deliberately never caches
+a filtered read — correctly, since an entry holding one request's hundred stops would answer the
+next request's question wrongly. So the shard cache has been dead code on every hot path, which is
+why raising its ceiling to 24 MiB changed nothing: `shardsAfter: 0` after a map request that read
+772,595 characters.
+
 ### 3 October, runs 90 and 91: the board's real cost, found by making the runs readable
 
 Two findings, and the first one made the second possible.
