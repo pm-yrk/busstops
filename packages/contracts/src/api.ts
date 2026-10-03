@@ -164,6 +164,15 @@ export const StopDeparturesResponseSchema = apiEnvelope(
       z.object({ id: z.string().uuid(), publicName: z.string(), operatorName: z.string() }),
     ),
     /**
+     * Whether that list is all of them.
+     *
+     * The read behind it is bounded, and a board at a busy interchange can reach the bound. A
+     * short list presented as the complete one tells a passenger their route does not stop here,
+     * which is a statement about the bus service made out of a limit of ours. Optional only so an
+     * older client is not broken by its arrival; the Worker always sends it.
+     */
+    routesComplete: z.boolean().optional(),
+    /**
      * Accessibility, as facts with sources rather than a verdict.
      *
      * Mostly `unknown` today and honestly so: the sources that would answer these questions are

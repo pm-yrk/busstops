@@ -317,6 +317,19 @@ export function StopPage() {
           <PixelSectionHeading mark="route" id="stop-routes-heading">
             Routes calling here
           </PixelSectionHeading>
+          {/*
+            A list read short must not look like a complete one.
+
+            The Worker bounds the read behind this and a busy interchange can reach the bound. A
+            route missing from the list reads as a route that does not stop here — a statement about
+            the bus service made out of a limit of ours.
+          */}
+          {response.data.routesComplete === false ? (
+            <p className="stop-page__routes-note small muted" role="status">
+              We could not read every route that calls here inside one request, so this list may be
+              short. It is not a statement that a route misses this stop.
+            </p>
+          ) : null}
           <ul className="stop-page__route-list">
             {response.data.routes.map((route) => (
               <li key={route.id}>

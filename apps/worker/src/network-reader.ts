@@ -258,6 +258,21 @@ const NEARBY_READ_CHARS = 2 * 1024 * 1024;
  */
 const JOURNEY_CORRIDOR_STOP_LIMIT = 20_000;
 
+/**
+ * How much pattern text a departure board may open to answer "what calls here".
+ *
+ * Three quarters of a mebibyte, against the map's three. A board asks this question only when its
+ * own departures could not answer it — nothing due, so no row named a pattern — and the stops
+ * where that happens on a busy day are exactly the ones whose tiles are largest. Stop
+ * `1800EB06161` in Manchester answered Cloudflare's error page on six consecutive deployed runs
+ * and in run 95 the breadcrumb put it here precisely: `board:departures:done@237` with zero rows,
+ * then nothing.
+ *
+ * A board that reaches this names fewer routes and says so — `routesComplete` is false — which is
+ * a far better answer than the platform's error page, and it is only ever the fallback path.
+ */
+const BOARD_PATTERN_READ_CHARS = 768 * 1024;
+
 /** The most tiles read at once, once their size is known. */
 const TILE_READ_BATCH = 6;
 
@@ -2057,7 +2072,8 @@ export class NetworkReader {
       index.patternTiles,
       index.version,
       now,
-      Math.min(this.patternChars, this.requestChars),
+      // A board's own bound, not the map's. See BOARD_PATTERN_READ_CHARS.
+      Math.min(BOARD_PATTERN_READ_CHARS, this.requestChars),
       ledger
         ? { ledger, family: "patterns", budgetReason: "pattern_enrichment_budget" }
         : undefined,

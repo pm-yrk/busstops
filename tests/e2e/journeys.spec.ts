@@ -78,6 +78,42 @@ test.describe("stop page", () => {
     await expect(page.getByText("First West Yorkshire").first()).toBeVisible();
   });
 
+  /*
+   * And says when that list is short, rather than drawing a short one like a complete one.
+   *
+   * The Worker bounds the read behind it — three quarters of a mebibyte of pattern text — and the
+   * boards that have to fall back to that read are the busy interchanges whose tiles are largest.
+   * A route missing from the list reads as a route that does not stop here, which would be a
+   * statement about the bus service made out of a limit of ours.
+   */
+  test("says when the route list was read short, and what that does not mean", async ({ page }) => {
+    await mockApi(page, {
+      [`/v1/stops/${STOP_ID}`]: {
+        ...STOP_RESPONSE,
+        data: { ...STOP_RESPONSE.data, routesComplete: false },
+      },
+    });
+    await page.goto(`/stops/${STOP_ID}`);
+
+    await expect(page.getByText(/this list may be short/)).toBeVisible();
+    await expect(page.getByText(/not a statement that a route misses this stop/)).toBeVisible();
+    // The routes it did read are still there and still followable.
+    await expect(page.getByRole("link", { name: /72/ }).first()).toBeVisible();
+  });
+
+  test("draws no such warning when the route list is all of them", async ({ page }) => {
+    await mockApi(page, {
+      [`/v1/stops/${STOP_ID}`]: {
+        ...STOP_RESPONSE,
+        data: { ...STOP_RESPONSE.data, routesComplete: true },
+      },
+    });
+    await page.goto(`/stops/${STOP_ID}`);
+
+    await expect(page.getByRole("link", { name: /72/ }).first()).toBeVisible();
+    await expect(page.getByText(/this list may be short/)).toHaveCount(0);
+  });
+
   test("a favourite is saved with no account and survives a reload", async ({ page }) => {
     await mockApi(page);
     await page.goto(`/stops/${STOP_ID}`);

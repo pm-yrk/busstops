@@ -169,3 +169,17 @@
   font-size: var(--font-size-small);
   color: var(--colour-ink-secondary);
 }
+
+/*
+ * A route list that was read short, said once, above the list it affects.
+ *
+ * The same shape as the route page's notice rather than an alarm: most of the routes are there.
+ * What it must not do is look identical to a complete list, because a route missing from it reads
+ * as a route that does not stop here.
+ */
+.stop-page__routes-note {
+  margin: 0 0 var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  background: var(--colour-canvas);
+  border-left: 3px solid var(--colour-red);
+}

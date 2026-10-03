@@ -1192,6 +1192,15 @@ router.get("/v1/stops/:id", async (_request, { env, params }) => {
         stop,
         departures,
         routes,
+        /*
+         * Whether that list is all of them, which it was never saying.
+         *
+         * The read behind it is bounded and a busy interchange can reach the bound. A short list
+         * presented as the complete one tells a passenger their route does not stop here — a
+         * statement about the bus service made out of a limit of ours, which is the one thing this
+         * API has decided it will not do.
+         */
+        routesComplete: patternRead.complete,
         accessibility: stopAccessibility(stop),
         ...(timetableCoverage === undefined ? {} : { timetableCoverage }),
         disruptions: snapshot
