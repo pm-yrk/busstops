@@ -1633,6 +1633,19 @@ export class NetworkReader {
       return { patterns: new Map(), complete: false, available: false };
     }
 
+    /*
+     * Nothing named means nothing to read, and this is not a formality.
+     *
+     * The filter below is built from the ids and is `undefined` for an empty list — correct for a
+     * caller that wants the whole tile, and a trap for the planner, whose want list is empty when
+     * its corridor held no trips. Without this, that case opened every corridor tile and parsed
+     * every row in it to answer a question nobody had asked. Complete, because an empty answer to
+     * an empty question is a whole one.
+     */
+    if (wantedPatternIds && wantedPatternIds.length === 0) {
+      return { patterns: new Map(), complete: true, available: true };
+    }
+
     const result = await this.readTiles<[string, PatternIndexRow]>(
       patternIndexTileDataset,
       tiles,

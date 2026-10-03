@@ -172,6 +172,32 @@ describe("the edge never reads a national dataset", () => {
    * with departures and a short route list; the alternative is Cloudflare's error page, which
    * carries no CORS header and so reaches the browser as a bare network failure.
    */
+  /*
+   * The trap the filter opened, which is worth a test of its own.
+   *
+   * `patternsInIndexTiles` builds its line filter from the ids the caller names, and an empty list
+   * has no filter — which is right for a caller that wants the whole tile and wrong for the
+   * planner, whose want list is empty when its corridor held no trips. Unguarded, that case opens
+   * every corridor tile and parses every row in it to answer nothing.
+   */
+  it("reads no corridor tile at all when no pattern was named", async () => {
+    const { reader } = await publishedReader();
+    const index = (await reader.networkIndex())!;
+    const tiles = index.patternIndexTiles ?? [];
+    expect(tiles.length).toBeGreaterThan(0);
+
+    const ledger = new ReadLedger(5_000);
+    const resolved = await reader.patternsInIndexTiles(tiles, Date.now(), ledger, undefined, []);
+
+    expect(resolved.patterns.size).toBe(0);
+    // Complete, because an empty answer to an empty question is a whole one — a refusal here
+    // would make the planner reject a corridor it had nothing left to resolve.
+    expect(resolved.complete).toBe(true);
+    expect(resolved.available).toBe(true);
+    // And it cost nothing: no read was recorded against the ledger.
+    expect(ledger.toJSON().charsDecoded).toBe(0);
+  });
+
   it("declines to read the patterns at all when the board has no budget left", async () => {
     const { reader } = await publishedReader();
     const built = network();
