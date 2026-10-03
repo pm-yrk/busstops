@@ -221,6 +221,24 @@ async function main(): Promise<number> {
 function write(report: Record<string, unknown>): void {
   report.finishedAt = new Date().toISOString();
   writeFileSync("horizon-report.json", JSON.stringify(report, null, 2));
+  /*
+   * The same report as an annotation, because the JSON file it just wrote is uploaded as an
+   * artifact and an artifact is served from a host this project's container cannot reach. The
+   * figures in here — which service dates hold their shards, and how many gibibytes the bucket
+   * holds against a 10 GiB free allowance — are the ones a decision about the horizon is made
+   * from, and they were only ever readable by opening the run in a browser.
+   */
+  if (process.env.GITHUB_ACTIONS) {
+    const outcome = String(report.outcome ?? "unknown");
+    const level =
+      outcome === "covered" ? "notice" : outcome === "covered_using_slack" ? "warning" : "error";
+    const body = JSON.stringify(report, null, 2)
+      .replace(/%/g, "%25")
+      .replace(/\r/g, "%0D")
+      .replace(/\n/g, "%0A")
+      .replace(/::/g, "%3A%3A");
+    console.log(`::${level} title=departure horizon (${outcome})::${body}`);
+  }
 }
 
 main()

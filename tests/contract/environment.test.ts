@@ -61,11 +61,12 @@ const readInCode = new Set(
 
 describe(".env.example matches what the platform actually uses", () => {
   it("documents every variable the code reads from the process environment", () => {
-    // Two exemptions, both runner-supplied rather than platform configuration: PREFLIGHT_STAGE is
+    // Three exemptions, all runner-supplied rather than platform configuration: PREFLIGHT_STAGE is
     // a CI switch the template explains in prose instead of offering as a value to set, and
-    // GITHUB_REF_NAME is set by GitHub Actions itself — nobody configures it, and putting it in
-    // the template would suggest somebody should.
-    const exempt = new Set(["PREFLIGHT_STAGE", "GITHUB_REF_NAME"]);
+    // GITHUB_REF_NAME and GITHUB_ACTIONS are set by GitHub Actions itself — nobody configures
+    // them, and putting them in the template would suggest somebody should. GITHUB_ACTIONS is read
+    // only to decide whether to emit workflow annotations, which are meaningless off a runner.
+    const exempt = new Set(["PREFLIGHT_STAGE", "GITHUB_REF_NAME", "GITHUB_ACTIONS"]);
     const undocumented = [...readInCode].filter((name) => !declared.has(name) && !exempt.has(name));
     expect(undocumented).toEqual([]);
   });

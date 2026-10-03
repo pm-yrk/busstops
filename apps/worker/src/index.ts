@@ -985,7 +985,14 @@ router.get("/v1/stops/:id", async (_request, { env, params }) => {
     network!.patternsCallingAtStop(stop, Date.now(), boardLedger),
   );
   const patterns = patternRead.patterns;
-  mark("board:patterns:done", { patterns: patterns.length, complete: patternRead.complete });
+  mark("board:patterns:done", {
+    patterns: patterns.length,
+    complete: patternRead.complete,
+    // Which dataset answered. The fast loop after run 90 could not tell a board that read the
+    // small index from one that read megabytes of geometry, and that is the difference that
+    // decides whether it survives.
+    source: patternRead.source,
+  });
   /*
    * The services these patterns belong to, not all 13,593 of them.
    *

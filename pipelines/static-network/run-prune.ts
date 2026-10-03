@@ -71,6 +71,21 @@ function report(body: Record<string, unknown>): void {
   console.log("--- prune report ---");
   console.log(JSON.stringify(body, null, 2));
   console.log("--- end prune report ---");
+  /*
+   * And as an annotation. Retention is the one job whose report decides whether the bucket is
+   * inside R2's free allowance, and the only copies of it were the job log and an uploaded
+   * artifact — both served from a host this project's container cannot reach. A number that
+   * cannot be read is a number that gets estimated again.
+   */
+  if (process.env.GITHUB_ACTIONS) {
+    const outcome = String((body as { outcome?: unknown }).outcome ?? "unknown");
+    const text = JSON.stringify(body, null, 2)
+      .replace(/%/g, "%25")
+      .replace(/\r/g, "%0D")
+      .replace(/\n/g, "%0A")
+      .replace(/::/g, "%3A%3A");
+    console.log(`::notice title=artifact retention (${outcome})::${text}`);
+  }
 }
 
 function gib(bytes: number): string {

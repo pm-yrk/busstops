@@ -1813,41 +1813,83 @@ export class NetworkReader {
   }
 
   /**
-   * The patterns that call at one stop, without their geometry and without parsing the rest.
+   * The patterns that call at one stop, from the smallest published form of that fact.
    *
-   * This was `patternsInBoundingBox(...).filter(calls here)`, and the filter was the whole problem:
-   * it ran *after* every line in the surrounding pattern tiles had been turned into an object. A
-   * pattern tile in a city holds hundreds of patterns and, worse, the polylines they share — so a
-   * cold board built thousands of coordinate objects and a few hundred stop sequences in order to
-   * keep about ten. Run 89 measured the consequence: a Manchester stop board died immediately
-   * after `board:live:done`, at `atMs: 0`, which is this call and nothing else.
+   * Two rounds of measurement are behind this, and the second contradicted the first.
    *
-   * Three things change. The filter moves in front of the parse — a pattern's stop sequence is a
-   * list of quoted ids, so "does this line mention this stop" is an `indexOf` on the raw text, and
-   * only the surviving lines are built. The shape lines are never parsed at all, because a board
-   * draws no route line: it names routes and destinations. And the read is on the board's own
-   * ledger, so a board that has already spent its budget on departures declines to start rather
-   * than being killed part way through.
+   * It began as `patternsInBoundingBox(...).filter(calls here)`, where the filter ran *after*
+   * every line in the surrounding pattern tiles had been turned into an object — hundreds of
+   * patterns and, worse, the polylines they share, to keep about ten stop sequences. Run 89
+   * watched a Manchester board die here: last crumb `board:live:done` at `atMs: 0`, which is the
+   * line that calls this.
    *
-   * Returns `RoutePattern` rather than `PatternGeometry` deliberately. There is no shape here, and
-   * handing back a geometry with an empty polyline would invite a caller to draw nothing.
+   * Moving the filter in front of the parse was not enough, and the fast loop after run 90 is
+   * what showed it: Manchester Piccadilly came back with **two** routes where dozens call, other
+   * boards still answered Cloudflare's error page, and both have the same cause. The bytes arrive
+   * whether or not they are parsed, and scanning three mebibytes of geometry line by line is
+   * itself several milliseconds of the ten a Workers Free invocation gets. No filter makes
+   * megabytes of polyline affordable.
+   *
+   * So the board reads a different dataset. The pattern *index* tiles carry the same patterns on
+   * the same grid with the shapes removed — run 48 measured a geometry tile at 4.21 MiB for 625
+   * patterns, and these are those patterns without their polylines — so the scan is over roughly
+   * a fifteenth of the text, and there is no shape to skip because there is none there. The
+   * geometry path stays as the fallback for an artifact published before the index existed.
+   *
+   * Returns `RoutePattern`, not `PatternGeometry`: there is no shape here, and handing back a
+   * geometry with an empty polyline would invite a caller to draw nothing.
    */
   async patternsCallingAtStop(
     stop: Stop,
     now: number = Date.now(),
     ledger?: ReadLedger,
-  ): Promise<{ patterns: RoutePattern[]; complete: boolean }> {
+  ): Promise<{ patterns: RoutePattern[]; complete: boolean; source: string }> {
     const index = await this.networkIndex(now);
-    if (!index) return { patterns: [], complete: false };
+    if (!index) return { patterns: [], complete: false, source: "unavailable" };
 
     if (ledger && !ledger.withinBudget) {
       ledger.stop("pattern_enrichment_budget");
-      return { patterns: [], complete: false };
+      return { patterns: [], complete: false, source: "declined" };
+    }
+
+    const tiles = patternTilesForBoundingBox(boxAround(stop.locationCoordinate));
+    const indexTiles = index.patternIndexTiles ?? [];
+
+    if (indexTiles.length > 0) {
+      const read = await this.readTiles<[string, PatternIndexRow]>(
+        patternIndexTileDataset,
+        tiles,
+        indexTiles,
+        index.version,
+        now,
+        Math.min(this.patternChars, this.requestChars),
+        ledger
+          ? { ledger, family: "patterns", budgetReason: "pattern_enrichment_budget" }
+          : undefined,
+        stopMentionedInLine(stop.id),
+      );
+
+      const patterns: RoutePattern[] = [];
+      const seen = new Set<string>();
+      for (const line of read.records) {
+        // The header line parses as an object rather than a pair; a row is always `[id, row]`.
+        if (!Array.isArray(line) || line.length !== 2) continue;
+        const row = line[1];
+        if (!row || typeof row !== "object" || !("stopSequence" in row)) continue;
+        // The text test says the line mentions this stop. Calling here is the stronger claim, and
+        // it is the one the board makes.
+        if (!row.stopSequence.includes(stop.id)) continue;
+        if (seen.has(row.id)) continue;
+        seen.add(row.id);
+        patterns.push(toRoutePattern(row));
+      }
+      ledger?.count({ patterns: patterns.length });
+      return { patterns, complete: !read.truncated, source: "pattern_index_tiles" };
     }
 
     const result = await this.readTiles<PatternTileLine>(
       patternTileDataset,
-      patternTilesForBoundingBox(boxAround(stop.locationCoordinate)),
+      tiles,
       index.patternTiles,
       index.version,
       now,
@@ -1872,7 +1914,7 @@ export class NetworkReader {
       patterns.push(line.pattern);
     }
     ledger?.count({ patterns: patterns.length });
-    return { patterns, complete: !result.truncated };
+    return { patterns, complete: !result.truncated, source: "pattern_tiles" };
   }
 
   /**

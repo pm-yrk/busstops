@@ -159,6 +159,14 @@ describe("the edge never reads a national dataset", () => {
     const serving = await reader.patternsCallingAtStop(stop!);
     expect(serving.patterns.length).toBeGreaterThan(0);
     expect(serving.complete).toBe(true);
+    /*
+     * And from the shape-free index, not the geometry tiles — which is the whole difference
+     * between a board that answers and one the platform kills. A geometry tile reaches 4.21 MiB
+     * and the bytes arrive whether or not they are parsed; scanning them is itself milliseconds
+     * of the ten an invocation gets. A change that sent this back to the tiles would pass every
+     * other assertion here.
+     */
+    expect(serving.source).toBe("pattern_index_tiles");
     // Every pattern it returns calls here, which is the claim the board makes from this list.
     expect(serving.patterns.every((pattern) => pattern.stopSequence.includes(stop!.id))).toBe(true);
   });
