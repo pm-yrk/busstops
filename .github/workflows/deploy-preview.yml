@@ -504,6 +504,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           FORCE_REBUILD: "true"
+          PRUNE_SERVICE_DATES: "true"
           SERVICE_DATE_HORIZON_DAYS: ${{ inputs.horizon_days || '4' }}
           # Headroom for the indexes the streamed build holds — stops, routes, the calendar and
           # the trips inside the horizon — not for file contents: the GTFS archive is read as a
@@ -564,6 +565,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           DEPARTURES_ONLY: "true"
+          PRUNE_SERVICE_DATES: "true"
           SERVICE_DATE_HORIZON_DAYS: ${{ inputs.horizon_days || '4' }}
           NODE_OPTIONS: "--max-old-space-size=12288"
         run: |

@@ -65,6 +65,25 @@ async function prunePastServiceDates(
   startedAt: Date,
   report: Record<string, unknown>,
 ): Promise<void> {
+  /*
+   * Opt-in, so merging this branch cannot change what the production schedule does.
+   *
+   * The pruning is needed where the horizon is wide — every service date is about 1.27 GB against a
+   * 10 GB free allowance for the account — and it is deliberately conservative: yesterday is kept
+   * because a bus that left at 23:40 is still running, and the version a rollback would restore is
+   * kept too. But it is still deletion, and `static-network-daily.yml` runs against the production
+   * bucket on a schedule that already exists. A flag the preview sets and production does not means
+   * this branch reaching main changes nothing there until somebody decides it should.
+   */
+  if (process.env.PRUNE_SERVICE_DATES !== "true") {
+    report.prunedServiceDates = { skipped: "PRUNE_SERVICE_DATES is not true" };
+    console.log(
+      "Past service dates were not pruned: PRUNE_SERVICE_DATES is not set. Storage grows by about " +
+        "1.27 GB a service date until it is.",
+    );
+    return;
+  }
+
   const liveIndex = await artifacts.readManifest(SHARDED.index);
   const pruned = await pruneExpiredServiceDates(store, {
     keepFrom: earliestServiceDateToKeep(startedAt),

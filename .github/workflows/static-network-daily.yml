@@ -54,6 +54,11 @@ jobs:
           # and the journeys spill to disk. Node's default heap is a fraction of the runner's
           # 16 GB, and this spends nothing: the memory is already paid for by the runner.
           NODE_OPTIONS: "--max-old-space-size=12288"
+          # Pinned to what this schedule has always published, so merging the preview work does
+          # not silently widen the production horizon. Every extra service date costs about 1.27 GB
+          # of R2 against a 10 GB allowance for the whole account, and this bucket serves the
+          # production site; widening it is a decision, not a side effect of a merge.
+          SERVICE_DATE_HORIZON_DAYS: "2"
           FORCE_REBUILD: ${{ inputs.force_rebuild }}
         run: npx tsx pipelines/static-network/run-daily.ts
 
