@@ -385,10 +385,18 @@ export function RoutePage() {
         <PixelSectionHeading mark="chart" id="route-frequency-heading">
           Frequency and reliability
         </PixelSectionHeading>
-        <p>
-          {headwaySummary ??
-            "This route's timetable does not support a meaningful frequency, so we do not show one."}
-        </p>
+        {/*
+         * Two different absences, and the page was printing the wrong one.
+         *
+         * "This route's timetable does not support a meaningful frequency" is a statement about
+         * the bus service — a route with three journeys a day, where an "every N minutes" would
+         * mislead — and it was shown on every route, because the Worker sends `headwaySummary:
+         * null` unconditionally. The timetable supports it on most of these routes; we have not
+         * worked out the figure. Saying so is the honest version, and it is the same rule the
+         * board follows about an unpublished timetable: never report our own gap as a fact about
+         * the buses.
+         */}
+        <p>{headwaySummary ?? "We do not state a frequency for this route yet."}</p>
 
         {reliability.length > 0 ? (
           <ul className="route-page__metrics">

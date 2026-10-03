@@ -152,11 +152,30 @@ describe("RoutePage", () => {
     expect(screen.getAllByText(/3 stops/).length).toBeGreaterThan(0);
   });
 
-  it("says why no frequency is shown rather than inventing one", async () => {
+  it("says the frequency is ours to work out, not the timetable's to support", async () => {
+    /*
+     * The wording this asserts used to be "this route's timetable does not support a meaningful
+     * frequency", which is a claim about the bus service — true of a route with three journeys a
+     * day — and it appeared on every route, because the Worker sends `headwaySummary: null`
+     * unconditionally. Our own missing figure must not be reported as a fact about the buses, so
+     * the absent sentence is asserted as well as the present one.
+     */
     vi.spyOn(apiClient, "route").mockResolvedValue(response);
     renderAt("/routes/r1", "/routes/:routeId", <RoutePage />);
 
-    expect(await screen.findByText(/does not support a meaningful frequency/)).toBeTruthy();
+    expect(await screen.findByText(/do not state a frequency for this route yet/)).toBeTruthy();
+    expect(screen.queryByText(/does not support a meaningful frequency/)).toBeNull();
+  });
+
+  it("prints the frequency when there is one, instead of the explanation", async () => {
+    vi.spyOn(apiClient, "route").mockResolvedValue({
+      ...response,
+      data: { ...response.data, headwaySummary: "About every 12 minutes" },
+    });
+    renderAt("/routes/r1", "/routes/:routeId", <RoutePage />);
+
+    expect(await screen.findByText("About every 12 minutes")).toBeTruthy();
+    expect(screen.queryByText(/do not state a frequency/)).toBeNull();
   });
 
   it("distinguishes a feed outage from there genuinely being no buses", async () => {
