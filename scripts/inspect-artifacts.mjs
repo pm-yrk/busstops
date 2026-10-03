@@ -14,6 +14,8 @@
 
 const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
 const apiToken = process.env.CLOUDFLARE_API_TOKEN;
+import { annotate } from "./annotate.mjs";
+
 const bucket = process.env.R2_BUCKET_ARTIFACTS;
 
 if (!accountId || !apiToken || !bucket) {
@@ -101,3 +103,22 @@ if (tooLarge.length === 0) {
     `\nThe edge must read these per tile rather than nationally, as journeys already are.`,
   );
 }
+
+/*
+ * The table as an annotation, which is the only copy of it a reader outside the runner can get at:
+ * it is written to the step summary and the job log, and both live on hosts this project's
+ * container cannot reach. "Is the dataset the edge needs actually in the bucket, and how big is
+ * it" is the first question asked when an endpoint starts answering 503, and until now it could
+ * only be answered by opening the run in a browser.
+ */
+annotate(
+  tooLarge.length === 0 ? "notice" : "warning",
+  `published artifacts in ${bucket}`,
+  [
+    `${everything.length} object(s), ${manifests.length} manifest(s)`,
+    ...rows.map(
+      (manifest) =>
+        `${manifest.dataset} — ${manifest.recordCount} records, ${mib(manifest.sizeBytes ?? 0)}`,
+    ),
+  ].join("\n"),
+);
