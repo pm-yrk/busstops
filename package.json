@@ -24,6 +24,7 @@
     "typecheck": "npm run typecheck --workspaces --if-present",
     "preflight": "node scripts/preflight.mjs",
     "test:e2e": "playwright test",
+    "test:e2e:local": "CHROMIUM_PATH=$(node scripts/find-chromium.mjs) playwright test",
     "test:e2e:ui": "playwright test --ui",
     "art": "node tools/pixel-art/build.mjs",
     "art:bench": "rm -rf apps/web/dist && VITE_MAP_STYLE_URL=/style.json playwright test -g 'art bench'"
