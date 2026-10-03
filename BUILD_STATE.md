@@ -34,6 +34,67 @@ York's 20 has six; X10 and the 35 each carry both directions. The page opens on 
 with the most stops and offers the rest as tabs, with the stop count appended where two
 variants would otherwise read as the same words.
 
+### 3 October, runs 90 and 91: the board's real cost, found by making the runs readable
+
+Two findings, and the first one made the second possible.
+
+**A run's verdict was unreadable from the container the work happens in.** Run 90 failed and
+nothing said why: a job's log, its uploaded artifacts and the deployed preview are all served from
+hosts this project's egress policy refuses, so the only annotation a run produced was "Process
+completed with exit code 1". Workflow _annotations_ do come back through the GitHub API, so the
+deployed verification, the visual sweep, the published-artifact table, the departure-horizon proof
+and the retention report all emit theirs as annotations now (`a6b9c9d`, `fb00db0`, `1f98831`).
+Everything below was read that way.
+
+**The stop board was reading the wrong dataset by two orders of magnitude.** The
+published-artifact table, now readable, says it plainly:
+
+    network/patterns-tile/101_-4   2265 records    86.4 MiB
+    network/patterns-tile/101_-3   1213 records    33.2 MiB
+    network/patterns-tile/102_-1   1069 records    30.9 MiB
+
+A board asking "which routes call here" was opening those. Moving the filter in front of the
+parse — run 89's fix — did not help, and the fast loop after run 90 is what showed it: Manchester
+Piccadilly came back with **two** routes where dozens call, and other boards still answered
+Cloudflare's error page. The bytes arrive whether or not they are parsed, and scanning tens of
+mebibytes line by line is itself far more than the ten milliseconds of CPU a Workers Free
+invocation gets.
+
+The pattern _index_ tiles carry the same patterns on the same grid without the polylines. The
+journey planner measured four of them at **1.76 MiB** in the same run — about 440 KB each against
+a geometry tile's 86 MiB. The board reads those now (`fb00db0`), and the read reports which
+dataset answered so the two can never again be confused in a log.
+
+Run 91 measured the result. Boards that had answered Cloudflare's error page now answer with
+their routes:
+
+    Leeds: Blackman Lane — 6 routes, 16 due, next 28 to Leeds City Bus Station
+    Bristol: Lamb Street — 15 routes, 20 due, next 48 to The Horseshoe
+    Brighton: Port Hall Road — 6 routes, 7 due, next 27 to Whitethorn Drive
+    Newcastle: Newcastle Percy Street — 3 routes, 6 due, next X63 to Newcastle Monument
+    Birmingham: Bromsgrove Street — 3 routes, 20 due, next 47 to Longbridge Island
+    York: Ninth Avenue — 2 routes, 2 due, next 25 to Crossfield Crescent
+    Shrewsbury: Belvidere Lane Jct — 1 route, 2 due, next 23 to Bus Station
+    Manchester: Piccadilly — 2 routes, 18 due, next 2 to Manchester Piccadilly Rail Station
+
+Journeys also answered in the fast loop, with the pattern filter of `f625a38` doing its job: a
+Leeds → Leeds Bradford Airport plan, 3 legs, **168 of 176 patterns resolved** from four index
+tiles and 1.76 MiB, 1,241 trips loaded and all 1,241 matched to a pattern — against run 87's
+1,287 loaded and none matched.
+
+**What is still red, and honestly.** 13 of 23 in run 91, which is worse than run 89's 19 of 22,
+and the difference is not all progress: boards are _intermittent_ — the same Leeds stop gave six
+routes to one check and no route id to another in the same run — and `/v1/routes/:id`, the London
+viewport and landmark search each still answer error 1102 somewhere in a run of ninety requests
+against one isolate. Every one of those failures reports `0.00 MiB resident`, so nothing is ever
+held between requests and every request re-reads and re-parses from R2.
+
+Route detail's trail was one entry long — `reads:begin@0`, covering six unmarked stages — and one
+of them did not need a measurement to be wrong: `await network.operators()` is `readCurrent`,
+which hashes the whole national object and parses every record to take one from it. That is the
+read whose removal fixed the cold board in `8828ff8`, still on the route page, the vehicle page
+and the operator page. All three ask by id now, and all six stages leave crumbs (`cb610bc`).
+
 ### Run 89's three failures, each root-caused from its own breadcrumb
 
 19 of 22. All three were Cloudflare error 1102 — CPU, not memory — and `f625a38` fixes the
