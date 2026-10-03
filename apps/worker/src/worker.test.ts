@@ -514,6 +514,39 @@ describe("GET /v1/stops/:id", () => {
     expect(body.data.routes[0]!.operatorName).not.toBe("");
   });
 
+  /*
+   * Named from the departures, not from a scan of the tiles around the stop.
+   *
+   * The handler used to ask "which patterns call here" of the pattern tiles, geographically, before
+   * reading any departures — and the densest stops have the largest tiles while needing that
+   * question asked the least, because their departures name their patterns outright. Stop
+   * `1800EB06161` in Manchester answered Cloudflare's error page on every deployed run from 89 to
+   * 94, dying on exactly that read. So this asserts what the board must still produce after the
+   * reorder: a route list where every entry is something a reader can actually follow.
+   */
+  it("names every route it lists with something a reader can follow", async () => {
+    const store = await publishedStore();
+    const withRows = await worker.fetch(get("/v1/stops/450010001"), makeEnv(store), ctx);
+    const body = (await withRows.json()) as {
+      meta: { diagnostics?: Record<string, unknown> };
+      data: {
+        routes: Array<{ id: string; publicName: string; operatorName: string }>;
+        departures: unknown[];
+      };
+    };
+    expect(withRows.status).toBe(200);
+    expect(body.data.routes.length).toBeGreaterThan(0);
+    // Every route is something a reader can follow: a name, an operator and an id that links.
+    for (const route of body.data.routes) {
+      expect(route.publicName).not.toBe("");
+      expect(route.id).not.toBe("");
+      expect(route.operatorName).not.toBe("");
+    }
+
+    // The two reads behind this — targeted by id, and geographic when there are no ids to use —
+    // are asserted to agree in isolate-memory.test.ts, where a reader can be asked each directly.
+  });
+
   it("returns 404 for an unknown stop", async () => {
     const store = await publishedStore();
     const response = await worker.fetch(get("/v1/stops/000000000"), makeEnv(store), ctx);

@@ -1873,6 +1873,73 @@ export class NetworkReader {
    * Returns `RoutePattern`, not `PatternGeometry`: there is no shape here, and handing back a
    * geometry with an empty polyline would invite a caller to draw nothing.
    */
+  /**
+   * The patterns a handful of ids name, from the shape-free index tiles around a stop.
+   *
+   * The targeted version of `patternsCallingAtStop`, for the caller that already knows which
+   * patterns it wants — a departure board, whose rows each carry their pattern id. The geographic
+   * version has to scan whole tiles because it is answering "what calls here"; this one is
+   * answering "where are these twelve", and the ids turn the scan into a cheap id test per line
+   * with a parse only for the ones named.
+   *
+   * Stop `1800EB06161` is why this exists: a Manchester board that answered Cloudflare's error
+   * page on every deployed run, dying immediately after `board:live:done`, which is the
+   * geographic read. The densest stops have the largest tiles and need this read the least — they
+   * have the most departures naming their patterns outright.
+   */
+  async patternsByIdsNearStop(
+    stop: Stop,
+    patternIds: ReadonlySet<string>,
+    now: number = Date.now(),
+    ledger?: ReadLedger,
+  ): Promise<{ patterns: RoutePattern[]; complete: boolean; source: string }> {
+    if (patternIds.size === 0) return { patterns: [], complete: true, source: "no_pattern_ids" };
+    const index = await this.networkIndex(now);
+    const indexTiles = index?.patternIndexTiles ?? [];
+    if (!index || indexTiles.length === 0) {
+      return { patterns: [], complete: false, source: "unavailable" };
+    }
+    if (ledger && !ledger.withinBudget) {
+      ledger.stop("pattern_enrichment_budget");
+      return { patterns: [], complete: false, source: "declined" };
+    }
+
+    const read = await this.readTiles<[string, PatternIndexRow]>(
+      patternIndexTileDataset,
+      patternTilesForBoundingBox(boxAround(stop.locationCoordinate)),
+      indexTiles,
+      index.version,
+      now,
+      Math.min(this.patternChars, this.requestChars),
+      ledger
+        ? { ledger, family: "patterns", budgetReason: "pattern_enrichment_budget" }
+        : undefined,
+      wantedPatternLineFilter([...patternIds]),
+    );
+
+    const patterns: RoutePattern[] = [];
+    const seen = new Set<string>();
+    for (const line of read.records) {
+      if (!Array.isArray(line) || line.length !== 2) continue;
+      const row = line[1];
+      if (!row || typeof row !== "object" || !("stopSequence" in row)) continue;
+      if (seen.has(row.id)) continue;
+      seen.add(row.id);
+      patterns.push(toRoutePattern(row));
+    }
+    ledger?.count({ patterns: patterns.length });
+    /*
+     * Complete means every id was found, not that the read finished. A board that resolved eight
+     * of twelve patterns names eight routes, and the caller has to be able to say so rather than
+     * presenting eight as the answer.
+     */
+    return {
+      patterns,
+      complete: !read.truncated && patterns.length === patternIds.size,
+      source: "pattern_index_by_id",
+    };
+  }
+
   async patternsCallingAtStop(
     stop: Stop,
     now: number = Date.now(),

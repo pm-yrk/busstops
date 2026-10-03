@@ -1009,39 +1009,6 @@ router.get("/v1/stops/:id", async (_request, { env, params }) => {
   mark("board:live:done", { departures: live.departures.length });
 
   /*
-   * Which patterns call here, read without building the ones that do not.
-   *
-   * `patternsServingStop` read the surrounding pattern tiles whole — every pattern in them and
-   * every shared polyline — and *then* filtered to this stop, on no ledger at all. Run 89 watched
-   * a Manchester board die here: last crumb `board:live:done` at `atMs: 0`, which is the line
-   * immediately above. The read is now filtered before the parse, skips the shapes a board never
-   * draws, and runs on the board's budget so a board that has already spent it declines instead.
-   */
-  const patternRead = await boardLedger.stage("patterns", () =>
-    network!.patternsCallingAtStop(stop, Date.now(), boardLedger),
-  );
-  const patterns = patternRead.patterns;
-  mark("board:patterns:done", {
-    patterns: patterns.length,
-    complete: patternRead.complete,
-    // Which dataset answered. The fast loop after run 90 could not tell a board that read the
-    // small index from one that read megabytes of geometry, and that is the difference that
-    // decides whether it survives.
-    source: patternRead.source,
-  });
-  /*
-   * The services these patterns belong to, not all 13,593 of them.
-   *
-   * `services()` reads the national object and parses every record, after hashing the whole thing
-   * — all pure computation, against the ten milliseconds a Workers Free invocation gets. A board
-   * names about ten services, and asking for those is one pass over the text instead.
-   */
-  const services = await boardLedger.stage("services", () =>
-    network!.servicesByIds(new Set(patterns.map((pattern) => pattern.serviceRouteId))),
-  );
-  mark("board:services:done", { services: services.size });
-
-  /*
    * Outside London the timetable is the board.
    *
    * `departuresForStop` returns nothing outside London and its comment said the caller would
@@ -1052,6 +1019,14 @@ router.get("/v1/stops/:id", async (_request, { env, params }) => {
    */
   let departures = live.departures;
   let scheduledRows = 0;
+  /*
+   * The timetable rows behind the board, kept because each one names its pattern.
+   *
+   * The route list below is built from these rather than from a geographic scan of the pattern
+   * tiles — see the comment on that read. Empty for a London stop, whose board comes from TfL
+   * predictions that carry no pattern id, and for a stop with nothing due.
+   */
+  let departureRows: Array<{ p: string }> = [];
   /*
    * Shards the board could not read.
    *
@@ -1089,6 +1064,7 @@ router.get("/v1/stops/:id", async (_request, { env, params }) => {
       missing: read.shardsMissing,
       serviceDates: [...serviceDates],
     };
+    departureRows = read.rows;
     departures = departuresFromRows({
       stop,
       rows: read.rows,
@@ -1097,6 +1073,49 @@ router.get("/v1/stops/:id", async (_request, { env, params }) => {
     });
     scheduledRows = departures.length;
   }
+  mark("board:departures:done", { rows: departureRows.length, shown: departures.length });
+
+  /*
+   * Which routes call here, from the patterns this board's own departures already named.
+   *
+   * The order of this handler is the fix. It used to ask "which patterns call at this stop" of the
+   * tiles around it, geographically, *before* reading any departures — and the densest stops have
+   * the largest tiles while needing that question asked the least, because their departures name
+   * their patterns outright. Stop `1800EB06161` in Manchester answered Cloudflare's error page on
+   * every deployed run from 89 to 94, dying immediately after `board:live:done`, which was that
+   * read. Each departure row carries its pattern id, so the rows turn a scan of whole tiles into
+   * an id test per line with a parse only for the dozen named.
+   *
+   * The geographic read is still here, for the stop whose board is genuinely empty — late at
+   * night, or a stop served only outside the window. That is the case it is affordable in.
+   */
+  const namedPatternIds = new Set(departureRows.map((row) => row.p).filter(Boolean));
+  const patternRead = await boardLedger.stage("patterns", () =>
+    namedPatternIds.size > 0
+      ? network!.patternsByIdsNearStop(stop, namedPatternIds, Date.now(), boardLedger)
+      : network!.patternsCallingAtStop(stop, Date.now(), boardLedger),
+  );
+  const patterns = patternRead.patterns;
+  mark("board:patterns:done", {
+    patterns: patterns.length,
+    wanted: namedPatternIds.size,
+    complete: patternRead.complete,
+    // Which dataset answered, and by which question. Runs 90 to 94 could not tell a board that
+    // read the small index from one that read megabytes of geometry, and that is the difference
+    // that decides whether it survives.
+    source: patternRead.source,
+  });
+  /*
+   * The services these patterns belong to, not all 13,626 of them.
+   *
+   * `services()` reads the national object and parses every record, after hashing the whole thing
+   * — all pure computation, against the ten milliseconds a Workers Free invocation gets. A board
+   * names about ten services, and asking for those is one pass over the text instead.
+   */
+  const services = await boardLedger.stage("services", () =>
+    network!.servicesByIds(new Set(patterns.map((pattern) => pattern.serviceRouteId))),
+  );
+  mark("board:services:done", { services: services.size });
 
   /*
    * `observedAt` is the age of the observation behind the answer. It used to be set to the first

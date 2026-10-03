@@ -181,6 +181,73 @@ describe("the edge never reads a national dataset", () => {
    * carries no CORS header and so reaches the browser as a bare network failure.
    */
   /*
+   * The two ways a board can learn its routes, asserted to agree.
+   *
+   * The departure board asks by id when its own rows name the patterns, and geographically when
+   * they do not — late at night, or a stop served only outside the window. Two paths to one fact
+   * is two chances to disagree, and a disagreement here is a stop that lists different routes at
+   * different times of day with no explanation.
+   */
+  it("finds the same patterns by id as it finds by looking around the stop", async () => {
+    const { reader } = await publishedReader();
+    const built = network();
+    const stop = built.stops.find((candidate) =>
+      built.patterns.some((pattern) => pattern.stopSequence.includes(candidate.id)),
+    )!;
+
+    const geographic = await reader.patternsCallingAtStop(stop);
+    expect(geographic.patterns.length).toBeGreaterThan(0);
+
+    const wanted = new Set(geographic.patterns.map((pattern) => pattern.id));
+    const byId = await reader.patternsByIdsNearStop(stop, wanted);
+
+    expect(byId.source).toBe("pattern_index_by_id");
+    expect(byId.complete).toBe(true);
+    expect(byId.patterns.map((pattern) => pattern.id).sort()).toEqual([...wanted].sort());
+    // And the records themselves, not merely the ids: the stop sequence is what the board reads.
+    expect(
+      byId.patterns.map((pattern) => pattern.stopSequence.length).sort((a, b) => a - b),
+    ).toEqual(
+      geographic.patterns.map((pattern) => pattern.stopSequence.length).sort((a, b) => a - b),
+    );
+  });
+
+  /*
+   * An id that is not there is an incomplete answer, not an empty one. A board that resolved
+   * eight of twelve patterns names eight routes, and must be able to say the list is short rather
+   * than presenting eight as everything that calls.
+   */
+  it("says a by-id read is incomplete when an id could not be found", async () => {
+    const { reader } = await publishedReader();
+    const built = network();
+    const stop = built.stops.find((candidate) =>
+      built.patterns.some((pattern) => pattern.stopSequence.includes(candidate.id)),
+    )!;
+    const real = (await reader.patternsCallingAtStop(stop)).patterns[0]!;
+
+    const found = await reader.patternsByIdsNearStop(
+      stop,
+      new Set([real.id, "no-such-pattern-id"]),
+    );
+
+    expect(found.patterns.map((pattern) => pattern.id)).toEqual([real.id]);
+    expect(found.complete).toBe(false);
+  });
+
+  it("reads nothing at all when no pattern was named", async () => {
+    const { reader } = await publishedReader();
+    const built = network();
+    const stop = built.stops[0]!;
+    const ledger = new ReadLedger(5_000);
+
+    const found = await reader.patternsByIdsNearStop(stop, new Set(), Date.now(), ledger);
+
+    expect(found.patterns).toEqual([]);
+    expect(found.complete).toBe(true);
+    expect(ledger.toJSON().charsDecoded).toBe(0);
+  });
+
+  /*
    * The trap the filter opened, which is worth a test of its own.
    *
    * `patternsInIndexTiles` builds its line filter from the ids the caller names, and an empty list
