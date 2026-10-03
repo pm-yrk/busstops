@@ -87,7 +87,52 @@ export function JourneyPage() {
    * dependency list because the point is that it does not run again: re-planning as somebody
    * edits an endpoint would fire a request per keystroke and fight the form.
    */
+  /*
+   * Whether this page was *asked* to plan, which is a fact about the URL and not about a request.
+   *
+   * Derived during render rather than tracked in a ref, and that is the fix. The page used to know
+   * it had started a plan only through a ref the render could not legitimately read, and between
+   * setting that ref and the request actually starting there was a window with no plan, no error
+   * and no loading state — every branch below rendering `null`. The sweep caught it as "2 content
+   * elements, 91 words, and nothing saying why" on two widths in one run. A link carrying both
+   * ends is a request for a journey whatever the request state happens to be, so the page can say
+   * it is working from its very first paint.
+   */
+  const linkOrigin = endpointFromParams(searchParams, "from");
+  const linkDestination = endpointFromParams(searchParams, "to");
+  const askedByLink = linkOrigin !== null && linkDestination !== null;
+
+  /*
+   * Once, on arrival, and only for endpoints that came from the URL. A ref rather than a
+   * dependency list because the point is that it does not run again: re-planning as somebody
+   * edits an endpoint would fire a request per keystroke and fight the form.
+   *
+   * No timer. It used to be `setTimeout(..., 0)` with `clearTimeout` as the cleanup, to save one
+   * render — and any re-render inside that tick cancelled the request, while the ref above had
+   * already recorded that it had been sent, so it was never sent again and the page waited
+   * forever. The request goes out in the effect body now, and nothing it does before its first
+   * `await` touches state, so there is no synchronous cascade either.
+   */
   const planned = useRef(false);
+  /*
+   * Liveness is its own effect, deliberately, and this is the second half of the same bug.
+   *
+   * A `let live = true` closed over by the planning effect, cleared in that effect's cleanup, is
+   * the obvious way to write this and it is wrong here. `searchParams` is stable per location but
+   * the effect still re-runs whenever React re-runs it, and every re-run fires the previous
+   * cleanup — so the in-flight request's own `live` goes false, its answer is discarded, and the
+   * `planned` guard makes sure nothing asks again. That is the silent empty page all over again,
+   * arrived at from the other side. Mount state belongs to the mount, so it is tracked by an
+   * effect with no other job and the planning effect has no cleanup to misfire.
+   */
+  const mounted = useRef(true);
+  useEffect(
+    () => () => {
+      mounted.current = false;
+    },
+    [],
+  );
+
   useEffect(() => {
     if (planned.current) return;
     const from = endpointFromParams(searchParams, "from");
@@ -95,15 +140,24 @@ export function JourneyPage() {
     if (!from || !to) return;
     planned.current = true;
 
-    /*
-     * On the next tick, not in the effect's own body. `runPlan` sets "planning" before it awaits
-     * anything, and setting state synchronously inside an effect makes React render twice for one
-     * arrival. The timer also gives this a cleanup: a passenger who navigates away before the
-     * request is even sent does not get a state update on an unmounted page.
-     */
-    const timer = setTimeout(() => void runPlan(from, to), 0);
-    return () => clearTimeout(timer);
-  }, [searchParams, runPlan]);
+    void (async () => {
+      try {
+        const response = await apiClient.journey(
+          { lat: from.lat, lon: from.lon },
+          { lat: to.lat, lon: to.lon },
+        );
+        if (mounted.current) setPlan(response);
+      } catch (caught) {
+        if (mounted.current) {
+          setError(
+            caught instanceof ApiError
+              ? caught.message
+              : "The journey could not be planned just now.",
+          );
+        }
+      }
+    })();
+  }, [searchParams]);
 
   const useMyLocation = useCallback(() => {
     if (!globalThis.navigator?.geolocation) {
@@ -175,7 +229,19 @@ export function JourneyPage() {
         </p>
       ) : null}
 
-      {planning && !plan ? <LoadingBus label="Planning your journey" /> : null}
+      {/*
+        Asked for and not yet answered, however it got that way.
+
+        The condition was `planning && !plan`, which is the loading state and not the same thing: a
+        journey that has been requested but whose request has not started yet satisfies neither
+        that nor the error branch nor the result branch, and the page renders nothing. The race
+        above is fixed, but a page whose only honest states are "loading", "failed" and "here it
+        is" should not be one refactor away from silence again, so this asks the question the
+        passenger is actually asking — has an answer arrived? — rather than tracking a flag.
+      */}
+      {!plan && !error && (planning || askedByLink) ? (
+        <LoadingBus label="Planning your journey" />
+      ) : null}
 
       {error ? (
         <ErrorState

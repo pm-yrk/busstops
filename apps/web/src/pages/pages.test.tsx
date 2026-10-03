@@ -521,6 +521,102 @@ describe("JourneyPage", () => {
     expect(journey.mock.calls[0]![1]).toEqual({ lat: 53.8659, lon: -1.6606 });
   });
 
+  /*
+   * A journey asked for by a link is never silent, at any moment between the ask and the answer.
+   *
+   * The deployed sweep found the page showing "Plan a journey", ninety-one words and no
+   * explanation, on two widths in the same run. The cause was a race: the plan was dispatched on
+   * a `setTimeout` whose `clearTimeout` was the effect's cleanup, while the "already planned" ref
+   * was set immediately — so a re-render inside that tick cancelled the request and the re-run
+   * declined to send it again. The page then had no plan, no error and no loading state, and every
+   * branch rendered `null`.
+   *
+   * This asserts the invariant rather than the mechanism: from the first paint until the answer
+   * arrives, the page says it is working on it.
+   */
+  /*
+   * Dispatched inside the effect, with no tick in between, which is the mechanism rather than the
+   * symptom. The symptom test below cannot reproduce the race — jsdom renders nothing inside the
+   * cancelled tick, so a restored `setTimeout` still passes it — and that is precisely why this
+   * one asserts the call has already happened by the time `render` returns. Reintroduce a deferred
+   * dispatch and this fails immediately.
+   */
+  it("asks for the plan synchronously, leaving no tick for a cleanup to cancel it", () => {
+    const journey = vi.spyOn(apiClient, "journey").mockResolvedValue(plan);
+
+    render(
+      <MemoryRouter
+        initialEntries={[
+          "/journey?fromLat=53.7965&fromLon=-1.5478&fromLabel=Leeds" +
+            "&toLat=53.8659&toLon=-1.6606&toLabel=Leeds%20Bradford%20Airport",
+        ]}
+      >
+        <JourneyPage />
+      </MemoryRouter>,
+    );
+
+    // No await: React has flushed the effect, and the request must already be out.
+    expect(journey).toHaveBeenCalledTimes(1);
+  });
+
+  it("never shows a bare form when a link asked it to plan", async () => {
+    let settle: ((value: typeof plan) => void) | null = null;
+    vi.spyOn(apiClient, "journey").mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          settle = resolve;
+        }),
+    );
+
+    render(
+      <MemoryRouter
+        initialEntries={[
+          "/journey?fromLat=53.7965&fromLon=-1.5478&fromLabel=Leeds" +
+            "&toLat=53.8659&toLon=-1.6606&toLabel=Leeds%20Bradford%20Airport",
+        ]}
+      >
+        <JourneyPage />
+      </MemoryRouter>,
+    );
+
+    // In flight: the page says so rather than showing the form it was handed. Named twice on
+    // purpose — a visually-hidden live region and a visible caption — so this counts rather than
+    // expecting one.
+    expect((await screen.findAllByText(/Planning your journey/i)).length).toBeGreaterThan(0);
+
+    settle!(plan);
+    expect(await screen.findByText(/Arrive between/)).toBeTruthy();
+    // And the working state goes when the answer arrives.
+    expect(screen.queryAllByText(/Planning your journey/i)).toEqual([]);
+  });
+
+  it("says why when a link's journey comes back with nothing", async () => {
+    vi.spyOn(apiClient, "journey").mockResolvedValue({
+      ...plan,
+      data: {
+        ...plan.data,
+        options: [],
+        unavailableReason: "We could not read the whole network along this corridor.",
+      },
+    });
+
+    render(
+      <MemoryRouter
+        initialEntries={[
+          "/journey?fromLat=53.7965&fromLon=-1.5478&fromLabel=Leeds" +
+            "&toLat=53.8659&toLon=-1.6606&toLabel=Leeds%20Bradford%20Airport",
+        ]}
+      >
+        <JourneyPage />
+      </MemoryRouter>,
+    );
+
+    expect(
+      await screen.findByText(/could not read the whole network along this corridor/),
+    ).toBeTruthy();
+    expect(screen.queryAllByText(/Planning your journey/i)).toEqual([]);
+  });
+
   /* Half a link is not a request: one endpoint seeded is a form to finish, not a plan to run. */
   it("does not plan when the link carries only one end", async () => {
     const journey = vi.spyOn(apiClient, "journey").mockResolvedValue(plan);
