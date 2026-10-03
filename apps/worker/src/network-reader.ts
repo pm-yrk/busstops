@@ -992,7 +992,23 @@ export class NetworkReader {
             ledger,
             options.patternBudgetChars,
           );
-    const services = await this.services(now);
+    /*
+     * The services of the patterns this slice actually holds, not all 13,626 of them.
+     *
+     * `services()` is `readCurrent`: an FNV-1a hash over a 4.7 MiB object *and* a `JSON.parse` of
+     * every record, before a caller takes the handful it wants. On a corridor that skips the
+     * pattern tiles there are no ids yet, which is the right answer too — the planner resolves its
+     * patterns from the trips and asks for their services then, which is the only place it looks a
+     * service up at all. Run 92's journeys died between `journey:begin` and the slice, and this is
+     * the one thing in that window that reads a national object.
+     */
+    const serviceIds = new Set(
+      patterns.geometries.map((geometry) => geometry.pattern.serviceRouteId),
+    );
+    const services =
+      serviceIds.size === 0
+        ? new Map<string, ServiceRoute>()
+        : await this.servicesByIds(serviceIds);
     return {
       stopsById: new Map(stops.stops.map((stop) => [stop.id, stop])),
       patternsById: new Map(

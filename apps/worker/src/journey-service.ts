@@ -1,4 +1,4 @@
-import type { Coordinate, RoutePattern } from "@busstops/contracts";
+import type { Coordinate, RoutePattern, ServiceRoute } from "@busstops/contracts";
 import {
   corridorBoundingBox,
   objectKeyFor,
@@ -74,6 +74,18 @@ export interface JourneyPlanRequest {
   resolvePatterns?: (
     patternIds: readonly string[],
   ) => Promise<{ patterns: Map<string, RoutePattern>; complete: boolean; available: boolean }>;
+  /**
+   * The services of the patterns this plan ended up with, asked for once they are known.
+   *
+   * The slice used to carry every service in England because it had no way of knowing which ones
+   * the corridor's trips would name — and that read is an FNV-1a hash over 4.7 MiB plus a parse of
+   * 13,626 records, which is tens of milliseconds against the ten a free invocation gets. It is
+   * looked up in exactly one place, inside the trip loop, by `pattern.serviceRouteId`; by then the
+   * patterns are resolved and the ids are a few hundred.
+   *
+   * Absent means use whatever the slice brought, which is what every caller did before this.
+   */
+  resolveServices?: (serviceIds: readonly string[]) => Promise<ReadonlyMap<string, ServiceRoute>>;
   /** The publish these shards belong to, from the network index, as every other reader takes it. */
   version: string;
 }
@@ -468,6 +480,32 @@ export class JourneyService {
         // them out of the graph builder's memory rather than out of its output.
         loaded.rows = loaded.rows.filter((row) => merged.has(row.p));
         diagnostics.tripsLoaded = loaded.rows.length;
+      }
+    }
+
+    /*
+     * The services of the patterns this plan actually has, asked for now that they are known.
+     *
+     * The slice used to arrive carrying every service in England, because at slice time nothing
+     * knew which ones the corridor's trips would name. A service is looked up in exactly one
+     * place — inside the trip loop, by `pattern.serviceRouteId` — and by here the patterns are
+     * resolved, so the ids are a few hundred rather than 13,626.
+     */
+    if (request.resolveServices) {
+      const serviceIds = [
+        ...new Set(
+          [...planningSlice.patternsById.values()]
+            .map((pattern) => pattern.serviceRouteId)
+            .filter((id) => !planningSlice.services.has(id)),
+        ),
+      ];
+      if (serviceIds.length > 0) {
+        const servicesBegan = Date.now();
+        const resolved = await request.resolveServices(serviceIds);
+        diagnostics.stageMs.resolveServices = Date.now() - servicesBegan;
+        const merged = new Map(planningSlice.services);
+        for (const [id, service] of resolved) merged.set(id, service);
+        planningSlice = { ...planningSlice, services: merged };
       }
     }
 

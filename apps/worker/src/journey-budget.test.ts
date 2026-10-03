@@ -142,6 +142,57 @@ describe("a journey plan owns its trip read", () => {
     expect(outcome.ok).toBe(true);
   });
 
+  /*
+   * The slice no longer brings the national service list, so the plan has to ask for the services
+   * of the patterns it ends up with — and a plan that cannot name its service prints a blank where
+   * "First Bristol" belongs. The failure mode is silent, which is why it is asserted both ways.
+   */
+  it("names its route from the services it asked for, not from a slice that carried them all", async () => {
+    const { store } = await publish(10);
+    const asked: string[][] = [];
+    const outcome = await new JourneyService(store).planJourney(
+      // A slice as the reader now builds one for a corridor that skipped the pattern tiles: it has
+      // the patterns the trips need and no services at all.
+      { ...slice(), services: new Map() },
+      {
+        ...request,
+        resolveServices: (serviceIds: readonly string[]) => {
+          asked.push([...serviceIds]);
+          return Promise.resolve(
+            new Map([["svc-a2", { id: "svc-a2", publicName: "A2", operatorId: "op" } as never]]),
+          );
+        },
+      },
+    );
+
+    expect(outcome.ok).toBe(true);
+    // Asked for exactly the one service its patterns name, not for everything.
+    expect(asked).toEqual([["svc-a2"]]);
+    /*
+     * The route's own name, in the plan. Asserted against the serialised result rather than by
+     * walking the leg shape, because what matters here is that "A2" reached the answer at all —
+     * the previous version of this read every service in England to find it.
+     */
+    const planned = outcome.ok ? JSON.stringify(outcome.result) : "";
+    expect(planned).toContain("A2");
+  });
+
+  it("asks for nothing when the slice already has every service its patterns name", async () => {
+    const { store } = await publish(10);
+    let calls = 0;
+    const outcome = await new JourneyService(store).planJourney(slice(), {
+      ...request,
+      resolveServices: (serviceIds: readonly string[]) => {
+        calls += 1;
+        void serviceIds;
+        return Promise.resolve(new Map());
+      },
+    });
+
+    expect(outcome.ok).toBe(true);
+    expect(calls).toBe(0);
+  });
+
   it("drops rows it could never use while parsing, rather than after building a graph", async () => {
     const { store } = await publish(50);
     const outcome = await new JourneyService(store).planJourney(slice(), request);

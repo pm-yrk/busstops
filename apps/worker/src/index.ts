@@ -738,9 +738,27 @@ router.get("/v1/map", async (_request, { env, url }) => {
         )
       : { geometries: [], complete: true };
   const geometries = enrichment.geometries;
+  /*
+   * The services these geometries belong to, not all 13,626 of them.
+   *
+   * `services()` is `readCurrent`: an FNV-1a hash over a 4.7 MiB object *and* a `JSON.parse` of
+   * every one of its 13,626 records, before a caller takes the few hundred it wants. That is tens
+   * of milliseconds of pure computation against the ten a Workers Free invocation gets — so the
+   * first request in any isolate that reaches this line dies, and every request after it, reading
+   * the same work out of the isolate's cache, is fine. That is exactly the intermittency the
+   * deployed runs show: `/v1/map` passes as check one and answers Cloudflare's error page as check
+   * nine, and the map's own diagnostics print `services=13626` to say the parse happened.
+   *
+   * The same substitution that fixed the stop board in 8828ff8 and route detail in cb610bc. The
+   * geometries name their services; asking for those is one bounded scan of the text.
+   */
   const services =
     network && geometries.length > 0
-      ? await ledger.stage("services", () => network!.services())
+      ? await ledger.stage("services", () =>
+          network!.servicesByIds(
+            new Set(geometries.map((geometry) => geometry.pattern.serviceRouteId)),
+          ),
+        )
       : new Map<string, ServiceRoute>();
 
   /*
@@ -1544,6 +1562,15 @@ router.get("/v1/journeys", async (_request, { env, url }) => {
       // What the artifact says about its own storage. Absent on publishes written before layouts
       // were recorded, which the planner reports as unchecked rather than treating as agreement.
       layout: journeyIndex.layout ?? null,
+      /*
+       * The services of the resolved patterns, read by id once the planner knows them.
+       *
+       * Passed unconditionally: the slice no longer carries the national list on either pattern
+       * path, so a plan that cannot name its routes would otherwise print a blank where "First
+       * Bristol" belongs.
+       */
+      resolveServices: (serviceIds: readonly string[]) =>
+        network!.servicesByIds(new Set(serviceIds)),
       ...(usePatternIndex
         ? {
             resolvePatterns: useIndexTiles
