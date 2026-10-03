@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { distinguishVariantDescriptions, routeVariants } from "./network-queries.js";
-import type { PatternGeometry, RouteStop } from "@busstops/contracts";
+import type { PatternGeometry } from "@busstops/matching";
+import {
+  distinguishVariantDescriptions,
+  routeVariants,
+  type RouteStop,
+} from "./network-queries.js";
 
 /**
  * A route page's whole job is the ordered sequence of stops, and the selector that chooses between
@@ -16,7 +20,7 @@ function stop(id: string, name: string): RouteStop {
     id,
     atcoCode: `ATCO${id}`,
     name,
-    coordinate: { lat: 53.8, lon: -1.5 },
+    locationCoordinate: { lat: 53.8, lon: -1.5 },
   } as RouteStop;
 }
 

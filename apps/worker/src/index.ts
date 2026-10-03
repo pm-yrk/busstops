@@ -117,6 +117,9 @@ const ROUTE_STOP_READ_CHARS = 4 * 1024 * 1024;
  */
 const JOURNEY_BUDGET_MS = 6_000;
 const JOURNEY_STOP_READ_CHARS = 5 * 1024 * 1024;
+
+/** What one plan may decode in total, against the 3 MiB every other request gets. See the ledger. */
+const JOURNEY_TEXT_CHARS = 5 * 1024 * 1024;
 /**
  * Above this many pattern tiles, a corridor asks the index instead of reading the tiles.
  *
@@ -1354,7 +1357,24 @@ router.get("/v1/journeys", async (_request, { env, url }) => {
    * was blamed — had been asked for at all. The ledger covers both, and the stop read gets the
    * same five-mebibyte cap the map uses rather than the shared default.
    */
-  const journeyLedger = new ReadLedger(JOURNEY_BUDGET_MS);
+  /*
+   * A journey gets a wider character budget than anything else, because it genuinely needs one.
+   *
+   * Run 87 is the measurement. Cutting the shared budget to three mebibytes fixed `/v1/map` over
+   * central Bristol and central Birmingham — forty dense map requests, no platform error pages —
+   * and broke this: the pattern index read stopped itself at `pattern_index_budget` with 1,287
+   * trips loaded and **none** matched to a pattern, so the planner refused with `incomplete_read`.
+   * A plan needs about 1.76 MiB of pattern index on top of its stops before it can resolve a single
+   * trip, and half a plan is not a plan — the refusal is correct and the budget was wrong.
+   *
+   * Five is affordable here where it would not be elsewhere, because of what else changed first:
+   * the trip reader now scans for its pattern before building a row (five sixths of what it used to
+   * construct was discarded immediately), the caches are a quarter of their old size, and the
+   * isolate is trimmed to a mebibyte before the request starts. Journeys answered at four mebibytes
+   * in runs 82 and 85 with those in place. A viewport asked a hundred times a minute and a journey
+   * asked deliberately are not the same request and should not share one number.
+   */
+  const journeyLedger = new ReadLedger(JOURNEY_BUDGET_MS, undefined, undefined, JOURNEY_TEXT_CHARS);
   const endJourneyResidency = beginResidency(journeyLedger, "journeys");
   const journeyIndexForSlice = await journeyLedger.stage("index", () => network!.networkIndex());
   /*
