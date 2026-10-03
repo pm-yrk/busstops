@@ -745,16 +745,62 @@ export const searchTilesForBoundingBox = stopTilesForBoundingBox;
  * claims the tiles of its four corners about a kilometre out. That adds a tile only where the
  * route actually runs near a boundary.
  */
-export function stopTilesForShape(shape: readonly Coordinate[], marginDegrees = 0.01): string[] {
+/**
+ * The stop tiles a route's shapes pass near, without asking the question once per shape point.
+ *
+ * A tile is a quarter of a degree — about 28 km — and consecutive shape points are metres apart,
+ * so the overwhelming majority of points name a tile the point before them already named. The
+ * original walked every one of them and did four `tileIdFor` calls apiece, each building a string
+ * and inserting it into a set. A York interurban service has six patterns of some thousands of
+ * points, which is a few hundred thousand string builds, and route detail is answered by a Worker
+ * with ten milliseconds of CPU. Run 95 put the death exactly here: the breadcrumb reached
+ * `route:patterns:done@115` with its six patterns resolved and never reached `route:stops:done`.
+ *
+ * So a point is skipped while it is still within half the margin of the last point that was used.
+ * That is about 550 metres at the default margin, which the margin itself — a full 0.01°, 1.1 km,
+ * added on all four sides — already covers, so the tile set is the same one. The first and last
+ * point of every shape are always used, because a route's ends are where it is most likely to
+ * reach a tile nothing else in it touches.
+ */
+export function stopTilesForShapes(
+  shapes: Iterable<readonly Coordinate[]>,
+  marginDegrees = 0.01,
+): string[] {
   const tiles = new Set<string>();
-  for (const point of shape) {
+  // Half the margin: the furthest a skipped point can be from a point that was used, and well
+  // inside the margin added around each one.
+  const step = marginDegrees / 2;
+
+  const use = (point: Coordinate) => {
     for (const lat of [point.lat - marginDegrees, point.lat + marginDegrees]) {
       for (const lon of [point.lon - marginDegrees, point.lon + marginDegrees]) {
         tiles.add(tileIdFor({ lat, lon }, STOP_TILE_DEGREES));
       }
     }
+  };
+
+  for (const shape of shapes) {
+    let last: Coordinate | null = null;
+    for (let at = 0; at < shape.length; at += 1) {
+      const point = shape[at]!;
+      const ends = at === 0 || at === shape.length - 1;
+      if (
+        ends ||
+        last === null ||
+        Math.abs(point.lat - last.lat) >= step ||
+        Math.abs(point.lon - last.lon) >= step
+      ) {
+        use(point);
+        last = point;
+      }
+    }
   }
   return [...tiles].sort();
+}
+
+/** One shape's tiles. Kept for callers with a single shape; see `stopTilesForShapes`. */
+export function stopTilesForShape(shape: readonly Coordinate[], marginDegrees = 0.01): string[] {
+  return stopTilesForShapes([shape], marginDegrees);
 }
 
 /** Every tile a pattern passes through, so a viewport finds it from any point along the route. */

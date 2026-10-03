@@ -36,7 +36,7 @@ import {
   stopLocatorDataset,
   stopTileDataset,
   stopTilesForBoundingBox,
-  stopTilesForShape,
+  stopTilesForShapes,
   tokenize,
   decodeRoutePatternsForService,
   decodePatternIndexFor,
@@ -1371,7 +1371,15 @@ export class NetworkReader {
     const index = await this.networkIndex(now);
     if (!index || keys.length === 0) return empty;
 
-    const tiles = stopTilesForShape(geometries.flatMap((geometry) => geometry.shape));
+    /*
+     * The shapes passed as shapes, not concatenated into one array first.
+     *
+     * `geometries.flatMap((g) => g.shape)` allocated a single array of every point of every
+     * pattern — tens of thousands of coordinates for a long service — purely to hand it to a
+     * function that iterates it once. See `stopTilesForShapes`, which also stops asking the tile
+     * question of points whose neighbour already answered it.
+     */
+    const tiles = stopTilesForShapes(geometries.map((geometry) => geometry.shape));
     /*
      * A pattern published without a shape cannot say where its stops are, so the locator path
      * still answers for it. That is the slow question, and it is asked only when the cheap one
