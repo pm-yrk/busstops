@@ -1051,6 +1051,108 @@ await check("route detail answers without the Worker falling over", async () => 
  * And the sequence has to lead somewhere: a stop from the middle of the list is opened as a board,
  * because a list of names nobody can click is a picture of a route rather than a way to catch a bus.
  */
+/*
+ * The navigation in the other direction, which had no deployed check at all.
+ *
+ * "Stop to route" is on the P0 list and, until `5379058`, the stop page simply had no route links
+ * on it — the board carried `routes[]` and the page threw it away. Worse, the board's route list
+ * is produced by the one read most likely to be cut short: the patterns around the stop. Before
+ * `f625a38` that read opened the surrounding pattern tiles whole, on no budget, and run 89 watched
+ * a Manchester board die inside it. A read that silently stops early does not error — it returns
+ * fewer routes — so a board that lists none, or lists one where ten call, looks exactly like a
+ * quiet stop. This asks whether the names and the links are actually there.
+ */
+await check("a stop board names the routes calling there, and each one opens", async () => {
+  const seen = [];
+  const problems = [];
+
+  for (const city of CITIES.slice(0, 5)) {
+    const map = await getJson(`/v1/map?bbox=${encodeURIComponent(city.bbox)}&zoom=15`);
+    if (!map.response.ok) {
+      problems.push(`${city.name}: /v1/map ${map.response.status}`);
+      continue;
+    }
+    const stops = map.body?.data?.stops ?? [];
+    // The busiest stop in the viewport, because a stop that names many routes is the one a short
+    // read would visibly truncate.
+    const busiest = stops.reduce(
+      (best, stop) =>
+        (stop.routePublicNames?.length ?? 0) > (best?.routePublicNames?.length ?? 0) ? stop : best,
+      null,
+    );
+    if (!busiest) {
+      seen.push(`${city.name}: no stop in the viewport names a route`);
+      continue;
+    }
+
+    const board = await getJson(`/v1/stops/${encodeURIComponent(busiest.atcoCode)}`);
+    if (!board.response.ok) {
+      problems.push(
+        `${city.name}: ${busiest.name} board ${describe(board.response, board.body, board.text)}`,
+      );
+      continue;
+    }
+    const routes = board.body?.data?.routes ?? [];
+    if (routes.length === 0) {
+      problems.push(
+        `${city.name}: ${busiest.name} lists no route, though the map says it serves ` +
+          `${(busiest.routePublicNames ?? []).join(", ")}`,
+      );
+      continue;
+    }
+
+    // A route the reader could click is one with a name, an operator and an id that resolves.
+    const unnamed = routes.filter((route) => !route.publicName);
+    if (unnamed.length > 0) {
+      problems.push(`${city.name}: ${busiest.name} has ${unnamed.length} route(s) with no name`);
+      continue;
+    }
+    const noOperator = routes.filter(
+      (route) => !route.operatorName || route.operatorName === "Unknown operator",
+    );
+
+    const target = routes[routes.length - 1];
+    const opened = await getJson(`/v1/routes/${encodeURIComponent(target.id)}`);
+    if (!opened.response.ok) {
+      problems.push(
+        `${city.name}: ${busiest.name} → ${target.publicName} would not open: ` +
+          describe(opened.response, opened.body, opened.text),
+      );
+      continue;
+    }
+    // The route the stop pointed at must be that route, not whatever the id happened to resolve to.
+    const openedName = opened.body?.data?.route?.publicName ?? null;
+    if (openedName !== target.publicName) {
+      problems.push(
+        `${city.name}: ${busiest.name} → ${target.publicName} opened "${openedName}" instead`,
+      );
+      continue;
+    }
+
+    seen.push(
+      `${city.name}: ${busiest.name} lists ${routes.length} route(s) — ` +
+        routes
+          .slice(0, 6)
+          .map((route) => route.publicName)
+          .join(", ") +
+        (routes.length > 6 ? ", …" : "") +
+        `; last one (${target.publicName}, ${target.operatorName}) opens` +
+        (noOperator.length > 0
+          ? ` [${noOperator.length} route(s) could not be attributed to an operator]`
+          : ""),
+    );
+  }
+
+  assert(problems.length === 0, problems.join("; "));
+  const withRoutes = seen.filter((line) => line.includes(" route(s) — "));
+  assert(
+    withRoutes.length >= 3,
+    `only ${withRoutes.length} of ${CITIES.slice(0, 5).length} cities produced a board with ` +
+      `routes on it — ${seen.join("; ")}`,
+  );
+  return seen.join("; ");
+});
+
 await check("a route page gives its stops in travel order", async () => {
   const seen = [];
   const problems = [];
