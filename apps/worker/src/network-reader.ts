@@ -250,6 +250,14 @@ export function searchLineFilter(words: readonly string[]): LineFilter | undefin
  */
 const NEARBY_READ_CHARS = 2 * 1024 * 1024;
 
+/**
+ * How many corridor stops a plan may hold. Measured, not chosen: a Leeds to Leeds Bradford
+ * Airport corridor reported 3,774, and the planner refuses above `JOURNEY_LIMITS.maxStops`
+ * anyway — this is the read's own bound, set well above a real corridor so that reaching it means
+ * something has gone wrong rather than that the corridor was ordinary.
+ */
+const JOURNEY_CORRIDOR_STOP_LIMIT = 20_000;
+
 /** The most tiles read at once, once their size is known. */
 const TILE_READ_BATCH = 6;
 
@@ -474,7 +482,15 @@ interface CachedShard {
 
 /** What a bounded area's worth of network looks like to code that does not read shards. */
 export interface NetworkSlice {
-  stopsById: ReadonlyMap<string, Stop>;
+  /*
+   * The three fields a plan reads, not the whole published record.
+   *
+   * `buildGraphFor` takes `{ id, name, coordinate }` from each of these and nothing else, and the
+   * corridor is read from the map projection, which carries exactly that. Typed as the narrower
+   * shape rather than as `Stop` so the projection is not a special case and nothing downstream can
+   * quietly start depending on a field the corridor no longer brings.
+   */
+  stopsById: ReadonlyMap<string, RouteStop>;
   patternsById: ReadonlyMap<string, RoutePattern>;
   services: ReadonlyMap<string, ServiceRoute>;
 }
@@ -1003,12 +1019,43 @@ export class NetworkReader {
      * anything had looked at it, and the trip shards were still to come. Sequential, the pattern
      * read can see what the stop read has already cost and decline to start.
      */
-    const stops = await this.stopsInTiles(
-      stopTilesForBoundingBox(bbox),
+    /*
+     * The projection, filtered to the box, and both halves of that were missing.
+     *
+     * This read had **no filter at all** — `stopsInTiles` over every tile the corridor touches,
+     * parsing every stop in each of them including the ones outside the box — and it read the full
+     * stop family, whose records carry provenance, quality flags, amenities, accessibility and
+     * NaPTAN status and whose tiles reach 8.1 MiB. The planner reads three fields: the id, the name
+     * and the coordinate. Run 95 put the death here, with the trail ending at
+     * `journey:slice:begin` and the pattern tiles already skipped, so the corridor's stops were
+     * the only thing left in the window.
+     *
+     * The map projection carries exactly those three fields at about a fifteenth of the bytes, and
+     * the box test now runs before a record is built rather than after. The full family is still
+     * the fallback for an artifact published without a projection.
+     */
+    const projected = await this.mapStopsInBoundingBox(
+      bbox,
+      /*
+       * Everything in the corridor, not a screenful. The limit exists for a viewport, which ranks
+       * by distance from the centre and drops the rest; a plan that silently lost the stops at one
+       * end of its corridor would be a plan missing the bus somebody wants. Past this the read
+       * reports itself truncated and the planner refuses, which is the correct answer.
+       */
+      JOURNEY_CORRIDOR_STOP_LIMIT,
       now,
       ledger,
       stopBudgetChars,
     );
+    const stops =
+      projected ??
+      (await this.stopsInTiles(
+        stopTilesForBoundingBox(bbox),
+        now,
+        ledger,
+        stopBudgetChars,
+        withinBoundingBox(bbox),
+      ));
     const patterns =
       options.patterns === "skip"
         ? { geometries: [] as PatternGeometry[], complete: true }

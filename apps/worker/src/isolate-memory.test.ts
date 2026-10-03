@@ -181,6 +181,55 @@ describe("the edge never reads a national dataset", () => {
    * carries no CORS header and so reaches the browser as a bare network failure.
    */
   /*
+   * A journey corridor reads the projection, and only the stops inside its box.
+   *
+   * This read had neither property. It opened every stop tile the corridor touched with **no
+   * filter at all**, parsing every stop in each of them including the ones outside the box, and it
+   * read the full stop family — records carrying provenance, quality flags, amenities,
+   * accessibility and NaPTAN status, in tiles reaching 8.1 MiB. The planner reads three fields.
+   * Run 95 put the journey planner's death inside this read, with the pattern tiles already
+   * skipped so nothing else was in the window.
+   */
+  it("reads a corridor from the map projection rather than the full stop family", async () => {
+    const { reader, reads } = await publishedReader();
+    const built = network();
+    const anyStop = built.stops[0]!.locationCoordinate;
+    const bbox = {
+      west: anyStop.lon - 0.02,
+      east: anyStop.lon + 0.02,
+      south: anyStop.lat - 0.02,
+      north: anyStop.lat + 0.02,
+    };
+
+    reads.length = 0;
+    const slice = await reader.sliceForBoundingBox(bbox, Date.now(), undefined, undefined, {
+      patterns: "skip",
+    });
+
+    expect(slice.stopsById.size).toBeGreaterThan(0);
+    expect(slice.complete).toBe(true);
+    // The projection, by key, and not one object of the full stop family.
+    expect(reads.filter((key) => key.includes(MAP_STOPS_PREFIX)).length).toBeGreaterThan(0);
+    expect(reads.filter((key) => key.includes(`${SHARDED.stopTile}/`))).toEqual([]);
+
+    // And every stop it returns is inside the box it was asked about.
+    for (const stop of slice.stopsById.values()) {
+      const { lat, lon } = stop.locationCoordinate;
+      expect(lat).toBeGreaterThanOrEqual(bbox.south);
+      expect(lat).toBeLessThanOrEqual(bbox.north);
+      expect(lon).toBeGreaterThanOrEqual(bbox.west);
+      expect(lon).toBeLessThanOrEqual(bbox.east);
+    }
+
+    // The three fields a plan actually reads are all present on each one.
+    for (const stop of slice.stopsById.values()) {
+      expect(stop.id).not.toBe("");
+      expect(stop.name).not.toBe("");
+      expect(Number.isFinite(stop.locationCoordinate.lat)).toBe(true);
+    }
+  });
+
+  /*
    * The two ways a board can learn its routes, asserted to agree.
    *
    * The departure board asks by id when its own rows name the patterns, and geographically when
