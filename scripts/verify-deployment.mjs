@@ -1034,6 +1034,121 @@ await check("route detail answers without the Worker falling over", async () => 
 });
 
 /*
+ * What a passenger opening a route page is actually told.
+ *
+ * The check above asks only whether the endpoint answers, which is the wrong question now. The most
+ * important thing on a route page is not that it loaded: it is the ordered sequence of stops the
+ * service follows — where it starts, where it goes, what it calls at, in travel order. So this walks
+ * several materially different real services in different cities and reports each as a reader sees
+ * it.
+ *
+ * The ordering is the claim worth proving rather than asserting. A list sorted by name, or by
+ * latitude, would look plausible in a screenshot and be useless on a bus. The sequence numbers must
+ * run strictly from zero — that is the timetable's own order, taken from the pattern's stopSequence —
+ * and if the names happen to come out alphabetical the line says so, because that is the one case
+ * where "ordered" and "sorted" are indistinguishable from the outside.
+ *
+ * And the sequence has to lead somewhere: a stop from the middle of the list is opened as a board,
+ * because a list of names nobody can click is a picture of a route rather than a way to catch a bus.
+ */
+await check("a route page gives its stops in travel order", async () => {
+  const seen = [];
+  const problems = [];
+
+  for (const city of CITIES.slice(0, 5)) {
+    const map = await getJson(`/v1/map?bbox=${encodeURIComponent(city.bbox)}&zoom=15`);
+    if (!map.response.ok) {
+      problems.push(`${city.name}: /v1/map ${map.response.status}`);
+      continue;
+    }
+    // A stop's own routes are the only honest way to find a real service in this city.
+    const stops = map.body?.data?.stops ?? [];
+    const withRoutes = stops.find((stop) => (stop.routePublicNames?.length ?? 0) > 0);
+    if (!withRoutes) {
+      seen.push(`${city.name}: no stop in the viewport names a route`);
+      continue;
+    }
+    const board = await getJson(`/v1/stops/${encodeURIComponent(withRoutes.atcoCode)}`);
+    const routeId = board.body?.data?.routes?.[0]?.id;
+    if (!routeId) {
+      seen.push(`${city.name}: ${withRoutes.name} carries no route id`);
+      continue;
+    }
+
+    const { response, body, text } = await getJson(`/v1/routes/${encodeURIComponent(routeId)}`);
+    if (!response.ok) {
+      problems.push(`${city.name}: /v1/routes/${routeId} ${describe(response, body, text)}`);
+      continue;
+    }
+    const data = body?.data ?? {};
+    const variants = data.variants ?? [];
+    const name = data.route?.publicName ?? routeId;
+    if (variants.length === 0) {
+      problems.push(`${city.name}: ${name} published no variant`);
+      continue;
+    }
+
+    // The variant with the most stops: the dominant pattern is what a reader means by "the route",
+    // and it is the one the page now opens on.
+    const variant = variants.reduce((a, b) => (b.stops.length > a.stops.length ? b : a));
+    const ordered = variant.stops ?? [];
+    if (ordered.length < 2) {
+      problems.push(`${city.name}: ${name} has ${ordered.length} stop(s)`);
+      continue;
+    }
+
+    const sequences = ordered.map((stop) => stop.sequence);
+    const strictlyIncreasing = sequences.every((value, index) =>
+      index === 0 ? value === 0 : value > sequences[index - 1],
+    );
+    if (!strictlyIncreasing) {
+      problems.push(
+        `${city.name}: ${name} sequence is not strictly increasing from zero: ` +
+          sequences.slice(0, 8).join(","),
+      );
+      continue;
+    }
+
+    const names = ordered.map((stop) => stop.name);
+    const alphabetical = names.every(
+      (entry, index) => index === 0 || names[index - 1].localeCompare(entry) <= 0,
+    );
+
+    // A stop from the middle, opened, because the list has to lead somewhere.
+    const middle = ordered[Math.floor(ordered.length / 2)];
+    const middleBoard = await getJson(`/v1/stops/${encodeURIComponent(middle.atcoCode)}`);
+    if (!middleBoard.response.ok) {
+      problems.push(
+        `${city.name}: stop ${middle.sequence + 1} (${middle.name}) would not open: ` +
+          `${middleBoard.response.status}`,
+      );
+      continue;
+    }
+    const due = middleBoard.body?.data?.departures?.length ?? 0;
+    const directions = [...new Set(variants.map((entry) => entry.direction))];
+
+    seen.push(
+      `${city.name}: ${name}` +
+        (data.operator?.name ? ` (${data.operator.name})` : "") +
+        ` — ${variants.length} variant(s) [${directions.join("/")}], ` +
+        `${ordered.length} stops: ${names[0]} → ${names[names.length - 1]}` +
+        `; #${middle.sequence + 1} ${middle.name} opens with ${due} due` +
+        (alphabetical ? " [WARNING: these names are in alphabetical order]" : "") +
+        (data.complete === false ? " [the read was truncated]" : ""),
+    );
+  }
+
+  assert(problems.length === 0, problems.join("; "));
+  const withSequence = seen.filter((line) => line.includes(" stops: "));
+  assert(
+    withSequence.length >= 3,
+    `only ${withSequence.length} of ${CITIES.slice(0, 5).length} cities produced a stop ` +
+      `sequence — ${seen.join("; ")}`,
+  );
+  return seen.join("; ");
+});
+
+/*
  * The two endpoints that fell over, asked repeatedly in the densest places.
  *
  * `/v1/map` and `/v1/routes/:id` are the only two that read pattern tiles in bulk, and both
