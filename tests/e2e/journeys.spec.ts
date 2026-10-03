@@ -1,5 +1,13 @@
 import { expect, test } from "@playwright/test";
-import { EMPTY_MAP, MAP_WITH_TRAFFIC, META, STOP_ID, STOP_RESPONSE, mockApi } from "./fixtures.js";
+import {
+  EMPTY_MAP,
+  MAP_WITH_TRAFFIC,
+  META,
+  ROUTE_ID,
+  STOP_ID,
+  STOP_RESPONSE,
+  mockApi,
+} from "./fixtures.js";
 
 /**
  * Passenger journeys end to end (docs/15_TESTING.md "End-to-end").
@@ -294,7 +302,13 @@ test.describe("unsubscribe", () => {
 });
 
 test.describe("responsive layout", () => {
-  for (const path of ["/", "/live", "/pro", `/stops/${STOP_ID}`]) {
+  /*
+   * The route page joins this sweep because it is now the page the product is judged on, and it
+   * is the one most likely to overflow: a long ordered list of stop names, a variant tablist that
+   * grows a tab per pattern — York's 20 has six — and a badge beside each name. All four viewport
+   * projects run this, so 320px is covered.
+   */
+  for (const path of ["/", "/live", "/pro", `/stops/${STOP_ID}`, `/routes/${ROUTE_ID}`]) {
     test(`never scrolls horizontally at ${path}`, async ({ page }) => {
       await mockApi(page);
       await page.goto(path);
