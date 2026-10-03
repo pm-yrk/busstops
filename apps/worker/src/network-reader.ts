@@ -188,9 +188,7 @@ const SEARCH_STEM_LENGTH = 3;
  * A one-letter word is no test at all, which is correct: there is nothing to narrow by, and
  * narrowing on nothing would mean dropping the bucket's contents.
  */
-export function searchLineFilter(
-  words: readonly string[],
-): ((line: string) => boolean) | undefined {
+export function searchLineFilter(words: readonly string[]): LineFilter | undefined {
   const stems = words
     .map((word) => word.toLowerCase().slice(0, SEARCH_STEM_LENGTH))
     .filter((stem) => stem.length >= 2);
@@ -204,7 +202,25 @@ export function searchLineFilter(
    * `tokenize`, which lowercases, so a lowercase stem matches the published text as it stands. A
    * mixed-case title is not the thing being matched on; its tokens are.
    */
-  return (line: string) => stems.some((stem) => line.includes(stem));
+  /*
+   * Bounded to this line, which it was not.
+   *
+   * This returned `(line: string) => boolean` and was passed where a `LineFilter` — `(body,
+   * start, end)` — was expected. TypeScript accepts a function of fewer parameters there, so it
+   * compiled, and at run time it was handed the *whole object body* as its `line`. `stems.some(
+   * stem => body.includes(stem))` is true whenever the stem occurs anywhere in a five-mebibyte
+   * bucket, which for any real query it does — so the filter kept every line and search parsed all
+   * twenty thousand records of every bucket it opened. The careful note above about not allocating
+   * a copy of each line was describing something that never ran.
+   *
+   * `indexOf` from `start`, rejected unless the hit is before `end`: the same shape as every other
+   * filter here, no allocation, and actually about one line.
+   */
+  return (body, start, end) =>
+    stems.some((stem) => {
+      const at = body.indexOf(stem, start);
+      return at >= 0 && at < end;
+    });
 }
 
 /**
@@ -289,7 +305,7 @@ const INDEX_TTL_MS = 5 * 60 * 1000;
  * record's own keys are pulled out by position and tested against a set — two bounded scans and
  * two lookups, whatever the size of the request.
  */
-type LineFilter = (body: string, start: number, end: number) => boolean;
+export type LineFilter = (body: string, start: number, end: number) => boolean;
 
 /**
  * Whether one stored line mentions a stop id, tested without building anything.
