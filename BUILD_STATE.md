@@ -34,6 +34,61 @@ York's 20 has six; X10 and the 35 each carry both directions. The page opens on 
 with the most stops and offers the rest as tabs, with the stop count appended where two
 variants would otherwise read as the same words.
 
+### 3 October, runs 95 and 96: the stage marks paid for themselves
+
+The stage crumbs added in `cb610bc` turned four runs of guesswork into three named lines of code.
+Every one of these was found by a trail, not by inference.
+
+**Route detail** reached `route:patterns:done@115` — six patterns resolved, complete, from the
+route-pattern index — and never reached `route:stops:done`. The work between them is not a read.
+`stopTilesForShape(geometries.flatMap((g) => g.shape))` concatenated every point of every pattern
+into one array and then did four `tileIdFor` calls for each of them, each building a string and
+inserting it into a set. A stop tile is a quarter of a degree, about 28 km, and polyline points are
+metres apart — so hundreds of thousands of string builds re-derived a tile their neighbour had
+already named. A point is now skipped while it is within half the margin of the last one used:
+Leeds to Scarborough at 4,000 points uses **224** of them, and six tests compare the sampled tile
+set against the exhaustive one, including on shapes stepping across a tile boundary at four
+different spacings.
+
+**The journey planner** reached `journey:slice:begin` with the pattern tiles already skipped, so
+the corridor's stops were the only thing in the window — and that read had neither of the two
+properties it needed. **No filter at all**: every stop in every tile the corridor touched, including
+the ones outside the box. And the full stop family, whose records carry provenance, quality flags,
+amenities, accessibility and NaPTAN status in tiles reaching 8.1 MiB, where the planner reads three
+fields. It reads the map projection now, filtered to the box. Run 96 measured the result: the
+corridor holds **222 stops where it held 3,774**, read in 59 ms, complete.
+
+**The stop board at `1800EB06161`** — the one stop that failed on six consecutive runs — reached
+`board:departures:done@237` with zero rows and then nothing. With no departures to name its
+patterns it falls through to the geographic read, and the stops where that happens are the busy
+interchanges whose tiles are largest, read against the _map's_ three-mebibyte budget. It has a
+board's own bound now, and the response says whether the list is all of them: a short list drawn
+like a complete one tells a passenger their route does not stop here, which is a statement about
+the bus service made out of a limit of ours.
+
+**Route pages reproduce.** Run 96's probe found five again, a different Birmingham route this time
+— 4 rather than 2 — so it is not one lucky service:
+
+    Route 19 — Leeds        First Leeds                      3 variants  83 stops  #42 opens
+    Route 101 — Manchester  Bee Network                      3 variants  56 stops  #29 opens
+    Route 4 — Birmingham    National Express West Midlands   6 variants  39 stops  #20 opens
+    Route 25 — Bristol      First Bristol, Bath & the West   2 variants  23 stops  #12 opens, 3 due
+    Route 13 — York         Connexions Buses                 4 variants  51 stops  #26 opens
+
+All `ordered: true`, `alphabetical: false`, `complete: true`. And boards at eight cities named
+their routes with real departures: Leeds 1 route/3 due, Manchester 2/2 next 201 to Hyde Bus
+Station, Bristol 4/10 next 41 to Croydon Street, Brighton 6 routes, Birmingham 3, York 2,
+Newcastle 3, Shrewsbury 1.
+
+**The honest distinction, now measurable.** The passenger probe — serial, a handful of requests,
+the way a person uses the site — is down to **one** failure, a journey returning no options at
+23:47, which off-peak is plausibly correct. The deployed verification, which fires about 150
+requests at one isolate in two minutes, holds at **14 of 23**. The failures there are concentrated
+after roughly seventy requests on the same isolate: the breadcrumb probes bracket them at req#16
+and req#73. Every surviving request in those runs is cheap — a Leeds viewport 1.02 MiB, a route
+page 0.48 + 0.54 MiB — so what is killing the later ones is not the work the diagnostics can see.
+That is the open question, and it is a different question from whether the product works.
+
 ### 3 October, run 94: five route pages verified, and the filter that never filtered
 
 **The headline, from the passenger probe on the deployed preview.** Five cities, five routes
