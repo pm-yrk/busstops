@@ -1397,6 +1397,7 @@ router.get("/v1/journeys", async (_request, { env, url }) => {
   const endJourneyResidency = beginResidency(journeyLedger, "journeys");
   mark("journey:begin", { serviceDate });
   const journeyIndexForSlice = await journeyLedger.stage("index", () => network!.networkIndex());
+  mark("journey:index:done", { version: journeyIndexForSlice?.version ?? "none" });
   /*
    * Which way to get the patterns, decided from what each one actually costs.
    *
@@ -1433,6 +1434,10 @@ router.get("/v1/journeys", async (_request, { env, url }) => {
     useIndexTiles ||
     ((journeyIndexForSlice?.patternIndexBuckets ?? 0) > 0 &&
       corridorPatternTiles > JOURNEY_PATTERN_TILE_LIMIT);
+  mark("journey:slice:begin", {
+    corridorPatternTiles,
+    patterns: usePatternIndex ? "skip" : "tiles",
+  });
   const slice = await journeyLedger.stage("slice", () =>
     network!.sliceForBoundingBox(corridorBox, Date.now(), journeyLedger, JOURNEY_STOP_READ_CHARS, {
       patterns: usePatternIndex ? "skip" : "tiles",
@@ -1778,7 +1783,10 @@ router.get("/v1/vehicles/:ref", async (_request, { env, params, url }) => {
    * endpoint already reads, matched on this bus's route name.
    */
   const operator =
-    service && network ? ((await network.operators()).get(service.operatorId) ?? null) : null;
+    service && network
+      ? ((await network.operatorsByIds(new Set([service.operatorId]))).get(service.operatorId) ??
+        null)
+      : null;
   const vehicleRouteName = service?.publicName ?? context?.publishedLineName ?? null;
   const vehicleNotices = vehicleRouteName
     ? ((await disruptions?.snapshot())?.notices ?? [])
@@ -1866,14 +1874,24 @@ router.get("/v1/routes/:id", async (_request, { env, params }) => {
     );
   }
 
+  mark("route:index:done", { version: index.version });
   const route = await routeLedger.stage("services", async () =>
     (await network!.servicesByIds(new Set([params.id ?? ""]))).get(params.id ?? ""),
   );
+  mark("route:service:done", { found: route !== undefined });
   if (!route) return errorResponse("not_found", "Route not found", 404);
 
+  /*
+   * One operator, by id. `operators()` is `readCurrent`, which hashes the whole national object
+   * with FNV-1a *and* parses every record before one is taken from it — the exact read whose
+   * removal fixed the cold stop board in 8828ff8, still sitting on route detail. Run 91's route
+   * detail died with `reads:begin` as its only crumb, which covers this stage and five others;
+   * this one does not need a measurement to be wrong.
+   */
   const operator = await routeLedger.stage(
     "operators",
-    async () => (await network!.operators()).get(route.operatorId) ?? null,
+    async () =>
+      (await network!.operatorsByIds(new Set([route.operatorId]))).get(route.operatorId) ?? null,
   );
 
   /*
@@ -1884,9 +1902,15 @@ router.get("/v1/routes/:id", async (_request, { env, params }) => {
    * publish a shorter route as though it were the route. When a read was capped the page says so
    * and the coverage drops, rather than the missing half simply not existing.
    */
+  mark("route:operator:done", { found: operator !== null });
   const patterns = await routeLedger.stage("route-patterns", () =>
     network!.patternsForService(route.id, Date.now(), routeLedger),
   );
+  mark("route:patterns:done", {
+    patterns: patterns.geometries.length,
+    source: patterns.source,
+    complete: patterns.complete,
+  });
 
   /*
    * An unreadable route is refused outright rather than drawn as an empty one.
@@ -1911,10 +1935,12 @@ router.get("/v1/routes/:id", async (_request, { env, params }) => {
     network!.stopsForGeometries(geometries, Date.now(), routeLedger, ROUTE_STOP_READ_CHARS),
   );
   const stopsById = stopsResult.stopsById;
+  mark("route:stops:done", { stops: stopsById.size, truncated: stopsResult.truncated });
 
   const variants = await routeLedger.stage("variants", async () =>
     distinguishVariantDescriptions(routeVariants(geometries, stopsById)),
   );
+  mark("route:variants:done", { variants: variants.length });
 
   /*
    * Complete means every part of the answer was read in full, not that the answer looks plausible.
@@ -2173,9 +2199,9 @@ router.get("/v1/operators/:id", async (_request, { env, params }) => {
     );
   }
 
-  // Operators and services are the two genuinely national datasets the edge still holds: 22 and
-  // 1,043 records. A test asserts they stay that size rather than trusting that they will.
-  const operator = (await network.operators()).get(params.id ?? "");
+  // By id, like everywhere else. `operators()` hashes and parses the whole national object to
+  // return one record, and a page about one operator is the clearest case against doing that.
+  const operator = (await network.operatorsByIds(new Set([params.id ?? ""]))).get(params.id ?? "");
   if (!operator) return errorResponse("not_found", "Operator not found", 404);
 
   // By operator, in one pass, for the same reason the departure board asks by id.
