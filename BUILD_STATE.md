@@ -4,6 +4,72 @@ Last updated: 2026-10-01 (recruiter-demo rescue: the horizon that expires, and a
 
 ## Current status
 
+### 3 October, run 87 deployed: 20 of 21 checks pass
+
+`https://preview.busstops.pages.dev`. Every item on the morning's verification list
+came back good:
+
+    pass  the pattern-heavy endpoints survive dense cities, repeatedly — 40 dense map
+          requests and 55 route-detail requests, no platform error pages
+    pass  search finds real places — 5 of 5 landmarks — York Minster; Leeds Station;
+          Manchester Arndale; Bullring → Bull Ring; Bristol Temple Meads
+    pass  a stop can be selected and returns a departure board — Piccadilly: 19 departures
+    pass  a real stop carries real weather — no weather published for this square, which is
+          a coverage gap rather than a broken endpoint
+    pass  a London stop returns real TfL arrival predictions — Waterloo / Tenison Way, 7 live
+
+Central Bristol _and_ central Birmingham both answer `/v1/map` now; the 3 MiB
+per-request character budget is what did it. The cold stop board stopped dying once
+`operators` got the text-cache treatment `services` already had and a board stopped
+reading three service dates in the middle of the day.
+
+**Service dates: a board asks for one, not three.** A departure shard reaches 2.6 MB
+and reading one costs a scan plus a parse of its header — the intern tables of every
+route, destination and pattern id in the bucket. Yesterday is asked for only before
+04:00 local, tomorrow only after 20:00. The first attempt at this used the UTC date
+and the BST test caught it immediately: at 23:00 UTC on the night the clocks go
+forward it asked for the 28th and 29th while the passenger stood in the 30th. Both
+clocks' dates are in the set now, because the publisher derives service dates in UTC
+and a passenger lives on a London clock.
+
+**The one regression, and it was mine.** Cutting the shared budget to 3 MiB starved
+the journey planner: the pattern index read stopped itself at `pattern_index_budget`
+with 1,287 trips loaded and none matched to a pattern, so the planner refused with
+`incomplete_read` — correctly. A journey now has its own 5 MiB budget. A viewport
+asked a hundred times a minute and a journey asked deliberately should not share one
+number.
+
+### Storage is over the free tier, and the fix is measured
+
+`prove-horizon` now measures the bucket, and the retention tool's dry run agrees:
+**17.99 GB across 73,194 objects against a 10 GB free allowance.** Six superseded
+publishes are removable — 41,094 objects, 7.38 GB — leaving 9.37 GB with the live
+version and its predecessor kept. Not yet applied: the run carrying `apply` was
+cancelled when the next deploy queued behind it.
+
+After pruning, four service dates sit at the limit rather than comfortably inside
+it. The artifact needs to get smaller or the horizon shorter before the horizon can
+widen again.
+
+### Route detail is a stop sequence, and it was already right
+
+The contract already carried what a route page needs — `variants[]`, each with a
+direction, a description, and `stops[]` ordered by the pattern's own `stopSequence`.
+What was wrong was that the page could not load, because `/v1/routes/:id` was reading
+national SIRI-VM and dying in the XML. With the live layer off and one operator read
+instead of 631, 55 route-detail requests across eight cities answer with no platform
+errors.
+
+Two product changes on top: the page opens on the pattern with the most stops rather
+than whichever the API listed first (`variants` sorts by direction before length, so
+an inbound short working could open ahead of the real route), and variants whose
+descriptions collide — a short working, a branch and the full route all read "A to B"
+— gain their stop count. A selector offering the same words three times tells a
+passenger the choice does not matter, when it decides whether their stop is listed.
+
+And a stop page now links to the routes calling there. The map's panel always has;
+the page a search result lands on never did.
+
 ### 2 October, deployed: departures work at eight cities, and 1102 is CPU
 
 Run 79 (`becc1b9`) on `https://preview.busstops.pages.dev`:
