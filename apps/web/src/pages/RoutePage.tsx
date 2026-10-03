@@ -51,7 +51,15 @@ export function RoutePage() {
   });
 
   const now = useTicker();
-  const [selectedVariant, setSelectedVariant] = useState(0);
+  /*
+   * Null until the reader chooses, so the page can open on the dominant pattern.
+   *
+   * Zero was the first variant in the API's order, which sorts by direction before length — so a
+   * route whose inbound short working happens to sort first opened on nineteen stops while its real
+   * forty-stop outbound sat behind a tab. The longest pattern is what a passenger means by "the
+   * route", and the tabs are still there for the rest.
+   */
+  const [chosenVariant, setChosenVariant] = useState<number | null>(null);
   /*
    * A route you can actually save.
    *
@@ -105,7 +113,16 @@ export function RoutePage() {
     incidents,
     disruptions,
   } = response.data;
-  const variant = variants[Math.min(selectedVariant, Math.max(0, variants.length - 1))];
+  const dominantVariant = variants.reduce(
+    (best, candidate, index) =>
+      candidate.stops.length > (variants[best]?.stops.length ?? -1) ? index : best,
+    0,
+  );
+  const selectedVariant = Math.min(
+    chosenVariant ?? dominantVariant,
+    Math.max(0, variants.length - 1),
+  );
+  const variant = variants[selectedVariant];
 
   return (
     <article className="page route-page">
@@ -326,7 +343,7 @@ export function RoutePage() {
                 role="tab"
                 aria-selected={index === selectedVariant}
                 className={index === selectedVariant ? "is-selected" : ""}
-                onClick={() => setSelectedVariant(index)}
+                onClick={() => setChosenVariant(index)}
               >
                 {candidate.description}
               </button>

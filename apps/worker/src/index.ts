@@ -237,6 +237,7 @@ import { ProService, resolveScope, DEFAULT_WINDOW_MINUTES } from "./pro-service.
 import {
   boundingBoxOf,
   publishedMetric,
+  distinguishVariantDescriptions,
   routeVariants,
   routesForOperator,
   routesServingStop,
@@ -1857,7 +1858,7 @@ router.get("/v1/routes/:id", async (_request, { env, params }) => {
   const stopsById = stopsResult.stopsById;
 
   const variants = await routeLedger.stage("variants", async () =>
-    routeVariants(geometries, stopsById),
+    distinguishVariantDescriptions(routeVariants(geometries, stopsById)),
   );
 
   /*

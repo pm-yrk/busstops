@@ -88,6 +88,34 @@ export function routeVariants(
     .sort((a, b) => a.direction.localeCompare(b.direction) || b.stops.length - a.stops.length);
 }
 
+/**
+ * Two variants that read as the same route, told apart.
+ *
+ * A description is built from the first and last stop, so a short working, a branch and the full
+ * route often come out identically — "Leeds City Bus Station to Beeston" three times over, from
+ * three patterns that call at 38, 22 and 19 stops. A selector offering the same words three times
+ * is worse than no selector: it tells a passenger the choice does not matter when it decides
+ * whether their stop is on the list at all.
+ *
+ * So where a direction holds several variants with the same description, each gains its stop count.
+ * Only where it is needed: a route with one pattern per direction keeps the plain words.
+ */
+export function distinguishVariantDescriptions(variants: readonly RouteVariant[]): RouteVariant[] {
+  const counts = new Map<string, number>();
+  for (const variant of variants) {
+    const key = `${variant.direction}\u0000${variant.description}`;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return variants.map((variant) => {
+    const key = `${variant.direction}\u0000${variant.description}`;
+    if ((counts.get(key) ?? 0) < 2) return variant;
+    return {
+      ...variant,
+      description: `${variant.description} · ${variant.stops.length} stops`,
+    };
+  });
+}
+
 /** Services that call at a stop, derived from the patterns read around it. */
 export function routesServingStop(
   patterns: readonly PatternGeometry[],
