@@ -10,7 +10,14 @@
  *
  * GitHub keeps at most ten annotations per level per step, so failures are emitted individually
  * (they are what needs reading) and the passes are rolled into one notice.
+ *
+ * It also truncates an annotation's body at about four kibibytes, which is not documented and was
+ * found the hard way: the passenger probe's route evidence was cut off mid-string and would not
+ * parse. So a long body is split across numbered annotations rather than sent as one.
  */
+
+/** What one annotation body can carry before GitHub cuts it off, with room to spare. */
+const MAX_ANNOTATION_CHARS = 3600;
 
 /** Newlines and the characters the workflow-command parser treats as syntax. */
 function escape(value) {
@@ -21,12 +28,35 @@ function escape(value) {
     .replace(/::/g, "%3A%3A");
 }
 
-/** A single annotation line. `level` is error, warning or notice. */
+/**
+ * A single annotation, split across several when the body is too long to survive.
+ *
+ * Split on line boundaries so each part is still readable on its own, and numbered, so a reader
+ * can tell a body that was divided from one that was cut off.
+ */
 export function annotate(level, title, message) {
   if (!process.env.GITHUB_ACTIONS) return;
   // A title with a comma or a colon in it would be read as another parameter.
   const safeTitle = escape(title).replace(/[,:]/g, " ");
-  process.stdout.write(`::${level} title=${safeTitle}::${escape(message)}\n`);
+
+  const parts = [];
+  let part = "";
+  for (const line of String(message).split("\n")) {
+    // A single line longer than the limit still has to go somewhere; it is sent on its own and
+    // GitHub truncates that one rather than taking the rest of the body with it.
+    if (part.length > 0 && part.length + line.length + 1 > MAX_ANNOTATION_CHARS) {
+      parts.push(part);
+      part = line;
+    } else {
+      part = part.length === 0 ? line : `${part}\n${line}`;
+    }
+  }
+  if (part.length > 0 || parts.length === 0) parts.push(part);
+
+  for (const [index, body] of parts.entries()) {
+    const suffix = parts.length > 1 ? ` ${index + 1}/${parts.length}` : "";
+    process.stdout.write(`::${level} title=${safeTitle}${escape(suffix)}::${escape(body)}\n`);
+  }
 }
 
 /**
