@@ -18,6 +18,7 @@
  */
 
 import { writeFileSync } from "node:fs";
+import { annotate } from "./annotate.mjs";
 import { normalizeSiriVm } from "@busstops/adapters";
 
 const args = process.argv.slice(2);
@@ -341,6 +342,133 @@ async function main(): Promise<void> {
     );
   }
 
+  /*
+   * The route page, from the board that named it, in the job that survives.
+   *
+   * The deployed verification already asks this and it keeps answering Cloudflare's error page —
+   * but it asks after ninety other requests against one isolate, and this job asks a passenger's
+   * handful. Whether a route page works for a person clicking one link, and whether it works on
+   * the hundredth rapid request, are two different questions and only the first one is the
+   * product. So the question is asked here too, serially, and the answer written in the form a
+   * reader can check: the route, its operator, the direction, the ordered stops, and the stop
+   * from the middle of that list opened on its own board.
+   */
+  head("Route pages: the ordered stops a passenger follows");
+
+  const routePages: unknown[] = [];
+  for (const area of stopsByArea.slice(0, 5)) {
+    const withRoutes = area.stops
+      .slice(0, 6)
+      .find((candidate) => asArray(at(candidate, "routePublicNames")).length > 0);
+    const atcoCode = withRoutes ? asText(at(withRoutes, "atcoCode")) : "";
+    if (!atcoCode) {
+      console.log(`  ${area.name.padEnd(20)} no stop in this viewport names a route`);
+      continue;
+    }
+
+    const board = await ask(`/v1/stops/${encodeURIComponent(atcoCode)}`);
+    const routeId = asText(at(board.json, "data", "routes", 0, "id"));
+    if (!routeId) {
+      console.log(
+        `  ${area.name.padEnd(20)} HTTP ${board.status}, ${asArray(at(board.json, "data", "routes")).length} route(s), none with an id`,
+      );
+      routePages.push({ area: area.name, atcoCode, boardStatus: board.status, routeId: null });
+      continue;
+    }
+
+    const page = await ask(`/v1/routes/${encodeURIComponent(routeId)}`);
+    const variants = asArray(at(page.json, "data", "variants"));
+    if (page.status !== 200 || variants.length === 0) {
+      console.log(
+        `  ${area.name.padEnd(20)} HTTP ${page.status}, ${variants.length} variant(s)` +
+          (page.text ? ` — ${page.text.slice(0, 80)}` : ""),
+      );
+      routePages.push({
+        area: area.name,
+        routeId,
+        status: page.status,
+        variants: variants.length,
+      });
+      continue;
+    }
+
+    // The dominant pattern: the one a reader means by "the route", and the one the page opens on.
+    const variant = variants.reduce((best, candidate) =>
+      asArray(at(candidate, "stops")).length > asArray(at(best, "stops")).length ? candidate : best,
+    );
+    const stops = asArray(at(variant, "stops"));
+    const names = stops.map((stop) => asText(at(stop, "name")));
+    const sequences = stops.map((stop) => Number(at(stop, "sequence")));
+    const ordered = sequences.every((value, i) =>
+      i === 0 ? value === 0 : value > sequences[i - 1]!,
+    );
+    /*
+     * Whether the order could have come from the names rather than the timetable. A sequence that
+     * happens to be alphabetical is not proof of a bug, but it is the one coincidence that would
+     * make a geographic or alphabetical sort look like a travel order, so it is always printed.
+     */
+    const alphabetical = names.every(
+      (name, i) => i === 0 || names[i - 1]!.localeCompare(name) <= 0,
+    );
+
+    const middle = stops[Math.floor(stops.length / 2)];
+    const middleAtco = asText(at(middle, "atcoCode"));
+    const middleBoard = middleAtco
+      ? await ask(`/v1/stops/${encodeURIComponent(middleAtco)}`)
+      : null;
+    const middleDue = asArray(at(middleBoard?.json, "data", "departures")).length;
+
+    console.log("");
+    console.log(`  ${asText(at(page.json, "data", "route", "publicName"))} — ${area.name}`);
+    console.log(`  ${names[0]} → ${names[names.length - 1]}`);
+    console.log(
+      `  ${stops.length} stops, ${variants.length} variant(s) [${[...new Set(variants.map((v) => asText(at(v, "direction")))).values()].join("/")}]` +
+        (asText(at(page.json, "data", "operator", "name"))
+          ? `, ${asText(at(page.json, "data", "operator", "name"))}`
+          : ""),
+    );
+    console.log(
+      `  Stop sequence ${ordered ? "verified from timetable pattern" : "IS NOT IN TRAVEL ORDER"}` +
+        (alphabetical ? " [WARNING: the names are also in alphabetical order]" : "") +
+        (at(page.json, "data", "complete") === false ? " [the read was truncated]" : ""),
+    );
+    console.log(
+      `  Stop #${Math.floor(stops.length / 2) + 1} (${asText(at(middle, "name"))}) ` +
+        `opens its live board ${middleBoard?.status === 200 ? "successfully" : `with HTTP ${middleBoard?.status}`}` +
+        `, ${middleDue} due`,
+    );
+
+    if (!ordered) {
+      failures.push(
+        `Route ${asText(at(page.json, "data", "route", "publicName"))} in ${area.name}: the stop sequence is not in travel order.`,
+      );
+    }
+    routePages.push({
+      area: area.name,
+      route: asText(at(page.json, "data", "route", "publicName")),
+      operator: asText(at(page.json, "data", "operator", "name")),
+      variants: variants.length,
+      stops: stops.length,
+      origin: names[0],
+      destination: names[names.length - 1],
+      ordered,
+      alphabetical,
+      complete: at(page.json, "data", "complete"),
+      middleStop: asText(at(middle, "name")),
+      middleStopNumber: Math.floor(stops.length / 2) + 1,
+      middleBoardStatus: middleBoard?.status ?? null,
+      middleDue,
+    });
+  }
+  report.routePages = routePages;
+
+  const workingRoutePages = routePages.filter(
+    (entry) => (entry as { ordered?: boolean }).ordered === true,
+  );
+  if (workingRoutePages.length === 0) {
+    failures.push("Route pages: not one city produced an ordered stop sequence.");
+  }
+
   head("Search, journey, disruptions, health");
 
   const search = await ask(`/v1/search?q=${encodeURIComponent("York Minster")}`);
@@ -402,6 +530,17 @@ async function main(): Promise<void> {
 
   // Reporting, not gating: this exists to show what the deployment does, and a red exit here
   // would stop the run before the evidence is uploaded. The workflow reads the verdict.
+  /*
+   * The whole report as an annotation. This job's log and its uploaded JSON are both served from a
+   * host this project's container cannot reach, so the one job that has passed on every run was
+   * also the one whose findings nobody working on it could read. See scripts/annotate.mjs.
+   */
+  annotate(
+    failures.length === 0 ? "notice" : "error",
+    `passenger probe (${failures.length} failure(s), ${notes.length} note(s))`,
+    JSON.stringify({ failures, notes, routePages: report.routePages }, null, 2),
+  );
+
   console.log("");
   console.log(`PROBE_FAILURES=${failures.length}`);
 }
