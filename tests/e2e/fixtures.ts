@@ -535,6 +535,13 @@ const OPERATOR_FIXTURE = {
   qualityFlags: [],
   name: "First West Yorkshire",
   licenceRegistryIds: ["FLDS"],
+  /*
+   * The address this operator really does publish as `agency_url` in its BODS feed, because that
+   * is what the ticket hand-off decides on. With it absent the hand-off correctly renders nothing
+   * at all, which meant the one thing on the route page a passenger might actually press was
+   * never on screen in any test.
+   */
+  contactUrl: "https://www.firstbus.co.uk/west-yorkshire",
   ticketDomains: [],
   serviceAreas: ["non_london"],
   active: true,

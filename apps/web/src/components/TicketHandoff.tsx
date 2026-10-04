@@ -1,3 +1,4 @@
+import { useId } from "react";
 import type { Operator } from "@busstops/contracts";
 import {
   EXTERNAL_LINK_ATTRIBUTES,
@@ -46,6 +47,13 @@ function hostnameOf(url: string): string | null {
 }
 
 export function TicketHandoff({ operator, routeName, headingLevel = 3 }: TicketHandoffProps) {
+  /*
+   * Generated, because this now appears on more than one page and a fixed id would eventually
+   * appear twice on the same one. Before the early returns: a hook may not be called
+   * conditionally.
+   */
+  const headingId = useId();
+
   if (!operator) return null;
 
   const registryCode = operator.licenceRegistryIds[0] ?? operator.id;
@@ -83,8 +91,8 @@ export function TicketHandoff({ operator, routeName, headingLevel = 3 }: TicketH
   const Heading = headingLevel === 2 ? "h2" : "h3";
 
   return (
-    <section className="ticket-handoff" aria-labelledby="ticket-handoff-heading">
-      <Heading id="ticket-handoff-heading">Tickets</Heading>
+    <section className="ticket-handoff" aria-labelledby={headingId}>
+      <Heading id={headingId}>Tickets</Heading>
       {sold ? (
         <p>
           <a className="ticket-handoff__buy" href={sold.url} {...EXTERNAL_LINK_ATTRIBUTES}>

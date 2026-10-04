@@ -9,7 +9,7 @@
 
 import { writeFileSync } from "node:fs";
 import type { Operator, ServiceRoute, VehicleObservation } from "@busstops/contracts";
-import { ArtifactStore, r2StoreFromEnv } from "@busstops/pipeline-core";
+import { ArtifactStore, annotateReport, r2StoreFromEnv } from "@busstops/pipeline-core";
 import { classify } from "@busstops/governor";
 import { runAnalyticsBatch } from "./src/run.js";
 import type { RoadSegment } from "./src/segments.js";
@@ -292,15 +292,7 @@ function writeReport(report: Record<string, unknown>): void {
    * numbers are the difference between a missing operator in the network build and two sources
    * disagreeing about a line name, and they have never been readable from here.
    */
-  if (process.env.GITHUB_ACTIONS) {
-    const text = JSON.stringify(report, null, 2)
-      .replace(/%/g, "%25")
-      .replace(/\r/g, "%0D")
-      .replace(/\n/g, "%0A")
-      .replace(/::/g, "%3A%3A");
-    const outcome = String((report as { outcome?: unknown }).outcome ?? "unknown");
-    console.log(`::notice title=analytics batch (${outcome})::${text}`);
-  }
+  annotateReport("analytics batch", report);
 }
 
 main()

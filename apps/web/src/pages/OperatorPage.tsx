@@ -13,6 +13,7 @@ import { PixelVista } from "../components/pixel/PixelVista.js";
 import { apiClient } from "../lib/api.js";
 import { useFetch } from "../lib/use-fetch.js";
 import "./OperatorPage.css";
+import { TicketHandoff } from "../components/TicketHandoff.js";
 import { PixelSectionHeading } from "../components/pixel/PixelSectionHeading.js";
 
 /**
@@ -72,15 +73,31 @@ export function OperatorPage() {
 
       <PixelVista
         title={operator.name}
+        /*
+         * `https` only. `contactUrl` is `agency_url` from the operator's own feed, so it is feed
+         * text, and the pipeline accepts `http` — a passenger should not be sent from here to a
+         * plaintext page. The ticket hand-off below applies the same rule and says where the
+         * link goes; this one is just the name of the thing.
+         */
         standfirst={
-          operator.contactUrl ? (
-            <a href={operator.contactUrl} rel="noreferrer noopener" target="_blank">
+          operator.contactUrl && /^https:\/\//i.test(operator.contactUrl) ? (
+            <a href={operator.contactUrl} rel="noreferrer noopener external" target="_blank">
               Operator website
             </a>
           ) : undefined
         }
         vista="depot"
       />
+
+      {/*
+        Where a passenger who followed an operator link actually wanted to end up.
+ 
+        Both the stop board and "Bus not come?" offer the operator as the way to buy a ticket or
+        ask a question, and this page answered with a name and a performance grid. The hand-off
+        decides between a verified seller and the operator's own published address, and renders
+        nothing at all when it has neither — so there is never a dead button here.
+      */}
+      <TicketHandoff operator={operator} headingLevel={2} />
 
       {/*
         What this operator is, in the fields the endpoint actually returns.
