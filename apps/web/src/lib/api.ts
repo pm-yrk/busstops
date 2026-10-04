@@ -91,6 +91,17 @@ export function isPlatformFailure(error: unknown): boolean {
 /** Long enough for the isolate that refused to be replaced, short enough that nobody notices. */
 const RETRY_DELAY_MS = 350;
 
+/**
+ * How long any one attempt waits before it is a stated failure.
+ *
+ * Twenty seconds, which is far longer than a healthy answer and far shorter than forever. The
+ * Worker's own budgets are 1.8 seconds for a map and 6 for a journey, so anything approaching this
+ * is not slow, it is gone. Two attempts plus the delay between them puts the worst case a
+ * passenger can see at about forty seconds, which is the price of retrying a platform failure that
+ * is usually transient.
+ */
+const REQUEST_TIMEOUT_MS = 20_000;
+
 export interface ProScopeQuery {
   areaId?: string | null;
   operatorId?: string | null;
@@ -150,10 +161,48 @@ export class ApiClient {
     signal?: AbortSignal,
     schema?: { safeParse: (value: unknown) => { success: boolean; data?: unknown } },
   ): Promise<T> {
-    const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
-      headers: { Accept: "application/json" },
-      ...(signal ? { signal } : {}),
-    });
+    /*
+     * Every request gets a deadline, and until now none of them did.
+     *
+     * A caller could pass an abort signal — the map does, so a fast pan drops its own request —
+     * but nothing bounded a request the server simply never answered. Run 96's sweep caught the
+     * consequence twice: the journey page showing a working animation, no result and no reason,
+     * because its request had neither returned nor failed. A passenger watching a bus drive across
+     * the screen for thirty seconds has been told nothing, and the page cannot say why it is stuck
+     * because as far as it knows nothing has gone wrong.
+     *
+     * A timeout is a failure, not a cancellation, and the two have to stay distinguishable: a
+     * caller's abort is something the page did deliberately and every one of them ignores it,
+     * while this is something a passenger has to be told about. So the deadline is its own
+     * controller and the abort it raises is converted into an `ApiError` the pages already render.
+     */
+    const deadline = new AbortController();
+    const timer = setTimeout(() => deadline.abort(), REQUEST_TIMEOUT_MS);
+    const onCallerAbort = () => deadline.abort();
+    signal?.addEventListener("abort", onCallerAbort);
+
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`${this.baseUrl}${path}`, {
+        headers: { Accept: "application/json" },
+        signal: deadline.signal,
+      });
+    } catch (error) {
+      // The caller's own abort is theirs; pages treat it as "never mind" and must keep doing so.
+      if (signal?.aborted === true) throw error;
+      if (deadline.signal.aborted) {
+        throw new ApiError(
+          `We asked for this and heard nothing back within ${Math.round(REQUEST_TIMEOUT_MS / 1000)} seconds. ` +
+            `That is a fault on our side rather than a statement about the buses.`,
+          504,
+          "timeout",
+        );
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onCallerAbort);
+    }
 
     if (!response.ok) {
       let code = "internal";

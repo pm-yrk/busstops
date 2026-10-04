@@ -102,4 +102,76 @@ describe("asking again when the platform refuses", () => {
 
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
+
+  /*
+   * A request that is never answered becomes a stated failure, not a page that spins.
+   *
+   * Nothing bounded a request the server simply never answered. Run 96's sweep caught it twice:
+   * the journey page showing a working animation, no result and no reason, because its request had
+   * neither returned nor failed. A passenger watching a bus drive across the screen for thirty
+   * seconds has been told nothing.
+   */
+  it("gives up on a request that is never answered, and says so", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = vi.fn(
+        (_url: string, init?: { signal?: AbortSignal }) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => {
+              reject(new DOMException("aborted", "AbortError"));
+            });
+          }),
+      );
+      const client = new ApiClient({
+        baseUrl: "https://api.example",
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+
+      const pending = client.sourcesHealth();
+      await vi.advanceTimersByTimeAsync(20_000);
+
+      await expect(pending).rejects.toThrow(/heard nothing back/);
+      /*
+       * Once, not twice, and deliberately.
+       *
+       * A blocked fetch and a 503 are retried because they usually succeed on the second ask and
+       * cost a passenger a few hundred milliseconds. A deadline is different: the Worker's own
+       * budgets are 1.8 seconds for a map and 6 for a journey, so twenty seconds of silence is not
+       * slowness, and asking again would mean forty seconds of a bus animation before anybody was
+       * told anything. The timeout surfaces as a 504, which `isPlatformFailure` does not count, so
+       * this is the policy agreeing with itself rather than an omission.
+       */
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /*
+   * And a caller's own abort stays a cancellation. Every page treats that as "never mind" — a fast
+   * pan drops its map request — so turning it into an error would put a notice on screen every
+   * time somebody moved the map.
+   */
+  it("keeps a caller's cancellation a cancellation", async () => {
+    const controller = new AbortController();
+    const fetchImpl = vi.fn(
+      (_url: string, init?: { signal?: AbortSignal }) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            reject(new DOMException("aborted", "AbortError"));
+          });
+        }),
+    );
+    const client = new ApiClient({
+      baseUrl: "https://api.example",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    const pending = client.sourcesHealth(controller.signal);
+    controller.abort();
+
+    await expect(pending).rejects.toThrow(DOMException);
+    // Not retried, and not dressed up as a timeout.
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
 });
