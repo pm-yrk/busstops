@@ -271,9 +271,28 @@ test.describe("the walk a passenger takes", () => {
     if ((await tabs.count()) > 1) {
       // Each tab names its direction, so "which way round is this" is answerable on the page.
       await expect(tabs.first()).toContainText(/outbound|inbound|circular/i);
+
+      /*
+       * Visibly selected, not merely marked selected.
+       *
+       * `aria-selected` is the right attribute and it is what a screen reader reads, but a sighted
+       * passenger has to be able to see which sequence they are looking at — and an attribute is
+       * invisible. So the two tabs' computed backgrounds are compared: the selected one inverts.
+       */
+      const backgroundOf = (index: number) =>
+        tabs.nth(index).evaluate((node) => getComputedStyle(node).backgroundColor);
+      const selectedBefore = await backgroundOf(0);
+      const unselectedBefore = await backgroundOf(1);
+      expect(selectedBefore, "the selected variant looks identical to the unselected one").not.toBe(
+        unselectedBefore,
+      );
+
       await tabs.nth(1).click();
       await expect(tabs.nth(1)).toHaveAttribute("aria-selected", "true");
       await expect(sequence.first()).toBeVisible();
+      // And the emphasis moved with the selection.
+      expect(await backgroundOf(1)).toBe(selectedBefore);
+      expect(await backgroundOf(0)).toBe(unselectedBefore);
     } else {
       // One pattern: the direction belongs on the stop-count line instead.
       await expect(page.getByText(/outbound|inbound|circular/i).first()).toBeVisible();

@@ -590,6 +590,14 @@ export const ROUTE_DETAIL = {
       validTo: null,
     },
     operator: OPERATOR_FIXTURE,
+    /*
+     * Both directions, because every real route has them and one variant let a test skip itself.
+     *
+     * `flows.spec.ts` guards the variant selector behind `tabs.count() > 1` — correctly, since a
+     * single-pattern route shows no tablist — and with one variant here the assertions about
+     * selecting a direction never ran. A fixture that is simpler than the product lets a test pass
+     * by not executing.
+     */
     variants: [
       {
         patternId: "00000000-0000-5000-8000-0000000000f2",
@@ -597,6 +605,13 @@ export const ROUTE_DETAIL = {
         description: "Leeds City Bus Station to Roundhay Park",
         distanceMetres: 8400,
         stops: ROUTE_STOPS,
+      },
+      {
+        patternId: "00000000-0000-5000-8000-0000000000f3",
+        direction: "inbound",
+        description: "Roundhay Park to Leeds City Bus Station",
+        distanceMetres: 8400,
+        stops: [...ROUTE_STOPS].reverse().map((stop, index) => ({ ...stop, sequence: index })),
       },
     ],
     // Three live vehicles, so the per-vehicle sprite row is drawn more than once.
