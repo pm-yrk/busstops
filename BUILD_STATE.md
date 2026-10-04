@@ -34,6 +34,56 @@ York's 20 has six; X10 and the 35 each carry both directions. The page opens on 
 with the most stops and offers the rest as tabs, with the stop count appended where two
 variants would otherwise read as the same words.
 
+### 4 October: three things that were measuring the wrong thing
+
+A run's own instruments were wrong in three places, and each one had been costing real
+investigation. Worth recording together, because the pattern is the lesson.
+
+**The search filter had never filtered anything.** `searchLineFilter` returned `(line: string) =>
+boolean` and was passed where a `LineFilter` — `(body, start, end)` — was expected. TypeScript
+accepts a function of fewer parameters, so it compiled and at run time received the _whole object
+body_ as its "line": the test it ran was "does this three-letter stem occur anywhere in this 5.1
+MiB bucket", which for any real query it does. Every search parsed all twenty thousand records of
+every bucket it opened, and the function's own comment about avoiding a per-line allocation
+described code that never ran. The only caller passing a single line was its test, which is why
+nothing caught it — correcting the signature made TypeScript reject that test immediately.
+
+**The gazetteer was not filtered because of a wrong diagnosis.** Run 82 filtered it with a
+lowercase stem, lost Manchester Arndale, Bullring and Bristol Temple Meads, and the conclusion
+recorded was that filtering it is unsafe. It is not: a stop's entry is published with `tokens`
+built by `tokenize`, which lowercases, while a place is published as a `PlaceRecord` whose
+searchable words are `name` and `subtitle` in the case a cartographer wrote them. "man" does not
+occur in "Manchester Arndale". `placeLineFilter` tests both forms and is bounded to those two field
+values — because the record's key names are in that text too and `"prominence"` contains "min", so
+a search for "Minster" matched every landmark and narrowed nothing. Over-matching is safe, which is
+exactly why that would have gone unnoticed. The five names in the test are the deployed check's own
+list.
+
+**The emptiness check counted the wrong controls.** "2 content elements, no controls and 91 words
+under 'Plan a journey', and nothing saying why" was reported at two widths for three runs, and the
+page it describes has three things to press: `EndpointPicker` renders a text input only while its
+endpoint is empty, so a journey arrived at from a link — both ends supplied, which is the case the
+sweep photographs — has two Change buttons and a Plan button and not one `input`. Three runs of
+looking at the journey endpoint for a fault in the measurement. The bus-click check had the same
+shape: it named `label.live-map__layer` as the blocker three runs running, which is the layer
+switcher, a real control over a corner of the map, and "every bus in this viewport is behind the
+controls" is not "clicking a bus is broken". It re-centres the map and tries again now.
+
+**And one real product defect the sweep did find.** Nothing in the API client bounded a request the
+server never answered. A caller could pass an abort signal — the map does — but a request that
+simply hung hung forever, and the page could not say why it was stuck because as far as it knew
+nothing had gone wrong. Twenty seconds now, eight for a viewport whose own ladder takes it three
+times. A timeout is a failure and a caller's abort is a cancellation, and they stay distinguishable
+because every page treats a cancellation as "never mind".
+
+**The instrument for the open question is in.** `startedNotFinished` — started minus finished,
+reported on every breadcrumb — is concurrency plus every death the isolate has accumulated, since a
+killed request never reaches the line that would decrement it. Two readings in one and
+distinguishable: a figure that rises and falls is live concurrency, a floor that only climbs is
+requests lost. Four rounds of reducing per-request work have not stopped requests dying once an
+isolate has served about seventy of them, and every survivor in those runs is cheap, so the next
+measurement has to be of the isolate rather than of the request.
+
 ### 3 October, runs 95 and 96: the stage marks paid for themselves
 
 The stage crumbs added in `cb610bc` turned four runs of guesswork into three named lines of code.
