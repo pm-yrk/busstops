@@ -107,7 +107,18 @@ describe("RoutePage", () => {
     vi.spyOn(apiClient, "route").mockResolvedValue(response);
     renderAt("/routes/r1", "/routes/:routeId", <RoutePage />);
 
-    expect(await screen.findByText("Leeds to Bradford")).toBeTruthy();
+    /*
+     * The heading names the route by its number first and then by where it goes.
+     *
+     * It used to be the description alone — "Leeds to Bradford" — with the number only in the
+     * badge beside it, so the page's heading, its document title and the first thing a screen
+     * reader announced all identified the route by its destinations rather than by what is written
+     * on the front of the bus. A passenger looking for the 36 is looking for "36".
+     */
+    const heading = await screen.findByRole("heading", { level: 1 });
+    expect(heading.textContent).toContain(response.data.route.publicName);
+    expect(heading.textContent).toContain("Leeds to Bradford");
+
     expect(screen.getByRole("link", { name: "First West Yorkshire" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Leeds City Bus Station" })).toBeTruthy();
   });

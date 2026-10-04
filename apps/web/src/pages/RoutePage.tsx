@@ -135,8 +135,21 @@ export function RoutePage() {
         The badge stands beside the title rather than inside the masthead's text, because it is
         the route's identity and not decoration: it is the thing somebody scanned the page for.
       */}
+      {/*
+        The heading leads with the number, because that is what somebody came here for.
+ 
+        It used to be `route.description` alone — "Leeds — Roundhay Park" — with the number only in
+        the badge beside it. The badge is right there and carries an accessible name, so this was
+        not invisible; but the page's heading, its document title and the line a screen reader
+        announces first all named the route by where it goes and not by what is written on the
+        front of the bus. A passenger looking for the 36 is looking for "36".
+      */}
       <PixelVista
-        title={route.description ?? `Route ${route.publicName}`}
+        title={
+          route.description
+            ? `${route.publicName} · ${route.description}`
+            : `Route ${route.publicName}`
+        }
         standfirst={
           operator ? (
             <>

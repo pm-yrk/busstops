@@ -86,7 +86,20 @@ export const STOP_RESPONSE = {
         confidence: { level: "low", score: 0.3, reasons: ["timetable only"] },
       },
     ],
+    /*
+     * Two routes, and the first of them is the one `ROUTE_DETAIL` describes.
+     *
+     * It used to name only a "72" whose id resolved, in the mock, to a route page headed "36" —
+     * so the fixture world contradicted itself at exactly the join a passenger walks, and
+     * flows.spec.ts caught it on its first run. A stop served by two routes where only one has a
+     * departure due in the window is an ordinary stop, so the 72 stays.
+     */
     routes: [
+      {
+        id: "00000000-0000-5000-8000-0000000000d1",
+        publicName: "36",
+        operatorName: "First West Yorkshire",
+      },
       {
         id: "00000000-0000-5000-8000-0000000000e1",
         publicName: "72",
@@ -668,6 +681,79 @@ export const VEHICLE_DETAIL = {
 };
 
 /** Routes every API call to a fixture, so no test depends on an upstream being reachable. */
+/**
+ * Search and nearby, answering with the same world the rest of these fixtures describe.
+ *
+ * Both used to answer `{ results: [] }`, which meant no end-to-end flow could be walked at all:
+ * a passenger's actual path is home → search → stop → departure → route → an ordered stop → that
+ * stop's board, and the second hop was a dead end. Every page was tested in isolation and the
+ * joins between them — the thing a person actually experiences — were tested nowhere.
+ *
+ * So the search result *is* `STOP_RESPONSE`'s stop, and the route a result leads to *is*
+ * `ROUTE_DETAIL`'s route. A fixture world that contradicts itself would let a flow test pass on
+ * links that go nowhere in the real product.
+ */
+export const SEARCH_RESULTS = {
+  meta: META,
+  data: {
+    results: [
+      {
+        kind: "stop",
+        id: STOP_ID,
+        title: "Leeds City Bus Station",
+        subtitle: "Stand 12 · Leeds",
+        coordinate: { lat: 53.7965, lon: -1.5379 },
+        atcoCode: "450010001",
+        hasLiveCoverage: true,
+      },
+      {
+        kind: "place",
+        id: "place:node:1",
+        title: "Leeds Station",
+        subtitle: "Railway station in Leeds",
+        coordinate: { lat: 53.7955, lon: -1.5486 },
+        hasLiveCoverage: false,
+      },
+      {
+        kind: "route",
+        id: ROUTE_ID,
+        title: "36",
+        subtitle: "Leeds — Roundhay Park · First West Yorkshire",
+        hasLiveCoverage: true,
+      },
+    ],
+  },
+};
+
+/** The same stop, as "stops near me" returns it: with how far away it is. */
+export const NEARBY_RESULTS = {
+  meta: META,
+  data: {
+    results: [
+      {
+        kind: "stop",
+        id: STOP_ID,
+        title: "Leeds City Bus Station",
+        subtitle: "Stand 12 · Leeds",
+        coordinate: { lat: 53.7965, lon: -1.5379 },
+        atcoCode: "450010001",
+        hasLiveCoverage: true,
+        distanceMetres: 120,
+      },
+      {
+        kind: "stop",
+        id: "00000000-0000-5000-8000-000000000201",
+        title: "Vicar Lane",
+        subtitle: "Leeds",
+        coordinate: { lat: 53.798, lon: -1.539 },
+        atcoCode: "450010101",
+        hasLiveCoverage: true,
+        distanceMetres: 310,
+      },
+    ],
+  },
+};
+
 export async function mockApi(page: Page, overrides: Record<string, unknown> = {}): Promise<void> {
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
@@ -736,9 +822,11 @@ export async function mockApi(page: Page, overrides: Record<string, unknown> = {
                             ? VEHICLE_DETAIL
                             : path === "/v1/map"
                               ? EMPTY_MAP
-                              : path === "/v1/search" || path === "/v1/nearby"
-                                ? { meta: META, data: { results: [] } }
-                                : { meta: META, data: {} });
+                              : path === "/v1/search"
+                                ? SEARCH_RESULTS
+                                : path === "/v1/nearby"
+                                  ? NEARBY_RESULTS
+                                  : { meta: META, data: {} });
 
     await route.fulfill({
       status: 200,

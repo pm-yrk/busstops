@@ -15,6 +15,17 @@ import "./ArrivalBoard.css";
 export interface ArrivalBoardProps {
   stopName: string;
   stopCode: string;
+  /**
+   * Whether this board's stop name is the page's own heading.
+   *
+   * Two places draw this board and they are not the same page. On the stop page the stop *is* the
+   * subject, and that page had no `<h1>` at all — the busiest page in the product, reached from
+   * every search result, journey leg and map marker, with a document outline starting at `h2` and
+   * nothing for a screen reader to announce as the page. Axe did not catch it: "page has no level
+   * one heading" is a best-practice rule, not a violation. On the live map the page is the map and
+   * a selected stop is a panel within it, so there `h2` is right.
+   */
+  headingLevel?: 1 | 2;
   departures: readonly DeparturePrediction[];
   now: Date;
   /** Age of the underlying data in seconds; drives the freshness line. */
@@ -39,6 +50,7 @@ export function ArrivalBoard({
   departures,
   now,
   ageSeconds,
+  headingLevel = 2,
   maxRows = 4,
   onViewAll,
   degraded = false,
@@ -67,9 +79,15 @@ export function ArrivalBoard({
           <p className="arrival-board__next">NEXT BUS</p>
         </div>
         <div>
-          <h2 id="arrival-board-heading" className="arrival-board__stop">
-            {stopName}
-          </h2>
+          {headingLevel === 1 ? (
+            <h1 id="arrival-board-heading" className="arrival-board__stop">
+              {stopName}
+            </h1>
+          ) : (
+            <h2 id="arrival-board-heading" className="arrival-board__stop">
+              {stopName}
+            </h2>
+          )}
           <p className="arrival-board__code">Stop {stopCode}</p>
         </div>
       </header>

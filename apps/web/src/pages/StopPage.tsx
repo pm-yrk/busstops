@@ -159,6 +159,14 @@ export function StopPage() {
       </nav>
 
       <ArrivalBoard
+        /*
+         * The stop is this page's subject, so its name is the page's heading.
+         *
+         * This page had no `<h1>` — the one a search result, a journey leg and every map marker
+         * lands on. The board's own `h2` was the first heading on it, which leaves a screen reader
+         * with no page title and the outline starting a level down.
+         */
+        headingLevel={1}
         stopName={stop.name}
         stopCode={stop.naptanCode ?? stop.atcoCode}
         departures={departures}
