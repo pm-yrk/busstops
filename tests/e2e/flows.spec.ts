@@ -113,6 +113,38 @@ test.describe("the walk a passenger takes", () => {
     ).toBeVisible();
   });
 
+  /*
+   * The help a passenger gets when their bus has not come, on the page they are actually on.
+   *
+   * It existed only on the vehicle page — reached by clicking a bus on the live map — so somebody
+   * standing at a stop was offered nothing. Checked in a browser at every viewport because the
+   * panel is a column of blocks and a phone is where it would fall apart.
+   */
+  test("a stop offers practical help when the bus has not come", async ({ page }) => {
+    await mockApi(page);
+    await page.goto(`/stops/${STOP_ID}`);
+
+    const help = page.locator(".waiting-help");
+    await expect(help).toBeVisible();
+    await expect(help.getByRole("heading", { name: /Bus not come\?/ })).toBeVisible();
+
+    // Another route from this stop, as a link to its ordered stops.
+    await expect(help.getByRole("link", { name: /72/ }).first()).toBeVisible();
+
+    // A journey re-plan that starts where the passenger is standing.
+    const replan = help.getByRole("link", { name: /Plan a different journey/ });
+    await expect(replan).toBeVisible();
+    expect(await replan.getAttribute("href")).toContain("fromLabel=Leeds");
+
+    // Nearby stops come from a real lookup, so either a suggestion or a stated reason.
+    await expect(
+      help.getByText(/m away|no other stop within|could not look up|Looking for stops nearby/),
+    ).toBeVisible();
+
+    // And the limit of what we claim, said once.
+    await expect(help.getByText(/not necessarily been cancelled/)).toBeVisible();
+  });
+
   test("nearby → a stop → its board", async ({ page }) => {
     await mockApi(page);
     await page.goto("/search");

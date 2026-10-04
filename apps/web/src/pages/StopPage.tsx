@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import type { StopDeparturesResponse } from "@busstops/contracts";
+import type { SearchResponse, StopDeparturesResponse } from "@busstops/contracts";
 import { AccessibilityCard } from "../components/AccessibilityCard.js";
 import { ArrivalBoard } from "../components/ArrivalBoard.js";
 import { OfficialNotices } from "../components/OfficialNotices.js";
@@ -16,6 +16,7 @@ import {
 import { PixelSectionHeading } from "../components/pixel/PixelSectionHeading.js";
 import { WeatherVignette } from "../components/WeatherVignette.js";
 import { WillIMakeItPanel } from "../components/WillIMakeItPanel.js";
+import { WaitingHelp } from "../components/WaitingHelp.js";
 import { apiClient, ApiError } from "../lib/api.js";
 import { useFetch, useTicker } from "../lib/use-fetch.js";
 import { formatLondonTime, walkingMinutes } from "../lib/format.js";
@@ -53,6 +54,36 @@ export function StopPage() {
   });
 
   const now = useTicker();
+
+  /*
+   * Stops nearby, for the passenger whose bus has not come.
+   *
+   * Asked for by coordinate rather than by stop id, because that is the endpoint that exists, and
+   * only once the board itself has answered — a second request racing the first would compete for
+   * the same ten milliseconds of Worker CPU on the page that most needs them. `enabled` is what
+   * sequences them.
+   */
+  /*
+   * The two numbers, not the object that holds them.
+   *
+   * `response.data.stop.locationCoordinate` is a fresh object on every render, so a callback
+   * depending on it would be rebuilt every render and the fetch effect would re-run every render
+   * — a request per frame against the endpoint this page can least afford to hammer. Depending on
+   * the latitude and longitude themselves gives a stable identity and satisfies the exhaustive
+   * dependency rule honestly, rather than by silencing it.
+   */
+  const stopLat = response?.data.stop.locationCoordinate.lat ?? null;
+  const stopLon = response?.data.stop.locationCoordinate.lon ?? null;
+  const nearbyFetcher = useCallback(
+    (signal: AbortSignal) =>
+      stopLat !== null && stopLon !== null
+        ? apiClient.nearby({ lat: stopLat, lon: stopLon }, 500, signal)
+        : Promise.reject(new Error("the stop's coordinate is not known yet")),
+    [stopLat, stopLon],
+  );
+  const { data: nearbyResponse, error: nearbyError } = useFetch<SearchResponse>(nearbyFetcher, {
+    enabled: stopLat !== null && stopLon !== null,
+  });
 
   const ageSeconds = useMemo(() => {
     if (!response?.meta.observedAt) return null;
@@ -350,6 +381,39 @@ export function StopPage() {
           </ul>
         </section>
       ) : null}
+
+      {/*
+        Help for the passenger whose bus has not come.
+ 
+        Placed after the board and the routes, because somebody who can see their bus coming does
+        not need it — and before the stop's own details, because somebody who cannot is not reading
+        about shelters. `BusStoppedPanel` answers the neighbouring question and only exists on the
+        vehicle page, which is reached by clicking a bus on the live map: a passenger standing at a
+        stop is not looking at a bus, and until now this page offered them nothing.
+      */}
+      <WaitingHelp
+        stop={stop}
+        departures={departures}
+        routes={response.data.routes}
+        disruptions={response.data.disruptions}
+        degradation={response.meta.degradation}
+        now={now}
+        ageSeconds={ageSeconds}
+        timetableCoverage={response.data.timetableCoverage}
+        nearby={
+          nearbyResponse
+            ? nearbyResponse.data.results
+                .filter((result) => result.kind === "stop" && result.id !== stop.id)
+                .map((result) => ({
+                  id: result.id,
+                  title: result.title,
+                  distanceMetres: result.distanceMetres,
+                }))
+            : null
+        }
+        nearbyFailed={nearbyError !== null}
+        walkingUrl={walkingUrl}
+      />
 
       <AccessibilityCard accessibility={response.data.accessibility} />
 

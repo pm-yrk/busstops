@@ -16,6 +16,7 @@ import {
   ServiceBanner,
   StateLozenge,
 } from "../components/primitives.js";
+import { TicketHandoff } from "../components/TicketHandoff.js";
 import { apiClient } from "../lib/api.js";
 import { useFetch, useTicker } from "../lib/use-fetch.js";
 import { formatLondonTime } from "../lib/format.js";
@@ -418,6 +419,15 @@ export function RoutePage() {
             description="The timetable for this route does not include a stop sequence we can show."
           />
         )}
+      </section>
+
+      {/*
+        How to pay for it, where we can honestly say. Omitted entirely when we cannot — see
+        `TicketHandoff`, which prefers a verified seller and falls back to the operator's own
+        published address rather than guessing one.
+      */}
+      <section className="route-page__section">
+        <TicketHandoff operator={operator} routeName={route.publicName} headingLevel={2} />
       </section>
 
       <section aria-labelledby="route-frequency-heading" className="route-page__section">

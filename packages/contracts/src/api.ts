@@ -161,7 +161,13 @@ export const StopDeparturesResponseSchema = apiEnvelope(
     departures: z.array(DeparturePredictionSchema),
     /** Routes serving this stop, for the arrival board and route links. */
     routes: z.array(
-      z.object({ id: z.string().uuid(), publicName: z.string(), operatorName: z.string() }),
+      z.object({
+        id: z.string().uuid(),
+        publicName: z.string(),
+        /** The operator's own id, so a stop can link to them and not merely name them. */
+        operatorId: z.string().uuid().optional(),
+        operatorName: z.string(),
+      }),
     ),
     /**
      * Whether that list is all of them.

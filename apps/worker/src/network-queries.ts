@@ -129,7 +129,7 @@ export function routesServingStop(
   stopId: string,
   services: ReadonlyMap<string, ServiceRoute>,
   operators: ReadonlyMap<string, Operator>,
-): Array<{ id: string; publicName: string; operatorName: string }> {
+): Array<{ id: string; publicName: string; operatorId: string; operatorName: string }> {
   const serviceIds = new Set<string>();
   for (const pattern of patterns) {
     if (pattern.stopSequence.includes(stopId)) {
@@ -145,11 +145,22 @@ export function routesServingStop(
       return {
         id: service.id,
         publicName: service.publicName,
+        /*
+         * The operator's id as well as its name, so a stop can link to them.
+         *
+         * The name alone is a label; a passenger whose bus has not come wants the operator's own
+         * page — their contact details and what else they run — and the stop board was the one
+         * place that named an operator without being able to reach it.
+         */
+        operatorId: service.operatorId,
         operatorName: operator?.name ?? "Unknown operator",
       };
     })
     .filter(
-      (entry): entry is { id: string; publicName: string; operatorName: string } => entry !== null,
+      (
+        entry,
+      ): entry is { id: string; publicName: string; operatorId: string; operatorName: string } =>
+        entry !== null,
     )
     .sort((a, b) => compareRouteNames(a.publicName, b.publicName));
 }
