@@ -1300,6 +1300,95 @@ await check("a route page gives its stops in travel order", async () => {
  * CORS header — which is why a browser reported it as a CORS failure rather than a server error.
  * That is what the HTML check below is looking for.
  */
+/**
+ * What one page load actually does, which is not what the burst check does.
+ *
+ * The burst check is one client issuing 150 requests at an isolate, and the directive is right
+ * that a passenger is not that. But the visual sweep — one browser, opening one page at a time
+ * against the real deployment — still lost `/v1/map` and `/v1/routes/:id` to Cloudflare's error
+ * page, reported as a CORS failure because that page carries no `Access-Control-Allow-Origin`.
+ * The reason is that **a single page load is not a single request**: opening a stop fires the
+ * board, the nearby stops and the weather together; opening the map fires stops and vehicles.
+ * Three or four at once is exactly the `startedNotFinished` the dying requests recorded.
+ *
+ * So this asks the question a page asks: four heavy requests in parallel, from one client, the
+ * way a browser would. It is a passenger check, not a stress check, because a page that cannot
+ * load its own pieces together is broken for a person, whatever a paced client sees.
+ */
+await check("a page's worth of requests at once, the way a browser opens one", async () => {
+  const PAGE_LOADS = 4;
+  const lines = [];
+  let platformErrors = 0;
+  let requests = 0;
+
+  for (let round = 1; round <= PAGE_LOADS; round += 1) {
+    /*
+     * Deliberately the heavy four, fired together with no pacing between them — this is the one
+     * place in the harness where concurrency is the thing under test rather than an accident.
+     */
+    const together = [
+      [`/v1/map?bbox=${BBOX}&zoom=15`, "map"],
+      [`/v1/nearby?lat=53.4794&lon=-2.2453&radius=500`, "nearby"],
+      [`/v1/map?bbox=-1.6000,53.7700,-1.5200,53.8200&zoom=15`, "map (Leeds)"],
+      [`/v1/sources/health`, "source health"],
+    ];
+
+    const settled = await Promise.all(
+      together.map(async ([path, label]) => {
+        requests += 1;
+        try {
+          const { response, body, text } = await getJson(path);
+          /*
+           * The platform's own error page, not ours. It is HTML, and it is the signature of a
+           * Worker killed past its resource limit — a browser never sees a status for it.
+           */
+          const platform =
+            !response.ok &&
+            typeof text === "string" &&
+            /<html|error 1102|exceeded resource limits/i.test(text);
+          if (platform) platformErrors += 1;
+          return {
+            label,
+            ok: response.ok,
+            platform,
+            status: response.status,
+            detail: response.ok
+              ? `${(body?.data?.stops ?? body?.data?.sources ?? body?.data ?? []).length ?? "ok"}`
+              : platform
+                ? "the platform's error page"
+                : `HTTP ${response.status}`,
+          };
+        } catch (error) {
+          // A bare TypeError from fetch is what a killed isolate looks like to a client too.
+          platformErrors += 1;
+          return {
+            label,
+            ok: false,
+            platform: true,
+            status: 0,
+            detail: String(error?.message ?? error),
+          };
+        }
+      }),
+    );
+
+    const failed = settled.filter((one) => !one.ok);
+    lines.push(
+      `load ${round}: ${settled.length - failed.length}/${settled.length} ok` +
+        (failed.length > 0 ? ` — ${failed.map((f) => `${f.label}: ${f.detail}`).join(", ")}` : ""),
+    );
+  }
+
+  assert(
+    platformErrors === 0,
+    `${platformErrors} of ${requests} request(s) across ${PAGE_LOADS} page loads were answered by ` +
+      `the platform rather than by the Worker, which is what a browser reports as a CORS failure. ` +
+      lines.join(" | "),
+  );
+
+  return `${requests} requests across ${PAGE_LOADS} simultaneous-four page loads, no platform errors — ${lines.join(" | ")}`;
+});
+
 await check("the pattern-heavy endpoints survive dense cities, repeatedly", async () => {
   /*
    * Five cities, five times each: twenty-five dense map requests in one run.

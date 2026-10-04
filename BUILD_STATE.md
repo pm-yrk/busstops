@@ -73,6 +73,63 @@ charged for, so it would not slow a normal page.
 
 Classification stands: **RESILIENCE / LOAD — OPEN.** Not a passenger blocker.
 
+### 4 October: the load bug reaches real browsing, and is now gated — re-ranked from P3
+
+The classification above said RESILIENCE / LOAD, not a passenger blocker, on the evidence then
+available. The visual sweep's own result changes the ranking, and the directive says to re-rank
+anything that becomes visibly user-facing.
+
+The sweep is **one browser opening one page at a time** against the deployment — it is not the
+150-request burst. It passed 430 of 453 checks, and among the 23 that failed were these, all with
+the same signature:
+
+    phone/live loads without console errors — Access to fetch at '…/v1/map?bbox=…' has been
+      blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present
+    tablet/route loads without console errors — same, on /v1/routes/:id
+    tablet/live-stop-deeplink draws its stops — 0 stop(s) drawn and 0 inside clusters
+
+Cloudflare's 1102 page carries no CORS header, so that message _is_ a killed isolate as a browser
+sees it. And the mechanism is now obvious: **a page load is not one request.** Opening a stop
+fires the board, the nearby stops and the weather together; opening the map fires stops and
+vehicles. Three or four at once is exactly the `startedNotFinished` the dying requests recorded.
+A paced client never reaches it, which is why the probe reports zero failures and the browser
+still loses the map.
+
+So the admission control the diagnosis implied is in, as `apps/worker/src/heavy-read-gate.ts`:
+at most two heavy reads resident in an isolate at once, the rest suspended. A suspended request
+is not charged CPU, and CPU is what the limit is about — that asymmetry is the whole mechanism.
+It changes nothing about what any endpoint reads: a lone request passes straight through and
+cannot tell the gate is there. It never queues past 2.5 seconds, because the frontend abandons a
+request after 20 (8 for the map) and a timeout is worse for a passenger than the risk being
+reduced; that bypass is counted, so a gate set too tight reports itself rather than quietly making
+pages slow. Six tests cover the cases that matter, including the two that would silently lose
+capacity for the life of an isolate: a double release, and a slot handed to a request that had
+already given up.
+
+The harness gained the check that matches what the sweep hit — four heavy requests in parallel,
+four times, the way a browser opens a page. It is a **passenger** check, not a stress check: a
+page that cannot load its own pieces together is broken for a person whatever a paced client sees.
+The 150-request burst stays separate and stays P3.
+
+### 4 October: storage prune complete, and verified against all five questions
+
+    deleted 3057   removableObjects 3057   remainingAfterRun 0   complete true
+    stoppedBecause "nothing left to remove"
+    objects 35157 → 32100      bytes 10,970,841,185 → 10,064,245,051
+    withinFreeStorageBefore false → withinFreeStorageAfter true   (allowance 10,737,418,240)
+    keep  live     2026-09-30T16:56:04.815Z  20,617 objects  8,031,034,917 bytes
+          rollback 2026-09-26T07:48:07.333Z  11,483 objects  2,033,210,134 bytes
+    unattributed 0   deletionFailures []
+
+Taken in the order asked. Remaining removable: **zero** — the run stopped because there was
+nothing left, not because it ran out of clock. Final preview bucket: **32,100 objects, 10.06 GB**,
+inside the 10 GiB free allowance for the first time. Departure horizon: re-counted _after_ the
+deletes at the live version, **512 of 512 departure shards for 4 October and 512 for 5 October**
+(the 6th and 7th are empty, which is the far end and is treated as slack). Active and rollback
+versions: both in `keep`, with their object counts. No live object removed: `unattributed: 0`, no
+deletion failures, and the three versions removed account for exactly 3,055 + 1 + 1 = 3,057
+objects, which is the number deleted.
+
 ### 4 October: the harness now browses, and bursts separately
 
 One artificial client issuing 150 requests at an isolate is not a passenger, and reading its

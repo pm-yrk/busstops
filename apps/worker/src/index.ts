@@ -7,6 +7,7 @@ import {
   type ServiceRoute,
 } from "@busstops/contracts";
 import { safeModeActive } from "@busstops/governor";
+import { acquireHeavyRead, heavyReadGateState } from "./heavy-read-gate.js";
 import { DisruptionReader, noticesFor } from "./disruption-reader.js";
 import { stopAccessibility } from "./stop-accessibility.js";
 import { WeatherReader } from "./weather-reader.js";
@@ -2673,6 +2674,27 @@ export default {
       return respond(errorResponse("not_found", "Unknown endpoint", 404), decision.remaining);
     }
 
+    /*
+     * Heavy endpoints queue behind each other rather than filling the isolate's heap together.
+     *
+     * See `heavy-read-gate.ts` for the evidence. The short version: an invocation's ten
+     * milliseconds of CPU is its own, the isolate's heap is not, and the garbage collection that
+     * three or four concurrent multi-mebibyte reads provoke is charged to whichever request
+     * triggers it. The visual sweep — one browser, one page at a time — still lost the map and
+     * route endpoints to it, because a single page load fires three or four of these at once.
+     *
+     * A lone request passes straight through. Only these paths are gated; the cheap ones, and
+     * everything that answers from memory, are untouched.
+     */
+    const slot = isHeavyPath(url.pathname) ? await acquireHeavyRead() : null;
+    if (slot) {
+      mark("gate:enter", {
+        waitedMs: slot.waitedMs,
+        bypassed: slot.bypassed,
+        ...heavyReadGateState(),
+      });
+    }
+
     try {
       const response = await matched.handler(request, { env, ctx, params: matched.params, url });
       return respond(response, decision.remaining);
@@ -2702,7 +2724,30 @@ export default {
        * that can now leave a breadcrumb behind is one that never returns from dispatch at all,
        * which is exactly the definition of the failure.
        */
+      /*
+       * Before the breadcrumb ends, because a release that throws must not stop the breadcrumb
+       * being cleared — and a slot held by a request that has returned is capacity lost for the
+       * life of the isolate.
+       */
+      slot?.release();
       endBreadcrumb();
     }
   },
 };
+
+/**
+ * The endpoints whose reads are measured in mebibytes.
+ *
+ * Named explicitly rather than inferred, so adding a cheap endpoint cannot accidentally put it
+ * behind the gate, and so the list is reviewable. `/v1/stops/:id` is here because a board resolves
+ * the patterns calling at the stop; `/v1/nearby` because it reads the stop tiles around a point.
+ */
+function isHeavyPath(pathname: string): boolean {
+  return (
+    pathname === "/v1/map" ||
+    pathname === "/v1/journeys" ||
+    pathname === "/v1/nearby" ||
+    pathname.startsWith("/v1/routes/") ||
+    pathname.startsWith("/v1/stops/")
+  );
+}

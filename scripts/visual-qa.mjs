@@ -1830,8 +1830,10 @@ for (const size of WIDTHS) {
    * checkable by a person; "flow ok" is not.
    */
   const walker = await context.newPage();
+  // Declared outside the try so the failure path can report how far the walk got.
+  const seenSoFar = [];
   try {
-    const seen = [];
+    const seen = seenSoFar;
     await walker.goto(`${baseUrl}/search?q=${encodeURIComponent("Leeds")}`, {
       waitUntil: "domcontentloaded",
     });
@@ -1899,10 +1901,20 @@ for (const size of WIDTHS) {
       );
     }
   } catch (error) {
+    /*
+     * With everything it had got to before it stopped.
+     *
+     * The first version recorded only the exception, so four viewports reported
+     * "locator.waitFor: Timeout 20000ms exceeded" and nothing else — which does not say whether
+     * the search found nothing, the board never arrived, or the route page was the step that
+     * failed. The walk's whole value is that it says where it got to.
+     */
+    const far =
+      seenSoFar.length > 0 ? `${seenSoFar.join("; ")}; then ` : "got no further than the search: ";
     record(
       `${size.name}/flow a passenger can walk`,
       false,
-      error instanceof Error ? error.message.split("\n")[0] : String(error),
+      far + (error instanceof Error ? error.message.split("\n")[0] : String(error)),
     );
   }
   await walker.close();
