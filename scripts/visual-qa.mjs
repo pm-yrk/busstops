@@ -372,11 +372,54 @@ async function clickPaintedBus(page, sink) {
     );
   }
   if (point.x === undefined) {
-    throw new Error(
-      `none of the ${point.of} painted bus(es) could be clicked: ${point.blocked} were under ` +
-        `something else${point.blockers.length > 0 ? ` (${point.blockers.join(", ")})` : ""}` +
-        `, ${point.offscreen} were off the screen`,
-    );
+    /*
+     * Try again with a bus in the middle of the map before calling this a defect.
+     *
+     * Three runs reported "none of the painted buses could be clicked" and named the blocker:
+     * `label.live-map__layer` and `fieldset.live-map__layers` — the layer switcher, which is a
+     * real control the passenger uses, sitting over a corner of the map. Every bus in the viewport
+     * happening to be behind it is a fact about where the buses are, not about whether clicking a
+     * bus works, and conflating the two cost three runs of looking at the wrong thing.
+     *
+     * So the map is re-centred on one of them. The centre of the canvas is the part no overlay
+     * claims, and if a bus is clickable there then the handler works; if it still is not, that is
+     * the product defect this check was looking for and the message says which case it is.
+     */
+    const recentred = await page.evaluate(async () => {
+      const map = globalThis.__busstopsMap;
+      if (!map) return null;
+      const features = map.queryRenderedFeatures({ layers: ["vehicle-buses", "vehicle-pips"] });
+      const first = features[0];
+      if (!first) return null;
+
+      map.jumpTo({ center: first.geometry.coordinates });
+      // One frame, so the projection below describes what is on the screen now.
+      await new Promise((resolve) => globalThis.requestAnimationFrame(() => resolve(undefined)));
+
+      const canvas = map.getCanvas();
+      const box = canvas.getBoundingClientRect();
+      const projected = map.project(first.geometry.coordinates);
+      const x = box.left + projected.x;
+      const y = box.top + projected.y;
+      const hit = document.elementFromPoint(x, y);
+      if (hit === canvas || canvas.contains(hit)) return { x, y };
+      return {
+        blocker: hit
+          ? `${hit.tagName.toLowerCase()}${hit.className ? `.${String(hit.className).split(/\s+/)[0]}` : ""}`
+          : "nothing identifiable",
+      };
+    });
+
+    if (!recentred || recentred.x === undefined) {
+      throw new Error(
+        `none of the ${point.of} painted bus(es) could be clicked: ${point.blocked} were under ` +
+          `something else${point.blockers.length > 0 ? ` (${point.blockers.join(", ")})` : ""}` +
+          `, ${point.offscreen} were off the screen; and with one centred on the map it was still ` +
+          `covered by ${recentred?.blocker ?? "nothing identifiable"}`,
+      );
+    }
+    await page.mouse.click(recentred.x, recentred.y);
+    return;
   }
   await page.mouse.click(point.x, point.y);
 }

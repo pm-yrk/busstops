@@ -331,6 +331,29 @@ const SIRI_PARSE_RESERVE_CHARS = 1_200_000;
  */
 const ROUTE_PAGE_SHOWS_LIVE_BUSES = false;
 let requestsServed = 0;
+/**
+ * How many instrumented requests are inside the Worker right now.
+ *
+ * The open question after runs 90 to 96, stated as a measurement rather than argued about. Every
+ * surviving request in those runs is cheap — a Leeds viewport 1.02 MiB, a route page 0.48 + 0.54
+ * MiB, a journey corridor 222 stops in 59 ms — and yet requests die, reliably, once an isolate has
+ * served about seventy of them. Per-request work cannot explain that and four rounds of reducing
+ * it have not stopped it.
+ *
+ * One isolate answers many requests at once, and an invocation's ten milliseconds of CPU is its
+ * own but the isolate's memory is shared. So a request that dies while eight others are mid-parse
+ * is a different event from one that dies alone, and nothing has been able to tell them apart.
+ *
+ * **What this number is, exactly.** Started minus finished — and a request the platform kills never
+ * reaches the line that would decrement it, so this is concurrency *plus* every death the isolate
+ * has accumulated. That is not a flaw to be corrected, it is two readings in one, and they are
+ * distinguishable: a figure that rises and falls is live concurrency, and a floor that only ever
+ * climbs is the number of requests this isolate has lost. Either one is worth more than the
+ * nothing there is now. Named for what it measures rather than for what I first assumed it would.
+ */
+let startedNotFinished = 0;
+/** The highest that figure has reached in this isolate, which is what a ceiling would show. */
+let peakStartedNotFinished = 0;
 
 /**
  * Trim before the work, and report either side of it.
@@ -349,10 +372,19 @@ function beginResidency(ledger: ReadLedger, handler = "unnamed"): () => void {
    * still set when this one starts belongs to a request that never finished.
    */
   beginBreadcrumb(handler, served);
+  startedNotFinished += 1;
+  if (startedNotFinished > peakStartedNotFinished) peakStartedNotFinished = startedNotFinished;
   const before = network?.residency() ?? null;
   const evicted = network?.trimTo(RESIDENT_FLOOR_CHARS) ?? 0;
-  mark("reads:begin", { cold: served === 1, residentChars: before?.chars ?? 0 });
+  mark("reads:begin", {
+    cold: served === 1,
+    residentChars: before?.chars ?? 0,
+    // Counted including this one, so 1 means it is alone and nothing has been lost.
+    startedNotFinished,
+    peakStartedNotFinished,
+  });
   return () => {
+    startedNotFinished = Math.max(0, startedNotFinished - 1);
     const after = network?.residency() ?? null;
     const died = takeUnfinished();
     if (died) {
