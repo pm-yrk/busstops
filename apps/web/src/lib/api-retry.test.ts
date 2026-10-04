@@ -174,4 +174,34 @@ describe("asking again when the platform refuses", () => {
     // Not retried, and not dressed up as a timeout.
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
+
+  /*
+   * The map's deadline is shorter than everything else's, because its own ladder takes it three
+   * times. The default twenty seconds, tripled, is a minute of a basemap with no stops on it
+   * before anybody is told anything.
+   */
+  it("gives a viewport a shorter deadline than a page", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = vi.fn(
+        (_url: string, init?: { signal?: AbortSignal }) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => {
+              reject(new DOMException("aborted", "AbortError"));
+            });
+          }),
+      );
+      const client = new ApiClient({
+        baseUrl: "https://api.example",
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+
+      const pending = client.map({ west: -1.6, south: 53.7, east: -1.4, north: 53.9 }, 15);
+      await vi.advanceTimersByTimeAsync(8_000);
+
+      await expect(pending).rejects.toThrow(/heard nothing back within 8 seconds/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

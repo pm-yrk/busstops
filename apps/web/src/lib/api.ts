@@ -102,6 +102,9 @@ const RETRY_DELAY_MS = 350;
  */
 const REQUEST_TIMEOUT_MS = 20_000;
 
+/** A viewport's own deadline. See `map`, which takes it three times over if it has to. */
+const MAP_TIMEOUT_MS = 8_000;
+
 export interface ProScopeQuery {
   areaId?: string | null;
   operatorId?: string | null;
@@ -141,12 +144,12 @@ export class ApiClient {
     path: string,
     signal?: AbortSignal,
     schema?: { safeParse: (value: unknown) => { success: boolean; data?: unknown } },
-    options: { retries?: number } = {},
+    options: { retries?: number; timeoutMs?: number } = {},
   ): Promise<T> {
     const retries = options.retries ?? 1;
     for (let attempt = 0; ; attempt += 1) {
       try {
-        return await this.attempt<T>(path, signal, schema);
+        return await this.attempt<T>(path, signal, schema, options.timeoutMs);
       } catch (error) {
         if (attempt >= retries) throw error;
         if (signal?.aborted === true) throw error;
@@ -160,6 +163,7 @@ export class ApiClient {
     path: string,
     signal?: AbortSignal,
     schema?: { safeParse: (value: unknown) => { success: boolean; data?: unknown } },
+    timeoutMs = REQUEST_TIMEOUT_MS,
   ): Promise<T> {
     /*
      * Every request gets a deadline, and until now none of them did.
@@ -177,7 +181,7 @@ export class ApiClient {
      * controller and the abort it raises is converted into an `ApiError` the pages already render.
      */
     const deadline = new AbortController();
-    const timer = setTimeout(() => deadline.abort(), REQUEST_TIMEOUT_MS);
+    const timer = setTimeout(() => deadline.abort(), timeoutMs);
     const onCallerAbort = () => deadline.abort();
     signal?.addEventListener("abort", onCallerAbort);
 
@@ -192,7 +196,7 @@ export class ApiClient {
       if (signal?.aborted === true) throw error;
       if (deadline.signal.aborted) {
         throw new ApiError(
-          `We asked for this and heard nothing back within ${Math.round(REQUEST_TIMEOUT_MS / 1000)} seconds. ` +
+          `We asked for this and heard nothing back within ${Math.round(timeoutMs / 1000)} seconds. ` +
             `That is a fault on our side rather than a statement about the buses.`,
           504,
           "timeout",
@@ -262,9 +266,21 @@ export class ApiClient {
       `/v1/map?bbox=${encodeURIComponent(bboxParam)}&zoom=${Math.round(zoom)}`,
       signal,
       MapResponseSchema,
-      // The live map runs its own ladder — the view, the view again, then a quarter of it — so a
-      // retry here would turn three requests into six against a Worker already over its limit.
-      { retries: 0 },
+      {
+        // The live map runs its own ladder — the view, the view again, then a quarter of it — so a
+        // retry here would turn three requests into six against a Worker already over its limit.
+        retries: 0,
+        /*
+         * And a shorter deadline than everything else, because the ladder multiplies it.
+         *
+         * The Worker gives a viewport 1.8 seconds of its own budget, so eight is already far
+         * beyond a healthy answer — while the default twenty, taken three times by the ladder,
+         * would leave a passenger looking at a basemap with no stops on it for a minute before
+         * anything was said. A map that gives up sooner retries sooner, and the next rung of the
+         * ladder asks for less.
+         */
+        timeoutMs: MAP_TIMEOUT_MS,
+      },
     );
   }
 
