@@ -280,6 +280,27 @@ async function main(): Promise<number> {
 function writeReport(report: Record<string, unknown>): void {
   report.finishedAt = new Date().toISOString();
   writeFileSync("batch-report.json", JSON.stringify(report, null, 2));
+  /*
+   * The report as an annotation, because the JSON it just wrote is uploaded as an artifact and an
+   * artifact is served from a host this project's container cannot reach.
+   *
+   * This one matters more than most. Pro withholds its route and operator figures when no observed
+   * vehicle resolves to a published route — honestly, because an empty route list reads as "no
+   * route needs attention" — and `routeJoin` is the only thing that says *why*: it counts the
+   * operator codes the feed gave that no published operator claims, and the line names that named
+   * a known operator but a service they do not publish, and samples a few of each. Those two
+   * numbers are the difference between a missing operator in the network build and two sources
+   * disagreeing about a line name, and they have never been readable from here.
+   */
+  if (process.env.GITHUB_ACTIONS) {
+    const text = JSON.stringify(report, null, 2)
+      .replace(/%/g, "%25")
+      .replace(/\r/g, "%0D")
+      .replace(/\n/g, "%0A")
+      .replace(/::/g, "%3A%3A");
+    const outcome = String((report as { outcome?: unknown }).outcome ?? "unknown");
+    console.log(`::notice title=analytics batch (${outcome})::${text}`);
+  }
 }
 
 main()
