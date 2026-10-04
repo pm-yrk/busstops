@@ -3287,26 +3287,45 @@ A dead `quota:check` npm script pointing at a file that was never written has be
 
 ### Next
 
-1. **Run `Deploy Preview` the moment Actions executes again.** Everything the recruiter cut needs
-   is committed and pushed; the deploy is the only remaining step, and its probe is also what
-   diagnoses the live-bus failure. Then verify, in order: home loads with the artwork, the live
-   map loads, the basemap loads, the deployed `/v1/map` returns more than zero real vehicles for
-   Leeds, buses render on the map, clicking a stop opens NEXT BUS, and the console carries no
-   major failures.
-2. **The deployed live-bus failure is unexplained.** BODS answered 237/364/338/233 vehicles for
-   Leeds/Manchester/Birmingham/Bristol from a runner while the deployment answered zero for all
-   four; both halves are a passing regression test, which itself says the code path is correct
-   given a healthy feed. `/v1/diagnostics/live` will name which of `request_failed`, `empty_feed`
-   or `all_rejected` actually happens up there.
-3. Deferred to the next session, deliberately and with nothing started: GTFS verified against a
-   real archive, departures at every non-London stop, place-first search, "take me to York
-   Minster", the rest of accessibility, "Bus stopped?", mobile bottom sheets and the phone map
-   layout (the live map on a phone still puts its controls above the map), a Pro baseline from
-   real observations, the final art passes, and the full deployed product audit.
-4. Watch the shard sizes each publish reports. The byte budget is a backstop, not a target: a
+Rewritten on 4 October because every item below the last one had been resolved and the section was
+describing a state from twenty runs earlier — a recruiter cut that happened, a live-bus failure
+that was diagnosed, a deploy that has since run ninety-eight times. A stale next-action list is
+worse than none: it is the file telling a reader to go and look at something that is no longer
+there.
+
+1. **The isolate question, with the instrument now in place.** Requests die once an isolate has
+   served about seventy of them, and every survivor in those runs is cheap — a Leeds viewport 1.02
+   MiB, a route page 0.48 + 0.54 MiB, a journey corridor 222 stops in 59 ms. Four rounds of
+   reducing per-request work have not stopped it, so the next reading is `startedNotFinished` on
+   the breadcrumbs: a figure that rises and falls is live concurrency, a floor that only climbs is
+   requests this isolate has lost. If it is concurrency, shedding load — answering 503 with a
+   reason rather than being killed — is honest degradation and the spec asks for it. Do not set a
+   threshold before the number is read: a figure that drifts upward with every death would shed
+   permanently.
+
+2. **Finish the retention prune: one pass with `prune_minutes: 150`.** Measured rather than
+   estimated: the account deletes about four objects a second, 8,968 went in the first 35-minute
+   pass, and 23,057 removable objects remain. Finishing takes the bucket from 16.05 GB to 10.06,
+   inside R2's 10 GiB free allowance, which the £0 rule requires. The budget is an input precisely
+   so this pass does not delay a verification that matters.
+
+3. **Merging to main needs a human**, and it is the only thing that does. `git merge-tree` says no
+   conflicts; the merged tree keeps the three README workflows that live only on main; production
+   deploys nothing because `deploy.yml` has no push trigger; the four schedules that newly activate
+   all resolve to the preview bucket on a schedule event. What it buys is the departures refresh
+   firing on its own schedule instead of needing a dispatch — the one thing that cannot be fixed
+   from a feature branch, because GitHub fires `schedule` only from the default branch.
+
+4. **Deferred on purpose, with nothing started.** Weather coverage beyond the squares the collector
+   has reached; postcode search, which has no source — NaPTAN publishes no postcode column, so it
+   needs a dataset and a licence decision rather than code; the live map's controls sitting over a
+   corner of the map on a phone; finer map-stop tiles; the vehicle page's thin state; Pro's
+   presentation; the remaining TfL adapters, still verified against published documentation rather
+   than a live response.
+
+5. Watch the shard sizes each publish reports. The byte budget is a backstop, not a target: a
    family that starts truncating is telling you its key needs to be finer, and it says which.
-5. The remaining TfL adapters (route sequence, stop point, disruptions) are still verified
-   against published documentation rather than against a live response.
+
 6. Production remains un-deployed pending explicit approval after the preview is reviewed.
 
 ### Deployment evidence
