@@ -31,6 +31,59 @@ async function where(page: Page): Promise<string> {
  * landed. Axe did not catch it, and will not: "page has a level one heading" is one of its
  * best-practice rules rather than a violation, and the sweep runs violations.
  */
+/**
+ * The selectors the deployed sweep walks with, checked here where they can be run.
+ *
+ * `scripts/visual-qa.mjs` follows the same chain against the real deployment, and it cannot be run
+ * from this container — the preview is not reachable from here. So a selector it depends on could
+ * rot for several deploys and the only symptom would be a flow check that fails for the wrong
+ * reason, which is exactly the class of confusion that cost six runs on the stress question. These
+ * assert that each hook the sweep reaches for still exists in the built app.
+ */
+test.describe("the hooks the deployed sweep walks with", () => {
+  test("a search result links to a stop by href", async ({ page }) => {
+    await mockApi(page);
+    await page.goto("/search?q=Leeds");
+    await expect(page.locator('a[href^="/stops/"]').first()).toBeVisible();
+  });
+
+  test("a board's rows are readable from its table body", async ({ page }) => {
+    await mockApi(page);
+    await page.goto(`/stops/${STOP_ID}`);
+    const rows = page.locator(".arrival-board__table tbody tr");
+    await expect(rows.first()).toBeVisible();
+    expect(((await rows.first().textContent()) ?? "").trim().length).toBeGreaterThan(3);
+  });
+
+  test("a stop links to a route by href", async ({ page }) => {
+    await mockApi(page);
+    await page.goto(`/stops/${STOP_ID}`);
+    await expect(page.locator('a[href^="/routes/"]').first()).toBeVisible();
+  });
+
+  test("a route's stops are links inside the sequence list", async ({ page }) => {
+    await mockApi(page);
+    await page.goto(`/routes/${ROUTE_ID}`);
+    const stops = page.locator(".route-page__stops li a");
+    await expect(stops.first()).toBeVisible();
+    expect(await stops.count()).toBeGreaterThan(1);
+  });
+
+  test("the operator is a link in the masthead standfirst", async ({ page }) => {
+    await mockApi(page);
+    await page.goto(`/routes/${ROUTE_ID}`);
+    await expect(page.locator(".pixel-vista__standfirst a").first()).toBeVisible();
+  });
+
+  test("the variant tabs carry the tab role", async ({ page }) => {
+    await mockApi(page);
+    await page.goto(`/routes/${ROUTE_ID}`);
+    // `expect(...).toBeVisible()` auto-waits; `count()` does not, and counted an unrendered page.
+    await expect(page.getByRole("tab").first()).toBeVisible();
+    expect(await page.getByRole("tab").count()).toBeGreaterThan(1);
+  });
+});
+
 test.describe("a page says what it is", () => {
   for (const [name, path] of [
     ["home", "/"],

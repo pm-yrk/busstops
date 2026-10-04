@@ -1817,6 +1817,96 @@ for (const size of WIDTHS) {
     await page.close();
   }
 
+  /*
+   * The chain, walked in a browser against the real deployment.
+   *
+   * Every page above is photographed on its own. The *joins* between them are what a passenger
+   * actually experiences, and they were verified only against fixtures — which is how the stop
+   * page came to have no route links at all for weeks with nothing failing. This follows the links
+   * rather than typing the URLs: search for a real place, click the stop it finds, click a route
+   * that calls there, click a stop from the middle of that route's sequence, and read the board.
+   *
+   * Reported as what it saw, not as a pass. "Route 19 — Leeds, 83 stops, #42 opens with 4 due" is
+   * checkable by a person; "flow ok" is not.
+   */
+  const walker = await context.newPage();
+  try {
+    const seen = [];
+    await walker.goto(`${baseUrl}/search?q=${encodeURIComponent("Leeds")}`, {
+      waitUntil: "domcontentloaded",
+    });
+    const firstStop = walker.locator('a[href^="/stops/"]').first();
+    await firstStop.waitFor({ state: "visible", timeout: 20_000 });
+    const stopName = ((await firstStop.textContent()) ?? "").trim().slice(0, 40);
+    seen.push(`searched "Leeds" and found ${stopName}`);
+
+    await firstStop.click();
+    await walker.locator("h1").first().waitFor({ state: "visible", timeout: 20_000 });
+    const board = await walker.evaluate(() => {
+      const rows = [...document.querySelectorAll(".arrival-board__table tbody tr")];
+      return rows.slice(0, 1).map((row) =>
+        [...row.querySelectorAll("td")]
+          .map((cell) => (cell.textContent ?? "").trim())
+          .filter(Boolean)
+          .join(" "),
+      );
+    });
+    seen.push(board[0] ? `its board reads "${board[0]}"` : "its board had no row to read");
+
+    const routeLink = walker.locator('a[href^="/routes/"]').first();
+    if ((await routeLink.count()) === 0) {
+      record(
+        `${size.name}/flow a passenger can walk`,
+        false,
+        seen.join("; ") + "; and the stop names no route to follow",
+      );
+    } else {
+      await routeLink.click();
+      await walker.locator(".route-page__stops li").first().waitFor({ timeout: 20_000 });
+      const route = await walker.evaluate(() => {
+        const stops = [...document.querySelectorAll(".route-page__stops li a")];
+        return {
+          heading: (document.querySelector("h1")?.textContent ?? "").trim(),
+          operator: (
+            document.querySelector(".pixel-vista__standfirst a, .route-page__section a")
+              ?.textContent ?? ""
+          ).trim(),
+          count: stops.length,
+          first: (stops[0]?.textContent ?? "").trim(),
+          last: (stops[stops.length - 1]?.textContent ?? "").trim(),
+          variants: document.querySelectorAll('[role="tab"]').length,
+        };
+      });
+      seen.push(
+        `route "${route.heading}" lists ${route.count} stops, ${route.first} → ${route.last}` +
+          (route.variants > 0 ? ` across ${route.variants} variant(s)` : ""),
+      );
+
+      const middleIndex = Math.floor(route.count / 2);
+      const middle = walker.locator(".route-page__stops li a").nth(middleIndex);
+      const middleName = ((await middle.textContent()) ?? "").trim();
+      await middle.click();
+      await walker.locator("h1").first().waitFor({ state: "visible", timeout: 20_000 });
+      const due = await walker.evaluate(
+        () => document.querySelectorAll(".arrival-board__table tbody tr").length,
+      );
+      seen.push(`stop #${middleIndex + 1} ${middleName} opens with ${due} row(s) due`);
+
+      record(
+        `${size.name}/flow a passenger can walk`,
+        route.count > 1 && due >= 0,
+        seen.join("; "),
+      );
+    }
+  } catch (error) {
+    record(
+      `${size.name}/flow a passenger can walk`,
+      false,
+      error instanceof Error ? error.message.split("\n")[0] : String(error),
+    );
+  }
+  await walker.close();
+
   await context.close();
 }
 
