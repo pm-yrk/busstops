@@ -196,6 +196,72 @@ const SEARCH_STEM_LENGTH = 3;
  * A one-letter word is no test at all, which is correct: there is nothing to narrow by, and
  * narrowing on nothing would mean dropping the bucket's contents.
  */
+/**
+ * Which gazetteer lines are worth building, tested against mixed-case text.
+ *
+ * Separate from `searchLineFilter`, and the difference is the whole reason filtering the gazetteer
+ * failed once before. A stop's search entry is published with `tokens` built by `tokenize`, which
+ * lowercases — so a lowercase stem matches that text as it stands. A **place** is published as a
+ * `PlaceRecord`: its searchable words are `name` and `subtitle`, in the case a cartographer wrote
+ * them, and the tokens are derived in the Worker at read time. Run 82 filtered these with a
+ * lowercase stem and lost Manchester Arndale, Bullring and Bristol Temple Meads — because "man"
+ * does not occur in "Manchester Arndale".
+ *
+ * So each stem is tested in both the forms a Title Case name can present it: as typed, which
+ * catches a match inside a word, and with its first letter capitalised, which catches a match at
+ * the start of one. No `toLowerCase` on the line, because that allocates a copy of it and the
+ * copies are the cost this exists to avoid.
+ */
+export function placeLineFilter(words: readonly string[]): LineFilter | undefined {
+  const stems = words
+    .map((word) => word.toLowerCase().slice(0, SEARCH_STEM_LENGTH))
+    .filter((stem) => stem.length >= 2);
+  if (stems.length === 0) return undefined;
+  const forms = stems.flatMap((stem) => [stem, stem[0]!.toUpperCase() + stem.slice(1)]);
+  /*
+   * Tested inside the two fields a passenger is typing at, not anywhere in the line.
+   *
+   * A record's own key names are in that text too, and they collide: `"prominence"` contains
+   * "min", so a search for "Minster" matched every landmark in the country and the filter narrowed
+   * nothing. Over-matching is safe — it costs a parse, it never loses a result — which is exactly
+   * why it would have gone unnoticed as a quiet loss of the saving. `name` and `subtitle` are
+   * where the searchable words are, and bounding the test to their values removes the collision
+   * rather than hoping no query stem looks like a field name.
+   */
+  return (body, start, end) =>
+    forms.some(
+      (form) =>
+        containsInField(body, start, end, "name", form) ||
+        containsInField(body, start, end, "subtitle", form),
+    );
+}
+
+/**
+ * Whether one quoted field's value contains a needle, without building the value.
+ *
+ * `valueAt` above answers the same question by slicing the value out, which is an allocation per
+ * field per line — some thousands of them for a gazetteer, which is the cost these filters exist
+ * to avoid. This walks to the value's bounds and searches inside them.
+ */
+function containsInField(
+  body: string,
+  start: number,
+  end: number,
+  field: string,
+  needle: string,
+): boolean {
+  const key = `"${field}":"`;
+  const at = body.indexOf(key, start);
+  if (at < 0 || at >= end) return false;
+  const from = at + key.length;
+  // The closing quote of the value. A name containing an escaped quote would end the span early,
+  // which costs a candidate rather than inventing one, and no place name in the gazetteer has one.
+  const to = body.indexOf('"', from);
+  if (to < 0 || to > end) return false;
+  const found = body.indexOf(needle, from);
+  return found >= 0 && found < to;
+}
+
 export function searchLineFilter(words: readonly string[]): LineFilter | undefined {
   const stems = words
     .map((word) => word.toLowerCase().slice(0, SEARCH_STEM_LENGTH))
@@ -553,7 +619,6 @@ export class NetworkReader {
    * cost falls with what was asked rather than with how much of England has a name.
    */
   private placeLinesCache: string[] | null = null;
-  private placesCache: SearchIndexEntry[] | null = null;
   private routeTilesCache: Map<string, string[]> | null = null;
 
   constructor(
@@ -2124,28 +2189,37 @@ export class NetworkReader {
   }
 
   /**
-   * The gazetteer, parsed once per isolate and then held.
+   * The landmarks a query could mean, and only those.
    *
-   * Not filtered by the query, and that was a mistake worth recording: filtering it cost run 82
-   * three of its five landmarks — Manchester Arndale, Bullring and Bristol Temple Meads stopped
-   * being found — for a saving the text cache had already made. The expensive part of the old path
-   * was `readCurrent`, which hashes the whole multi-megabyte object with FNV-1a *and* parses every
-   * record; skipping the hash and parsing 3,178 lines once an isolate is cheap, and the entries are
-   * then shared by every later search. A query's filter belongs on the 1.6 MB prefix buckets, where
-   * the volume actually is.
+   * This parsed all 3,178 of them and held the result for the isolate's life. That was a response
+   * to run 82, where filtering lost Manchester Arndale, Bullring and Bristol Temple Meads — and
+   * the diagnosis was wrong. The filter did not fail because filtering is unsafe here; it failed
+   * because it used a lowercase stem against text a cartographer capitalised. `placeLineFilter`
+   * tests both forms, which is what that run needed.
+   *
+   * Filtering matters because the parse is the cost. `places=3178` was resident in every isolate
+   * that answered error 1102 across runs 90 to 96, and the request that paid for it is whichever
+   * one happened to search first. A query names a handful of landmarks, so a handful is what gets
+   * built; the text stays cached, so the bytes are paid for once either way.
    */
-  private async placeEntries(): Promise<SearchIndexEntry[]> {
-    if (this.placesCache) return this.placesCache;
+  private async placeEntriesMatching(words: readonly string[]): Promise<SearchIndexEntry[]> {
     const lines = await this.placeLines();
+    const keep = placeLineFilter(words);
     const entries: SearchIndexEntry[] = [];
     for (const line of lines) {
+      /*
+       * Tested on the whole line, which here *is* the record — `placeLines` splits the object into
+       * lines and holds them, so each string is one place and the filter's bounds are its own
+       * ends. No filter means the query had nothing to narrow by, and then every landmark is a
+       * candidate, which is the same rule the stop index follows.
+       */
+      if (keep && !keep(line, 0, line.length)) continue;
       try {
         entries.push(placeAsSearchEntry(JSON.parse(line) as PlaceRecord));
       } catch {
         // One unreadable line is one missing landmark, not a failed search.
       }
     }
-    this.placesCache = entries;
     return entries;
   }
 
@@ -2435,7 +2509,7 @@ export class NetworkReader {
      * scoring them together is what lets the station come first when it deserves to. Two lists
      * concatenated would put whichever happened to be first ahead of a better match.
      */
-    for (const entry of await this.placeEntries()) {
+    for (const entry of await this.placeEntriesMatching(lookups)) {
       unique.set(`${entry.kind}:${entry.id}`, entry);
     }
 
