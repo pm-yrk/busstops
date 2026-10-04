@@ -25,6 +25,16 @@
   background: var(--colour-critical-pale);
 }
 
+/*
+ * Real observations, but old. Quieter than the other two on purpose: the figures are genuine and
+ * the reader is being told their age, not warned that something is broken. The default amber would
+ * read as a fault where this is a date.
+ */
+.pro-mode--stale {
+  border-left-color: var(--colour-muted);
+  background: var(--colour-canvas);
+}
+
 .pro-mode strong {
   font-family: var(--font-pixel);
   letter-spacing: 0.06em;

@@ -397,3 +397,91 @@ describe("ProTableWrap", () => {
     expect(region.tabIndex).toBe(0);
   });
 });
+
+describe("what Pro says about the age of its own figures", () => {
+  /*
+   * `dataMode: "live"` was doing two jobs and only admitting to one. It says the figures come from
+   * real observations rather than the demonstration snapshot; it says nothing about when those
+   * observations were. The deployed Pro has reported "live" with its newest settled window a
+   * fortnight old, and the only place that appeared was a sentence among the coverage caveats — so
+   * an operations dashboard looked current while describing a period two weeks gone.
+   */
+  const at = (iso: string) => new Date(iso);
+
+  it("says nothing when a live measurement is recent", () => {
+    render(
+      <DataModeBanner
+        provenance={{
+          dataMode: "live",
+          snapshotDate: null,
+          notice: null,
+          measuredAt: "2026-10-04T09:00:00.000Z",
+        }}
+        now={at("2026-10-04T09:40:00.000Z")}
+      />,
+    );
+    expect(screen.queryByTestId("pro-data-mode")).toBeNull();
+  });
+
+  it("says how old a live measurement is, in hours, once it is not recent", () => {
+    render(
+      <DataModeBanner
+        provenance={{
+          dataMode: "live",
+          snapshotDate: null,
+          notice: null,
+          measuredAt: "2026-10-04T03:00:00.000Z",
+        }}
+        now={at("2026-10-04T09:00:00.000Z")}
+      />,
+    );
+    expect(screen.getByTestId("pro-data-mode").textContent).toContain("6 hours");
+    // Still credited as real data, because it is.
+    expect(screen.getByTestId("pro-data-mode").textContent).toContain("Real observations");
+  });
+
+  it("says it in days when it is a fortnight, which is what the deployment reported", () => {
+    render(
+      <DataModeBanner
+        provenance={{
+          dataMode: "live",
+          snapshotDate: null,
+          notice: null,
+          measuredAt: "2026-09-20T14:25:00.000Z",
+        }}
+        now={at("2026-10-04T09:00:00.000Z")}
+      />,
+    );
+    expect(screen.getByTestId("pro-data-mode").textContent).toContain("14 days");
+    expect(screen.getByTestId("pro-data-mode").textContent).toContain("not as the state of the");
+  });
+
+  /* Nothing measured is a different fact from measured long ago, and must not borrow its wording. */
+  it("says nothing when there is no measurement to date", () => {
+    render(
+      <DataModeBanner
+        provenance={{ dataMode: "live", snapshotDate: null, notice: null, measuredAt: null }}
+        now={at("2026-10-04T09:00:00.000Z")}
+      />,
+    );
+    expect(screen.queryByTestId("pro-data-mode")).toBeNull();
+  });
+
+  it("still labels the demonstration snapshot as a snapshot", () => {
+    render(
+      <DataModeBanner
+        provenance={{
+          dataMode: "demo_snapshot",
+          snapshotDate: "2026-08-14",
+          notice: "Demonstration snapshot from 2026-08-14.",
+          measuredAt: null,
+        }}
+        now={at("2026-10-04T09:00:00.000Z")}
+      />,
+    );
+    const banner = screen.getByTestId("pro-data-mode");
+    expect(banner.textContent).toContain("Demonstration snapshot");
+    expect(banner.textContent).toContain("2026-08-14");
+    expect(banner.textContent).not.toContain("Real observations");
+  });
+});

@@ -30,6 +30,19 @@ export const ProProvenanceSchema = z.object({
   snapshotDate: z.string().nullable(),
   /** One sentence the UI must display verbatim when the mode is not `live`. */
   notice: z.string().nullable(),
+  /**
+   * The end of the newest settled measurement behind these figures.
+   *
+   * `dataMode` was doing two jobs and only admitting to one. "Live" means the figures come from
+   * real observations rather than from the demonstration snapshot — it says nothing about *when*
+   * those observations were, and the deployed Pro has reported `live` while its newest settled
+   * window was a fortnight old. An operations dashboard that looks current and is not is worse
+   * than one that says how old it is, so the age is its own field and the banner reads it.
+   *
+   * Optional so an older client is not broken by its arrival; null when nothing has been measured
+   * at all, which is a different fact again from old.
+   */
+  measuredAt: IsoInstantSchema.nullable().optional(),
 });
 export type ProProvenance = z.infer<typeof ProProvenanceSchema>;
 

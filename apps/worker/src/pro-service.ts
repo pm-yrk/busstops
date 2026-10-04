@@ -182,8 +182,19 @@ export function resolveScope(input: ProScopeInput = {}): ProScope {
   };
 }
 
-export function liveProvenance(): ProProvenance {
-  return { dataMode: "live", snapshotDate: null, notice: null };
+/**
+ * Live provenance, carrying when the newest settled measurement actually ended.
+ *
+ * `dataMode: "live"` was doing two jobs and only admitting to one: it says the figures come from
+ * real observations rather than the demonstration snapshot, and says nothing about when those
+ * observations were. The deployed Pro has reported `live` with its newest settled window a
+ * fortnight old, and the only place that age appeared was a sentence in the coverage caveats. A
+ * dashboard that looks current and is not is worse than one that says how old it is.
+ *
+ * `null` when nothing has been measured at all, which is a different fact again from old.
+ */
+export function liveProvenance(measuredAt: string | null = null): ProProvenance {
+  return { dataMode: "live", snapshotDate: null, notice: null, measuredAt };
 }
 
 export function demoProvenance(): ProProvenance {
@@ -191,6 +202,8 @@ export function demoProvenance(): ProProvenance {
     dataMode: "demo_snapshot",
     snapshotDate: DEMO_SNAPSHOT_DATE,
     notice: DEMO_SNAPSHOT_NOTICE,
+    // The snapshot's date says when it describes; there is no live measurement behind it.
+    measuredAt: null,
   };
 }
 
@@ -375,7 +388,7 @@ export class ProService {
     });
 
     return {
-      provenance: usingDemo ? demoProvenance() : liveProvenance(),
+      provenance: usingDemo ? demoProvenance() : liveProvenance(live.summary?.windowEnd ?? null),
       scope,
       generatedAt: now.toISOString(),
       headline,
@@ -442,7 +455,7 @@ export class ProService {
         }));
 
     return {
-      provenance: usingDemo ? demoProvenance() : liveProvenance(),
+      provenance: usingDemo ? demoProvenance() : liveProvenance(live.summary?.windowEnd ?? null),
       scope,
       generatedAt: now.toISOString(),
       items: incidents.map((incident) => ({
@@ -489,7 +502,7 @@ export class ProService {
     const window = `last ${scope.windowMinutes} minutes`;
 
     return {
-      provenance: usingDemo ? demoProvenance() : liveProvenance(),
+      provenance: usingDemo ? demoProvenance() : liveProvenance(live.summary?.windowEnd ?? null),
       scope,
       generatedAt: now.toISOString(),
       /*
@@ -562,7 +575,7 @@ export class ProService {
     const window = `last ${scope.windowMinutes} minutes`;
 
     return {
-      provenance: usingDemo ? demoProvenance() : liveProvenance(),
+      provenance: usingDemo ? demoProvenance() : liveProvenance(live.summary?.windowEnd ?? null),
       scope,
       generatedAt: now.toISOString(),
       // Same as routes: the live branch was a permanent empty list, not a passing state.
@@ -634,7 +647,7 @@ export class ProService {
       : [];
 
     return {
-      provenance: usingDemo ? demoProvenance() : liveProvenance(),
+      provenance: usingDemo ? demoProvenance() : liveProvenance(live.summary?.windowEnd ?? null),
       scope,
       generatedAt: now.toISOString(),
       biggestDelays: [...hotspots]
@@ -656,7 +669,7 @@ export class ProService {
     const window = `last ${scope.windowMinutes} minutes`;
 
     return {
-      provenance: usingDemo ? demoProvenance() : liveProvenance(),
+      provenance: usingDemo ? demoProvenance() : liveProvenance(live.summary?.windowEnd ?? null),
       scope,
       generatedAt: now.toISOString(),
       // The live branch was a permanent empty list; the page had nothing on it at all.
@@ -678,7 +691,7 @@ export class ProService {
       period === "daily" ? "yesterday" : period === "weekly" ? "last 7 days" : "last 30 days";
 
     return {
-      provenance: usingDemo ? demoProvenance() : liveProvenance(),
+      provenance: usingDemo ? demoProvenance() : liveProvenance(live.summary?.windowEnd ?? null),
       scope,
       period,
       periodStart: periodStart.toISOString(),

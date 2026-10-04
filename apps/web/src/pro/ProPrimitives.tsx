@@ -40,8 +40,59 @@ export function IllustrativeBanner({ metrics }: { metrics: readonly ProMetric[] 
   );
 }
 
-export function DataModeBanner({ provenance }: { provenance: ProProvenance }) {
-  if (provenance.dataMode === "live") return null;
+/**
+ * How old a live measurement may be before the page has to say so.
+ *
+ * The analytics batch aggregates five-minute windows and runs hourly, so a couple of hours is
+ * ordinary and anything beyond it is not. The deployed Pro has reported "live" with its newest
+ * settled window **a fortnight** old, and the only place that appeared was a sentence among the
+ * coverage caveats.
+ */
+const STALE_MEASUREMENT_SECONDS = 2 * 60 * 60;
+
+/** "three hours", "nine days" — the age as somebody would say it, never as a bare number. */
+function spokenAge(seconds: number): string {
+  const hours = Math.round(seconds / 3600);
+  if (hours < 1) return "under an hour";
+  if (hours < 48) return `${hours} hour${hours === 1 ? "" : "s"}`;
+  const days = Math.round(hours / 24);
+  return `${days} day${days === 1 ? "" : "s"}`;
+}
+
+export function DataModeBanner({
+  provenance,
+  now = new Date(),
+}: {
+  provenance: ProProvenance;
+  /** Passed in by tests; the age is relative to the reader's clock, not the payload's. */
+  now?: Date;
+}) {
+  /*
+   * Live is a statement about the source, not about the clock.
+   *
+   * This returned `null` for live mode, full stop — so a dashboard whose newest observation was
+   * two weeks old said nothing at all and looked current. "Live" still means these are real
+   * observations rather than the demonstration snapshot; how old they are is a separate fact and
+   * it is the one a reader is entitled to before they believe a number.
+   */
+  if (provenance.dataMode === "live") {
+    const measuredAt = provenance.measuredAt ?? null;
+    if (!measuredAt) return null;
+    const ageSeconds = Math.max(0, (now.getTime() - Date.parse(measuredAt)) / 1000);
+    if (!Number.isFinite(ageSeconds) || ageSeconds < STALE_MEASUREMENT_SECONDS) return null;
+
+    return (
+      <div className="pro-mode pro-mode--stale" role="status" data-testid="pro-data-mode">
+        <PixelClock size={18} className="pro-mode__mark" />
+        <strong>Real observations, {spokenAge(ageSeconds)} old</strong>
+        <p>
+          These figures come from observed vehicle data rather than a demonstration snapshot, but
+          the newest settled measurement behind them ended {spokenAge(ageSeconds)} ago. Read them as
+          a record of that period, not as the state of the network now.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div
