@@ -174,22 +174,86 @@ test.describe("the walk a passenger takes", () => {
         "&toLat=53.8659&toLon=-1.6606&toLabel=Leeds%20Bradford%20Airport",
     );
 
-    // Either an itinerary or a stated reason — never a bare form.
+    /*
+     * Each item a passenger needs, asserted one at a time rather than as "an itinerary rendered".
+     *
+     * `/v1/journeys` had no fixture at all until now, so every journey this suite asked for fell to
+     * the catch-all response, failed validation, and showed the error state — which the previous
+     * version of this test, accepting "an itinerary *or* a stated reason", passed on. The result a
+     * passenger actually reads was looked at by nothing that runs here.
+     */
     const itinerary = page.locator(".journey-strip").first();
-    const reason = page.locator(".state-block").first();
-    await expect(itinerary.or(reason)).toBeVisible({ timeout: 15_000 });
+    await expect(itinerary).toBeVisible({ timeout: 15_000 });
 
-    if ((await itinerary.count()) > 0) {
-      const legs = itinerary.locator(".journey-strip__leg");
-      expect(await legs.count(), "an itinerary with no legs is not an itinerary").toBeGreaterThan(
-        0,
-      );
-      // A passenger needs to know what to catch, which means a route badge on a bus leg.
-      const badges = itinerary.locator(".route-badge");
-      expect(await badges.count(), "no leg says which service to catch").toBeGreaterThan(0);
-      // And when they will get there.
-      await expect(page.getByText(/Arrive between/).first()).toBeVisible();
-    }
+    // The legs, in order.
+    const legs = itinerary.locator(".journey-strip__leg");
+    expect(await legs.count(), "an itinerary with no legs is not an itinerary").toBe(3);
+
+    // Where it starts and where it ends.
+    await expect(itinerary.getByText("Your starting point")).toBeVisible();
+    await expect(itinerary.getByText("Your destination")).toBeVisible();
+
+    // What to catch, and where it is heading — not merely that a bus is involved.
+    await expect(itinerary.locator(".route-badge").first()).toBeVisible();
+    await expect(itinerary.getByText(/towards Roundhay Park/)).toBeVisible();
+
+    // Where to get on and where to get off, by name.
+    await expect(itinerary.getByText("Leeds City Bus Station").first()).toBeVisible();
+    await expect(itinerary.getByText("Oakwood Lane").first()).toBeVisible();
+
+    // Both walking legs, each saying how long it is.
+    const walks = itinerary.locator(".journey-strip__leg--walk");
+    expect(await walks.count(), "a journey with no walk at either end is not a bus journey").toBe(
+      2,
+    );
+    await expect(itinerary.getByText(/Walk \d+ min/).first()).toBeVisible();
+
+    // Times on the legs, and an arrival as a range rather than a false precision.
+    expect(await itinerary.locator("time").count()).toBeGreaterThan(1);
+    await expect(page.getByText(/Arrive between/).first()).toBeVisible();
+
+    // And roughly how long the whole thing takes.
+    await expect(page.locator(".journey-option__summary").first()).toBeVisible();
+  });
+
+  /*
+   * The form must not stand in front of the answer, at any width.
+   *
+   * The reported symptom was a phone showing the journey form where a valid result belonged. The
+   * race behind the blank result is fixed, but "the result rendered" and "the result is the thing
+   * you can see and touch" are different claims on a narrow screen, where the form is tall and the
+   * result is below it. So this asks the browser what is actually at the top of the itinerary: if
+   * the form overlays it, `elementFromPoint` says so.
+   */
+  test("the journey form never covers a valid result", async ({ page }) => {
+    await mockApi(page);
+    await page.goto(
+      "/journey?fromLat=53.7965&fromLon=-1.5478&fromLabel=Leeds" +
+        "&toLat=53.8659&toLon=-1.6606&toLabel=Leeds%20Bradford%20Airport",
+    );
+
+    const itinerary = page.locator(".journey-strip").first();
+    await expect(itinerary).toBeVisible({ timeout: 15_000 });
+
+    const box = await itinerary.boundingBox();
+    expect(box, "the itinerary has no box, so nothing is on screen").not.toBeNull();
+    expect(box!.width, "the itinerary is zero-width").toBeGreaterThan(80);
+    expect(box!.height, "the itinerary is zero-height").toBeGreaterThan(40);
+
+    // Scrolled to, as a passenger would, then asked what is actually under the pointer there.
+    await itinerary.scrollIntoViewIfNeeded();
+    const covering = await page.evaluate(() => {
+      const strip = document.querySelector(".journey-strip");
+      if (!strip) return "no itinerary";
+      const rect = strip.getBoundingClientRect();
+      const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + 8);
+      if (!hit) return "nothing identifiable";
+      if (strip === hit || strip.contains(hit)) return null;
+      // A label or wrapper the itinerary sits inside is not covering it.
+      if (hit.contains(strip)) return null;
+      return `${hit.tagName.toLowerCase()}.${String(hit.className).split(/\s+/)[0] ?? ""}`;
+    });
+    expect(covering, "something is drawn over the top of the itinerary").toBeNull();
   });
 
   test("the route page's variant selector names the direction and switches the sequence", async ({

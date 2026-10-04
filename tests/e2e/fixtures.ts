@@ -754,6 +754,80 @@ export const NEARBY_RESULTS = {
   },
 };
 
+/**
+ * A journey through the same world: Leeds City Bus Station, the 36, Roundhay Park.
+ *
+ * `/v1/journeys` had no fixture at all, so every journey the end-to-end suite asked for fell to
+ * the catch-all `{ data: {} }`, failed schema validation, and the page showed its error state —
+ * which a flow test accepting "an itinerary *or* a stated reason" passes on. The result a
+ * passenger reads was therefore never looked at by anything that runs here.
+ *
+ * Built so that each thing a passenger needs is present and distinguishable: a walk at each end,
+ * one bus leg naming its service and where it is heading, named boarding and alighting stops, and
+ * times on every leg.
+ */
+const JOURNEY_BASE = Date.parse("2026-09-03T09:00:00.000Z") / 1000;
+const JOURNEY_DAY_START = Date.parse("2026-09-03T00:00:00.000Z") / 1000;
+
+function journeyLeg(
+  mode: "walk" | "bus",
+  fromName: string,
+  toName: string,
+  startOffsetSeconds: number,
+  durationSeconds: number,
+  service?: { routeName: string; headsign: string },
+) {
+  const departureSeconds = JOURNEY_BASE + startOffsetSeconds - JOURNEY_DAY_START;
+  return {
+    mode,
+    fromStopId: null,
+    toStopId: null,
+    fromName,
+    toName,
+    fromCoordinate: { lat: 53.7965, lon: -1.5379 },
+    toCoordinate: { lat: 53.8266, lon: -1.4976 },
+    ...(service
+      ? { routeId: ROUTE_ID, routeName: service.routeName, headsign: service.headsign }
+      : {}),
+    departureSeconds,
+    arrivalSeconds: departureSeconds + durationSeconds,
+    departAtExpected: new Date((JOURNEY_BASE + startOffsetSeconds) * 1000).toISOString(),
+    arriveAtExpected: new Date(
+      (JOURNEY_BASE + startOffsetSeconds + durationSeconds) * 1000,
+    ).toISOString(),
+  };
+}
+
+export const JOURNEY_PLAN = {
+  meta: META,
+  data: {
+    serviceDate: "2026-09-03",
+    options: [
+      {
+        ranking: "fastest",
+        legs: [
+          journeyLeg("walk", "Your starting point", "Leeds City Bus Station", 0, 240),
+          journeyLeg("bus", "Leeds City Bus Station", "Oakwood Lane", 300, 1_140, {
+            routeName: "36",
+            headsign: "Roundhay Park",
+          }),
+          journeyLeg("walk", "Oakwood Lane", "Your destination", 1_440, 300),
+        ],
+        departureSeconds: JOURNEY_BASE - JOURNEY_DAY_START,
+        arrivalSeconds: JOURNEY_BASE + 1_740 - JOURNEY_DAY_START,
+        arrivalLowSeconds: JOURNEY_BASE + 1_680 - JOURNEY_DAY_START,
+        arrivalHighSeconds: JOURNEY_BASE + 1_860 - JOURNEY_DAY_START,
+        totalWalkSeconds: 540,
+        changeCount: 0,
+        boardingStopId: STOP_ID,
+        confidence: { level: "medium", score: 0.6, reasons: ["timetable only"] },
+      },
+    ],
+    explanation: null,
+    unavailableReason: null,
+  },
+};
+
 export async function mockApi(page: Page, overrides: Record<string, unknown> = {}): Promise<void> {
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
@@ -814,19 +888,21 @@ export async function mockApi(page: Page, overrides: Record<string, unknown> = {
                             coverageCaveats: ["No live analysis has been published."],
                           },
                         }
-                      : path === "/v1/disruptions"
-                        ? DISRUPTIONS_RESPONSE
-                        : path.startsWith("/v1/routes/")
-                          ? ROUTE_DETAIL
-                          : path.startsWith("/v1/vehicles/")
-                            ? VEHICLE_DETAIL
-                            : path === "/v1/map"
-                              ? EMPTY_MAP
-                              : path === "/v1/search"
-                                ? SEARCH_RESULTS
-                                : path === "/v1/nearby"
-                                  ? NEARBY_RESULTS
-                                  : { meta: META, data: {} });
+                      : path === "/v1/journeys"
+                        ? JOURNEY_PLAN
+                        : path === "/v1/disruptions"
+                          ? DISRUPTIONS_RESPONSE
+                          : path.startsWith("/v1/routes/")
+                            ? ROUTE_DETAIL
+                            : path.startsWith("/v1/vehicles/")
+                              ? VEHICLE_DETAIL
+                              : path === "/v1/map"
+                                ? EMPTY_MAP
+                                : path === "/v1/search"
+                                  ? SEARCH_RESULTS
+                                  : path === "/v1/nearby"
+                                    ? NEARBY_RESULTS
+                                    : { meta: META, data: {} });
 
     await route.fulfill({
       status: 200,
