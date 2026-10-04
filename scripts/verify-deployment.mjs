@@ -212,16 +212,51 @@ function inServiceHours(now = new Date()) {
 
 const SERVICE_HOURS = inServiceHours();
 
+/**
+ * How long this script pauses between checks, so that it reads as somebody browsing.
+ *
+ * Not a concession, and worth being exact about why. The passenger probe — a handful of requests,
+ * one after another, with a page's worth of thinking between them — reported **zero** failures
+ * against the same deployment on which this script reported twelve of twenty-three. The difference
+ * is not the endpoints. It is that this script fired about a hundred and fifty requests at one
+ * isolate inside two minutes, and `/v1/map` passed as its first check and answered Cloudflare's
+ * error 1102 as its ninth, same run, same viewport size.
+ *
+ * A harness that only ever asks that way cannot tell "this endpoint is broken" from "this
+ * deployment does not survive a burst", and for several runs it reported the second as the first.
+ * So the sequence of passenger checks is paced, and the burst question keeps a check of its own —
+ * `the pattern-heavy endpoints survive dense cities, repeatedly` — which deliberately does not
+ * pace itself and is labelled as the stress test it is. Nothing is skipped and nothing is
+ * forgiven: the script still exits non-zero if any check fails, stress included.
+ */
+const CHECK_PACE_MS = Number(process.env.VERIFY_PACE_MS ?? "400");
+
+/** Checks that are deliberately a burst, and must not be paced. */
+const STRESS_CHECKS = new Set(["the pattern-heavy endpoints survive dense cities, repeatedly"]);
+
+let pacedChecks = 0;
+
 async function check(name, run) {
+  /*
+   * Paced before the check rather than after, so the first one is not delayed and the Worker has
+   * a moment between each page a notional passenger opens.
+   */
+  const stress = STRESS_CHECKS.has(name);
+  if (!stress && pacedChecks > 0 && CHECK_PACE_MS > 0) {
+    await new Promise((resolve) => setTimeout(resolve, CHECK_PACE_MS));
+  }
+  if (!stress) pacedChecks += 1;
+
   try {
     const detail = await run();
-    results.push({ name, ok: true, detail: detail ?? "" });
+    results.push({ name, ok: true, detail: detail ?? "", stress });
   } catch (error) {
     failures += 1;
     results.push({
       name,
       ok: false,
       detail: error instanceof Error ? error.message : String(error),
+      stress,
     });
   }
 }
@@ -2062,8 +2097,57 @@ for (const result of results) {
  * get at: a job's log and its uploaded artifacts are both served from a storage host this
  * project's container cannot reach, and so is the preview itself. See scripts/annotate.mjs.
  */
-annotateResults("deployment", results);
+annotateResults("deployment", passenger);
+if (stress.length > 0) annotateResults("stress (burst, one client)", stress);
 
+/*
+ * Reported in two parts, because they are two questions.
+ *
+ * "Does a passenger get real data" and "does this deployment survive a burst from one client" have
+ * different answers today, and a single ratio hid that for six runs: the passenger-facing flows
+ * were called broken on the strength of a stress result. Both still count towards the exit code.
+ */
+/*
+ * The label has to still be attached to something.
+ *
+ * `STRESS_CHECKS` matches on a check's name, so renaming that check would quietly move it into the
+ * passenger set and the burst question would stop being asked separately — with nothing failing to
+ * say so. Named here rather than hoped for.
+ */
+for (const name of STRESS_CHECKS) {
+  if (!results.some((result) => result.name === name)) {
+    console.error(
+      `::error title=stress label::"${name}" is listed as a burst check and no check by that ` +
+        `name ran. Either it was renamed, in which case STRESS_CHECKS needs the new name, or it ` +
+        `was removed, in which case nothing is testing burst behaviour.`,
+    );
+    failures += 1;
+    results.push({
+      name: `the burst check named "${name}" exists`,
+      ok: false,
+      detail: "no check ran under that name, so burst behaviour is no longer being tested",
+      stress: true,
+    });
+  }
+}
+
+const passenger = results.filter((result) => !result.stress);
+const stress = results.filter((result) => result.stress);
+const passengerFailures = passenger.filter((result) => !result.ok).length;
+const stressFailures = stress.filter((result) => !result.ok).length;
+
+console.log(
+  `\nPassenger-representative checks: ${passenger.length - passengerFailures} of ${passenger.length} passed, ` +
+    `paced ${CHECK_PACE_MS}ms apart, against real data at ${apiUrl}.`,
+);
+if (stress.length > 0) {
+  console.log(
+    `Deliberate burst (stress) checks: ${stress.length - stressFailures} of ${stress.length} passed. ` +
+      (stressFailures > 0
+        ? `A burst failure is RESILIENCE / LOAD, not a passenger blocker — see BUILD_STATE.md.`
+        : ``),
+  );
+}
 console.log(
   failures === 0
     ? `\nDeployment verified: ${results.length} checks against real data at ${apiUrl}.`
