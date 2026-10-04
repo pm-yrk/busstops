@@ -809,7 +809,17 @@ export class NetworkReader {
     records: number;
     operators: number;
     services: number;
-    places: number;
+    /**
+     * Gazetteer *lines* held as text, not landmarks parsed into objects.
+     *
+     * Renamed because the old name was about to mislead the one person reading it closely. It
+     * printed `places=3178` for weeks, which read as "this isolate is holding 3,178 parsed
+     * landmarks" — and it was, because the filter had been removed. The filter is back, so nothing
+     * parsed survives a request and this counts the strings the text cache holds. Those are one
+     * allocation each and were always going to be held; conflating them with the objects would
+     * make the next run's diagnostics say the fix had not worked.
+     */
+    placeLines: number;
     routeTiles: number;
   } {
     let records = 0;
@@ -820,7 +830,7 @@ export class NetworkReader {
       records,
       operators: this.operatorsCache?.size ?? 0,
       services: this.servicesCache?.size ?? 0,
-      places: this.placeLinesCache?.length ?? 0,
+      placeLines: this.placeLinesCache?.length ?? 0,
       routeTiles: this.routeTilesCache?.size ?? 0,
     };
   }

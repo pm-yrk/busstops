@@ -431,7 +431,7 @@ function beginResidency(ledger: ReadLedger, handler = "unnamed"): () => void {
       singletons: {
         operators: after?.operators ?? 0,
         services: after?.services ?? 0,
-        places: after?.places ?? 0,
+        placeLines: after?.placeLines ?? 0,
         routeTiles: after?.routeTiles ?? 0,
       },
     });
