@@ -44,6 +44,19 @@ on:
         type: choice
         options: [skip, report, apply]
         default: skip
+      prune_minutes:
+        description: "Minutes retention may spend deleting (blank = 35; the job allows up to 200)"
+        type: string
+        # Blank by default, which keeps the behaviour the step's own comment argues for: retention
+        # is housekeeping and must not delay the verification the run exists to produce.
+        #
+        # Raised deliberately for a pass whose point *is* the prune. The account deletes at about
+        # four objects a second — a ceiling this repository does not control — so the first apply
+        # pass removed 8,968 of 32,025 removable objects in its 35 minutes and reported 23,057
+        # left. At that rate finishing takes about 96 more minutes, which is three more passes at
+        # the default or one at 150. The bucket matters: 16.05 GB against R2's 10 GiB free
+        # allowance, and finishing brings it to 10.06.
+        default: ""
       run_weather:
         description: "Also collect stop weather into the preview bucket"
         type: boolean
@@ -275,7 +288,9 @@ jobs:
         # bucket is housekeeping. Whether the deployment serves real data is the question, and an
         # unrelated housekeeping task must not be able to stop it being asked.
         continue-on-error: true
-        timeout-minutes: 45
+        # Enough for the longest budget the input allows, plus the listing it does first — 51
+        # seconds over 64,125 objects — and still inside the job's own 240.
+        timeout-minutes: 210
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -287,8 +302,32 @@ jobs:
           # oldest version left on the next pass, so cutting its budget costs a later start
           # rather than a lost prune — whereas a job that runs out of time cancels the
           # verification, which is the thing the run exists to produce.
-          PRUNE_TIME_BUDGET_MS: ${{ inputs.bootstrap_data && '1080000' || '2100000' }}
+          # Worked out in the shell rather than in an expression. The expression form needed
+          # `fromJSON` on a string that is empty by default, which throws, and a clamp is a
+          # sentence of shell against a nest of conditionals.
+          PRUNE_MINUTES: ${{ inputs.prune_minutes }}
+          PRUNE_DEFAULT_MS: ${{ inputs.bootstrap_data && '1080000' || '2100000' }}
         run: |
+          set -o pipefail
+          # A number or nothing. `$((abc * 60000))` is 0 in shell, so a typo would have handed
+          # retention a zero budget and it would have deleted nothing and said nothing about why.
+          if [ -n "$PRUNE_MINUTES" ] && ! printf '%s' "$PRUNE_MINUTES" | grep -Eq '^[0-9]+$'; then
+            echo "::warning title=retention budget::prune_minutes was \"$PRUNE_MINUTES\", which is not a number of minutes. Using the default."
+            PRUNE_MINUTES=""
+          fi
+          if [ -n "$PRUNE_MINUTES" ]; then
+            # Clamped to the step's own limit less the listing and a margin, so a typed 10000
+            # cannot turn into a step the runner kills in the middle of the delete loop — which is
+            # the one failure mode that loses the report of what was already deleted.
+            minutes="$PRUNE_MINUTES"
+            [ "$minutes" -gt 195 ] && minutes=195
+            [ "$minutes" -lt 1 ] && minutes=1
+            PRUNE_TIME_BUDGET_MS=$((minutes * 60000))
+          else
+            PRUNE_TIME_BUDGET_MS="$PRUNE_DEFAULT_MS"
+          fi
+          export PRUNE_TIME_BUDGET_MS
+          echo "Retention may spend $((PRUNE_TIME_BUDGET_MS / 60000)) minute(s) deleting."
           if [ "${{ inputs.prune_artifacts }}" = "apply" ]; then
             npx tsx pipelines/static-network/run-prune.ts --apply
           else
