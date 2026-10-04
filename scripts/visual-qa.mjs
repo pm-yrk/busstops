@@ -1494,7 +1494,20 @@ for (const size of WIDTHS) {
          * something to use is never accidentally empty, and the count-and-words test applies to
          * pages that offer only reading.
          */
-        const controls = [...main.querySelectorAll("input, select, textarea")].filter(
+        /*
+         * Buttons count too, and leaving them out is what made this fire on the journey page.
+         *
+         * `EndpointPicker` renders a text input only while its endpoint is empty; once one is
+         * chosen it renders the chosen place and a "Change" button. So a journey arrived at from a
+         * link — both ends supplied, which is the case the sweep photographs — has two Change
+         * buttons and a Plan button and not one `input`, and the check reported "no controls and
+         * 91 words, and nothing saying why" at two widths for three runs. The page was offering
+         * three things to press.
+         *
+         * Counting them does not blunt the check: nav, footer and header are excluded, and a page
+         * whose only button is the retry inside a state block already passes through `declared`.
+         */
+        const controls = [...main.querySelectorAll("input, select, textarea, button")].filter(
           (node) => !node.closest("nav, footer, header.app__header"),
         ).length;
 
