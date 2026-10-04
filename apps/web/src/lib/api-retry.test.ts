@@ -127,10 +127,17 @@ describe("asking again when the platform refuses", () => {
         fetchImpl: fetchImpl as unknown as typeof fetch,
       });
 
+      /*
+       * The expectation is attached before the clock is advanced, which is not a stylistic choice.
+       * `advanceTimersByTimeAsync` fires the deadline and flushes microtasks, so the promise
+       * rejects while nothing is waiting on it — Node sees an unhandled rejection and vitest
+       * reports it as an error beside ten passing tests. That is how this shipped to CI: the pass
+       * count was green and the error count was not something I was reading.
+       */
       const pending = client.sourcesHealth();
+      const settled = expect(pending).rejects.toThrow(/heard nothing back/);
       await vi.advanceTimersByTimeAsync(20_000);
-
-      await expect(pending).rejects.toThrow(/heard nothing back/);
+      await settled;
       /*
        * Once, not twice, and deliberately.
        *
@@ -196,10 +203,11 @@ describe("asking again when the platform refuses", () => {
         fetchImpl: fetchImpl as unknown as typeof fetch,
       });
 
+      // Attached before the clock moves; see the test above.
       const pending = client.map({ west: -1.6, south: 53.7, east: -1.4, north: 53.9 }, 15);
+      const settled = expect(pending).rejects.toThrow(/heard nothing back within 8 seconds/);
       await vi.advanceTimersByTimeAsync(8_000);
-
-      await expect(pending).rejects.toThrow(/heard nothing back within 8 seconds/);
+      await settled;
     } finally {
       vi.useRealTimers();
     }
