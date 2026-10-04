@@ -143,21 +143,23 @@ const OPERATOR = {
 
 describe("the ticket hand-off", () => {
   /*
-   * The registry is empty, so nothing claims to sell a ticket. What the operator publishes in the
-   * national dataset is their own address, and that is offered as exactly that.
+   * An operator on no verified seller's domain. Nothing claims to sell a ticket for them; what
+   * they publish in the national dataset is their own address, and that is offered as exactly
+   * that. The host here is deliberately one that will never appear in the seller list, so this
+   * test does not quietly change meaning the day a real operator's page is verified.
    */
   it("offers the operator's published site, and does not call it a ticket shop", () => {
     render(
       <TicketHandoff
-        operator={{ ...OPERATOR, contactUrl: "https://www.firstbus.co.uk/" } as Operator}
+        operator={{ ...OPERATOR, contactUrl: "https://www.coachesofnowhere.example/" } as Operator}
         routeName="36"
       />,
     );
 
     const link = screen.getByRole("link");
-    expect(link.getAttribute("href")).toBe("https://www.firstbus.co.uk/");
+    expect(link.getAttribute("href")).toBe("https://www.coachesofnowhere.example/");
     // The hostname is in the text, so a poisoned feed cannot disguise where it leads.
-    expect(link.textContent).toContain("firstbus.co.uk");
+    expect(link.textContent).toContain("coachesofnowhere.example");
     expect(screen.getByText(/own website, as they publish it/)).toBeTruthy();
     expect(screen.queryByText(/Buy a ticket/)).toBeNull();
     // External, and not carrying our referrer.
@@ -168,7 +170,7 @@ describe("the ticket hand-off", () => {
   it("refuses a plaintext address rather than sending a passenger to it", () => {
     render(
       <TicketHandoff
-        operator={{ ...OPERATOR, contactUrl: "http://www.firstbus.co.uk/" } as Operator}
+        operator={{ ...OPERATOR, contactUrl: "http://www.coachesofnowhere.example/" } as Operator}
       />,
     );
     expect(screen.queryByRole("link")).toBeNull();

@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { RouteBadge } from "./primitives.js";
 import { ART } from "./pixel/sprites/generated.js";
 import "./JourneyStrip.css";
@@ -12,6 +13,13 @@ import "./JourneyStrip.css";
  *
  * Nothing here is invented. Every name, time, route number and headsign comes from the leg the
  * planner produced; a leg with no headsign simply does not show one.
+ *
+ * It is also where the journey stops being a dead end. A passenger who has been given a plan
+ * immediately wants two things the plan itself does not hold: the rest of the service they are
+ * being told to board, and the board at the stop they are being told to wait at. So the route
+ * number opens the route — which is also where the ticket hand-off lives — and a named stop opens
+ * its departure board. Both are ids the planner already returned; a leg without them is still
+ * drawn, just not as a link, because a plausible link is worse than plain text.
  */
 
 export interface JourneyStripLeg {
@@ -20,6 +28,13 @@ export interface JourneyStripLeg {
   toName: string;
   routeName?: string | null;
   headsign?: string | null;
+  /**
+   * The published service id, never the number on the front: several operators run a "36" and a
+   * link built from the public name opens somebody else's route.
+   */
+  routeId?: string | null;
+  fromStopId?: string | null;
+  toStopId?: string | null;
   departureLabel: string;
   arrivalLabel: string;
   minutes: number;
@@ -31,6 +46,21 @@ function minutesLabel(minutes: number): string {
   const hours = Math.floor(minutes / 60);
   const rest = Math.round(minutes % 60);
   return rest === 0 ? `${hours} hr` : `${hours} hr ${rest} min`;
+}
+
+/**
+ * A place on the journey, as a link to its board when it is a stop we hold.
+ *
+ * The ends of a journey are the points the passenger asked for — a postcode, a dropped pin, a
+ * landmark — and those have no stop id and must not pretend to. So the id decides, not the name.
+ */
+function StopName({ name, stopId }: { name: string; stopId?: string | null }) {
+  if (!stopId) return <>{name}</>;
+  return (
+    <Link className="journey-strip__stop-link" to={`/stops/${encodeURIComponent(stopId)}`}>
+      {name}
+    </Link>
+  );
 }
 
 export function JourneyStrip({ legs }: { legs: readonly JourneyStripLeg[] }) {
@@ -59,7 +89,7 @@ export function JourneyStrip({ legs }: { legs: readonly JourneyStripLeg[] }) {
 
             <div className="journey-strip__body">
               <p className="journey-strip__place">
-                {leg.fromName}
+                <StopName name={leg.fromName} stopId={leg.fromStopId} />
                 {isChange ? <span className="journey-strip__change">Change</span> : null}
               </p>
 
@@ -85,7 +115,17 @@ export function JourneyStrip({ legs }: { legs: readonly JourneyStripLeg[] }) {
                       alt=""
                     />
                     <span className="journey-strip__what">
-                      <RouteBadge name={leg.routeName ?? "Bus"} />
+                      {leg.routeId ? (
+                        <Link
+                          className="journey-strip__route-link"
+                          to={`/routes/${encodeURIComponent(leg.routeId)}`}
+                          aria-label={`Route ${leg.routeName ?? "details"}, all stops and tickets`}
+                        >
+                          <RouteBadge name={leg.routeName ?? "Bus"} />
+                        </Link>
+                      ) : (
+                        <RouteBadge name={leg.routeName ?? "Bus"} />
+                      )}
                       {leg.headsign ? (
                         <span className="journey-strip__towards">towards {leg.headsign}</span>
                       ) : null}
@@ -98,7 +138,7 @@ export function JourneyStrip({ legs }: { legs: readonly JourneyStripLeg[] }) {
 
               {isLast ? (
                 <p className="journey-strip__place journey-strip__place--end">
-                  {leg.toName}
+                  <StopName name={leg.toName} stopId={leg.toStopId} />
                   <time className="journey-strip__time">{leg.arrivalLabel}</time>
                 </p>
               ) : null}

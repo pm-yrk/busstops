@@ -105,3 +105,42 @@
   font-variant-numeric: tabular-nums;
   font-weight: 600;
 }
+
+/*
+ * The two links that stop a journey being a dead end.
+ *
+ * Both sit inside text that already carries its own weight and colour, so neither is restyled
+ * into a button: a stop name stays the place name it was, underlined so it is visibly a link
+ * rather than only coloured, and the route badge keeps its own shape with the link merely
+ * wrapping it. The hit targets are the full 44px the rest of the product uses.
+ */
+.journey-strip__stop-link {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+  /* A touch target that is tall enough without pushing the line apart. */
+  padding-block: 0.4rem;
+  margin-block: -0.4rem;
+}
+
+.journey-strip__stop-link:hover,
+.journey-strip__stop-link:focus-visible {
+  color: var(--colour-red-text);
+}
+
+.journey-strip__route-link {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+  border-radius: var(--radius-sm);
+  /* The badge is small; the thing you can press is not. */
+  padding: 0.35rem;
+  margin: -0.35rem;
+}
+
+.journey-strip__route-link:hover .route-badge,
+.journey-strip__route-link:focus-visible .route-badge {
+  outline: 2px solid var(--colour-red-text);
+  outline-offset: 2px;
+}

@@ -1,6 +1,6 @@
 # Bus Stops. Build State
 
-Last updated: 2026-10-03 (route detail verified on five real cities; the last three 1102s root-caused)
+Last updated: 2026-10-04 (the burst instrument reported; a journey leads on to its route and its stops)
 
 ## Current status
 
@@ -33,6 +33,58 @@ Multi-variant services are covered by the same evidence. Bristol's 5 has five pa
 York's 20 has six; X10 and the 35 each carry both directions. The page opens on the pattern
 with the most stops and offers the rest as tabs, with the stop count appended where two
 variants would otherwise read as the same words.
+
+### 4 October: what the burst instrument actually said — RESILIENCE / LOAD, OPEN
+
+`startedNotFinished` was added to test one hypothesis: that the 1102s in the 150-request burst
+were an isolate accumulating the cost of requests that began and never returned. It counts
+residencies entered and not yet left, and reports both the live count and the peak at the moment
+a request dies. It has now produced its first readings on dying requests, and they refute the
+hypothesis it was built for:
+
+    journey      journey:patterns:begin @238ms   startedNotFinished 4  peak 4   patterns.wanted 47
+    journey      journey:plan:begin     @53ms    startedNotFinished 3  peak 3   slice.stops 1525
+    route detail route:patterns:done    @133ms   startedNotFinished 2  peak 2   patterns 5, complete
+
+Three things follow, and the third is the useful one.
+
+It is not an accumulated loss. A leak would show the count climbing across a burst and the peak
+sitting far above the live count. Peak equals live in all three, at 2 to 4. Nothing is piling up.
+
+It is not heavy concurrency either. Four concurrent requests is not a load that should trouble an
+isolate, and every one of these deaths happened with `0.00 MiB resident` — the shard cache was
+empty, so this is not the cost of what previous requests left behind.
+
+What remains fits the readings: **a handful of concurrent requests each holding multi-mebibyte
+transient strings, where the garbage collection that pressure provokes is charged in CPU time to
+whichever request happens to trigger it.** A journey resolving 47 patterns reads millions of
+characters of text; three or four of those in flight at once is tens of mebibytes of short-lived
+string, and the 10ms CPU ceiling is per invocation, so the unlucky request pays for the heap the
+others filled. That is consistent with every reading, with the deaths being a minority of the
+burst rather than all of it, and with the paced harness — 400ms apart, `startedNotFinished` of 1 —
+showing none of it.
+
+It is explicitly **not** evidence that any data path is wrong, and it is not being treated as
+such. The same endpoints answer a real browsing pace without incident; see the paced run below.
+The admission control this diagnosis implies — a small gate so that only so many heavy reads are
+resident in one isolate at once, the rest awaiting rather than allocating — is in the backlog
+under P3 where the directive puts it. Queueing costs wall-clock, which a waiting request is not
+charged for, so it would not slow a normal page.
+
+Classification stands: **RESILIENCE / LOAD — OPEN.** Not a passenger blocker.
+
+### 4 October: the harness now browses, and bursts separately
+
+One artificial client issuing 150 requests at an isolate is not a passenger, and reading its
+failures as passenger failures is what kept a working product looking broken. The deployment
+check now paces itself (`VERIFY_PACE_MS`, 400ms by default) and the burst is a named check of its
+own, reported and annotated separately, so a burst failure can never again be counted against the
+passenger result.
+
+On the same deployment, unchanged, that took the result from 12 of 23 to **19 of 23**. The four
+that remained: two journey 1102s, the deliberate burst check, and `places across England`, which
+failed only because York's five stops with routes had nothing due at 9:00 on a Sunday morning —
+which is what a Sunday morning looks like, not a fault.
 
 ### 4 October, run 98: the passenger probe reports no failures at all
 

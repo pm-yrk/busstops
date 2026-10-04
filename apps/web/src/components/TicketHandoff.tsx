@@ -1,5 +1,10 @@
 import type { Operator } from "@busstops/contracts";
-import { EXTERNAL_LINK_ATTRIBUTES, isAllowedTicketDomain, ticketLinkFor } from "../lib/tickets.js";
+import {
+  EXTERNAL_LINK_ATTRIBUTES,
+  isAllowedTicketDomain,
+  sellerForOperatorSite,
+  ticketLinkFor,
+} from "../lib/tickets.js";
 import "./TicketHandoff.css";
 
 /**
@@ -44,7 +49,23 @@ export function TicketHandoff({ operator, routeName, headingLevel = 3 }: TicketH
   if (!operator) return null;
 
   const registryCode = operator.licenceRegistryIds[0] ?? operator.id;
-  const sold = ticketLinkFor(registryCode, routeName);
+
+  /*
+   * Three sources, narrowest first.
+   *
+   * A registry entry scoped to this operator and possibly this route number wins, because it is
+   * the one somebody chose deliberately. Failing that, the operator's own published domain is
+   * matched against the verified seller list — if First Leeds publishes `firstbus.co.uk` in the
+   * national dataset, First Bus's ticket page is their seller by their own account, and no table
+   * of which subsidiary belongs to which group had to be guessed at. Only then the website.
+   */
+  const registered = ticketLinkFor(registryCode, routeName);
+  const seller = registered ? null : sellerForOperatorSite(operator.contactUrl);
+  const sold =
+    registered ??
+    (seller
+      ? { url: seller.url!, sellerName: seller.sellerName, operatorName: operator.name }
+      : null);
 
   /*
    * `https` only, and through the same allowlist check the registry uses where the host happens

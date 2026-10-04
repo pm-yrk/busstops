@@ -270,6 +270,46 @@ test.describe("the walk a passenger takes", () => {
   });
 
   /*
+   * A plan the passenger cannot act on is half a feature.
+   *
+   * Two things are wanted the moment a plan appears and neither is in the plan: the rest of the
+   * service being recommended, and the board at the stop being recommended. So the walk continues
+   * out of the journey — into the route, which is also where the ticket hand-off lives, and into
+   * the boarding stop's own board.
+   */
+  test("a journey leads on to the route it recommends and the stop it starts from", async ({
+    page,
+  }) => {
+    await mockApi(page);
+    await page.goto(
+      "/journey?fromLat=53.7965&fromLon=-1.5478&fromLabel=Leeds" +
+        "&toLat=53.8266&toLon=-1.4976&toLabel=Roundhay",
+    );
+
+    const itinerary = page.locator(".journey-strip").first();
+    await expect(itinerary).toBeVisible();
+
+    // The boarding stop opens its own board.
+    await itinerary.getByRole("link", { name: "Leeds City Bus Station" }).first().click();
+    await expect(page.locator("h1")).toBeVisible();
+    await expect(page.locator(".arrival-board, .arrival-row").first()).toBeVisible();
+    expect(page.url()).toContain("/stops/");
+
+    await page.goBack();
+    await expect(itinerary).toBeVisible();
+
+    // And the number on the front opens the service, which carries its stops and its tickets.
+    await itinerary
+      .getByRole("link", { name: /Route 36/ })
+      .first()
+      .click();
+    await expect(page.locator("h1")).toBeVisible();
+    expect(page.url()).toContain("/routes/");
+    // The route page is the thing the hand-off hangs off, so it has to have arrived.
+    await expect(page.getByRole("heading", { name: "Tickets" })).toBeVisible();
+  });
+
+  /*
    * The form must not stand in front of the answer, at any width.
    *
    * The reported symptom was a phone showing the journey form where a valid result belonged. The

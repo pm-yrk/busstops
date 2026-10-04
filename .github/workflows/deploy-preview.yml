@@ -663,6 +663,22 @@ jobs:
           echo "::error::The Pages deployment did not start serving."
           exit 1
 
+      # Ticket links are checked from here because they cannot be checked from where they are
+      # decided. The agent maintaining `data/ticket-sellers.json` has no outbound route to
+      # operator websites — the gateway refuses them — so a URL written from memory would be
+      # precisely the unverified link `lib/tickets.ts` exists to refuse. A runner can reach them.
+      #
+      # It runs on every deploy rather than behind an input, because the second thing it catches
+      # is link rot: an operator who moves their ticket page turns a working hand-off into a 404,
+      # and the only way to notice is to keep asking. It never fails the run — a seller being
+      # down is not a reason to withhold a deployment — and it changes nothing by itself. The
+      # result comes back as an annotation to be written into the data file deliberately.
+      - name: Check the ticket-seller pages still answer
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 8
+        run: node scripts/verify-ticket-links.mjs
+
       - name: Smoke test the real deployment
         if: ${{ !cancelled() && steps.pages.outcome == 'success' }}
         run: node scripts/smoke-test.mjs "${{ steps.pages.outputs.url }}" "${{ steps.worker.outputs.url }}"

@@ -791,12 +791,18 @@ function journeyLeg(
   startOffsetSeconds: number,
   durationSeconds: number,
   service?: { routeName: string; headsign: string },
+  /*
+   * Real ids on the ride, so the walk out of a journey plan is covered: the planner always puts
+   * a bus leg between two known stops (`itinerary-check` refuses one that is not), and the ends
+   * of the journey are the pin the passenger dropped and have none.
+   */
+  stops?: { fromStopId: string; toStopId: string },
 ) {
   const departureSeconds = JOURNEY_BASE + startOffsetSeconds - JOURNEY_DAY_START;
   return {
     mode,
-    fromStopId: null,
-    toStopId: null,
+    fromStopId: stops?.fromStopId ?? null,
+    toStopId: stops?.toStopId ?? null,
     fromName,
     toName,
     fromCoordinate: { lat: 53.7965, lon: -1.5379 },
@@ -822,10 +828,15 @@ export const JOURNEY_PLAN = {
         ranking: "fastest",
         legs: [
           journeyLeg("walk", "Your starting point", "Leeds City Bus Station", 0, 240),
-          journeyLeg("bus", "Leeds City Bus Station", "Oakwood Lane", 300, 1_140, {
-            routeName: "36",
-            headsign: "Roundhay Park",
-          }),
+          journeyLeg(
+            "bus",
+            "Leeds City Bus Station",
+            "Oakwood Lane",
+            300,
+            1_140,
+            { routeName: "36", headsign: "Roundhay Park" },
+            { fromStopId: ROUTE_STOPS[0]!.stopId, toStopId: ROUTE_STOPS[10]!.stopId },
+          ),
           journeyLeg("walk", "Oakwood Lane", "Your destination", 1_440, 300),
         ],
         departureSeconds: JOURNEY_BASE - JOURNEY_DAY_START,
