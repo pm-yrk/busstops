@@ -34,6 +34,43 @@ York's 20 has six; X10 and the 35 each carry both directions. The page opens on 
 with the most stops and offers the rest as tabs, with the stop count appended where two
 variants would otherwise read as the same words.
 
+### 4 October, run 98: the passenger probe reports no failures at all
+
+`"failures": []`. Every question the probe asks of the deployed preview — eight cities' viewports,
+four stop boards in each, a route page in five of them with its stop sequence and a stop from the
+middle of it opened, landmark search, a journey, disruptions, source health — came back good.
+
+Five route pages again, and Manchester's is a third different service across three runs (103 this
+time, after 101 and 1), so the result is the product rather than a lucky route:
+
+    Route 19 — Leeds        First Leeds                      3 variants  83 stops  #42 opens
+    Route 103 — Manchester  Bee Network                      5 variants  64 stops  #33 opens, 4 due
+    Route 2 — Birmingham    National Express West Midlands   6 variants  43 stops  #22 opens
+    Route 25 — Bristol      First Bristol, Bath & the West   2 variants  23 stops  #12 opens, 3 due
+    Route 13 — York         Connexions Buses                 4 variants  51 stops  #26 opens
+
+All `ordered: true`, `alphabetical: false`, `complete: true`. Boards at eight cities named their
+routes, with real departures where any were due at 01:00 — Bristol 3 routes and 9 due, next 5 to
+Chapel Way; Manchester next 203 to Stockport Interchange; Leeds next 24 to City Square G.
+
+**And the deployed verification holds at 12 of 23, which is the same deployment.** The difference
+is how it asks: about 150 requests at one isolate in two minutes, where the probe asks a
+passenger's handful serially. `/v1/map` passes as the first check and answers error 1102 as the
+ninth, in the same run, for the same viewport size. In this run no breadcrumb survived at all — the
+chase's own probe requests failed too — which is itself consistent with something isolate-wide
+rather than request-shaped.
+
+The residency readings from the requests that did answer say the isolate is holding nothing:
+`shardsAfter: 0`, `charsAfter: 0`, `services: 0`, `placeLines: 0`, across requests 1 to 6. Every
+national read is gone from the request paths and every parsed cache with it. So the thing that
+kills the seventieth request is not state this code is accumulating, and the next reading is
+`startedNotFinished` from a run where a breadcrumb survives.
+
+**What this means for the product, stated plainly.** A passenger using the site gets departures,
+search, nearby, stop boards, route stop sequences in travel order, stop-to-route navigation and a
+journey plan. A burst of 150 requests from one address does not. Those are different claims and
+only the first one is what the site is for — but the second is not nothing, and it is not fixed.
+
 ### 4 October: three things that were measuring the wrong thing
 
 A run's own instruments were wrong in three places, and each one had been costing real
