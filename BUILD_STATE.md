@@ -1,6 +1,6 @@
 # Bus Stops. Build State
 
-Last updated: 2026-10-04 (ticket links checked and the answer is no; the verification's own reporting was dead)
+Last updated: 2026-10-12 (Pro's chain proven end to end; the branch is not on main and no schedule has fired since 4 Sep)
 
 ## Current status
 
@@ -72,6 +72,99 @@ under P3 where the directive puts it. Queueing costs wall-clock, which a waiting
 charged for, so it would not slow a normal page.
 
 Classification stands: **RESILIENCE / LOAD — OPEN.** Not a passenger blocker.
+
+### 12 October: the branch is NOT on main, and no schedule has fired since 4 September
+
+Two operational findings, the second of which is bigger than the first.
+
+**The merge has not landed.** `origin/main` is at `5f33bc7` ("Update README.md", 5 September) and
+`git merge-base --is-ancestor` says this branch is not an ancestor of it; 263 commits are
+unmerged. PR #1 _is_ merged — on 3 September, long before any of this work — and because its head
+branch has the same name, the PR page reads "Merged" while the branch has moved on 263 commits. A
+merged pull request cannot track new work, so a new one is needed. None of
+`preview-departures-refresh.yml`, `prove-horizon.yml`, `weather.yml`, `disruptions.yml` or
+`prune-artifacts.yml` is on main, so none is schedulable or dispatchable from its real home yet.
+
+What _is_ verified, and holds regardless: main's workflows name only `busstops-artifacts` where
+they are production (`daily-brief`, `intelligence-batch`, `intelligence-collection`,
+`static-network-daily`, `static-network-weekly`) and only `busstops-artifacts-preview` where they
+are preview (`deploy-preview`, `verify-sources`). No deployment was triggered: main has had no run
+of any kind since 4 September. And main can run workflows — `verify-sources.yml` dispatched
+against `main` completed successfully — so the merge will make the two preview workflows reachable.
+
+**No scheduled workflow in this repository has fired since 2026-09-04.** Every workflow reports
+`state: active`; the repository is public, not archived, not disabled, and was pushed to today. Yet
+`static-network-daily` (03:15 daily), `intelligence-collection` (every 30 minutes),
+`intelligence-batch` (hourly) and `daily-brief` (05:40 daily) all stop dead on 4 September. The
+last few `intelligence-collection` runs are at 23:38, 01:46 and 06:40 — already nothing like every
+thirty minutes — so GitHub was dropping most of them before it stopped entirely.
+
+This matters more than the merge, because **the merge alone will not fix it.** The goal was to
+remove the last manual life-support requirement from departures; a scheduler that does not fire
+leaves departures on manual dispatch whether the workflow lives on main or not. It is also why
+Pro has no accumulated observations (see below). Manual dispatch works, from both branches.
+
+### 12 October: Pro's chain is proven end to end, and starved rather than broken
+
+The road-network extraction succeeded and the whole chain ran for the first time:
+
+    live collection      38,840 observations, coverage 1, source healthy
+    segment_samples      76,822 segments indexed; 18,580 traces; 385 accepted; 256 emitted
+    interval_aggregates  226 closed buckets — and 226 suppressed
+    atomic_publish       3 objects published
+
+So every stage works. What Pro still cannot do is show an unsuppressed segment figure, and the
+reason is arithmetic rather than architectural: **385 accepted samples spread across 226
+five-minute buckets is about 1.7 samples each**, and a bucket needs a minimum before it will
+publish a value. Suppressing them is correct. One dispatch cannot produce the volume; the
+scheduled collector running every thirty minutes can, and it has not run since 4 September.
+
+Two further facts worth keeping separate from that:
+
+**Road coverage is six urban boxes, by design.** `ROAD_AREAS` is Leeds, Manchester, Birmingham,
+Bristol, York and Central London, each about a tenth of a degree across, and `describeCoverage`
+states it in the Pro response. The batch samples traces nationally, so 14,483 of 18,580 had no road
+at all — cell 51.5,0 (east London), 53,-1.5 (Sheffield), 52.5,-2.5 (the Black Country). That is the
+documented scope, not a fault, and the honest reading of "0% matched" there is "not extracted".
+
+**The route join still maps nothing, and the cause is now one measurement away.** 20,033 vehicles,
+20,031 with a line reference, 20,033 with an operator reference, and `vehiclesMappedToRouteId: 0`.
+`unmappedOperatorRefs: 295` with samples FCYM, NATX, TFCN, ABUS, ATWE; `unmappedLineRefs: 0` —
+which is not evidence that lines match, because the operator lookup fails first and `continue`s, so
+no line is ever tested. A _total_ miss against 631 published operators is the signature of two
+identifier spaces rather than of patchy data: the feed's codes look like National Operator Codes,
+and the GTFS build records `agency_id` as a registry id, which in our hand-written fixture is also
+a NOC. One of those assumptions is wrong and nothing settles which from here, so the join now
+reports the other side of the comparison — how many codes it knows, a sample of them, and whether a
+case-folded, punctuation-stripped match would have hit where the exact one did not. A relaxed hit
+means normalise; no relaxed hit means the network build is keying operators by something the feed
+never sends, and the fix is there.
+
+### 12 October: searching a town returned twenty places and not one bus stop
+
+The flow walk failed on its first step for three runs, and the improved reporting finally said
+why — then the sweep's own search check said it outright:
+
+    phone/search-results finds something for a real place name — 20 result(s):
+      Leeds [Place], Leeds Supporters Coach Park [Place],
+      Leeds City Bus & Coach Station [Place], Leeds Coach Station National Express Terminal [Place]
+
+Search was never broken. It answered a different question: the scorer adds `entry.prominence`, a
+gazetteer place is prominent where an individual bus stop is not, and there are more than twenty
+place matches for "Leeds" — so the most obvious query a first-time visitor can type offered twenty
+ways to plan a journey and no departure board at all, and the walk's selector for a stop link had
+nothing to find.
+
+The ranking is left exactly as it is, because it is not wrong; the result _set_ is corrected. If
+the top results hold fewer than four stops and stops exist among the candidates, the
+lowest-scoring non-stops give way to the best-scoring stops and score order is restored. Four,
+not one: a town matches several plausible places and a single stop beneath them reads as an
+afterthought. A query that genuinely matched no stop is returned unchanged.
+
+The harness gap this exposed is worth more than the fix. Every search check it had used either a
+curated landmark or a word lifted from a stop the API had just returned — so none of them asked for
+a town name on its own, and a total failure of the first step of the core flow was invisible for
+weeks. It asks now, for five towns, and names the ones that answered.
 
 ### 12 October: postcode search has a £0 source, and it is a storage question not a licence one
 
