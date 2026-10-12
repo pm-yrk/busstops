@@ -615,10 +615,20 @@ async function main(): Promise<void> {
     const legStop = await ask(`/v1/stops/${encodeURIComponent(String(first.fromStopId))}`);
     const routeName = asText(at(legRoute.json, "data", "route", "publicName"));
     const stopName = asText(at(legStop.json, "data", "stop", "name"));
-    const legStops = asCount(at(legRoute.json, "data", "stops"));
+    /*
+     * Stops live under each variant, not at the top of the response — which the route-page check
+     * above has always read correctly and this one did not, so it reported `routeStops: null`
+     * against a route that has stops. A probe that misreads a healthy response is a probe that
+     * will one day be believed about an unhealthy one.
+     */
+    const legVariants = asArray(at(legRoute.json, "data", "variants"));
+    const legStops = legVariants.reduce(
+      (most, variant) => Math.max(most, asCount(at(variant, "stops")) ?? 0),
+      0,
+    );
     console.log(
       `  journey leg → route           : HTTP ${legRoute.status} · ${routeName || "(no name)"} · ` +
-        `${legStops ?? "?"} stop(s)`,
+        `${legVariants.length} variant(s), ${legStops} stop(s)`,
     );
     console.log(
       `  journey leg → boarding board  : HTTP ${legStop.status} · ${stopName || "(no name)"}`,
@@ -626,6 +636,7 @@ async function main(): Promise<void> {
     report.journeyLegNavigation = {
       routeStatus: legRoute.status,
       routeName,
+      routeVariants: legVariants.length,
       routeStops: legStops,
       stopStatus: legStop.status,
       stopName,
@@ -635,6 +646,12 @@ async function main(): Promise<void> {
       failures.push(
         `Journey leg navigation: the route a leg names (${first.routeName || first.routeId}) ` +
           `answered HTTP ${legRoute.status} with no route name, so the link on the plan is dead.`,
+      );
+    } else if (legStops === 0) {
+      // A link that opens a page with nothing on it is worse than no link.
+      failures.push(
+        `Journey leg navigation: route ${routeName} answered 200 but carries no stop in any of ` +
+          `${legVariants.length} variant(s), so the link on the plan opens an empty page.`,
       );
     }
     if (legStop.status !== 200 || !stopName) {
