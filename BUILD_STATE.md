@@ -1,6 +1,6 @@
 # Bus Stops. Build State
 
-Last updated: 2026-10-12 (passenger core green on real data; Pro's route join resolves 14,148 vehicles)
+Last updated: 2026-10-12 (Pro publishes real figures; the passenger core is green on real data)
 
 ## Current status
 
@@ -72,6 +72,42 @@ under P3 where the directive puts it. Queueing costs wall-clock, which a waiting
 charged for, so it would not slow a normal page.
 
 Classification stands: **RESILIENCE / LOAD — OPEN.** Not a passenger blocker.
+
+### 12 October, run 38254333807: Pro publishes, and the figures are real but thin
+
+`analytics batch (published)` — no rollback, for the first time. What the summary carries:
+
+    distinctVehicles         17
+    distinctRoutes            8      (was 0 before the NOC fix)
+    medianTraversalSeconds  122
+    sampleCount              18
+    closedBuckets            18      suppressedBuckets 18
+    segmentsMeasured          0
+    vehiclesMappedToRouteId  12,992
+
+So Pro now shows measured values — seventeen buses observed, eight distinct routes, a median
+segment traversal of 122 seconds — and they are honest about being thin: eighteen matched crossings
+nationally, every one of the eighteen closed buckets still suppressed for want of samples, so
+`segmentsMeasured` is zero and the tile says what that means rather than showing a bare nought.
+
+Eighteen crossings is the shape of one dispatch against six urban boxes. Volume is what the
+scheduled collector provides, and it has not run since 4 September; nothing else about this is
+broken.
+
+### 12 October: one refused secret took a whole deploy with it
+
+Run 38254333807's deploy job failed at "Configure Worker runtime secrets" — setting the BODS key
+refused once, with the value present and every other step fine. That took the frontend build, the
+Pages deploy, the verification and the visual sweep with it, and the only thing readable about it
+was "Failed to set Worker secret BODS_API_KEY", which does not say why.
+
+Cloudflare's API is rate limited per account and this job had deployed several times inside the
+window, so a single refusal is the shape of a bad minute rather than a fault to stop for. Three
+attempts with backoff now, and the error annotation carries wrangler's own stderr — which names
+the secret and the failure but never the value, and is the only thing that says why.
+
+The Worker itself had deployed before the step failed, and the probe passed against it, which is
+why the passenger evidence from that run still stands.
 
 ### 12 October, run 38245359800: the passenger core is green on a real timetable
 
