@@ -641,7 +641,36 @@ function writeReport(report: Record<string, unknown>): void {
    * refresh is a 170-minute job whose whole purpose is to say how far the timetable now reaches;
    * that answer has to survive the job.
    */
-  annotateReport("static network", report);
+  /*
+   * A digest, not the report.
+   *
+   * The full build report runs to tens of kilobytes — source health for every upstream, per-table
+   * GTFS counts, spill statistics — and an annotation survives about 3,400 characters. Sending the
+   * whole thing meant the fields a reader actually came for were cut off: run 38227490547's
+   * annotation ended mid-way through `spill`, so whether the operators had been republished with
+   * their National Operator Codes, which was the entire point of that run, was unreadable. The
+   * full report is still written to `build-report.json` and uploaded.
+   */
+  annotateReport("static network", {
+    outcome: report.outcome,
+    refreshedVersion: report.refreshedVersion,
+    serviceDates: report.serviceDates,
+    republishedOperators: report.republishedOperators,
+    prunedServiceDates: report.prunedServiceDates,
+    publishedDatasets: Array.isArray(report.published) ? report.published.length : undefined,
+    failed: report.failed,
+    departureShards: report.departureShards,
+    counts: report.counts,
+    // Named rather than included whole: a source that is down is the thing worth seeing.
+    sourcesDown: Array.isArray(report.sourceHealth)
+      ? report.sourceHealth
+          .filter((entry) => (entry as { status?: string }).status !== "healthy")
+          .map((entry) => {
+            const row = entry as { source?: string; status?: string; message?: string };
+            return `${row.source}: ${row.status}${row.message ? ` (${row.message})` : ""}`;
+          })
+      : undefined,
+  });
 }
 
 main()
