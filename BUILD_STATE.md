@@ -93,6 +93,21 @@ helped — which is exactly why this was worth measuring before touching it.
 (The one "NOC-shaped" sample is `OP10`, four alphanumerics by coincidence. The shape test is a
 glance, not a proof, and here the glance is unambiguous.)
 
+The line hop was measured too, and it does not work either. GTFS `route_id` values are plain
+BODS-internal integers:
+
+    route_id          8, 25, 30, 46, 58, 765, 1359, 1456, 1677, 2986
+    route_short_name  4, C9, 4S, 14, 025, 252, X27, X79, 581, 12A
+
+So `route_id` is a BODS row id and `route_short_name` is the number on the front. A direct join
+from SIRI-VM's `LineRef` to `route_id` would need the feed to send BODS row ids, which it does not.
+What is left is the obvious correspondence — SIRI's `PublishedLineName` to GTFS `route_short_name`,
+"252" to "252" — and that is exactly the join the code already attempts. **It is only the operator
+that is missing**, and the operator is required because several operators run a "252".
+
+So the whole problem reduces to one mapping: **National Operator Code → BODS operator id.** Both
+identifiers exist, in two feeds from the same publisher, and neither feed carries the other's.
+
 Two ways forward, and the cheaper one is being measured before anything is built:
 
 **Through the operator** needs a third dataset. The NOC database maps NOC to operator _name_, and
