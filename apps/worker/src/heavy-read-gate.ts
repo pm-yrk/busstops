@@ -60,6 +60,31 @@ let queued = 0;
 let bypassed = 0;
 let peakActive = 0;
 let longestWaitMs = 0;
+let totalWaitMs = 0;
+
+/**
+ * The same counts per endpoint, because "the gate queued 40 requests" does not say whether that
+ * was the map behaving normally or search being starved. Keyed by the gated path, which is a
+ * fixed small set — never by the full URL, which would grow without bound in a long-lived isolate.
+ */
+const byEndpoint = new Map<
+  string,
+  { entered: number; queued: number; bypassed: number; waitMs: number }
+>();
+
+function tally(endpoint: string): {
+  entered: number;
+  queued: number;
+  bypassed: number;
+  waitMs: number;
+} {
+  let row = byEndpoint.get(endpoint);
+  if (!row) {
+    row = { entered: 0, queued: 0, bypassed: 0, waitMs: 0 };
+    byEndpoint.set(endpoint, row);
+  }
+  return row;
+}
 
 export interface HeavyReadSlot {
   /** Milliseconds spent waiting for the slot. Zero means it was free. */
@@ -92,14 +117,18 @@ function handOver(): void {
  * `release` is safe to call exactly once, including after a bypass, and is written so a thrown
  * read cannot leak the slot — every caller releases in a `finally`.
  */
-export async function acquireHeavyRead(): Promise<HeavyReadSlot> {
+export async function acquireHeavyRead(endpoint = "unnamed"): Promise<HeavyReadSlot> {
+  const row = tally(endpoint);
+
   if (active < MAX_CONCURRENT) {
     take();
     entered += 1;
+    row.entered += 1;
     return { waitedMs: 0, bypassed: false, release: makeRelease(false) };
   }
 
   queued += 1;
+  row.queued += 1;
   const startedAt = Date.now();
 
   const granted = await new Promise<boolean>((resolve) => {
@@ -130,13 +159,17 @@ export async function acquireHeavyRead(): Promise<HeavyReadSlot> {
 
   const waitedMs = Date.now() - startedAt;
   if (waitedMs > longestWaitMs) longestWaitMs = waitedMs;
+  totalWaitMs += waitedMs;
+  row.waitMs += waitedMs;
 
   if (!granted) {
     bypassed += 1;
+    row.bypassed += 1;
     return { waitedMs, bypassed: true, release: makeRelease(true) };
   }
 
   entered += 1;
+  row.entered += 1;
   return { waitedMs, bypassed: false, release: makeRelease(false) };
 }
 
@@ -152,7 +185,44 @@ function makeRelease(wasBypass: boolean): () => void {
 
 /** What to put in the breadcrumb. Read-only; the gate's state is the isolate's. */
 export function heavyReadGateState(): Record<string, number> {
-  return { active, waiting: waiting.length, entered, queued, bypassed, peakActive, longestWaitMs };
+  return {
+    active,
+    waiting: waiting.length,
+    entered,
+    queued,
+    bypassed,
+    peakActive,
+    longestWaitMs,
+    // Mean over queued requests only; a request that walked straight through waited zero and
+    // would drag the average towards nothing.
+    meanQueuedWaitMs: queued === 0 ? 0 : Math.round(totalWaitMs / queued),
+  };
+}
+
+/**
+ * The same, broken down by endpoint, for a report rather than a breadcrumb.
+ *
+ * Every figure here is **one isolate's**. Cloudflare runs many, a request may land on any of them,
+ * and a reader who takes these as deployment-wide totals will badly underestimate them. The
+ * endpoint that serves this says so in the response.
+ */
+export function heavyReadGateByEndpoint(): Record<
+  string,
+  { entered: number; queued: number; bypassed: number; meanQueuedWaitMs: number }
+> {
+  const out: Record<
+    string,
+    { entered: number; queued: number; bypassed: number; meanQueuedWaitMs: number }
+  > = {};
+  for (const [endpoint, row] of byEndpoint) {
+    out[endpoint] = {
+      entered: row.entered,
+      queued: row.queued,
+      bypassed: row.bypassed,
+      meanQueuedWaitMs: row.queued === 0 ? 0 : Math.round(row.waitMs / row.queued),
+    };
+  }
+  return out;
 }
 
 /** For tests only: the gate is module state and a test must be able to start from nothing. */
@@ -164,6 +234,8 @@ export function resetHeavyReadGate(): void {
   bypassed = 0;
   peakActive = 0;
   longestWaitMs = 0;
+  totalWaitMs = 0;
+  byEndpoint.clear();
 }
 
 export const HEAVY_READ_GATE_LIMITS = { MAX_CONCURRENT, MAX_WAIT_MS } as const;

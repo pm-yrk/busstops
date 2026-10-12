@@ -7,7 +7,12 @@ import {
   type ServiceRoute,
 } from "@busstops/contracts";
 import { safeModeActive } from "@busstops/governor";
-import { acquireHeavyRead, heavyReadGateState } from "./heavy-read-gate.js";
+import {
+  HEAVY_READ_GATE_LIMITS,
+  acquireHeavyRead,
+  heavyReadGateByEndpoint,
+  heavyReadGateState,
+} from "./heavy-read-gate.js";
 import { DisruptionReader, noticesFor } from "./disruption-reader.js";
 import { stopAccessibility } from "./stop-accessibility.js";
 import { WeatherReader } from "./weather-reader.js";
@@ -561,6 +566,46 @@ router.get("/v1/diagnostics/live", async (_request, { env, url }) => {
       },
     },
     15,
+  );
+});
+
+/**
+ * What the heavy-read gate has done in this isolate.
+ *
+ * Deliberately cheap and deliberately ungated: reading the gate's state must not queue behind the
+ * gate, or the one request that can report a saturated isolate is the one that cannot get through.
+ * It touches no artifact and no upstream.
+ *
+ * Every figure is **one isolate's**, and the response says so rather than leaving a reader to
+ * assume otherwise. Cloudflare runs many isolates and a request lands on whichever it lands on, so
+ * these are a sample, not a total — which is the right shape for the question being asked of them:
+ * does ordinary page concurrency queue, and does it ever wait long enough to bypass.
+ */
+router.get("/v1/diagnostics/gate", async (_request, { env }) => {
+  const state = governorState(env);
+  const now = new Date();
+  return json(
+    {
+      meta: buildMeta({
+        sources: [],
+        observedAt: now.toISOString(),
+        coverage: 1,
+        governorState: state,
+        now,
+        failedSources: [],
+        safeMode: safeModeActive(state),
+      }),
+      data: {
+        scope:
+          "One isolate. Cloudflare runs many and a request lands on whichever it lands on, so " +
+          "these counts are a sample of the deployment, never a total.",
+        limits: HEAVY_READ_GATE_LIMITS,
+        totals: heavyReadGateState(),
+        byEndpoint: heavyReadGateByEndpoint(),
+        requestsServed,
+      },
+    },
+    0,
   );
 });
 
@@ -2686,7 +2731,9 @@ export default {
      * A lone request passes straight through. Only these paths are gated; the cheap ones, and
      * everything that answers from memory, are untouched.
      */
-    const slot = isHeavyPath(url.pathname) ? await acquireHeavyRead() : null;
+    const slot = isHeavyPath(url.pathname)
+      ? await acquireHeavyRead(gatedEndpoint(url.pathname))
+      : null;
     if (slot) {
       mark("gate:enter", {
         waitedMs: slot.waitedMs,
@@ -2754,6 +2801,17 @@ export default {
  * reported "got no further than the search" on all three viewports — the one endpoint the walk
  * could not get past was the one heavy endpoint left ungated.
  */
+/**
+ * The gated path as a bounded label.
+ *
+ * `/v1/stops/450010510` and `/v1/stops/450010511` are the same endpoint, and keying the per-endpoint
+ * tallies by the full path would grow a map without bound in an isolate that lives for hours.
+ */
+function gatedEndpoint(pathname: string): string {
+  const match = /^\/v1\/(routes|stops|operators|vehicles)\//.exec(pathname);
+  return match ? `/v1/${match[1]}/:id` : pathname;
+}
+
 function isHeavyPath(pathname: string): boolean {
   return (
     pathname === "/v1/map" ||
