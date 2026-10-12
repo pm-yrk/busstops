@@ -37,27 +37,55 @@ export function annotateReport(name: string, report: Record<string, unknown>): v
 
   const outcome = String(report.outcome ?? "unknown");
   const bad = outcome === "threw" || outcome === "failed" || outcome === "not_configured";
+  const level = bad ? "error" : "notice";
 
   /*
-   * Escape first, then cap. The other way round does not work: escaping expands every newline
-   * from one character to three, so a body capped at 3400 characters of JSON came back as 4169
-   * characters of annotation — over the limit it was capped to stay under, and truncated by
-   * GitHub at a point of its choosing instead of ours.
+   * Escape first, then split. The other way round does not work: escaping expands every newline
+   * from one character to three, so a body split at 3,400 characters of JSON came back as 4,169
+   * characters of annotation — over the limit it was split to stay under.
    */
-  let body = escape(JSON.stringify(report, null, 1));
-  if (body.length > MAX_ANNOTATION_CHARS) {
-    body = body.slice(0, MAX_ANNOTATION_CHARS);
-    // Never leave a half-written escape sequence on the end.
-    body = body.replace(/%.?$/, "");
-    body = `${body}%0A… truncated`;
+  const body = escape(JSON.stringify(report, null, 1));
+
+  if (body.length <= MAX_ANNOTATION_CHARS) {
+    // eslint-disable-next-line no-console
+    console.log(`::${level} title=${name} (${outcome})::${body}`);
+    return;
   }
 
-  const level = bad ? "error" : "notice";
   /*
-   * A workflow command, not logging: stdout is the only channel GitHub reads these from, and the
-   * rule forbidding `console.log` is about keeping noise out of library code. This line IS the
-   * output.
+   * Split across numbered annotations rather than capped, because capping loses whichever field
+   * happens to be last and that is never the one a reader came for.
+   *
+   * Three separate runs proved it. The static-network report was cut off mid-`spill`, hiding
+   * whether the operators had been republished with their National Operator Codes — the entire
+   * point of that run. The analytics batch was cut off inside `atomic_publish`, hiding which
+   * dataset was rejected and why the batch rolled back. In both cases the run had the answer and
+   * the channel threw it away.
+   *
+   * Parts are numbered so a reader can tell a body that was divided from one that was cut off,
+   * and split on `%0A` — an escaped line boundary — so each part is still readable on its own.
+   *
+   * GitHub keeps at most ten annotations per level per step, so splitting is not a licence to send
+   * anything of any size: a report running to tens of kilobytes still needs a caller-side digest
+   * naming the fields it is judged on, which is what `run-daily.ts` does. Splitting is for the
+   * reports that are merely a little too big, which is most of them.
    */
-  // eslint-disable-next-line no-console
-  console.log(`::${level} title=${name} (${outcome})::${body}`);
+  const parts: string[] = [];
+  let rest = body;
+  while (rest.length > 0) {
+    if (rest.length <= MAX_ANNOTATION_CHARS) {
+      parts.push(rest);
+      break;
+    }
+    let cut = rest.lastIndexOf("%0A", MAX_ANNOTATION_CHARS);
+    // A body with no line boundary in reach is split where it is, minus any half escape sequence.
+    if (cut <= 0) cut = MAX_ANNOTATION_CHARS;
+    parts.push(rest.slice(0, cut).replace(/%.?$/, ""));
+    rest = rest.slice(cut);
+  }
+
+  parts.forEach((part, index) => {
+    // eslint-disable-next-line no-console
+    console.log(`::${level} title=${name} (${outcome}) ${index + 1}/${parts.length}::${part}`);
+  });
 }

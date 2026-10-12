@@ -55,18 +55,32 @@ describe("annotateReport", () => {
   });
 
   /*
-   * GitHub cuts a body at about four kibibytes without saying so, and a JSON body cut mid-string
-   * will not parse — which is harder to read than a short one that will.
+   * Split, not capped. Capping loses whichever field happens to be last, and that is never the one
+   * a reader came for: three runs proved it, hiding whether the operators had been republished and
+   * why a batch rolled back.
    */
-  it("caps a long body with a marker instead of being cut off mid-string", () => {
-    const long = {
+  it("splits a long body across numbered annotations and loses nothing", () => {
+    annotateReport("live collection", {
       outcome: "collected",
       partitions: Array.from({ length: 500 }, (_, i) => `p${i}`),
-    };
-    annotateReport("live collection", long);
-    const line = lines[0]!;
-    expect(line).toContain("truncated");
-    expect(line.length).toBeLessThan(4096);
+    });
+
+    expect(lines.length).toBeGreaterThan(1);
+    for (const line of lines) {
+      expect(line.length).toBeLessThan(4096);
+      expect(line).toMatch(/\(collected\) \d+\/\d+::/);
+    }
+
+    // The last field survives, which is the whole point, and so does the first.
+    const body = lines.map((line) => line.replace(/^::\w+ title=[^:]*::/, "")).join("");
+    expect(body).toContain("p499");
+    expect(body).toContain("p0");
+  });
+
+  it("does not number an annotation that fits in one", () => {
+    annotateReport("live collection", { outcome: "collected", observations: 12 });
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).not.toMatch(/\d+\/\d+::/);
   });
 
   it("calls an outcome it has never seen a notice rather than hiding it", () => {
