@@ -72,6 +72,13 @@ on:
       run_intelligence:
         description: "Collect live observations and run the analytics batch, so Pro reports live"
         type: boolean
+        # Ordering worth knowing before combining this with a refresh: the batch runs at step 25
+        # and the departures refresh at step 29, so a single dispatch asking for both analyses the
+        # network as it was *before* the refresh republished it. That matters for one thing in
+        # particular — a refresh is what carries `agency_noc` into `network/operators`, and the
+        # batch's route join needs it — so getting both takes two dispatches: refresh, then
+        # intelligence. The steps are not reordered because collection has to start early enough
+        # for its window to close inside the run, and the refresh takes up to 170 minutes.
         default: false
       settle_before_batch:
         description: "Wait 16 min after collecting so the newest window has closed before the batch runs"
