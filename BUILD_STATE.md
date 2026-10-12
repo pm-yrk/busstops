@@ -73,6 +73,44 @@ charged for, so it would not slow a normal page.
 
 Classification stands: **RESILIENCE / LOAD — OPEN.** Not a passenger blocker.
 
+### 12 October: the route join is innocent — `agency_id` is a BODS internal id
+
+Measured rather than reasoned about, and it closes a question that has been open for weeks. The
+GTFS measurement job sampled the real `agency.txt`:
+
+    rows 567   withAgencyId 567   NOC-shaped sample ids 1 of 12
+    ids   OP10, OP101, OP102, OP10232, OP1024, OP103, OP10363, OP104, OP105, OP10594, OP10792, OP108
+    names M & H Coaches, Select Bus Services, LandFlight, Solus Coaches, Orkney Travel,
+          National Express Coventry
+
+So BODS keys its GTFS agencies by a **BODS-internal operator id**, not by a National Operator
+Code. The live SIRI-VM feed sends NOCs — FCYM, NATX, TFCN, ABUS, ATWE. The network build records
+`row.agency_id ?? row.agency_name` as the operator's registry id, so the published operators are
+keyed `OP10232` and the observations arrive keyed `FCYM`. They cannot meet. Mapping 0 of 20,033
+vehicles was the only thing the join could have done, and no amount of work inside it would have
+helped — which is exactly why this was worth measuring before touching it.
+
+(The one "NOC-shaped" sample is `OP10`, four alphanumerics by coincidence. The shape test is a
+glance, not a proof, and here the glance is unambiguous.)
+
+Two ways forward, and the cheaper one is being measured before anything is built:
+
+**Through the operator** needs a third dataset. The NOC database maps NOC to operator _name_, and
+the TransXchange adapter in this repository already reads `NationalOperatorCode` — but the live
+path is GTFS, which carries no NOC at all. Joining through a name match across two publishers is
+the kind of fuzzy join that produces confidently wrong attributions, and attributing a delay to
+the wrong operator is worse than attributing it to none.
+
+**Through the line** may need nothing. The join reads `publishedLineName ?? lineRef` and stops, so
+"2,185 distinct route names" says nothing about which field supplied them. If `LineRef` is a
+TransXchange line identifier rather than the number on the front, and GTFS `route_id` is the same
+identifier, an observation attributes to a published route with no operator involved. Both sides
+are now sampled — the two line references kept apart in the batch, `route_id` and
+`route_short_name` in the measurement — and one run of each settles it.
+
+Until then Pro's route and operator pages stay empty, which is the honest state: an empty route
+list reads as "no route needs attention", so the figures are withheld rather than guessed.
+
 ### 12 October: the branch is NOT on main, and no schedule has fired since 4 September
 
 Two operational findings, the second of which is bigger than the first.
