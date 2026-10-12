@@ -225,6 +225,14 @@ export interface MetricInput {
   suppressionReason?: string;
   /** True when the value is an example rather than a measurement. Drives a badge on the card. */
   illustrative?: boolean;
+  /**
+   * Whether the figure was counted or computed. See `ProMetricSchema.basis`.
+   *
+   * Defaults to `calculated`, which is the cautious answer: a figure is assumed to be derived
+   * unless its author says it is a direct count. An illustrative figure overrides it outright,
+   * so the two can never disagree.
+   */
+  basis?: "observed" | "calculated";
 }
 
 /**
@@ -259,6 +267,8 @@ export function metric(input: MetricInput): ProMetric {
     baselineValue: input.baselineValue ?? null,
     evidence: input.evidence ?? [],
     illustrative: input.illustrative ?? false,
+    // One flag cannot say "example" while the other says "observed"; illustrative wins.
+    basis: input.illustrative ? "illustrative" : (input.basis ?? "calculated"),
   };
 }
 
@@ -1076,6 +1086,8 @@ function buildHeadlineMetrics(input: {
       freshnessSeconds: usingDemo || !summary ? null : freshness,
       minimumDenominator: 1,
       evidence: usingDemo || !summary ? [] : ["segment_metrics"],
+      // A count of what the feed reported, not a statistic over it.
+      basis: "observed",
     }),
     (usingDemo ? metric : illustrative)({
       key: "punctuality",
@@ -1128,6 +1140,8 @@ function buildHeadlineMetrics(input: {
       window,
       coverage,
       minimumDenominator: 0,
+      // Counted from what publishers actually published, after the gates. Not modelled.
+      basis: "observed",
     }),
   ];
 }

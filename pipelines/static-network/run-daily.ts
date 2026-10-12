@@ -7,7 +7,12 @@
  */
 
 import { writeFileSync } from "node:fs";
-import { ArtifactStore, r2StoreFromEnv, type ObjectStore } from "@busstops/pipeline-core";
+import {
+  ArtifactStore,
+  annotateReport,
+  r2StoreFromEnv,
+  type ObjectStore,
+} from "@busstops/pipeline-core";
 import { assembleGtfsNetwork } from "./src/gtfs-assemble.js";
 import { discardGtfsArchive, fetchGtfsArchive } from "./src/gtfs-sources.js";
 import {
@@ -582,6 +587,14 @@ async function cleanUp(): Promise<void> {
 function writeReport(report: Record<string, unknown>): void {
   report.finishedAt = new Date().toISOString();
   writeFileSync("build-report.json", JSON.stringify(report, null, 2));
+  /*
+   * And as an annotation. The workflow's "report, where the log can reach it" step cats this
+   * file into the job log — and a job log is served from a host this project's container cannot
+   * reach, so for anyone working from here it has always been written to nowhere. The departures
+   * refresh is a 170-minute job whose whole purpose is to say how far the timetable now reaches;
+   * that answer has to survive the job.
+   */
+  annotateReport("static network", report);
 }
 
 main()

@@ -248,7 +248,28 @@ export function ProMetricTile({ metric }: { metric: ProMetric }) {
         */}
         {metric.illustrative ? (
           <span className="pro-metric__demo-badge">Example figure</span>
-        ) : null}
+        ) : (
+          /*
+            And which kind of real figure it is.
+ 
+            "Buses observed: 1,284" and "Median segment time: 44s" are not the same claim. One is
+            a count of what the feed reported; the other is a statistic computed over matched
+            traversals, with every assumption that implies. A reader deciding whether to trust an
+            operational dashboard needs to tell them apart, and the badge is the only place that
+            distinction can be made without a paragraph. Absent `basis` reads as calculated, the
+            more cautious of the two.
+          */
+          <span
+            className={`pro-metric__basis pro-metric__basis--${metric.basis ?? "calculated"}`}
+            title={
+              (metric.basis ?? "calculated") === "observed"
+                ? "Counted directly from what the feed reported."
+                : "Derived from observations by the analytics batch."
+            }
+          >
+            {(metric.basis ?? "calculated") === "observed" ? "Observed" : "Calculated"}
+          </span>
+        )}
       </header>
 
       <p className="pro-metric__value">

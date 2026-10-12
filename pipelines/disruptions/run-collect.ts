@@ -12,7 +12,7 @@
  */
 
 import { writeFileSync } from "node:fs";
-import { ArtifactStore, r2StoreFromEnv } from "@busstops/pipeline-core";
+import { ArtifactStore, annotateReport, r2StoreFromEnv } from "@busstops/pipeline-core";
 import { collectDisruptions } from "./src/index.js";
 
 const DATASET = "disruptions/notices";
@@ -89,6 +89,9 @@ async function main(): Promise<number> {
 function writeReport(report: Record<string, unknown>): void {
   report.finishedAt = new Date().toISOString();
   writeFileSync("disruptions-report.json", JSON.stringify(report, null, 2));
+  // Readable from outside the runner, for the same reason as every other pipeline here.
+
+  annotateReport("disruptions", report);
 }
 
 main()

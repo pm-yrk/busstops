@@ -18,7 +18,12 @@
 
 import { writeFileSync } from "node:fs";
 import { OVERPASS_HEADERS, OVERPASS_URL, OSM_ATTRIBUTION, overpassQuery } from "@busstops/adapters";
-import { ArtifactStore, SourceClient, r2StoreFromEnv } from "@busstops/pipeline-core";
+import {
+  ArtifactStore,
+  SourceClient,
+  annotateReport,
+  r2StoreFromEnv,
+} from "@busstops/pipeline-core";
 import {
   ROAD_AREAS,
   describeCoverage,
@@ -143,6 +148,15 @@ async function main(): Promise<number> {
 
 function writeReport(report: Record<string, unknown>): void {
   report.finishedAt = new Date().toISOString();
+  /*
+   * And as an annotation, because a green tick is not a segment count.
+   *
+   * This job is a one-off that the whole of Pro's live intelligence waits on — the analytics batch
+   * stops at `no_segments` until it has run — and the step reported "success" with the number of
+   * segments it wrote visible only in an artifact served from a host this project's container
+   * cannot reach. "Did it populate network/segments?" is a question with a number for an answer.
+   */
+  annotateReport("road network", report);
   writeFileSync("road-network-report.json", JSON.stringify(report, null, 2));
 }
 

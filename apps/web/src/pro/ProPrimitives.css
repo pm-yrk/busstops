@@ -591,3 +591,35 @@
 .pro-severity__band--healthy {
   background: color-mix(in srgb, var(--colour-ink) 55%, transparent);
 }
+
+/*
+ * Which kind of real figure this is.
+ *
+ * Deliberately quieter than the example badge. "Example figure" is a warning and is set like
+ * one; "Observed" and "Calculated" are provenance, and a reader should be able to ignore them
+ * while scanning and find them when they stop to ask. So: no border, muted ink, same position.
+ * The example badge keeps its amber frame and stays the loudest thing in the header.
+ */
+.pro-metric__basis {
+  margin-inline-start: auto;
+  font-family: var(--font-pixel);
+  font-size: var(--font-size-small);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 0.1rem 0.4rem;
+  color: var(--colour-muted);
+  white-space: nowrap;
+  /* It carries a title attribute, so it should look like something worth hovering. */
+  cursor: help;
+}
+
+/* A counted figure is the stronger claim of the two, and reads a shade more definite. */
+.pro-metric__basis--observed {
+  color: var(--colour-ink);
+}
+
+@media (prefers-contrast: more) {
+  .pro-metric__basis {
+    color: var(--colour-ink);
+  }
+}
