@@ -608,6 +608,13 @@ export interface StopsInViewport {
 const MIN_STOP_RESULTS = 4;
 
 /**
+ * How much deeper than the caller's limit the ranking is taken, so the stops that prominent places
+ * crowded out are still visible to `withReservedStops`. Four times twenty is eighty entries to
+ * sort, which is nothing next to scoring the candidates in the first place.
+ */
+const SEARCH_RANK_DEPTH = 4;
+
+/**
  * Guarantee a search offers somewhere to catch a bus.
  *
  * The scorer adds `entry.prominence`, and a gazetteer place is prominent where an individual bus
@@ -623,41 +630,37 @@ const MIN_STOP_RESULTS = 4;
  * afterwards, so the list still reads as ranked rather than as two lists stapled together, and a
  * query that genuinely matched no stop is unchanged.
  */
-export function withReservedStops(
-  candidates: readonly SearchIndexEntry[],
-  ranked: readonly SearchHit[],
-  query: string,
-  builtAt: string,
-  options: { limit: number; near?: Coordinate },
-): SearchHit[] {
-  const wanted = Math.min(MIN_STOP_RESULTS, options.limit);
-  const present = ranked.filter((hit) => hit.entry.kind === "stop").length;
-  if (present >= wanted) return [...ranked];
-
-  const stopCandidates = candidates.filter((entry) => entry.kind === "stop");
-  if (stopCandidates.length === 0) return [...ranked];
-
-  const stopHits = rankSearch({ entries: stopCandidates, builtAt }, query, {
-    ...options,
-    limit: wanted,
-  });
-  const already = new Set(ranked.map((hit) => `${hit.entry.kind}:${hit.entry.id}`));
-  const missing = stopHits.filter((hit) => !already.has(`${hit.entry.kind}:${hit.entry.id}`));
-  if (missing.length === 0) return [...ranked];
+export function withReservedStops(ranked: readonly SearchHit[], limit: number): SearchHit[] {
+  const wanted = Math.min(MIN_STOP_RESULTS, limit);
+  const top = ranked.slice(0, limit);
+  const present = top.filter((hit) => hit.entry.kind === "stop").length;
+  if (present >= wanted) return top;
 
   /*
-   * Drop from the bottom, and only non-stops: the point is to make room, not to re-rank. Taking
-   * the tail keeps the best matches whatever kind they are.
+   * The stops are taken from further down the same ranked list, not from a second ranking pass.
+   *
+   * The first version ranked the stop candidates again, which doubles the scoring work on the most
+   * expensive path in the Worker — the one a visitor takes first, and the one whose cost is why the
+   * read gate exists. It is also unnecessary: the scorer scores every candidate regardless of the
+   * limit, so asking for a longer list costs nothing beyond the sort, and the stops that were
+   * crowded out are already in it with their scores attached.
    */
-  const keep = [...ranked];
-  const room = missing.slice(0, Math.max(0, wanted - present));
-  for (let i = keep.length - 1; i >= 0 && keep.length + room.length > options.limit; i -= 1) {
+  const below = ranked.slice(limit).filter((hit) => hit.entry.kind === "stop");
+  if (below.length === 0) return top;
+
+  const room = below.slice(0, wanted - present);
+  /*
+   * Room comes from the bottom and only from non-stops: the point is to make space, not to
+   * re-rank, and taking the tail keeps the best matches whatever kind they are.
+   */
+  const keep = [...top];
+  for (let i = keep.length - 1; i >= 0 && keep.length + room.length > limit; i -= 1) {
     if (keep[i]!.entry.kind !== "stop") keep.splice(i, 1);
   }
 
   const merged = [...keep, ...room];
   merged.sort((a, b) => b.score - a.score);
-  return merged.slice(0, options.limit);
+  return merged.slice(0, limit);
 }
 
 export class NetworkReader {
@@ -2586,16 +2589,17 @@ export class NetworkReader {
     }
 
     const candidates = [...unique.values()];
+    /*
+     * Ranked deeper than the caller asked for, so stops crowded out of the top by prominent
+     * gazetteer places are still on the list with their scores. The scorer scores every candidate
+     * whatever the limit, so this costs the sort and nothing else — see `withReservedStops`.
+     */
+    const deepLimit = Math.min(options.limit * SEARCH_RANK_DEPTH, candidates.length);
     const rankOptions =
-      options.near === undefined
-        ? { limit: options.limit }
-        : { limit: options.limit, near: options.near };
+      options.near === undefined ? { limit: deepLimit } : { limit: deepLimit, near: options.near };
     const hits = withReservedStops(
-      candidates,
       rankSearch({ entries: candidates, builtAt: index.publishedAt }, query, rankOptions),
-      query,
-      index.publishedAt,
-      rankOptions,
+      options.limit,
     );
     return { hits: hits.map(presentHit), builtAt: index.publishedAt };
   }
