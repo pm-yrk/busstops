@@ -90,13 +90,21 @@ const RETRIEVED_AT = "2026-09-07T05:00:00.000Z";
 const MONDAY = "2026-09-07";
 const TUESDAY = "2026-09-08";
 
-const AGENCY = `agency_id,agency_name,agency_url,agency_timezone
-FLDS,First Leeds,https://www.firstbus.co.uk,Europe/London
+/*
+ * Shaped like the real feed, which is not what this fixture used to assume.
+ *
+ * BODS keys its GTFS agencies by an internal row id — OP10232 — and ships the National Operator
+ * Code in an `agency_noc` extension column. The fixture used `FLDS` as the agency_id, which is a
+ * NOC, so it quietly asserted the opposite of what the publisher does and the operator join's
+ * total failure was invisible to every test here.
+ */
+const AGENCY = `agency_id,agency_name,agency_url,agency_timezone,agency_lang,agency_phone,agency_noc
+OP10232,First Leeds,https://www.firstbus.co.uk,Europe/London,en,,FLDS
 `;
 
 const ROUTES = `route_id,agency_id,route_short_name,route_long_name,route_type
-R36,FLDS,36,Leeds – Ripon,3
-R99,FLDS,99,Ferry,4
+R36,OP10232,36,Leeds – Ripon,3
+R99,OP10232,99,Ferry,4
 `;
 
 const STOPS = `stop_id,stop_name,stop_lat,stop_lon,wheelchair_boarding
@@ -193,6 +201,39 @@ describe("building the network from a GTFS archive", () => {
     expect(result.services.map((service) => service.publicName)).toEqual(["36"]);
     // route_type 4 is a ferry.
     expect(result.counts.routesSkippedByMode).toBe(1);
+  });
+
+  /*
+   * The identifier the live feed speaks, which the build did not record.
+   *
+   * SIRI-VM sends `OperatorRef` as a National Operator Code; BODS keys its GTFS agencies by an
+   * internal row id and ships the NOC in an `agency_noc` extension column. Recording only the row
+   * id is why the analytics batch mapped 0 of 20,033 observed vehicles to a published route
+   * against 631 operators — a total miss that no work inside the join could have fixed.
+   */
+  it("records the National Operator Code as well as the publisher's own id", async () => {
+    const { result } = await build();
+
+    const operator = result.operators[0]!;
+    expect(operator.licenceRegistryIds).toContain("FLDS");
+    // Kept, because routes.txt references it.
+    expect(operator.licenceRegistryIds).toContain("OP10232");
+  });
+
+  /*
+   * An extension column, so it has to be optional. A publisher who omits it leaves the join
+   * behaving exactly as it does today for that operator, rather than being handed an empty string
+   * that matches nothing and looks like a code.
+   */
+  it("records only the publisher's id where no NOC is shipped", async () => {
+    const { result } = await build({
+      ...FEED,
+      "agency.txt":
+        "agency_id,agency_name,agency_url,agency_timezone\n" +
+        "OP10232,First Leeds,https://www.firstbus.co.uk,Europe/London\n",
+    });
+
+    expect(result.operators[0]!.licenceRegistryIds).toEqual(["OP10232"]);
   });
 
   it("takes stop identity from NaPTAN where NaPTAN has the stop", async () => {

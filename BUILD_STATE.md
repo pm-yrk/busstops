@@ -105,8 +105,28 @@ What is left is the obvious correspondence — SIRI's `PublishedLineName` to GTF
 "252" to "252" — and that is exactly the join the code already attempts. **It is only the operator
 that is missing**, and the operator is required because several operators run a "252".
 
-So the whole problem reduces to one mapping: **National Operator Code → BODS operator id.** Both
-identifiers exist, in two feeds from the same publisher, and neither feed carries the other's.
+So the whole problem reduced to one mapping: **National Operator Code → BODS operator id.** Both
+identifiers exist, in two feeds from the same publisher — and it turns out one feed does carry the
+other's. `agency.txt`'s header, which nothing had ever read:
+
+    agency_id, agency_name, agency_url, agency_timezone, agency_lang, agency_phone, agency_noc
+
+**`agency_noc`**, present in every region measured (all, Yorkshire, North West). BODS ships the
+National Operator Code alongside its own row id, in a publisher-extension column, and the build
+asked only for `agency_id`, `agency_name` and `agency_url` because those are the three it used. So
+the fix is reading a column: `licenceRegistryIds` now carries both the row id — `routes.txt`
+references it — and the NOC, which is what the live feed speaks. No new upstream, no NOC database,
+and no name match across publishers, which was the alternative and would have risked attributing a
+delay to the wrong company.
+
+It is an extension rather than part of the GTFS specification, so it is read defensively: a
+publisher who omits it leaves the join behaving exactly as it does today for that operator, rather
+than being handed an empty string that matches nothing and looks like a code. Both cases are
+tested.
+
+The test fixture was part of why this stayed hidden. It used `FLDS` as `agency_id` — a NOC — so it
+quietly asserted the opposite of what BODS publishes, and the join's total failure was invisible to
+every test in the file. It now looks like the real feed: `OP10232` with `agency_noc` beside it.
 
 Two ways forward, and the cheaper one is being measured before anything is built:
 

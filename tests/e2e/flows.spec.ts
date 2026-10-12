@@ -215,21 +215,52 @@ test.describe("the walk a passenger takes", () => {
     }
   });
 
-  test("nearby → a stop → its board", async ({ page }) => {
+  /*
+   * The other way in, actually walked.
+   *
+   * This test was named "nearby → a stop → its board" and navigated straight to the stop: it
+   * opened /search, ignored it, typed the stop's URL and asserted the board. Every step it was
+   * named for was skipped, so "Stops near me" could have been dead and nothing would have failed.
+   * A test whose name misdescribes it is worse than no test, because it is counted as coverage.
+   */
+  test("nearby → a stop → its board", async ({ page, context }) => {
+    // The browser will not offer a position otherwise, and the page asks for one.
+    await context.grantPermissions(["geolocation"]);
+    await context.setGeolocation({ latitude: 53.7965, longitude: -1.5478 });
     await mockApi(page);
     await page.goto("/search");
 
-    // "Stops near me" is the other way in, and it must lead somewhere too.
-    await page.goto(`/stops/${STOP_ID}`);
-    await expect(page.getByRole("heading", { name: /Leeds City Bus Station/ })).toBeVisible();
-    await expect(page.getByText("72").first()).toBeVisible();
+    await page.getByRole("button", { name: /Stops near me/i }).click();
+
+    // A real result, reached from the control rather than from a typed URL.
+    const firstNearby = page.locator('a[href^="/stops/"]').first();
+    await expect(firstNearby).toBeVisible();
+    const nearbyName = ((await firstNearby.textContent()) ?? "").trim();
+    expect(nearbyName.length, "a nearby result with no name is not a result").toBeGreaterThan(0);
+
+    await firstNearby.click();
+    await expect(page.locator("h1")).toBeVisible();
+    expect(page.url()).toContain("/stops/");
+    // And the board is there, which is the thing the walk was for.
+    await expect(page.locator(".arrival-board, .arrival-board__table").first()).toBeVisible();
   });
 
-  test("the map → a stop → its board", async ({ page }) => {
+  /*
+   * Named for what it does, which is not the whole flow.
+   *
+   * It opens the map's stop deep link and reads the board over the map — the destination of
+   * "map → click a stop → board" without the click. The click itself needs a real style, real
+   * tiles and a rendered canvas, and it is covered where those exist: the deployed sweep's
+   * "live opens the arrival board when a stop is clicked" clicks a painted marker against the
+   * real deployment and reads the rows out of the panel.
+   *
+   * It was called "the map → a stop → its board", which claimed the click. A test counted as
+   * coverage for a step it never takes is worse than no test for that step.
+   */
+  test("the board over the map, which is where a map click lands", async ({ page }) => {
     await mockApi(page);
     await page.goto(`/live/stops/${STOP_ID}`);
 
-    // The board over the map is the same board, reached a different way.
     await expect(page.getByText(/Leeds City Bus Station/).first()).toBeVisible();
     await expect(page.getByText("72").first()).toBeVisible();
     await expect(page.getByText(/Bradford Interchange/).first()).toBeVisible();

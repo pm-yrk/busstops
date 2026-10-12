@@ -233,11 +233,29 @@ export async function buildNetworkFromGtfs(options: GtfsBuildOptions): Promise<G
         const agencyId = row.agency_id ?? row.agency_name ?? "";
         if (agencyId.length === 0) return;
         const id = deterministicUuid("operator", agencyId);
+        /*
+         * The National Operator Code, which BODS ships in a publisher-extension column.
+         *
+         * This is the identifier the live SIRI-VM feed sends as `OperatorRef` — FCYM, NATX, ABUS
+         * — and without it an observed vehicle can never be attributed to a published route. The
+         * registry id was `agency_id` alone, and `agency_id` in this feed is a BODS-internal row
+         * id: OP10, OP101, OP10232. So the analytics batch mapped 0 of 20,033 observed vehicles
+         * against 631 published operators, and no work inside the join could have changed that.
+         *
+         * `agency.txt` carries `agency_noc` in every region measured (all, yorkshire, north_west),
+         * alongside `agency_lang` and `agency_phone`. It is an extension rather than part of the
+         * GTFS specification, so it is read defensively and simply absent where a publisher omits
+         * it — the join then behaves exactly as it does today for that operator rather than
+         * guessing. Both identifiers are kept: `agency_id` is what `routes.txt` references, and
+         * the NOC is what the live feed speaks.
+         */
+        const noc = row.agency_noc?.trim();
         operators.set(agencyId, {
           ...base,
           id,
           name: row.agency_name ?? agencyId,
-          licenceRegistryIds: [agencyId],
+          licenceRegistryIds:
+            noc !== undefined && noc.length > 0 && noc !== agencyId ? [agencyId, noc] : [agencyId],
           ...(row.agency_url && /^https?:\/\//i.test(row.agency_url)
             ? { contactUrl: row.agency_url }
             : {}),
@@ -246,7 +264,7 @@ export async function buildNetworkFromGtfs(options: GtfsBuildOptions): Promise<G
           active: true,
         });
       },
-      { columns: ["agency_id", "agency_name", "agency_url"] },
+      { columns: ["agency_id", "agency_name", "agency_url", "agency_noc"] },
     );
     counts.agencies = operators.size;
   } else {
