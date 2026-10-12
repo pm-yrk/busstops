@@ -73,6 +73,28 @@ charged for, so it would not slow a normal page.
 
 Classification stands: **RESILIENCE / LOAD — OPEN.** Not a passenger blocker.
 
+### 12 October: the NOC fix reaches the deployment without a rebuild
+
+Reading `agency_noc` fixes the build, but a build is not a deployment. The operators family is
+national, and a departures refresh publishes only what expired — so the fix would have waited for
+a full national rebuild, and a rebuild writes a second eight-gigabyte version into a
+ten-gibibyte free allowance. That is the one thing this project will not do.
+
+It does not need one. A refresh already assembles the whole network in memory and discards the
+national datasets, and `network/operators` is the single one whose contents were _wrong_ rather
+than stale. So a refresh now republishes that one dataset at the version already live.
+
+Safe, for a specific reason: an operator's id is `deterministicUuid("operator", agency_id)` and
+the key is unchanged, so every `operatorId` a service already carries still resolves. The only
+difference in the record is that `licenceRegistryIds` gains the code the live feed sends. It is one
+small object, and a failure is reported rather than fatal, because a refresh exists to carry the
+timetable forward and must still do that even if this part fails.
+
+A one-day refresh is enough to carry it, which matters: `expiredDatedKeys` deletes only dates
+strictly before yesterday, so a short refresh republishes today and leaves a wider horizon
+published by an earlier run intact. Carrying the operators therefore costs one date of publishing
+rather than four.
+
 ### 12 October: the route join is innocent — `agency_id` is a BODS internal id
 
 Measured rather than reasoned about, and it closes a question that has been open for weeks. The
