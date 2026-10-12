@@ -21,7 +21,7 @@ import {
   fingerprintFromParts,
   type SourceFingerprint,
 } from "./src/fingerprint.js";
-import { publishNetwork, rollbackNetwork } from "./src/publish.js";
+import { DATASETS, publishNetwork, rollbackNetwork } from "./src/publish.js";
 import {
   publishSpilledJourneyTiles,
   type SpilledJourneyPublishResult,
@@ -350,6 +350,53 @@ async function main(): Promise<number> {
       records: m.recordCount,
     }));
     report.failed = result.failed;
+  }
+
+  /*
+   * One exception to "a refresh publishes nothing national": the operators.
+   *
+   * A refresh builds the whole network in memory and publishes only what expired, which is right.
+   * But `network/operators` is the one national dataset whose *contents* were wrong rather than
+   * stale: it recorded only `agency_id`, which in the BODS feed is an internal row id (OP10232),
+   * while the live vehicle feed identifies operators by National Operator Code (FCYM). So the
+   * analytics batch mapped 0 of 20,033 observed vehicles to a published route, and Pro could show
+   * no route or operator figure at all. Reading `agency_noc` fixes the build; without this, that
+   * fix would not reach the deployment until somebody paid for a full national rebuild — and a
+   * rebuild writes a second eight-gigabyte version into a ten-gibibyte free allowance, which is
+   * the one thing this project will not do.
+   *
+   * It is safe to republish alone. An operator's id is `deterministicUuid("operator", agency_id)`
+   * and the key is unchanged, so every `operatorId` a service already carries still resolves; the
+   * only difference in the record is that `licenceRegistryIds` gains the code the live feed sends.
+   * It is one small object, published at the version already live, and a failure is reported
+   * rather than fatal because a refresh exists to carry the timetable forward and must still do
+   * that.
+   */
+  if (departuresOnly) {
+    try {
+      const manifest = await artifacts.publish({
+        dataset: DATASETS.operators,
+        version,
+        records: network.operators,
+        schemaVersion: "1.0.0",
+        sources: ["bods"],
+        partialCoverage: false,
+        notes: "Republished by a departures refresh to carry agency_noc.",
+      });
+      const withNoc = network.operators.filter(
+        (operator) => operator.licenceRegistryIds.length > 1,
+      ).length;
+      report.republishedOperators = { records: manifest.recordCount, withNoc };
+      console.log(
+        `Republished ${manifest.recordCount} operator(s) at ${version}; ` +
+          `${withNoc} carry a National Operator Code.`,
+      );
+    } catch (error) {
+      report.republishedOperators = {
+        failed: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+      };
+      console.error("Operators could not be republished; the timetable refresh still stands.");
+    }
   }
 
   /*
