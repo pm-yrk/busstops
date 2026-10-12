@@ -508,6 +508,51 @@ async function main(): Promise<void> {
     notes.push(`Search: "York Minster" returned no result of kind "place".`);
   }
 
+  /*
+   * A town name on its own — the first thing a visitor types, and the check this gate did not have.
+   *
+   * Both searches above ask something the index is known to hold: a curated landmark, and a word
+   * lifted from a stop the API had just returned. Neither asks the obvious question, and the cost
+   * of that gap was the largest user-facing fault of the week going unseen: "Leeds" returned
+   * twenty results and every one was a place, so the first step of the core flow — search, then
+   * open a stop, then read its board — had nowhere to go, while the probe reported no failures.
+   *
+   * What is asserted is a stop, not a result count. Places and areas are legitimate answers to a
+   * town name; a board is the one a passenger standing in Leeds needs.
+   */
+  const townSearches: Array<{ town: string; results: number; stops: number; first: string }> = [];
+  for (const town of ["Leeds", "Manchester", "Birmingham"]) {
+    const townSearch = await ask(`/v1/search?q=${encodeURIComponent(town)}`);
+    const townResults = asArray(at(townSearch.json, "data", "results"));
+    const stops = townResults.filter((result) => at(result, "kind") === "stop");
+    console.log(
+      `GET /v1/search?q=${town.padEnd(12)}: HTTP ${townSearch.status} · ${townResults.length} results · ` +
+        `${stops.length} stop(s)` +
+        (townResults[0] ? ` · first "${asText(at(townResults[0], "title"))}"` : ""),
+    );
+    townSearches.push({
+      town,
+      results: townResults.length,
+      stops: stops.length,
+      first: townResults[0] ? asText(at(townResults[0], "title")) : "",
+    });
+  }
+  report.townSearches = townSearches;
+
+  const townsWithNoStop = townSearches.filter((entry) => entry.stops === 0);
+  if (townsWithNoStop.length === townSearches.length) {
+    failures.push(
+      `Search: not one of ${townSearches.length} town name(s) returned a single bus stop ` +
+        `(${townSearches.map((entry) => `${entry.town}: ${entry.results} result(s), 0 stops`).join("; ")}). ` +
+        `A visitor typing a town name has nowhere to go, which breaks the first step of the core flow.`,
+    );
+  } else if (townsWithNoStop.length > 0) {
+    notes.push(
+      `Search: ${townsWithNoStop.map((entry) => entry.town).join(", ")} returned no stop, though ` +
+        `other towns did.`,
+    );
+  }
+
   // Leeds city centre to Leeds Bradford Airport: two points a passenger would actually pick.
   const journey = await ask(
     `/v1/journeys?fromLat=53.79648&fromLon=-1.54785&toLat=53.86590&toLon=-1.66030`,
@@ -676,6 +721,7 @@ async function main(): Promise<void> {
         failures,
         notes,
         routePages: report.routePages,
+        townSearches: report.townSearches,
         journeyLegs: report.journeyLegs,
         journeyLegNavigation: report.journeyLegNavigation,
         nearby: report.nearby,
