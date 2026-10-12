@@ -285,7 +285,22 @@ export class ArtifactStore {
       contentHash: contentHash(body),
       sizeBytes: body.length,
       schemaVersion,
-      previousVersion: previous?.version ?? null,
+      /*
+       * The version this one superseded — which is not this one.
+       *
+       * Republishing a dataset at the version already live is an in-place correction, not a new
+       * version: a departures refresh does it to `network/operators` to carry a field the build
+       * had not been reading. Pointing `previousVersion` at the same string would make
+       * `rollback()` for that dataset a no-op, silently costing the recoverability the pointer
+       * exists for. So an in-place republish carries the existing pointer forward, because the
+       * version it superseded has not changed.
+       */
+      previousVersion:
+        previous === null
+          ? null
+          : previous.version === version
+            ? previous.previousVersion
+            : previous.version,
       sources: [...sources],
       partialCoverage,
       ...(notes === undefined ? {} : { notes }),
