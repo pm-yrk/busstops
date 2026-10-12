@@ -934,6 +934,28 @@ function buildIntelligenceSummary(
  * is how a reader comes to believe the ones it shows are the whole picture. But they say what is
  * actually true about them.
  */
+/**
+ * The state the pipeline is actually in, said in a way a reader can act on.
+ *
+ * It is not "no data" and it is not "broken". The batch read 38,840 observations, matched them to
+ * road segments and closed 226 measurement windows — and suppressed every one, because 385
+ * accepted samples spread over 226 five-minute buckets is about 1.7 crossings each and a figure
+ * from that would be noise presented as measurement. Suppressing is right. What a reader needs to
+ * know is that the suppression is about *volume over time*, which accumulates as the collector
+ * keeps running, rather than about anything missing from the network.
+ *
+ * Without this, the two tiles read "Road segments measured: 0" over a denominator of 385, which
+ * invites exactly the wrong conclusion.
+ */
+function awaitingVolume(summary: NetworkSummary): string {
+  return (
+    `${summary.closedBuckets} measurement window(s) have closed and all of them were suppressed: ` +
+    `${summary.sampleCount} matched crossing(s) across those windows is too few per segment for a ` +
+    `figure that would mean anything. This accumulates as collection continues; nothing is missing ` +
+    `from the road network or the feed.`
+  );
+}
+
 const NOT_YET_MEASURED =
   "Not measured yet. This figure compares actual against scheduled time, and the intelligence " +
   "pipeline currently measures road-segment traversals only — it does not read the timetable. " +
@@ -961,7 +983,7 @@ function illustrative(input: MetricInput): ProMetric {
   });
 }
 
-function buildHeadlineMetrics(input: {
+export function buildHeadlineMetrics(input: {
   usingDemo: boolean;
   window: string;
   coverage: number;
@@ -992,7 +1014,10 @@ function buildHeadlineMetrics(input: {
           label: "Road segments measured",
           definition:
             "Distinct road segments with at least one closed, unsuppressed measurement window. " +
-            "A segment appears once it has carried enough matched traversals to publish a figure.",
+            "A segment appears once it has carried enough matched traversals to publish a figure." +
+            (summary.segmentsMeasured === 0 && summary.suppressedBuckets > 0
+              ? ` ${awaitingVolume(summary)}`
+              : ""),
           value: summary.segmentsMeasured,
           unit: "count",
           denominator: summary.sampleCount,
@@ -1007,7 +1032,10 @@ function buildHeadlineMetrics(input: {
           label: "Median segment time",
           definition:
             "The middle traversal time across every matched segment crossing in the window. It " +
-            "describes how long a segment takes to drive, not whether a bus was on time.",
+            "describes how long a segment takes to drive, not whether a bus was on time." +
+            (summary.medianTraversalSeconds === null && summary.suppressedBuckets > 0
+              ? ` ${awaitingVolume(summary)}`
+              : ""),
           value: summary.medianTraversalSeconds,
           unit: "seconds",
           denominator: summary.sampleCount,

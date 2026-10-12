@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { SearchHit, SearchIndexEntry } from "@busstops/contracts";
+import type { SearchHit, SearchIndexEntry } from "@busstops/pipeline-static-network";
 import { withReservedStops } from "./network-reader.js";
 
 /**
