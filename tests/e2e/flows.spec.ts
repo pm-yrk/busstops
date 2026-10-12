@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { ROUTE_ID, STOP_ID, mockApi } from "./fixtures.js";
+import { ROUTE_ID, STOP_ID, STOP_RESPONSE, mockApi } from "./fixtures.js";
 
 /**
  * The joins between pages, which is where a passenger actually lives.
@@ -284,6 +284,40 @@ test.describe("the walk a passenger takes", () => {
 
     // And roughly how long the whole thing takes.
     await expect(page.locator(".journey-option__summary").first()).toBeVisible();
+  });
+
+  /*
+   * Our own staleness must never be reported as a fact about the buses.
+   *
+   * With the horizon expired — which is the live state of the preview whenever the departures
+   * refresh has not run — every timetable shard a board asks for is absent. "There are no
+   * departures from this stop in the next hour" is then false, and it was what the full
+   * departures list said while the board directly above it said the opposite. A page that
+   * contradicts itself about whose fault an empty board is cannot be trusted about either answer.
+   */
+  test("an expired timetable is reported as ours, not as the buses not running", async ({
+    page,
+  }) => {
+    await mockApi(page, {
+      [`/v1/stops/${STOP_ID}`]: {
+        ...STOP_RESPONSE,
+        data: {
+          ...STOP_RESPONSE.data,
+          departures: [],
+          timetableCoverage: { read: 0, missing: 4, serviceDates: ["2026-10-12"] },
+        },
+      },
+    });
+    await page.goto(`/stops/${STOP_ID}`);
+
+    // Said once on the board, and once in the full list, and the same way both times.
+    await expect(page.getByText(/no timetable published for today/i).first()).toBeVisible();
+    await expect(
+      page.locator(".stop-page__departures").getByText(/gap on our side/i),
+    ).toBeVisible();
+
+    // And never the sentence that blames the buses.
+    await expect(page.getByText(/no departures from this stop in the next hour/i)).toHaveCount(0);
   });
 
   /*

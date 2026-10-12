@@ -181,6 +181,14 @@ export function StopPage() {
     setFavouriteState({ atcoCode: stop.atcoCode, favourited: isFavourited("stop", stop.atcoCode) });
   };
 
+  /*
+   * Every shard the reader asked for was absent and none answered: there is no timetable published
+   * for today at this stop. The same test `ArrivalBoard` and `WaitingHelp` apply, derived once here
+   * so the page cannot disagree with itself about it.
+   */
+  const coverage = response.data.timetableCoverage;
+  const noTimetablePublished =
+    coverage !== undefined && coverage.read === 0 && coverage.missing > 0;
   return (
     <div className="page stop-page">
       <ServiceBanner meta={response.meta} />
@@ -296,13 +304,25 @@ export function StopPage() {
         </PixelSectionHeading>
 
         {departures.length === 0 ? (
+          /*
+           * Three states, and the third used to be reported as the first.
+           *
+           * "There are no departures from this stop in the next hour" is a statement about the
+           * buses. When every timetable shard the reader asked for was absent it is a statement
+           * about us, and saying the former is reporting our own staleness as a fact about the
+           * service — on every stop outside London, for as long as the horizon is expired. The
+           * board and "Bus not come?" have always distinguished these; this section did not, which
+           * is the one place on the page a passenger could be told something untrue.
+           */
           <EmptyState
             art="bus"
-            title="No departures to show"
+            title={noTimetablePublished ? "No timetable for today" : "No departures to show"}
             description={
-              response.meta.degradation === "scheduled_only"
-                ? "Live tracking is unavailable for this stop right now, and we have no timetabled departures in the next hour."
-                : "There are no departures from this stop in the next hour."
+              noTimetablePublished
+                ? "We have no timetable published for today at this stop, so we cannot say what is due. That is a gap on our side, not a statement that nothing runs."
+                : response.meta.degradation === "scheduled_only"
+                  ? "Live tracking is unavailable for this stop right now, and we have no timetabled departures in the next hour."
+                  : "There are no departures from this stop in the next hour."
             }
           />
         ) : (
