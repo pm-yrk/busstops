@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   HEAVY_READ_GATE_LIMITS,
   acquireHeavyRead,
+  heavyReadGateByEndpoint,
   heavyReadGateState,
   resetHeavyReadGate,
 } from "./heavy-read-gate.js";
@@ -132,4 +133,54 @@ describe("the heavy-read gate", () => {
     }
     for (const one of again) one.release();
   }, 10_000);
+});
+
+/**
+ * The counters are the evidence the gate is judged on, so what they claim has to be true.
+ *
+ * On the burst in run 38214849377 the gate reported `peakActive: 2` while the request that died
+ * recorded fourteen requests started and not finished. Both were correct: `active` counts slot
+ * holders and a bypass holds no slot. Together they were misleading, because the gauge named
+ * "peak concurrent" was describing the limit rather than the load.
+ */
+describe("what the gate's counters claim", () => {
+  it("counts a bypass as in flight, so the load is not understated", async () => {
+    const held = [];
+    for (let i = 0; i < HEAVY_READ_GATE_LIMITS.MAX_CONCURRENT; i += 1) {
+      held.push(await acquireHeavyRead("/v1/map"));
+    }
+    const bypass = await acquireHeavyRead("/v1/map");
+    expect(bypass.bypassed).toBe(true);
+
+    const state = heavyReadGateState();
+    // The limit is doing its job...
+    expect(state.peakActive).toBe(HEAVY_READ_GATE_LIMITS.MAX_CONCURRENT);
+    // ...and this says what actually got through, which is one more than the limit.
+    expect(state.peakInFlight).toBe(HEAVY_READ_GATE_LIMITS.MAX_CONCURRENT + 1);
+    expect(state.inFlight).toBe(HEAVY_READ_GATE_LIMITS.MAX_CONCURRENT + 1);
+
+    bypass.release();
+    for (const one of held) one.release();
+    expect(heavyReadGateState().inFlight).toBe(0);
+  }, 10_000);
+
+  it("attributes queueing to the endpoint that queued", async () => {
+    const held = [];
+    for (let i = 0; i < HEAVY_READ_GATE_LIMITS.MAX_CONCURRENT; i += 1) {
+      held.push(await acquireHeavyRead("/v1/map"));
+    }
+    const waiting = acquireHeavyRead("/v1/search");
+    await Promise.resolve();
+
+    held[0]!.release();
+    const slot = await waiting;
+
+    const byEndpoint = heavyReadGateByEndpoint();
+    expect(byEndpoint["/v1/search"]!.queued).toBe(1);
+    expect(byEndpoint["/v1/map"]!.queued).toBe(0);
+    expect(byEndpoint["/v1/map"]!.entered).toBe(HEAVY_READ_GATE_LIMITS.MAX_CONCURRENT);
+
+    slot.release();
+    held[1]!.release();
+  });
 });

@@ -63,6 +63,22 @@ let longestWaitMs = 0;
 let totalWaitMs = 0;
 
 /**
+ * Everything the gate has let through and not seen return, slot or no slot.
+ *
+ * `active` counts slot holders, and a bypassing request holds no slot — so on the burst in run
+ * 38214849377 the gate reported `peakActive: 2` while the breadcrumb of the request that died
+ * recorded `startedNotFinished: 14`. Both figures were correct and together they were misleading:
+ * the gauge named "peak concurrent" was describing the limit rather than the load.
+ *
+ * This is the honest one. It changes no admission decision — a bypass still proceeds, because the
+ * frontend abandons a request long before an unbounded queue would clear — it only stops the
+ * instrument understating what got through, which matters because these counters are the evidence
+ * the gate is judged on.
+ */
+let inFlight = 0;
+let peakInFlight = 0;
+
+/**
  * The same counts per endpoint, because "the gate queued 40 requests" does not say whether that
  * was the map behaving normally or search being starved. Keyed by the gated path, which is a
  * fixed small set — never by the full URL, which would grow without bound in a long-lived isolate.
@@ -99,6 +115,11 @@ function take(): void {
   if (active > peakActive) peakActive = active;
 }
 
+function beginFlight(): void {
+  inFlight += 1;
+  if (inFlight > peakInFlight) peakInFlight = inFlight;
+}
+
 /** Hand the slot to the next waiter, or give it back. */
 function handOver(): void {
   const next = waiting.shift();
@@ -122,6 +143,7 @@ export async function acquireHeavyRead(endpoint = "unnamed"): Promise<HeavyReadS
 
   if (active < MAX_CONCURRENT) {
     take();
+    beginFlight();
     entered += 1;
     row.entered += 1;
     return { waitedMs: 0, bypassed: false, release: makeRelease(false) };
@@ -165,11 +187,13 @@ export async function acquireHeavyRead(endpoint = "unnamed"): Promise<HeavyReadS
   if (!granted) {
     bypassed += 1;
     row.bypassed += 1;
+    beginFlight();
     return { waitedMs, bypassed: true, release: makeRelease(true) };
   }
 
   entered += 1;
   row.entered += 1;
+  beginFlight();
   return { waitedMs, bypassed: false, release: makeRelease(false) };
 }
 
@@ -178,6 +202,7 @@ function makeRelease(wasBypass: boolean): () => void {
   return () => {
     if (released) return;
     released = true;
+    inFlight = Math.max(0, inFlight - 1);
     // A bypass never held a slot, so it has none to give back.
     if (!wasBypass) handOver();
   };
@@ -191,7 +216,15 @@ export function heavyReadGateState(): Record<string, number> {
     entered,
     queued,
     bypassed,
+    // Slot holders, which is the limit working.
     peakActive,
+    /*
+     * Everything let through, which is the load. Where this exceeds `peakActive` the difference is
+     * requests that waited out the ceiling and proceeded anyway, and a large gap is the signal
+     * that the gate is being asked to hold back more than it can.
+     */
+    inFlight,
+    peakInFlight,
     longestWaitMs,
     // Mean over queued requests only; a request that walked straight through waited zero and
     // would drag the average towards nothing.
@@ -235,6 +268,8 @@ export function resetHeavyReadGate(): void {
   peakActive = 0;
   longestWaitMs = 0;
   totalWaitMs = 0;
+  inFlight = 0;
+  peakInFlight = 0;
   byEndpoint.clear();
 }
 

@@ -1548,7 +1548,8 @@ await check("real page loads neither fail nor wait noticeably", async () => {
   const summary = totals
     ? `gate (one isolate): ${totals.entered} admitted, ${totals.queued} queued, ` +
       `${totals.bypassed} bypassed, mean queued wait ${totals.meanQueuedWaitMs}ms, ` +
-      `longest ${totals.longestWaitMs}ms, peak ${totals.peakActive} concurrent` +
+      `longest ${totals.longestWaitMs}ms, peak ${totals.peakActive} holding a slot and ` +
+      `${totals.peakInFlight ?? totals.peakActive} in flight` +
       (perEndpoint ? ` — ${perEndpoint}` : "")
     : "gate counters are not exposed by this deployment";
 
