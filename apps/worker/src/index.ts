@@ -7,12 +7,6 @@ import {
   type ServiceRoute,
 } from "@busstops/contracts";
 import { safeModeActive } from "@busstops/governor";
-import {
-  HEAVY_READ_GATE_LIMITS,
-  acquireHeavyRead,
-  heavyReadGateByEndpoint,
-  heavyReadGateState,
-} from "./heavy-read-gate.js";
 import { DisruptionReader, noticesFor } from "./disruption-reader.js";
 import { stopAccessibility } from "./stop-accessibility.js";
 import { WeatherReader } from "./weather-reader.js";
@@ -388,8 +382,6 @@ function beginResidency(ledger: ReadLedger, handler = "unnamed"): () => void {
     // Counted including this one, so 1 means it is alone and nothing has been lost.
     startedNotFinished,
     peakStartedNotFinished,
-    // The gate as this request found it, written where it cannot be mistaken for another's.
-    ...heavyReadGateState(),
   });
   return () => {
     startedNotFinished = Math.max(0, startedNotFinished - 1);
@@ -568,46 +560,6 @@ router.get("/v1/diagnostics/live", async (_request, { env, url }) => {
       },
     },
     15,
-  );
-});
-
-/**
- * What the heavy-read gate has done in this isolate.
- *
- * Deliberately cheap and deliberately ungated: reading the gate's state must not queue behind the
- * gate, or the one request that can report a saturated isolate is the one that cannot get through.
- * It touches no artifact and no upstream.
- *
- * Every figure is **one isolate's**, and the response says so rather than leaving a reader to
- * assume otherwise. Cloudflare runs many isolates and a request lands on whichever it lands on, so
- * these are a sample, not a total — which is the right shape for the question being asked of them:
- * does ordinary page concurrency queue, and does it ever wait long enough to bypass.
- */
-router.get("/v1/diagnostics/gate", async (_request, { env }) => {
-  const state = governorState(env);
-  const now = new Date();
-  return json(
-    {
-      meta: buildMeta({
-        sources: [],
-        observedAt: now.toISOString(),
-        coverage: 1,
-        governorState: state,
-        now,
-        failedSources: [],
-        safeMode: safeModeActive(state),
-      }),
-      data: {
-        scope:
-          "One isolate. Cloudflare runs many and a request lands on whichever it lands on, so " +
-          "these counts are a sample of the deployment, never a total.",
-        limits: HEAVY_READ_GATE_LIMITS,
-        totals: heavyReadGateState(),
-        byEndpoint: heavyReadGateByEndpoint(),
-        requestsServed,
-      },
-    },
-    0,
   );
 });
 
@@ -2721,37 +2673,6 @@ export default {
       return respond(errorResponse("not_found", "Unknown endpoint", 404), decision.remaining);
     }
 
-    /*
-     * Heavy endpoints queue behind each other rather than filling the isolate's heap together.
-     *
-     * See `heavy-read-gate.ts` for the evidence. The short version: an invocation's ten
-     * milliseconds of CPU is its own, the isolate's heap is not, and the garbage collection that
-     * three or four concurrent multi-mebibyte reads provoke is charged to whichever request
-     * triggers it. The visual sweep — one browser, one page at a time — still lost the map and
-     * route endpoints to it, because a single page load fires three or four of these at once.
-     *
-     * A lone request passes straight through. Only these paths are gated; the cheap ones, and
-     * everything that answers from memory, are untouched.
-     */
-    const slot = isHeavyPath(url.pathname)
-      ? await acquireHeavyRead(gatedEndpoint(url.pathname))
-      : null;
-    /*
-     * Deliberately not marked here, and this cost a run to learn.
-     *
-     * The breadcrumb is module state: `mark()` writes into whichever request last called
-     * `beginBreadcrumb`, and a handler does that *after* dispatch has acquired the slot. So a
-     * `gate:enter` marked at this point lands in the **previous** request's trail — and run
-     * 38215204465 duly reported a stop board that "last reached gate:enter at 5370ms" when its
-     * own last phase was `board:departures:done@109` and the gate line belonged to the request
-     * after it. A diagnostic that attributes one request's phase to another is worse than none,
-     * because every conclusion drawn from it is about the wrong request. It sent me looking at
-     * the gate when the board's own pattern read was what had died.
-     *
-     * The gate's state goes into `reads:begin` instead, inside the request's own breadcrumb, and
-     * the per-request wait is in `/v1/diagnostics/gate` where a reader would look for it anyway.
-     */
-
     try {
       const response = await matched.handler(request, { env, ctx, params: matched.params, url });
       return respond(response, decision.remaining);
@@ -2781,12 +2702,6 @@ export default {
        * that can now leave a breadcrumb behind is one that never returns from dispatch at all,
        * which is exactly the definition of the failure.
        */
-      /*
-       * Before the breadcrumb ends, because a release that throws must not stop the breadcrumb
-       * being cleared — and a slot held by a request that has returned is capacity lost for the
-       * life of the isolate.
-       */
-      slot?.release();
       endBreadcrumb();
     }
   },
@@ -2811,26 +2726,3 @@ export default {
  * reported "got no further than the search" on all three viewports — the one endpoint the walk
  * could not get past was the one heavy endpoint left ungated.
  */
-/**
- * The gated path as a bounded label.
- *
- * `/v1/stops/450010510` and `/v1/stops/450010511` are the same endpoint, and keying the per-endpoint
- * tallies by the full path would grow a map without bound in an isolate that lives for hours.
- */
-function gatedEndpoint(pathname: string): string {
-  const match = /^\/v1\/(routes|stops|operators|vehicles)\//.exec(pathname);
-  return match ? `/v1/${match[1]}/:id` : pathname;
-}
-
-export function isHeavyPath(pathname: string): boolean {
-  return (
-    pathname === "/v1/map" ||
-    pathname === "/v1/journeys" ||
-    pathname === "/v1/nearby" ||
-    pathname === "/v1/search" ||
-    pathname.startsWith("/v1/routes/") ||
-    pathname.startsWith("/v1/stops/") ||
-    pathname.startsWith("/v1/operators/") ||
-    pathname.startsWith("/v1/vehicles/")
-  );
-}

@@ -1448,10 +1448,13 @@ await check("a page's worth of requests at once, the way a browser opens one", a
  *
  * Each page's real request set is issued together — taken from `apps/web/src/lib/api.ts` rather
  * than guessed at, so weather is not a request (it arrives inside the stop board) and live
- * vehicles are not either (they arrive inside the map). Afterwards `/v1/diagnostics/gate` is read
- * for what the isolate saw: how many queued, how many waited past the ceiling and went through
- * anyway, how long a queued request waited, and the same per endpoint. Client-side timings are
- * kept too, because the gate cannot see a request the frontend has already abandoned.
+ * vehicles are not either (they arrive inside the map).
+ *
+ * It outlived the read gate it was written alongside, and deserves to: what it measures is what a
+ * page costs, which is the question whatever the Worker does about concurrency. It fails on a
+ * platform error, on a request the frontend's own deadline would have abandoned, and on a slowest
+ * request close enough to that deadline to be heading there — the last of which never shows up as
+ * a bad status code.
  */
 await check("real page loads neither fail nor wait noticeably", async () => {
   const pages = [
@@ -1529,39 +1532,15 @@ await check("real page loads neither fail nor wait noticeably", async () => {
     );
   }
 
-  // Read last and separately: asking the gate what it did is not a page load.
-  let gate = null;
-  try {
-    const { response, body } = await getJson("/v1/diagnostics/gate");
-    if (response.ok) gate = body?.data ?? null;
-  } catch {
-    // An older deployment has no such endpoint; the request results above still stand.
-  }
-
-  const totals = gate?.totals ?? null;
-  const perEndpoint = gate?.byEndpoint
-    ? Object.entries(gate.byEndpoint)
-        .filter(([, row]) => row.queued > 0 || row.bypassed > 0)
-        .map(([endpoint, row]) => `${endpoint} queued ${row.queued}/bypassed ${row.bypassed}`)
-        .join(", ") || "nothing queued on any endpoint"
-    : "";
-  const summary = totals
-    ? `gate (one isolate): ${totals.entered} admitted, ${totals.queued} queued, ` +
-      `${totals.bypassed} bypassed, mean queued wait ${totals.meanQueuedWaitMs}ms, ` +
-      `longest ${totals.longestWaitMs}ms, peak ${totals.peakActive} holding a slot and ` +
-      `${totals.peakInFlight ?? totals.peakActive} in flight` +
-      (perEndpoint ? ` — ${perEndpoint}` : "")
-    : "gate counters are not exposed by this deployment";
-
   assert(
     platformErrors === 0,
     `${platformErrors} of ${requests} request(s) were answered by the platform rather than the ` +
-      `Worker, which a browser reports as a CORS failure. ${lines.join(" | ")} | ${summary}`,
+      `Worker, which a browser reports as a CORS failure. ${lines.join(" | ")}`,
   );
   assert(
     clientTimeouts === 0,
     `${clientTimeouts} request(s) exceeded the frontend's own deadline, so a passenger saw a ` +
-      `failure even if the Worker answered. ${lines.join(" | ")} | ${summary}`,
+      `failure even if the Worker answered. ${lines.join(" | ")}`,
   );
   /*
    * The second half of the claim, and the one a status code cannot make. The gate's wait ceiling
@@ -1571,10 +1550,10 @@ await check("real page loads neither fail nor wait noticeably", async () => {
   assert(
     slowest < 6_000,
     `the slowest single request took ${slowest}ms, close enough to the frontend's deadline that ` +
-      `ordinary browsing is becoming noticeable waiting. ${lines.join(" | ")} | ${summary}`,
+      `ordinary browsing is becoming noticeable waiting. ${lines.join(" | ")}`,
   );
 
-  return `${requests} requests across ${pages.length} real page loads; slowest ${slowest}ms; no platform error, no client timeout — ${lines.join(" | ")} | ${summary}`;
+  return `${requests} requests across ${pages.length} real page loads; slowest ${slowest}ms; no platform error, no client timeout — ${lines.join(" | ")}`;
 });
 
 await check("a journey can be planned across real timetable data", async () => {

@@ -1,6 +1,6 @@
 # Bus Stops. Build State
 
-Last updated: 2026-10-12 (Pro's chain proven end to end; the branch is not on main and no schedule has fired since 4 Sep)
+Last updated: 2026-10-12 (the read gate is removed — it caused the pile-up it was built to prevent)
 
 ## Current status
 
@@ -72,6 +72,57 @@ under P3 where the directive puts it. Queueing costs wall-clock, which a waiting
 charged for, so it would not slow a normal page.
 
 Classification stands: **RESILIENCE / LOAD — OPEN.** Not a passenger blocker.
+
+### 12 October: the read gate is removed. It caused the pile-up it was built to prevent.
+
+Deployed evidence, from the first run whose breadcrumb was not corrupted by the gate's own
+instrumentation:
+
+    begin.queued=23   begin.bypassed=23      every queued request bypassed; not one was admitted
+    begin.peakActive=2                        the limit "held"
+    begin.inFlight=22 begin.peakInFlight=22   22 requests in flight regardless
+    begin.longestWaitMs=2500  meanQueuedWaitMs=2500   every wait hit the ceiling exactly
+    startedNotFinished=22
+
+`bypassed === queued` is the tell, and the mechanism follows from one line that was never written:
+**a request the platform kills never reaches `finally { slot?.release() }`.** So a death consumes a
+slot permanently. After two deaths `active === 2` for the life of the isolate, no waiter can ever
+be admitted, and every heavy request from then on waits the full 2,500 ms and proceeds anyway. The
+bypass is what stopped it deadlocking outright; what it could not stop was the delay being charged
+to every request forever, and the released requests arriving together.
+
+So the gate took a stream paced 400 ms apart and turned it into a 22-deep pile-up. Before it
+existed, dying requests recorded `startedNotFinished` of 2 to 4. It made the number it was built
+to reduce five times worse, and the 2,500 ms it added to every heavy request was pure loss.
+
+It is removed rather than repaired, and the reason is not the bug. A lease — reclaim a slot held
+longer than the client would wait — fixes the bug in about ten lines. But the gate's _premise_ was
+never evidenced: it was built on the reading that the sweep's CORS failures came from one page
+firing three or four requests at once, and the comparison below shows those failures were the cost
+of a real timetable rather than of concurrency. A mechanism with an unproven premise and a measured
+regression does not earn a repair. The per-request cost is where the work belongs.
+
+### 12 October: the earlier passes were partly passing because there was nothing to read
+
+Runs 38214849377 and 38215204465 are the **same commit**, `c32723df8`, and differ only in data.
+The first verified against an expired timetable and scored 18 of 23. The second ran minutes after
+the refresh published four real service dates and scored 13.
+
+That reframes a lot of this week's evidence. A stop board with no departures resolves no patterns,
+reads no services and returns almost immediately; the same board with 18 real departures does the
+work the product exists to do. Several endpoints only now meet their real cost, and the honest
+reading of the earlier greener numbers is that they were measured against an empty artifact.
+
+The clean breadcrumbs say where the cost lands, and it is not where the gate assumed:
+
+    stop board  died after board:patterns:done@173, patterns.wanted=2 patterns.patterns=2 complete
+                departures.rows=18 departures.shown=18
+    journeys    died at journey:plan:begin@75, slice.stops=1525 slice.patterns=0 slice.complete=true
+
+Both died a few hundred milliseconds in, having read very little — two patterns in the board's
+case. So the remaining cost is per-request and after those reads: services and operators for the
+board, graph construction for the planner. That is the next thing to measure, and it is a
+different problem from admission control.
 
 ### 12 October: the NOC fix reaches the deployment without a rebuild
 
