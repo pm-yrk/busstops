@@ -153,6 +153,11 @@ export class DepartureReader {
     }
   }
 
+  /** How many shards are resident, for the breadcrumb that used to report none of them. */
+  get cachedShardCount(): number {
+    return this.shards.size;
+  }
+
   /** How much text the resident shards hold. Exposed so a test can bound it. */
   get cachedChars(): number {
     let total = 0;

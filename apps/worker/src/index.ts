@@ -379,6 +379,18 @@ function beginResidency(ledger: ReadLedger, handler = "unnamed"): () => void {
   mark("reads:begin", {
     cold: served === 1,
     residentChars: before?.chars ?? 0,
+    /*
+     * The departure reader's own cache, which the breadcrumb reported none of.
+     *
+     * `residentChars` is the `NetworkReader`'s, and every dying request all day reported it as
+     * zero — correctly, because the board's reads are filtered and filtered reads cache no
+     * records. Meanwhile `DepartureReader` holds up to four departure shards and six mebibytes of
+     * text of its own, and with a real timetable a shard is about 4.6 MB where with an expired one
+     * it is absent. So "nothing is resident" was true of one reader and badly misleading about the
+     * isolate, which is the sort of gap that sends a day's diagnosis the wrong way.
+     */
+    departureShardsResident: departures2?.cachedShardCount ?? 0,
+    departureChars: departures2?.cachedChars ?? 0,
     // Counted including this one, so 1 means it is alone and nothing has been lost.
     startedNotFinished,
     peakStartedNotFinished,
