@@ -1918,6 +1918,61 @@ await check("a journey can be planned to a place found by searching for it", asy
   );
 });
 
+/**
+ * What the published operators are keyed by — the measurement that decides where Pro's route join
+ * has to be fixed.
+ *
+ * The analytics batch reports 20,033 observed vehicles, 20,033 carrying an operator reference, and
+ * `vehiclesMappedToRouteId: 0` against 631 published operators. A *total* miss is the signature of
+ * two identifier spaces rather than of patchy data, and from a container with no route to the
+ * deployment there was no way to tell which side was wrong: the feed's codes (FCYM, NATX, TFCN,
+ * ABUS, ATWE) look like National Operator Codes, and the GTFS build records `agency_id` as a
+ * registry id, which in our hand-written fixture is also a NOC. The SIRI fixture is constructed
+ * from the published schema rather than captured, so it cannot settle it either.
+ *
+ * The search index can. It indexes every operator by `licenceRegistryIds` lowercased, and an exact
+ * code match scores higher than anything else — so asking the deployment for a NOC answers
+ * "are the published operators keyed by NOC at all" in one request per code.
+ *
+ * A failure here is not a passenger-facing fault, and it is reported as what it is: the reason Pro
+ * can publish no route or operator figure.
+ */
+await check("published operators can be found by their National Operator Code", async () => {
+  // Codes the batch reported as unmapped, so these are the exact ones that failed to join.
+  const codes = ["FCYM", "NATX", "ABUS", "FLDS", "ATWE"];
+  const lines = [];
+  let resolved = 0;
+
+  for (const code of codes) {
+    const { response, body, text } = await getJson(`/v1/search?q=${encodeURIComponent(code)}`);
+    if (!response.ok) {
+      lines.push(`${code}: ${describe(response, body, text).slice(0, 80)}`);
+      continue;
+    }
+    const results = body?.data?.results ?? [];
+    const operator = results.find((result) => result.kind === "operator");
+    if (operator) {
+      resolved += 1;
+      lines.push(`${code} → ${operator.title}`);
+    } else {
+      const kinds = [...new Set(results.map((result) => result.kind))];
+      lines.push(
+        `${code}: ${results.length} result(s)${kinds.length > 0 ? ` [${kinds.join(", ")}]` : ""}, no operator`,
+      );
+    }
+  }
+
+  assert(
+    resolved > 0,
+    `not one of ${codes.length} National Operator Codes resolves to a published operator, so the ` +
+      `network build is keying operators by something the live feed never sends — which is exactly ` +
+      `why the analytics batch maps 0 of 20,033 vehicles to a route. The fix belongs in the ` +
+      `operator build, not in the join. ${lines.join("; ")}`,
+  );
+
+  return `${resolved} of ${codes.length} NOC(s) resolve — ${lines.join("; ")}`;
+});
+
 await check("the source health endpoint reports on real sources", async () => {
   const { response, body } = await getJson("/v1/sources/health");
   assert(response.ok, `expected 2xx, got ${response.status}`);
