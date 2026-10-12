@@ -2812,7 +2812,7 @@ function gatedEndpoint(pathname: string): string {
   return match ? `/v1/${match[1]}/:id` : pathname;
 }
 
-function isHeavyPath(pathname: string): boolean {
+export function isHeavyPath(pathname: string): boolean {
   return (
     pathname === "/v1/map" ||
     pathname === "/v1/journeys" ||

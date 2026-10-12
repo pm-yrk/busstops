@@ -659,10 +659,35 @@ async function main(): Promise<void> {
    * host this project's container cannot reach, so the one job that has passed on every run was
    * also the one whose findings nobody working on it could read. See scripts/annotate.mjs.
    */
+  /*
+   * Named explicitly, and kept in step with what the probe measures.
+   *
+   * This used to carry `{failures, notes, routePages, mapDiagnostics}` and nothing else, so two
+   * checks added to the probe — journey-leg navigation and nearby — would have reported into a
+   * payload that never included them: the whole run would have said "no failures" and shown no
+   * sign the questions had been asked. The map diagnostics are by far the largest field here, so
+   * they go last, where the annotation splitter puts them in a part of their own.
+   */
   annotate(
     failures.length === 0 ? "notice" : "error",
     `passenger probe (${failures.length} failure(s), ${notes.length} note(s))`,
-    JSON.stringify({ failures, notes, routePages: report.routePages, mapDiagnostics }, null, 2),
+    JSON.stringify(
+      {
+        failures,
+        notes,
+        routePages: report.routePages,
+        journeyLegs: report.journeyLegs,
+        journeyLegNavigation: report.journeyLegNavigation,
+        nearby: report.nearby,
+        search: report.search,
+        journey: report.journey,
+        disruptions: report.disruptions,
+        health: report.health,
+        mapDiagnostics,
+      },
+      null,
+      2,
+    ),
   );
 
   console.log("");
