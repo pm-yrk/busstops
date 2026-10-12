@@ -1,6 +1,6 @@
 # Bus Stops. Build State
 
-Last updated: 2026-10-04 (the burst instrument reported; a journey leads on to its route and its stops)
+Last updated: 2026-10-04 (ticket links checked and the answer is no; the verification's own reporting was dead)
 
 ## Current status
 
@@ -72,6 +72,84 @@ under P3 where the directive puts it. Queueing costs wall-clock, which a waiting
 charged for, so it would not slow a normal page.
 
 Classification stands: **RESILIENCE / LOAD — OPEN.** Not a passenger blocker.
+
+### 4 October: the verification computed its evidence and then threw it away
+
+Worth recording because of how long it could have hidden. Run 37193507423 showed the deploy job
+failing at "Verify real data through the deployed API" and **no `deployment` annotation at all** —
+so the run that was meant to prove the gate produced no verdict about it.
+
+The cause was two lines:
+
+    annotateResults("deployment", passenger);          // line 2189
+    ...
+    const passenger = results.filter((r) => !r.stress); // line 2223
+
+`ReferenceError: Cannot access 'passenger' before initialization`, thrown _after_ all 24 checks
+had run. Every answer was fetched, computed and printed to a log that nothing outside the runner
+can reach, and then discarded at the last line. A verification that cannot report costs a whole
+deploy to repeat, so the annotate calls now sit below the declarations and below the stress-label
+guard, and the script was run locally against an unreachable host to prove it reaches the end.
+
+### 4 October: ticket links cannot be verified by machine, and the registry stays empty
+
+The checker ran against all sixteen candidate seller pages from a runner. The result is a clear
+answer, and it is no:
+
+    403 — stagecoachbus.com, arrivabus.co.uk, tfl.gov.uk, transdevbus.co.uk, nctx.co.uk,
+          morebus.co.uk, metrobus.co.uk, oxfordbus.co.uk …
+    404 — firstbus.co.uk/tickets, trentbarton.co.uk/tickets  (guessed paths, wrong)
+    200 — nxbus.co.uk/west-midlands/404, titled "404 | NX West Midlands"
+
+Three findings, in order of how much they matter.
+
+**A 403 is an answer about the client, not the page.** Large operator sites sit behind a WAF that
+refuses datacentre address ranges, and GitHub's runners are datacentre address ranges. Every one of
+those operators plainly does sell tickets on that domain. Recording them as "rejected" would be
+recording the opposite of what was learned, so the script now reports three outcomes — verified,
+rejected, and unanswerable from a runner — and only the middle one is a statement about the page.
+
+**The one page that "passed" was a soft 404.** `nxbus.co.uk` answered HTTP 200 with a page titled
+"404 | NX West Midlands", and a 200-is-enough rule would have put that in front of a passenger as
+a ticket shop. The checker now rejects a 200 whose title or final path says not-found. That this
+was caught by reading the evidence rather than by the rule is the argument for the design: nothing
+is activated by the script, only reported.
+
+**So the curated registry stays empty, deliberately, and that is the finished state of this
+feature rather than a gap in it.** The product already does the honest thing: it offers the
+operator's own published `agency_url` — the operator telling the national dataset where to find
+them — labelled as their website and explicitly not a ticket shop, https only, with the hostname
+shown so a poisoned feed cannot disguise where it leads. The directive says not to fabricate links
+and to omit the button cleanly where there is no known purchase URL. There is no known purchase
+URL that can be established from here, so the button is omitted and the website is offered.
+
+The check keeps running on every deploy, because its second job is link rot and because a 403 can
+stop being a 403.
+
+### 4 October: `/v1/search` was the one heavy endpoint left ungated
+
+The improved flow walk earned its keep on its first run. All three viewports reported **"got no
+further than the search"** — not a bare timeout — and the reason was immediate once it was legible:
+`/v1/search` scans the prefix shards at about 5 MiB each and was not in the gated list, while every
+other heavy endpoint was. The walk's first step was the only unprotected one.
+
+Gated now, along with `/v1/operators/:id` and `/v1/vehicles/:ref`, and the list carries a line per
+endpoint saying what it reads so the next omission is visible by reading it. `/v1/search` was also
+added to the page-load concurrency check, since it is the heaviest read a passenger makes first.
+
+### 4 October: Pro's live intelligence is blocked on one unrun job, and now says so
+
+The chain is finally legible end to end, which it was not before the collector could annotate:
+
+    live collection (collected)   18,791 observations accepted, coverage 1, source healthy
+    analytics batch (no_segments) read 18,791 of 18,791 in the closed window — and stopped
+
+So collection works and the batch reads it. What is missing is `network/segments`: the OSM road
+network has never been extracted against the preview bucket, so there is nothing to sample traces
+against, and the batch stops exactly where it should. That is a one-off job
+(`run_road_network: true`), not a defect, and it is the single remaining blocker for Pro's route
+and operator performance figures — which is also why no observed vehicle has ever resolved to a
+published route.
 
 ### 4 October: the load bug reaches real browsing, and is now gated — re-ranked from P3
 

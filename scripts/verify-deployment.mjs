@@ -1330,7 +1330,8 @@ await check("a page's worth of requests at once, the way a browser opens one", a
       [`/v1/map?bbox=${BBOX}&zoom=15`, "map"],
       [`/v1/nearby?lat=53.4794&lon=-2.2453&radius=500`, "nearby"],
       [`/v1/map?bbox=-1.6000,53.7700,-1.5200,53.8200&zoom=15`, "map (Leeds)"],
-      [`/v1/sources/health`, "source health"],
+      // The deployed flow walk begins here, and it is the heaviest read a passenger makes first.
+      [`/v1/search?q=${encodeURIComponent("Leeds")}`, "search"],
     ];
 
     const settled = await Promise.all(
@@ -2182,14 +2183,6 @@ for (const result of results) {
 }
 
 /*
- * The same lines as annotations, which is the only form of this a reader outside the runner can
- * get at: a job's log and its uploaded artifacts are both served from a storage host this
- * project's container cannot reach, and so is the preview itself. See scripts/annotate.mjs.
- */
-annotateResults("deployment", passenger);
-if (stress.length > 0) annotateResults("stress (burst, one client)", stress);
-
-/*
  * Reported in two parts, because they are two questions.
  *
  * "Does a passenger get real data" and "does this deployment survive a burst from one client" have
@@ -2224,6 +2217,21 @@ const passenger = results.filter((result) => !result.stress);
 const stress = results.filter((result) => result.stress);
 const passengerFailures = passenger.filter((result) => !result.ok).length;
 const stressFailures = stress.filter((result) => !result.ok).length;
+
+/*
+ * The same lines as annotations, which is the only form of this a reader outside the runner can
+ * get at: a job's log and its uploaded artifacts are both served from a storage host this
+ * project's container cannot reach, and so is the preview itself. See scripts/annotate.mjs.
+ *
+ * Below the declarations, deliberately. These two calls used to sit thirty lines above them and
+ * threw `ReferenceError: Cannot access 'passenger' before initialization` — after every check had
+ * run. The whole run's evidence was computed, printed to a log nothing can reach, and then thrown
+ * away at the last line. A verification that cannot report is a verification that has to be run
+ * again, which cost a full deploy. They also go after the stress-label guard, so a failure it
+ * adds is annotated with the rest rather than only counted.
+ */
+annotateResults("deployment", passenger);
+if (stress.length > 0) annotateResults("stress (burst, one client)", stress);
 
 console.log(
   `\nPassenger-representative checks: ${passenger.length - passengerFailures} of ${passenger.length} passed, ` +

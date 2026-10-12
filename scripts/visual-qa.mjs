@@ -1838,7 +1838,17 @@ for (const size of WIDTHS) {
       waitUntil: "domcontentloaded",
     });
     const firstStop = walker.locator('a[href^="/stops/"]').first();
+    /*
+     * Said before it is waited for, so a timeout names what was missing.
+     *
+     * "got no further than the search" was already far better than the bare exception it replaced,
+     * but it still did not distinguish a search that returned nothing from a search that returned
+     * only places — a city name legitimately matches places and areas as well as stops, and only
+     * a stop result carries a /stops/ link.
+     */
+    seen.push('searched "Leeds" and waited for a stop result');
     await firstStop.waitFor({ state: "visible", timeout: 20_000 });
+    seen.pop();
     const stopName = ((await firstStop.textContent()) ?? "").trim().slice(0, 40);
     seen.push(`searched "Leeds" and found ${stopName}`);
 

@@ -53,19 +53,60 @@ async function tryCandidate(url, domain) {
     });
     const finalUrl = new URL(response.url || url);
     if (response.status !== 200) {
-      return { ok: false, detail: `HTTP ${response.status} (landed on ${finalUrl.href})` };
+      /*
+       * 403 is not an answer about the page, it is an answer about the client.
+       *
+       * Most large operator sites sit behind a WAF that refuses datacentre address ranges, and
+       * GitHub's runners are datacentre address ranges. The first run of this script collected
+       * 403 from Stagecoach, Arriva, TfL, Transdev, Nottingham City Transport, morebus and
+       * metrobus — every one of which plainly does sell tickets on that domain. Recording those
+       * as "rejected" would be recording the opposite of what was learned, so they are reported
+       * as inconclusive, and the registry stays empty rather than wrong.
+       */
+      const blocked = response.status === 403 || response.status === 429;
+      return {
+        ok: false,
+        conclusive: !blocked,
+        detail: blocked
+          ? `HTTP ${response.status} — the site refused this client, which says nothing about the page`
+          : `HTTP ${response.status} (landed on ${finalUrl.href})`,
+      };
     }
     if (!isOnDomain(finalUrl.hostname, domain)) {
-      return { ok: false, detail: `redirected off ${domain} to ${finalUrl.hostname}` };
+      return {
+        ok: false,
+        conclusive: true,
+        detail: `redirected off ${domain} to ${finalUrl.hostname}`,
+      };
     }
     const html = (await response.text()).slice(0, 200_000);
     const pageTitle = titleOf(html);
-    if (!pageTitle) return { ok: false, detail: `200 but no <title> at ${finalUrl.href}` };
+    if (!pageTitle) {
+      return { ok: false, conclusive: true, detail: `200 but no <title> at ${finalUrl.href}` };
+    }
+    /*
+     * A soft 404: HTTP 200 serving a "not found" page.
+     *
+     * Not hypothetical. The first run of this script "verified"
+     * `nxbus.co.uk/west-midlands/404`, which answered 200 with the title "404 | NX West
+     * Midlands" — and a 200-is-enough rule would have offered that to a passenger as a ticket
+     * shop. On sites built this way a status code is not a statement about content, so the
+     * content is checked too.
+     */
+    if (/\b(404|not found|page not found|page unavailable)\b/i.test(pageTitle)) {
+      return { ok: false, conclusive: true, detail: `soft 404: HTTP 200 titled "${pageTitle}"` };
+    }
+    if (/\/404(\/|$)/.test(finalUrl.pathname)) {
+      return { ok: false, conclusive: true, detail: `landed on a 404 path: ${finalUrl.href}` };
+    }
     return { ok: true, url: finalUrl.href, pageTitle };
   } catch (error) {
+    const timedOut = error?.name === "AbortError";
     return {
       ok: false,
-      detail: error?.name === "AbortError" ? "timed out" : String(error?.message ?? error),
+      // Neither a timeout nor a transport failure says the page does not exist.
+      conclusive: false,
+      detail: timedOut ? "timed out" : String(error?.message ?? error),
     };
   } finally {
     clearTimeout(deadline);
@@ -77,10 +118,20 @@ async function main() {
   const verifiedAt = new Date().toISOString();
   const verified = [];
   const rejected = [];
+  /*
+   * Three outcomes, not two.
+   *
+   * The first version had only "verified" and "rejected", and put every 403 in "rejected" — which
+   * reads as "this operator does not sell tickets there" when what actually happened is that the
+   * operator's firewall would not talk to a GitHub runner. The distinction is the difference
+   * between a finding and its opposite.
+   */
+  const inconclusive = [];
 
   for (const seller of data.sellers) {
     const attempts = [];
     let accepted = null;
+    let anyConclusive = false;
     for (const path of seller.candidatePaths) {
       const url = `https://www.${seller.domain}${path}`;
       const result = await tryCandidate(url, seller.domain);
@@ -89,6 +140,7 @@ async function main() {
         accepted = result;
         break;
       }
+      if (result.conclusive) anyConclusive = true;
       // Some of these sites do not serve the www host at all.
       const bare = `https://${seller.domain}${path}`;
       const bareResult = await tryCandidate(bare, seller.domain);
@@ -99,6 +151,7 @@ async function main() {
         accepted = bareResult;
         break;
       }
+      if (bareResult.conclusive) anyConclusive = true;
     }
     if (accepted) {
       verified.push({
@@ -109,21 +162,34 @@ async function main() {
         verifiedAt,
         evidence: `fetched from a CI runner: 200 on ${seller.domain}, titled "${accepted.pageTitle}"`,
       });
-    } else {
+    } else if (anyConclusive) {
       rejected.push({ domain: seller.domain, attempts });
+    } else {
+      inconclusive.push({ domain: seller.domain, attempts });
     }
   }
 
-  console.log(`ticket links: ${verified.length} verified, ${rejected.length} rejected`);
+  console.log(
+    `ticket links: ${verified.length} verified, ${rejected.length} rejected, ` +
+      `${inconclusive.length} unanswerable from a runner`,
+  );
   for (const entry of verified)
     console.log(`  ✓ ${entry.sellerName} ${entry.url} — ${entry.pageTitle}`);
   for (const entry of rejected) console.log(`  × ${entry.domain}: ${entry.attempts.join("; ")}`);
+  for (const entry of inconclusive)
+    console.log(`  ? ${entry.domain}: ${entry.attempts.join("; ")}`);
 
   // The whole point: the result has to be readable from outside the runner.
   annotate(
     "notice",
     "ticket links (verified)",
     `${verified.length} of ${data.sellers.length} seller pages answered.\n${JSON.stringify(verified, null, 1)}`,
+  );
+  annotate(
+    "notice",
+    "ticket links (unanswerable from a runner)",
+    `${inconclusive.length} refused this client or did not answer, which says nothing about the ` +
+      `page.\n${inconclusive.map((r) => `${r.domain}\n  ${r.attempts.join("\n  ")}`).join("\n")}`,
   );
   annotate(
     "notice",

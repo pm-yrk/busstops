@@ -2739,15 +2739,30 @@ export default {
  * The endpoints whose reads are measured in mebibytes.
  *
  * Named explicitly rather than inferred, so adding a cheap endpoint cannot accidentally put it
- * behind the gate, and so the list is reviewable. `/v1/stops/:id` is here because a board resolves
- * the patterns calling at the stop; `/v1/nearby` because it reads the stop tiles around a point.
+ * behind the gate, and so the list is reviewable against what each handler actually reads:
+ *
+ *  - `/v1/map` reads the stop and pattern tiles for a viewport.
+ *  - `/v1/journeys` reads a corridor's trip shards, the largest read in the product.
+ *  - `/v1/nearby` reads the stop tiles around a point.
+ *  - `/v1/routes/:id` reads the pattern index and the pattern's stops.
+ *  - `/v1/stops/:id` resolves the patterns calling at the stop.
+ *  - `/v1/search` scans the prefix shards, which are about 5 MiB each.
+ *  - `/v1/operators/:id` reads the operator's services and their patterns.
+ *  - `/v1/vehicles/:ref` resolves the vehicle's pattern to name its route.
+ *
+ * `/v1/search` was the omission that mattered. The deployed flow walk begins by searching, and it
+ * reported "got no further than the search" on all three viewports — the one endpoint the walk
+ * could not get past was the one heavy endpoint left ungated.
  */
 function isHeavyPath(pathname: string): boolean {
   return (
     pathname === "/v1/map" ||
     pathname === "/v1/journeys" ||
     pathname === "/v1/nearby" ||
+    pathname === "/v1/search" ||
     pathname.startsWith("/v1/routes/") ||
-    pathname.startsWith("/v1/stops/")
+    pathname.startsWith("/v1/stops/") ||
+    pathname.startsWith("/v1/operators/") ||
+    pathname.startsWith("/v1/vehicles/")
   );
 }
