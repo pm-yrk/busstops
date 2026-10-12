@@ -525,6 +525,108 @@ async function main(): Promise<void> {
   if (options.length === 0)
     failures.push("Journey: Leeds → Leeds Bradford Airport gave 0 options.");
 
+  /*
+   * A plan a passenger cannot act on is half a feature, so the probe follows it.
+   *
+   * The journey strip turns a bus leg's route number into a link to the route and its named stops
+   * into links to their boards, and it does that from the ids the planner returns — never from the
+   * names, because several operators run a "36" and the ends of a journey are a dropped pin. Which
+   * means the ids have to be there and have to resolve. A plan with 3 options and a leg carrying no
+   * `routeId` renders as plain text and nothing fails, which is exactly how the stop page came to
+   * have no route links at all for weeks.
+   */
+  const busLegs = options
+    .flatMap((option) => asArray(at(option, "legs")))
+    .filter((leg) => at(leg, "mode") === "bus");
+  const legIds = busLegs.map((leg) => ({
+    routeId: at(leg, "routeId"),
+    fromStopId: at(leg, "fromStopId"),
+    toStopId: at(leg, "toStopId"),
+    routeName: asText(at(leg, "routeName")),
+  }));
+  const navigable = legIds.filter(
+    (leg) => typeof leg.routeId === "string" && typeof leg.fromStopId === "string",
+  );
+  console.log(
+    `  journey legs                  : ${busLegs.length} bus leg(s), ${navigable.length} carrying ` +
+      `both a routeId and a boarding stop`,
+  );
+  report.journeyLegs = { busLegs: busLegs.length, navigable: navigable.length, sample: legIds[0] };
+
+  if (busLegs.length > 0 && navigable.length === 0) {
+    failures.push(
+      `Journey legs: ${busLegs.length} bus leg(s) and not one carries both a routeId and a ` +
+        `fromStopId, so every leg renders as plain text and the plan is a dead end.`,
+    );
+  }
+
+  /*
+   * And the ids are followed, because an id that is present and does not resolve is worse than an
+   * absent one: it renders as a link and takes the passenger to an error.
+   */
+  const first = navigable[0];
+  if (first) {
+    const legRoute = await ask(`/v1/routes/${encodeURIComponent(String(first.routeId))}`);
+    const legStop = await ask(`/v1/stops/${encodeURIComponent(String(first.fromStopId))}`);
+    const routeName = asText(at(legRoute.json, "data", "route", "publicName"));
+    const stopName = asText(at(legStop.json, "data", "stop", "name"));
+    const legStops = asCount(at(legRoute.json, "data", "stops"));
+    console.log(
+      `  journey leg → route           : HTTP ${legRoute.status} · ${routeName || "(no name)"} · ` +
+        `${legStops ?? "?"} stop(s)`,
+    );
+    console.log(
+      `  journey leg → boarding board  : HTTP ${legStop.status} · ${stopName || "(no name)"}`,
+    );
+    report.journeyLegNavigation = {
+      routeStatus: legRoute.status,
+      routeName,
+      routeStops: legStops,
+      stopStatus: legStop.status,
+      stopName,
+      legRouteName: first.routeName,
+    };
+    if (legRoute.status !== 200 || !routeName) {
+      failures.push(
+        `Journey leg navigation: the route a leg names (${first.routeName || first.routeId}) ` +
+          `answered HTTP ${legRoute.status} with no route name, so the link on the plan is dead.`,
+      );
+    }
+    if (legStop.status !== 200 || !stopName) {
+      failures.push(
+        `Journey leg navigation: the boarding stop a leg names answered HTTP ${legStop.status} ` +
+          `with no stop name, so the link on the plan is dead.`,
+      );
+    }
+  }
+
+  /*
+   * Nearby, which the probe has never asked for and which the stop page's practical help depends
+   * on entirely: "other stops near here" is the one suggestion in "Bus not come?" that cannot be
+   * answered from the stop's own response.
+   */
+  const nearby = await ask(`/v1/nearby?lat=53.79648&lon=-1.54785&radius=500`);
+  const nearbyResults = asArray(at(nearby.json, "data", "results"));
+  const nearbyStops = nearbyResults.filter((result) => at(result, "kind") === "stop");
+  console.log(
+    `GET /v1/nearby Leeds centre     : HTTP ${nearby.status} · ${nearbyResults.length} result(s), ` +
+      `${nearbyStops.length} stop(s)` +
+      (nearbyStops[0] ? ` · nearest ${asText(at(nearbyStops[0], "title"))}` : ""),
+  );
+  report.nearby = {
+    status: nearby.status,
+    results: nearbyResults.length,
+    stops: nearbyStops.length,
+    nearest: nearbyStops[0] ? asText(at(nearbyStops[0], "title")) : null,
+  };
+  if (nearby.status !== 200) {
+    failures.push(`Nearby: /v1/nearby answered HTTP ${nearby.status} in Leeds city centre.`);
+  } else if (nearbyStops.length === 0) {
+    failures.push(
+      "Nearby: no stop within 500 m of Leeds city centre, which is not a property of Leeds.",
+    );
+  }
+
   const disruptions = await ask(`/v1/disruptions`);
   const disruptionData = at(disruptions.json, "data");
   const official = at(disruptionData, "official");
