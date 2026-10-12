@@ -598,6 +598,68 @@ export interface StopsInViewport {
   truncated: boolean;
 }
 
+/**
+ * How many of a search's results are kept for stops when anything else would take them all.
+ *
+ * Four, not one. A town matches several plausible places — "Leeds", "Leeds City Bus & Coach
+ * Station", "Leeds Coach Station National Express Terminal" — and one stop beneath them reads as
+ * an afterthought rather than as an answer.
+ */
+const MIN_STOP_RESULTS = 4;
+
+/**
+ * Guarantee a search offers somewhere to catch a bus.
+ *
+ * The scorer adds `entry.prominence`, and a gazetteer place is prominent where an individual bus
+ * stop is not. That is right for ranking and wrong for the result *set*: searching "Leeds" on the
+ * deployed preview returned twenty results and every one of them was a place, so a visitor typing
+ * the most obvious thing they could type was offered twenty ways to plan a journey and no
+ * departure board at all. The flow walk starts with that query and could get no further — it was
+ * not that search was broken, it was that search answered a different question.
+ *
+ * So the ranking is left exactly as it is and the *set* is corrected: if the top results hold
+ * fewer than `MIN_STOP_RESULTS` stops and better-than-nothing stops exist among the candidates,
+ * the lowest-scoring non-stops are given up for the best-scoring stops. Score order is preserved
+ * afterwards, so the list still reads as ranked rather than as two lists stapled together, and a
+ * query that genuinely matched no stop is unchanged.
+ */
+export function withReservedStops(
+  candidates: readonly SearchIndexEntry[],
+  ranked: readonly SearchHit[],
+  query: string,
+  builtAt: string,
+  options: { limit: number; near?: Coordinate },
+): SearchHit[] {
+  const wanted = Math.min(MIN_STOP_RESULTS, options.limit);
+  const present = ranked.filter((hit) => hit.entry.kind === "stop").length;
+  if (present >= wanted) return [...ranked];
+
+  const stopCandidates = candidates.filter((entry) => entry.kind === "stop");
+  if (stopCandidates.length === 0) return [...ranked];
+
+  const stopHits = rankSearch({ entries: stopCandidates, builtAt }, query, {
+    ...options,
+    limit: wanted,
+  });
+  const already = new Set(ranked.map((hit) => `${hit.entry.kind}:${hit.entry.id}`));
+  const missing = stopHits.filter((hit) => !already.has(`${hit.entry.kind}:${hit.entry.id}`));
+  if (missing.length === 0) return [...ranked];
+
+  /*
+   * Drop from the bottom, and only non-stops: the point is to make room, not to re-rank. Taking
+   * the tail keeps the best matches whatever kind they are.
+   */
+  const keep = [...ranked];
+  const room = missing.slice(0, Math.max(0, wanted - present));
+  for (let i = keep.length - 1; i >= 0 && keep.length + room.length > options.limit; i -= 1) {
+    if (keep[i]!.entry.kind !== "stop") keep.splice(i, 1);
+  }
+
+  const merged = [...keep, ...room];
+  merged.sort((a, b) => b.score - a.score);
+  return merged.slice(0, options.limit);
+}
+
 export class NetworkReader {
   private index: NetworkIndexRecord | null = null;
   private indexLoadedAt = 0;
@@ -2523,12 +2585,17 @@ export class NetworkReader {
       unique.set(`${entry.kind}:${entry.id}`, entry);
     }
 
-    const hits = rankSearch(
-      { entries: [...unique.values()], builtAt: index.publishedAt },
-      query,
+    const candidates = [...unique.values()];
+    const rankOptions =
       options.near === undefined
         ? { limit: options.limit }
-        : { limit: options.limit, near: options.near },
+        : { limit: options.limit, near: options.near };
+    const hits = withReservedStops(
+      candidates,
+      rankSearch({ entries: candidates, builtAt: index.publishedAt }, query, rankOptions),
+      query,
+      index.publishedAt,
+      rankOptions,
     );
     return { hits: hits.map(presentHit), builtAt: index.publishedAt };
   }

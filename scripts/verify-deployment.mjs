@@ -710,6 +710,55 @@ await check("search finds a real stop by name", async () => {
  * yet: an empty result says "no gazetteer here", which is a different fact from "place search is
  * broken", and the line says which.
  */
+/**
+ * The first thing a first-time visitor types: a town name, on its own.
+ *
+ * Every other search check here asks something the index is known to hold — a landmark from a
+ * curated list, or a word lifted from a stop the API had just returned. None of them asks the
+ * obvious question, and the deployed sweep found out why that matters: "Leeds" returned nothing at
+ * all, on a deployment where "Leeds Station" returns a place called Leeds. The flow walk starts
+ * with exactly this query and could get no further.
+ *
+ * Five cities, and a failure names the ones that answered so a total outage reads differently from
+ * one city missing from the gazetteer.
+ */
+await check(
+  "a plain town name returns something, which is what a visitor types first",
+  async () => {
+    const towns = ["Leeds", "Manchester", "Birmingham", "Bristol", "York"];
+    const lines = [];
+    const empty = [];
+
+    for (const town of towns) {
+      const { response, body, text } = await getJson(`/v1/search?q=${encodeURIComponent(town)}`);
+      if (!response.ok) {
+        empty.push(`${town}: ${describe(response, body, text)}`);
+        lines.push(`${town}: failed`);
+        continue;
+      }
+      const results = body?.data?.results ?? [];
+      if (results.length === 0) {
+        empty.push(`${town}: 200 with an empty result list`);
+        lines.push(`${town}: nothing`);
+        continue;
+      }
+      const kinds = [...new Set(results.map((result) => result.kind))];
+      lines.push(
+        `${town}: ${results.length} result(s) [${kinds.join(", ")}], first "${results[0].title}"`,
+      );
+    }
+
+    assert(
+      empty.length === 0,
+      `${empty.length} of ${towns.length} town name(s) returned nothing, and a town name is the ` +
+        `first thing a visitor types — ${empty.join("; ")}. The ones that answered: ` +
+        `${lines.filter((line) => !/nothing|failed/.test(line)).join("; ") || "none"}`,
+    );
+
+    return lines.join(" | ");
+  },
+);
+
 await check("search finds real places, not only bus stops", async () => {
   const wanted = [
     "York Minster",

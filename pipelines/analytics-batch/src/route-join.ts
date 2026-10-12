@@ -49,6 +49,26 @@ export interface RouteJoinCounts {
    * in the network build, the other is a line name that does not agree between two sources.
    */
   unmappedLineRefs: number;
+  /**
+   * How many distinct operator codes the published network is keyed by, and a sample of them.
+   *
+   * The other side of the comparison, which was never printed. "295 operator refs matched
+   * nothing" is half a finding; the half that names the cause is what the published operators are
+   * keyed by. Side by side, one line settles whether these are two namespaces or one namespace
+   * formatted two ways.
+   */
+  knownOperatorCodes: number;
+  sampleKnownOperatorCodes: string[];
+  /**
+   * Refs that would have matched had punctuation and case been ignored.
+   *
+   * Reported, never acted on: a relaxed match applied silently would hide the formatting
+   * difference this exists to reveal. A non-zero count means normalise; zero alongside a large
+   * `unmappedOperatorRefs` means the two sources genuinely use different identifiers, and the fix
+   * belongs in the network build rather than in the join.
+   */
+  operatorRefsMatchingOnlyWhenRelaxed: number;
+  sampleRelaxedOnlyMatches: string[];
   /** A few of each, so the report names them rather than only counting them. */
   sampleUnmappedOperators: string[];
   sampleUnmappedLines: string[];
@@ -89,6 +109,30 @@ export function joinObservationsToRoutes(input: RouteJoinInput): RouteJoinResult
     if (!routeByOperatorAndName.has(key)) routeByOperatorAndName.set(key, service.id);
   }
 
+  /*
+   * A relaxed index, used only to tell a missing operator from a differently-punctuated one.
+   *
+   * Run 38214849377 reported 295 distinct `operatorRef`s in the feed and not one match against
+   * 631 published operators — a total miss, which is the signature of two different identifier
+   * spaces rather than of patchy data. The feed's codes (FCYM, NATX, TFCN, ABUS, ATWE) look like
+   * National Operator Codes, and the GTFS build records `agency_id` as a registry id, which in a
+   * hand-written fixture is also a NOC. One of those two assumptions is wrong and no amount of
+   * reasoning from here settles which.
+   *
+   * So the join reports what it actually holds: a sample of the codes it knows, and whether a
+   * relaxed comparison — case-folded, non-alphanumerics stripped — would have matched where the
+   * exact one did not. A relaxed hit means formatting; no relaxed hit means the two sides are
+   * genuinely different namespaces, and the fix is in the network build rather than here.
+   */
+  const operatorByRelaxedCode = new Map<string, string>();
+  for (const [code, id] of operatorByCode) {
+    const relaxed = code.replace(/[^A-Z0-9]/g, "");
+    if (relaxed.length > 0 && !operatorByRelaxedCode.has(relaxed)) {
+      operatorByRelaxedCode.set(relaxed, id);
+    }
+  }
+  const relaxedOnlyMatches = new Set<string>();
+
   const routeByVehicle = new Map<string, string | null>();
   const nameByVehicle = new Map<string, string>();
   const withRouteRef = new Set<string>();
@@ -122,7 +166,11 @@ export function joinObservationsToRoutes(input: RouteJoinInput): RouteJoinResult
 
     const operatorId = operatorByCode.get(normaliseName(observation.operatorRef));
     if (operatorId === undefined) {
-      unmappedOperators.add(normaliseName(observation.operatorRef));
+      const code = normaliseName(observation.operatorRef);
+      unmappedOperators.add(code);
+      // Reported, not used: a relaxed match is a diagnosis, and acting on one here would hide
+      // the formatting difference it exists to reveal.
+      if (operatorByRelaxedCode.has(code.replace(/[^A-Z0-9]/g, ""))) relaxedOnlyMatches.add(code);
       routeByVehicle.set(observation.vehicleRef, null);
       continue;
     }
@@ -151,8 +199,19 @@ export function joinObservationsToRoutes(input: RouteJoinInput): RouteJoinResult
       distinctRouteNames: routeNames.size,
       unmappedOperatorRefs: unmappedOperators.size,
       unmappedLineRefs: unmappedLines.size,
-      sampleUnmappedOperators: [...unmappedOperators].slice(0, 5),
+      sampleUnmappedOperators: [...unmappedOperators].slice(0, 8),
       sampleUnmappedLines: [...unmappedLines].slice(0, 5),
+      /*
+       * The other side of the comparison, which has never been printed.
+       *
+       * "295 operator refs matched nothing" is only half a finding; the half that identifies the
+       * cause is what the published operators are keyed by. Printed together, one line settles
+       * whether these are two namespaces or one namespace formatted two ways.
+       */
+      knownOperatorCodes: operatorByCode.size,
+      sampleKnownOperatorCodes: [...operatorByCode.keys()].slice(0, 12),
+      operatorRefsMatchingOnlyWhenRelaxed: relaxedOnlyMatches.size,
+      sampleRelaxedOnlyMatches: [...relaxedOnlyMatches].slice(0, 5),
     },
   };
 }

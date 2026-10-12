@@ -1847,8 +1847,38 @@ for (const size of WIDTHS) {
      * a stop result carries a /stops/ link.
      */
     seen.push('searched "Leeds" and waited for a stop result');
-    await firstStop.waitFor({ state: "visible", timeout: 20_000 });
-    seen.pop();
+    try {
+      await firstStop.waitFor({ state: "visible", timeout: 20_000 });
+      seen.pop();
+    } catch (error) {
+      /*
+       * Say what the page DID show before giving up.
+       *
+       * "waited for a stop result; then timeout" was already far better than the bare exception,
+       * and still did not distinguish a search that returned nothing from one that returned only
+       * places — a town name legitimately matches places and areas as well as stops, and only a
+       * stop result carries a /stops/ link. The answer was one `evaluate` away the whole time.
+       */
+      const showed = await walker.evaluate(() => {
+        const links = [...document.querySelectorAll(".search-page__result-link")];
+        return {
+          results: links.length,
+          hrefs: links.slice(0, 4).map((link) => link.getAttribute("href") ?? ""),
+          titles: links.slice(0, 4).map((link) => (link.textContent ?? "").trim().slice(0, 40)),
+          saidSo: /no results|nothing|could not/i.test(document.body.textContent ?? ""),
+        };
+      });
+      seen.pop();
+      seen.push(
+        `searched "Leeds" and the page showed ${showed.results} result(s)` +
+          (showed.results > 0
+            ? ` — ${showed.titles.map((title, i) => `${title} → ${showed.hrefs[i]}`).join("; ")} — but none a stop`
+            : showed.saidSo
+              ? " and said so"
+              : " at all"),
+      );
+      throw error;
+    }
     const stopName = ((await firstStop.textContent()) ?? "").trim().slice(0, 40);
     seen.push(`searched "Leeds" and found ${stopName}`);
 
