@@ -403,19 +403,43 @@ async function clickPaintedBus(page, sink) {
       const y = box.top + projected.y;
       const hit = document.elementFromPoint(x, y);
       if (hit === canvas || canvas.contains(hit)) return { x, y };
+      /*
+       * Three different findings used to arrive as one sentence.
+       *
+       * A bus under the layer switcher is a fact about where the buses are. A bus under a
+       * collapsed canvas is a layout fault. And a page showing "The map could not be loaded"
+       * is not a clicking fault at all — the map component replaces itself with a message, so
+       * there is no canvas to click and the map object left over from a previous render still
+       * answers `queryRenderedFeatures`. Reporting that as "clicking a bus is broken" sent three
+       * runs after the wrong thing.
+       */
       return {
         blocker: hit
           ? `${hit.tagName.toLowerCase()}${hit.className ? `.${String(hit.className).split(/\s+/)[0]}` : ""}`
           : "nothing identifiable",
+        mapUnavailable: document.querySelector(".map-view--unavailable") !== null,
+        mapMessage: (document.querySelector(".map-view--unavailable p")?.textContent ?? "").trim(),
+        canvasBox: { width: Math.round(box.width), height: Math.round(box.height) },
       };
     });
 
     if (!recentred || recentred.x === undefined) {
+      // The one case that is not a clicking fault, said first and said plainly.
+      if (recentred?.mapUnavailable) {
+        throw new Error(
+          `the map is not showing: "${recentred.mapMessage || "no message"}" — so there was no ` +
+            `canvas to click. ${point.of} bus(es) came back from the API and are listed below the ` +
+            `map, which is the documented fallback; this is a map-load failure, not a click one.`,
+        );
+      }
       throw new Error(
         `none of the ${point.of} painted bus(es) could be clicked: ${point.blocked} were under ` +
           `something else${point.blockers.length > 0 ? ` (${point.blockers.join(", ")})` : ""}` +
           `, ${point.offscreen} were off the screen; and with one centred on the map it was still ` +
-          `covered by ${recentred?.blocker ?? "nothing identifiable"}`,
+          `covered by ${recentred?.blocker ?? "nothing identifiable"}` +
+          (recentred?.canvasBox
+            ? ` (canvas ${recentred.canvasBox.width}x${recentred.canvasBox.height})`
+            : ""),
       );
     }
     await page.mouse.click(recentred.x, recentred.y);
