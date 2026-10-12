@@ -388,6 +388,8 @@ function beginResidency(ledger: ReadLedger, handler = "unnamed"): () => void {
     // Counted including this one, so 1 means it is alone and nothing has been lost.
     startedNotFinished,
     peakStartedNotFinished,
+    // The gate as this request found it, written where it cannot be mistaken for another's.
+    ...heavyReadGateState(),
   });
   return () => {
     startedNotFinished = Math.max(0, startedNotFinished - 1);
@@ -2734,13 +2736,21 @@ export default {
     const slot = isHeavyPath(url.pathname)
       ? await acquireHeavyRead(gatedEndpoint(url.pathname))
       : null;
-    if (slot) {
-      mark("gate:enter", {
-        waitedMs: slot.waitedMs,
-        bypassed: slot.bypassed,
-        ...heavyReadGateState(),
-      });
-    }
+    /*
+     * Deliberately not marked here, and this cost a run to learn.
+     *
+     * The breadcrumb is module state: `mark()` writes into whichever request last called
+     * `beginBreadcrumb`, and a handler does that *after* dispatch has acquired the slot. So a
+     * `gate:enter` marked at this point lands in the **previous** request's trail — and run
+     * 38215204465 duly reported a stop board that "last reached gate:enter at 5370ms" when its
+     * own last phase was `board:departures:done@109` and the gate line belonged to the request
+     * after it. A diagnostic that attributes one request's phase to another is worse than none,
+     * because every conclusion drawn from it is about the wrong request. It sent me looking at
+     * the gate when the board's own pattern read was what had died.
+     *
+     * The gate's state goes into `reads:begin` instead, inside the request's own breadcrumb, and
+     * the per-request wait is in `/v1/diagnostics/gate` where a reader would look for it anyway.
+     */
 
     try {
       const response = await matched.handler(request, { env, ctx, params: matched.params, url });
