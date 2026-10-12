@@ -213,6 +213,17 @@ async function measureRegion(region: string): Promise<RegionReport> {
       const names: string[] = [];
       let withId = 0;
       let rows = 0;
+      /*
+       * The header, before anything else.
+       *
+       * `agency_id` turned out to be a BODS-internal id, which leaves the operator join needing a
+       * National Operator Code from somewhere. Before reaching for a third dataset it is worth
+       * knowing whether the feed already carries one in a column nobody read: GTFS permits
+       * publisher extensions, and the sampling above only asked for `agency_id` and `agency_name`
+       * because those are the two the build uses. A `noc` column here would make this a one-line
+       * fix instead of a new adapter.
+       */
+      const agencyColumns = await streamGtfsTable(destination, agency, () => {}, { columns: [] });
       await streamGtfsTable(
         destination,
         agency,
@@ -234,12 +245,15 @@ async function measureRegion(region: string): Promise<RegionReport> {
       const nocShaped = ids.filter((id) => /^[A-Z0-9]{4}$/.test(id)).length;
       report.agency = {
         rows,
+        // Every column the publisher actually ships, so a NOC hiding in an extension is visible.
+        columns: agencyColumns.header,
         withAgencyId: withId,
         // Zero here means `agency_name` became the registry id, which is the other candidate cause.
         sampleIds: ids,
         sampleNames: names,
         nocShapedSampleIds: nocShaped,
       };
+      console.log(`  agency.txt columns: [${agencyColumns.header.join(", ")}]`);
       console.log(
         `  agency.txt: ${rows} row(s), ${withId} with an agency_id, ` +
           `${nocShaped} of ${ids.length} sampled id(s) NOC-shaped — ids [${ids.join(", ")}] ` +
