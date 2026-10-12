@@ -22,6 +22,7 @@ import { pipeline } from "node:stream/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeFileSync } from "node:fs";
+import { annotateReport } from "@busstops/pipeline-core";
 import {
   readZipDirectory,
   type ZipDirectoryEntry,
@@ -189,6 +190,63 @@ async function measureRegion(region: string): Promise<RegionReport> {
       counts[name] = result.rows;
     }
 
+    /*
+     * What `agency.txt` is actually keyed by — the measurement Pro's route join waits on.
+     *
+     * The network build records `row.agency_id ?? row.agency_name` as an operator's registry id,
+     * and the analytics batch then maps 0 of 20,033 observed vehicles to a route because not one
+     * of 295 `OperatorRef` codes from SIRI-VM matches any of 631 published operators. A *total*
+     * miss means the two sides use different identifiers, and there are only two ways that
+     * happens: `agency_id` is present but is not a National Operator Code, or it is absent and
+     * the operator's *name* became its registry id.
+     *
+     * Nothing in this repository can distinguish those. The SIRI fixture is built from the
+     * published schema rather than captured, and there is no captured BODS GTFS fixture at all.
+     * One real row settles it, and this job already has the archive open.
+     *
+     * Values are sampled, not dumped: a handful of ids and names is the evidence, and the rest of
+     * the file is somebody's licensed data.
+     */
+    const agency = entry(directory.entries, "agency.txt");
+    if (agency) {
+      const ids: string[] = [];
+      const names: string[] = [];
+      let withId = 0;
+      let rows = 0;
+      await streamGtfsTable(
+        destination,
+        agency,
+        (row) => {
+          rows += 1;
+          if (row.agency_id !== undefined && row.agency_id.length > 0) {
+            withId += 1;
+            if (ids.length < 12) ids.push(row.agency_id);
+          }
+          if (names.length < 6 && row.agency_name) names.push(row.agency_name);
+        },
+        { columns: ["agency_id", "agency_name"] },
+      );
+      /*
+       * A National Operator Code is four alphanumerics, conventionally upper case. Shape-matching
+       * is not proof, but "every sampled id is NOC-shaped" and "none of them is" are the two
+       * answers that decide where the fix goes, and either is clear at a glance.
+       */
+      const nocShaped = ids.filter((id) => /^[A-Z0-9]{4}$/.test(id)).length;
+      report.agency = {
+        rows,
+        withAgencyId: withId,
+        // Zero here means `agency_name` became the registry id, which is the other candidate cause.
+        sampleIds: ids,
+        sampleNames: names,
+        nocShapedSampleIds: nocShaped,
+      };
+      console.log(
+        `  agency.txt: ${rows} row(s), ${withId} with an agency_id, ` +
+          `${nocShaped} of ${ids.length} sampled id(s) NOC-shaped — ids [${ids.join(", ")}] ` +
+          `names [${names.join(", ")}]`,
+      );
+    }
+
     // trips.txt: which trips belong to a service running in the horizon.
     const horizon = new Set([...activeToday, ...activeTomorrow]);
     const tripsOnHorizon = new Set<string>();
@@ -281,6 +339,19 @@ async function main(): Promise<void> {
       JSON_OUT,
       JSON.stringify({ measuredAt: new Date().toISOString(), regions }, null, 2),
     );
+
+  /*
+   * The agency finding, through the one channel readable from outside the runner.
+   *
+   * Only the agency rows, not the whole measurement: this is a diagnosis of a specific join
+   * failure, and the rest of the report is already summarised into the job's step summary. A job
+   * log and an uploaded artifact are both served from a host this project's container cannot
+   * reach, so a measurement nobody can read is a measurement that has to be taken twice.
+   */
+  annotateReport("gtfs agency keys", {
+    outcome: "measured",
+    agency: regions.map((region) => ({ region: region.region, ...(region.agency ?? {}) })),
+  });
 }
 
 main().catch((error: unknown) => {
