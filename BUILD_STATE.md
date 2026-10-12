@@ -213,11 +213,24 @@ all filtered, which was the right fix for an earlier round of 1102s, and the sid
 nothing is ever reused: every board pays the full R2 fetch and UTF-8 decode of `network/services`
 (4.7 MiB) from scratch. With an empty timetable that was affordable. With a real one it is not.
 
-The lever that follows is narrow — cache the raw body text keyed by dataset and version, separate
-from the parsed-record cache, so a filtered read reuses the text and re-runs its own cheap line
-filter. It is **not** done here. The directive closes "arbitrary cache redesign", and having just
-removed one well-intentioned mechanism that backfired, the honest move is to put the measurement on
-the table rather than to act on it unasked.
+The obvious lever was to cache the raw body text, keyed by dataset and version and separate from
+the parsed-record cache, so a filtered read reuses the text and re-runs its own cheap line filter.
+**It was tried and it made things worse: 9 of 26 against 12 of 26 without it**, and the new
+failures included "search finds a real stop by name" and "a plain town name returns something" —
+searches that had been reliable all day. It is reverted.
+
+That result is more likely signal than noise, because search is the biggest text consumer in the
+product: a prefix bucket is about 5 MiB, and caching several of them is precisely what pushes an
+isolate's retained heap up. The premise — that retaining one string costs the collector less than
+allocating a fresh one per request — is plausible in general and wrong here.
+
+So the measurement stands and the fix does not. Nothing is reused on a filtered read, every board
+still re-fetches and re-decodes 4.7 MiB of services, and that remains the best-understood
+per-request cost in the Worker. What is now also known is that retaining the text is not the way
+out of it, which is worth more than the change was. Whatever comes next has to reduce the work
+rather than hold its inputs: fewer bytes to decode per board, which means a services index bucketed
+by id the way stops already are — and that is an artifact change, so it waits for a rebuild that
+the storage allowance will not currently take.
 
 ### 12 October: the read gate is removed. It caused the pile-up it was built to prevent.
 
