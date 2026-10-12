@@ -109,17 +109,6 @@ export interface ReadTrack {
  * whatever is resident.
  */
 const MAX_CACHED_SHARDS = 16;
-
-/**
- * Bounds on the text cache.
- *
- * Eight entries covers what a request path actually re-reads — the services and operators objects,
- * a stop tile, a pattern index tile, a search prefix bucket — without becoming an accumulation.
- * The char budget is the binding one: `network/services` alone is 4.7 MiB, and a Workers isolate
- * has 128 MiB to live in, so 16 MiB of retained text is affordable and 100 MiB would not be.
- */
-const MAX_CACHED_TEXTS = 8;
-export const MAX_CACHED_TEXT_CHARS = 16 * 1024 * 1024;
 /*
  * Twenty-four mebibytes, up from three, and the reason is the same CPU the old number was defending.
  *
@@ -680,28 +669,6 @@ export class NetworkReader {
   private indexInFlight: Promise<NetworkIndexRecord | null> | null = null;
 
   private readonly shards = new Map<string, CachedShard>();
-  /**
-   * The raw body of an object, keyed by version and dataset, for the reads that cannot cache their
-   * records.
-   *
-   * A filtered read cannot populate the shard cache — an entry holding one request's hundred stops
-   * would answer the next request's question with a tile missing almost all of it, which is a
-   * wrong answer rather than a slow one. The *text* has no such problem: it is the whole object at
-   * that version, and the only thing a second reader has to do with it is run its own filter.
-   *
-   * Without this, nothing was ever reused. Every dying request in runs 38215204465 and
-   * 38245359800 reported `residentChars=0` with every singleton at zero — at request #88 of an
-   * isolate — because the board's reads are all filtered, which was the right fix for an earlier
-   * round of 1102s. So each board re-fetched and re-decoded `network/services` (4.7 MiB) from
-   * scratch, and with an empty timetable that was affordable while with a real one it was not.
-   *
-   * Retaining one string is also cheaper for the collector than allocating a fresh one per
-   * request: a short-lived multi-mebibyte string is exactly what a generational collector handles
-   * worst, and the garbage collection it provokes is charged in CPU to whichever request triggers
-   * it.
-   */
-  private readonly texts = new Map<string, { body: string; chars: number; usedAt: number }>();
-  private cachedTextChars = 0;
 
   private operatorsCache: Map<string, Operator> | null = null;
   private servicesCache: Map<string, ServiceRoute> | null = null;
@@ -813,28 +780,11 @@ export class NetworkReader {
 
     const began = Date.now();
     let raw: string | null;
-    /*
-     * The text this isolate already holds, if any. Only filtered reads populate it, which are
-     * exactly the reads that cache no records — an unfiltered read caches its records instead and
-     * holding both would store the same bytes twice.
-     */
-    const cachedText = keep ? this.texts.get(key) : undefined;
-    if (cachedText) {
-      cachedText.usedAt = now;
-      raw = cachedText.body;
-      track?.ledger.record(track.family, { outcome: "text_cached", chars: cachedText.chars });
-    } else {
-      try {
-        raw = await this.store.get(objectKeyFor(dataset, version));
-      } catch (error) {
-        track?.ledger.record(track.family, { outcome: "failed", ms: Date.now() - began });
-        throw error;
-      }
-      if (keep && raw !== null) {
-        this.texts.set(key, { body: raw, chars: raw.length, usedAt: now });
-        this.cachedTextChars += raw.length;
-        this.evictTexts();
-      }
+    try {
+      raw = await this.store.get(objectKeyFor(dataset, version));
+    } catch (error) {
+      track?.ledger.record(track.family, { outcome: "failed", ms: Date.now() - began });
+      throw error;
     }
 
     const records: T[] = [];
@@ -891,52 +841,6 @@ export class NetworkReader {
       this.shards.delete(key);
       chars -= shard.chars;
     }
-  }
-
-  /**
-   * Least-recently-used eviction for the text cache, on the same shape as the shard cache's.
-   *
-   * The most recently used entry is never evicted: it is the one the request in flight is reading.
-   */
-  private evictTexts(): void {
-    if (this.texts.size <= MAX_CACHED_TEXTS && this.cachedTextChars <= MAX_CACHED_TEXT_CHARS) {
-      return;
-    }
-    const byAge = [...this.texts].sort((a, b) => a[1].usedAt - b[1].usedAt);
-    for (const [key, entry] of byAge.slice(0, -1)) {
-      if (this.texts.size <= MAX_CACHED_TEXTS && this.cachedTextChars <= MAX_CACHED_TEXT_CHARS) {
-        break;
-      }
-      this.texts.delete(key);
-      this.cachedTextChars -= entry.chars;
-    }
-  }
-
-  /**
-   * A seam for the text-cache tests, and only for them.
-   *
-   * `readShardSized` is private because nothing outside this class should be choosing how an
-   * object is read. But the text cache's two guarantees are properties of that method rather than
-   * of any endpoint — one round trip per object however many filtered reads ask for it, and a
-   * second filter getting its own answer rather than the first one's — and reaching them through a
-   * public path would mean publishing an index first, so the test would be about dataset naming
-   * and versioning instead of about the thing it is checking.
-   */
-  async testReadShard<T>(
-    dataset: string,
-    version: string,
-    keep: LineFilter,
-  ): Promise<{ records: T[]; chars: number }> {
-    return this.readShardSized<T>(dataset, version, Date.now(), undefined, keep);
-  }
-
-  /** How many object bodies are resident, and how much they weigh. For tests and diagnostics. */
-  get cachedTextCount(): number {
-    return this.texts.size;
-  }
-
-  get cachedTextCharCount(): number {
-    return this.cachedTextChars;
   }
 
   /** How many shards are resident. Exposed so a test can prove the cache stays bounded. */

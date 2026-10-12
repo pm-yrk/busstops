@@ -64,15 +64,6 @@ export interface FamilyCost {
   read: number;
   /** Objects already resident in the isolate's cache, which cost no round trip and no parse. */
   cached: number;
-  /**
-   * Objects whose body was resident but whose records this request still built.
-   *
-   * The reads that filter cannot cache their records — an entry holding one request's hundred
-   * stops would answer the next request with a tile missing almost all of it — so before the text
-   * cache they reused nothing at all, and every board re-fetched and re-decoded 4.7 MiB of
-   * services. This counts the hits that saved the round trip and the decode but not the parse.
-   */
-  textCached: number;
   /** Objects the store reported absent. A missing shard is an ordinary answer, not a failure. */
   missing: number;
   /** Objects whose read threw. */
@@ -86,17 +77,7 @@ export interface FamilyCost {
 }
 
 function emptyCost(): FamilyCost {
-  return {
-    requested: 0,
-    read: 0,
-    cached: 0,
-    textCached: 0,
-    missing: 0,
-    failed: 0,
-    chars: 0,
-    records: 0,
-    ms: 0,
-  };
+  return { requested: 0, read: 0, cached: 0, missing: 0, failed: 0, chars: 0, records: 0, ms: 0 };
 }
 
 export interface LedgerCounts {
@@ -271,21 +252,12 @@ export class ReadLedger {
       chars?: number;
       records?: number;
       ms?: number;
-      /**
-       * `text_cached` is a third kind of hit and is counted apart from the other two.
-       *
-       * `cached` means the records were already built, so nothing was decoded and nothing parsed.
-       * `text_cached` means the object's body was already here — no network, no UTF-8 decode — but
-       * this request still ran its own filter and built its own records. That is most of the saving
-       * and not all of it, and conflating it with either neighbour would misreport which.
-       */
-      outcome: "read" | "cached" | "text_cached" | "missing" | "failed";
+      outcome: "read" | "cached" | "missing" | "failed";
     },
   ): void {
     const cost = this.families.get(family) ?? emptyCost();
     cost.requested += 1;
-    if (entry.outcome === "text_cached") cost.textCached += 1;
-    else cost[entry.outcome] += 1;
+    cost[entry.outcome] += 1;
     cost.chars += entry.chars ?? 0;
     cost.records += entry.records ?? 0;
     cost.ms += entry.ms ?? 0;
