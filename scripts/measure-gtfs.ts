@@ -247,6 +247,33 @@ async function measureRegion(region: string): Promise<RegionReport> {
       );
     }
 
+    /*
+     * And the other side of a possible line-level join.
+     *
+     * With `agency_id` settled as a BODS-internal id, the operator hop needs a third dataset. The
+     * line hop might not: if SIRI-VM's `LineRef` is a TransXchange line identifier and `route_id`
+     * here is the same identifier, an observation can be attributed to a published route directly.
+     * Both sides have to be seen to know, and this is the side the archive holds.
+     */
+    const routesTable = entry(directory.entries, "routes.txt");
+    if (routesTable) {
+      const routeIds: string[] = [];
+      const shortNames: string[] = [];
+      await streamGtfsTable(
+        destination,
+        routesTable,
+        (row) => {
+          if (routeIds.length < 10 && row.route_id) routeIds.push(row.route_id);
+          if (shortNames.length < 10 && row.route_short_name) shortNames.push(row.route_short_name);
+        },
+        { columns: ["route_id", "route_short_name"] },
+      );
+      report.routeKeys = { sampleRouteIds: routeIds, sampleShortNames: shortNames };
+      console.log(
+        `  routes.txt: ids [${routeIds.join(", ")}] short names [${shortNames.join(", ")}]`,
+      );
+    }
+
     // trips.txt: which trips belong to a service running in the horizon.
     const horizon = new Set([...activeToday, ...activeTomorrow]);
     const tripsOnHorizon = new Set<string>();
@@ -351,6 +378,7 @@ async function main(): Promise<void> {
   annotateReport("gtfs agency keys", {
     outcome: "measured",
     agency: regions.map((region) => ({ region: region.region, ...(region.agency ?? {}) })),
+    routeKeys: regions.map((region) => ({ region: region.region, ...(region.routeKeys ?? {}) })),
   });
 }
 

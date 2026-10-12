@@ -69,6 +69,17 @@ export interface RouteJoinCounts {
    */
   operatorRefsMatchingOnlyWhenRelaxed: number;
   sampleRelaxedOnlyMatches: string[];
+  /**
+   * `LineRef` and `PublishedLineName` counted separately, which the join itself does not do.
+   *
+   * It reads `publishedLineName ?? lineRef` and stops, so a run reporting 2,185 distinct "route
+   * names" says nothing about which field supplied them. The distinction decides whether a
+   * line-level join to `route_id` is even possible.
+   */
+  distinctLineRefs: number;
+  sampleLineRefs: string[];
+  distinctPublishedLineNames: number;
+  samplePublishedLineNames: string[];
   /** A few of each, so the report names them rather than only counting them. */
   sampleUnmappedOperators: string[];
   sampleUnmappedLines: string[];
@@ -143,6 +154,8 @@ export function joinObservationsToRoutes(input: RouteJoinInput): RouteJoinResult
   const unmappedOperators = new Set<string>();
   const unmappedLines = new Set<string>();
   const vehicles = new Set<string>();
+  const lineRefs = new Set<string>();
+  const publishedNames = new Set<string>();
 
   for (const observation of input.observations) {
     vehicles.add(observation.vehicleRef);
@@ -151,6 +164,22 @@ export function joinObservationsToRoutes(input: RouteJoinInput): RouteJoinResult
       withRouteRef.add(observation.vehicleRef);
       routeNames.add(normaliseName(name));
       nameByVehicle.set(observation.vehicleRef, name);
+    }
+    /*
+     * The two line references kept apart, because the join collapses them and they may not be the
+     * same kind of thing.
+     *
+     * `agency_id` in the BODS GTFS feed turned out to be a BODS-internal operator id (OP10232),
+     * not the National Operator Code the live feed sends — so the operator hop cannot be made to
+     * work without a third dataset. That makes the line hop worth measuring: if SIRI-VM's
+     * `LineRef` is a TransXchange line id rather than a short name, it may share a namespace with
+     * the GTFS `route_id`, and an observation could be attributed to a published route with no
+     * operator involved at all. `publishedLineName` is "36"; what `lineRef` is has never been
+     * looked at, because the join reads whichever is present and stops.
+     */
+    if (observation.lineRef !== undefined) lineRefs.add(observation.lineRef);
+    if (observation.publishedLineName !== undefined) {
+      publishedNames.add(observation.publishedLineName);
     }
     if (observation.operatorRef !== undefined) withOperatorRef.add(observation.vehicleRef);
 
@@ -212,6 +241,16 @@ export function joinObservationsToRoutes(input: RouteJoinInput): RouteJoinResult
       sampleKnownOperatorCodes: [...operatorByCode.keys()].slice(0, 12),
       operatorRefsMatchingOnlyWhenRelaxed: relaxedOnlyMatches.size,
       sampleRelaxedOnlyMatches: [...relaxedOnlyMatches].slice(0, 5),
+      /*
+       * The two line references, apart. If `lineRef` is a line *identifier* rather than a number
+       * on the front, an observation may be attributable to a published route without the broken
+       * operator hop — which is the only remaining route to route-level figures that does not need
+       * a third dataset.
+       */
+      distinctLineRefs: lineRefs.size,
+      sampleLineRefs: [...lineRefs].slice(0, 10),
+      distinctPublishedLineNames: publishedNames.size,
+      samplePublishedLineNames: [...publishedNames].slice(0, 10),
     },
   };
 }
