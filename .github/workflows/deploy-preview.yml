@@ -212,15 +212,37 @@ jobs:
               echo "::error::Repository secret $NAME is empty; the preview Worker needs it."
               exit 1
             fi
-            # stdout is discarded because wrangler echoes a success banner per secret; stderr is
-            # kept, because it names the secret and the failure but never the value, and losing
-            # the diagnostic would be worse than the negligible risk of showing it.
-            printf '%s' "${!NAME}" | npx --no-install wrangler secret put "$NAME" \
-              --config apps/worker/wrangler.toml \
-              --env "$WORKER_ENV" >/dev/null \
-              && echo "  $NAME: set" \
-              || { echo "::error::Failed to set Worker secret $NAME"; exit 1; }
+            # Retried, because one API hiccup has no business failing a deploy.
+            #
+            # Run 38254333807 died here: `wrangler secret put BODS_API_KEY` failed once, with the
+            # value present and every other step fine, and that took the frontend build, the Pages
+            # deploy, the verification and the visual sweep with it. Cloudflare's API is rate
+            # limited per account and this job had deployed several times inside the window, so a
+            # single refusal is the expected shape of a bad minute rather than a fault to stop for.
+            #
+            # stdout is discarded because wrangler echoes a success banner per secret. stderr is
+            # captured to a file rather than shown directly: it names the secret and the failure
+            # but never the value, and it is the only thing that says *why* — "Failed to set Worker
+            # secret BODS_API_KEY" was all the last run could tell anyone, which is the same
+            # blindness as a log nobody can reach.
+            ATTEMPT=1
+            until [ "$ATTEMPT" -gt 3 ]; do
+              if printf '%s' "${!NAME}" | npx --no-install wrangler secret put "$NAME" \
+                --config apps/worker/wrangler.toml \
+                --env "$WORKER_ENV" >/dev/null 2>secret-error.log; then
+                echo "  $NAME: set$([ "$ATTEMPT" -gt 1 ] && echo " (attempt $ATTEMPT)")"
+                break
+              fi
+              if [ "$ATTEMPT" -eq 3 ]; then
+                echo "::error::Failed to set Worker secret $NAME after 3 attempts: $(tr '\n' ' ' < secret-error.log | tail -c 600)"
+                exit 1
+              fi
+              echo "::warning::Setting $NAME failed on attempt $ATTEMPT; retrying. $(tr '\n' ' ' < secret-error.log | tail -c 300)"
+              sleep $((ATTEMPT * 10))
+              ATTEMPT=$((ATTEMPT + 1))
+            done
           done
+          rm -f secret-error.log
 
       - name: Check the Worker answers before building against it
         run: |
