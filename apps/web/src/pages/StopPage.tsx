@@ -252,6 +252,44 @@ export function StopPage() {
 
       <WillIMakeItPanel departures={departures} stop={stop} now={now} />
 
+      {/*
+        "Bus not come?" — the question this page exists to answer when the board does not.
+
+        Placed directly after the board and the official notices, and deliberately above the full
+        departures list and the weather. It used to sit sixth, below a weather scene, which is the
+        wrong order for the only moment it matters: somebody standing at a stop whose bus has not
+        arrived is not scrolling past a forecast to find help. A passenger who can see their bus
+        coming reads the board and stops there, so nothing is lost by putting this early; a
+        passenger who cannot has it in front of them.
+
+        `BusStoppedPanel` answers the neighbouring question and only exists on the vehicle page,
+        reached by clicking a bus on the live map: somebody standing at a stop is not looking at
+        a bus, and before this panel existed the page offered them nothing at all.
+      */}
+      <WaitingHelp
+        stop={stop}
+        departures={departures}
+        routes={response.data.routes}
+        disruptions={response.data.disruptions}
+        degradation={response.meta.degradation}
+        now={now}
+        ageSeconds={ageSeconds}
+        timetableCoverage={response.data.timetableCoverage}
+        nearby={
+          nearbyResponse
+            ? nearbyResponse.data.results
+                .filter((result) => result.kind === "stop" && result.id !== stop.id)
+                .map((result) => ({
+                  id: result.id,
+                  title: result.title,
+                  distanceMetres: result.distanceMetres,
+                }))
+            : null
+        }
+        nearbyFailed={nearbyError !== null}
+        walkingUrl={walkingUrl}
+      />
+
       <section className="stop-page__departures" aria-labelledby="all-departures-heading">
         <PixelSectionHeading mark="clock" id="all-departures-heading">
           All departures
@@ -381,39 +419,6 @@ export function StopPage() {
           </ul>
         </section>
       ) : null}
-
-      {/*
-        Help for the passenger whose bus has not come.
- 
-        Placed after the board and the routes, because somebody who can see their bus coming does
-        not need it — and before the stop's own details, because somebody who cannot is not reading
-        about shelters. `BusStoppedPanel` answers the neighbouring question and only exists on the
-        vehicle page, which is reached by clicking a bus on the live map: a passenger standing at a
-        stop is not looking at a bus, and until now this page offered them nothing.
-      */}
-      <WaitingHelp
-        stop={stop}
-        departures={departures}
-        routes={response.data.routes}
-        disruptions={response.data.disruptions}
-        degradation={response.meta.degradation}
-        now={now}
-        ageSeconds={ageSeconds}
-        timetableCoverage={response.data.timetableCoverage}
-        nearby={
-          nearbyResponse
-            ? nearbyResponse.data.results
-                .filter((result) => result.kind === "stop" && result.id !== stop.id)
-                .map((result) => ({
-                  id: result.id,
-                  title: result.title,
-                  distanceMetres: result.distanceMetres,
-                }))
-            : null
-        }
-        nearbyFailed={nearbyError !== null}
-        walkingUrl={walkingUrl}
-      />
 
       <AccessibilityCard accessibility={response.data.accessibility} />
 

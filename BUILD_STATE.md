@@ -73,6 +73,39 @@ charged for, so it would not slow a normal page.
 
 Classification stands: **RESILIENCE / LOAD — OPEN.** Not a passenger blocker.
 
+### 12 October: postcode search has a £0 source, and it is a storage question not a licence one
+
+Asked for before building anything. The answer is that a usable free source exists, so this is
+sequenced work rather than blocked work.
+
+**NaPTAN has no postcode column**, which is where this stalled before. The options that do:
+
+| Source                                                | Licence           | Key needed                           | Size                      | Coordinates                        |
+| ----------------------------------------------------- | ----------------- | ------------------------------------ | ------------------------- | ---------------------------------- |
+| ONS Postcode Directory (ONSPD), Open Geography Portal | OGL v3            | no                                   | ~1 GB CSV, ~100 MB zipped | lat/lon included                   |
+| OS Code-Point Open                                    | OGL v3            | OS Data Hub key for the download API | ~20 MB zipped             | easting/northing, needs conversion |
+| postcodes.io                                          | open source, free | no                                   | n/a, it is a service      | yes                                |
+
+ONSPD is the candidate: Open Government Licence, no credential, and it already carries lat/lon so
+no coordinate conversion is needed. OGL permits redistribution provided the attribution is carried
+("Contains OS data © Crown copyright and database right", plus the Royal Mail and National
+Statistics notices), so a derived artifact is allowed — but it should still be fetched by the
+pipeline rather than committed.
+
+postcodes.io is rejected, not on cost but on principle: it is a third-party service this project
+does not control, and the product's rule is real adapters against the authoritative publisher.
+
+The binding constraint is **storage, not licence**. The preview bucket is at 10.06 GB of a
+10.74 GB allowance, so the artifact has to be small. It can be: only the postcode and its
+coordinate are needed, and sharded by outward code (about 2,900 of them) that is roughly 45 MB
+across 2,900 objects of about 15 KB — affordable, and it shards the same way the search prefixes
+already do, so the reader needs no new shape.
+
+Not started: the directive sequences it after Pro has real figures and after the product pass. The
+one thing that cannot be settled from this container is whether the ONS download URL answers
+without a credential, since the gateway refuses that host — so the adapter will be written with a
+CI probe reporting what it actually got, the same way the ticket-seller check works.
+
 ### 4 October: the verification computed its evidence and then threw it away
 
 Worth recording because of how long it could have hidden. Run 37193507423 showed the deploy job

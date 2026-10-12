@@ -196,6 +196,23 @@ test.describe("the walk a passenger takes", () => {
 
     // And the limit of what we claim, said once.
     await expect(help.getByText(/not necessarily been cancelled/)).toBeVisible();
+
+    /*
+     * Above the weather and above the full timetable, which is where it belongs.
+     *
+     * It used to be the sixth section on the page, below a weather scene — the wrong order for
+     * the only moment it matters, since somebody standing at a stop whose bus has not arrived
+     * does not scroll past a forecast to find help. Asserted by position rather than by reading
+     * the source order, because a stylesheet can reorder a flex or grid container and the DOM
+     * would still look right.
+     */
+    const helpTop = (await help.boundingBox())?.y ?? Number.POSITIVE_INFINITY;
+    for (const below of [".stop-page__departures", ".stop-page__weather"]) {
+      const target = page.locator(below);
+      if ((await target.count()) === 0) continue;
+      const top = (await target.first().boundingBox())?.y ?? 0;
+      expect(helpTop, `"Bus not come?" must sit above ${below}`).toBeLessThan(top);
+    }
   });
 
   test("nearby → a stop → its board", async ({ page }) => {
