@@ -215,14 +215,25 @@ nothing is ever reused: every board pays the full R2 fetch and UTF-8 decode of `
 
 The obvious lever was to cache the raw body text, keyed by dataset and version and separate from
 the parsed-record cache, so a filtered read reuses the text and re-runs its own cheap line filter.
-**It was tried and it made things worse: 9 of 26 against 12 of 26 without it**, and the new
-failures included "search finds a real stop by name" and "a plain town name returns something" —
-searches that had been reliable all day. It is reverted.
+It was tried, read as a regression, reverted — and **the revert then scored 11 of 26 with the same
+failures, which means the reading was wrong.**
 
-That result is more likely signal than noise, because search is the biggest text consumer in the
-product: a prefix bucket is about 5 MiB, and caching several of them is precisely what pushes an
-isolate's retained heap up. The premise — that retaining one string costs the collector less than
-allocating a fresh one per request — is plausible in general and wrong here.
+The three runs are 12 of 26 without the cache, 9 with it, and 11 after reverting it, and the
+searches I blamed on the cache fail in the run that does not have it. Those numbers are one
+distribution, not three measurements. The cache is still out, because nothing shows it helping
+either, but the reason recorded for taking it out was overstated and that matters more than the
+change did.
+
+**The methodological finding is the valuable one: this harness's pass count cannot measure a worker
+change.** Each run collects 1102s on a varying subset of the same dozen heavy checks, so a single
+run's total says almost nothing, and single-run deltas are what several of today's conclusions
+leaned on — the gate's removal (13 → 12) is inside the same noise. The only difference large enough
+to trust so far is an expired timetable against a real one, and even that is one run each side.
+Anything further needs repeated runs at a fixed commit, or a test that measures one endpoint's cost
+directly rather than counting which checks happened to survive.
+
+What is stable across every run today, and is therefore worth something: the probe passes with no
+failures and no notes, every time.
 
 So the measurement stands and the fix does not. Nothing is reused on a filtered read, every board
 still re-fetches and re-decodes 4.7 MiB of services, and that remains the best-understood
