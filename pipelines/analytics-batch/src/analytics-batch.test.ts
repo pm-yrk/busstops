@@ -792,6 +792,61 @@ describe("atomic publication", () => {
     expect(manifest?.recordCount).toBe(1);
   });
 
+  /*
+   * The rollback that cost Pro a good publish.
+   *
+   * How many buckets close in a window depends entirely on how much was collected in it: the 07:19
+   * batch read 108,821 observations accumulated across several dispatches, the 12:56 batch read
+   * only its own fresh collection, and the count fell 79.6%. The 25% shrink guard refused the
+   * publish, which marked it incomplete and rolled back the network summary and the incidents that
+   * had both published perfectly well. The guard is for a broken parse of bulk reference data, not
+   * for a measurement of an hour.
+   */
+  it("publishes a window far smaller than the last one, because that is a quiet hour", async () => {
+    const store = new InMemoryObjectStore(() => NOW);
+    const many = Array.from({ length: 50 }, (_, i) => ({ ...bucket, segmentId: `seg-${i}` }));
+
+    const first = await publishIntelligence(
+      store,
+      { buckets: many, incidents: [] },
+      { version: "v1", coverage: 1, sources: ["bods"], now: () => NOW },
+    );
+    expect(first.complete).toBe(true);
+
+    // One bucket against fifty: a 98% fall, far past the guard that used to apply.
+    const second = await publishIntelligence(
+      store,
+      { buckets: [bucket], incidents: [] },
+      { version: "v2", coverage: 1, sources: ["bods"], now: () => NOW },
+    );
+
+    expect(second.failed, "a quiet hour is not a broken parse").toEqual([]);
+    expect(second.complete).toBe(true);
+
+    const artifacts = new ArtifactStore(store);
+    const manifest = await artifacts.readManifest(INTELLIGENCE_DATASETS.segmentMetrics);
+    expect(manifest?.version).toBe("v2");
+    expect(manifest?.recordCount).toBe(1);
+  });
+
+  /*
+   * And the thing the guard was actually there for is still caught, by a different rule: a run
+   * that produced nothing at all does not get to replace a version that had something.
+   */
+  it("still refuses a window with no closed bucket at all", async () => {
+    const store = new InMemoryObjectStore(() => NOW);
+    const result = await publishIntelligence(
+      store,
+      { buckets: [], incidents: [] },
+      { version: "v1", coverage: 1, sources: ["bods"], now: () => NOW },
+    );
+
+    expect(result.complete).toBe(false);
+    expect(result.failed.map((entry) => entry.dataset)).toContain(
+      INTELLIGENCE_DATASETS.segmentMetrics,
+    );
+  });
+
   it("does not publish an open bucket, whose figure is still going to change", async () => {
     const store = new InMemoryObjectStore(() => NOW);
     const result = await publishIntelligence(

@@ -132,9 +132,30 @@ feed rather than mis-keyed. `unmappedLineRefs: 350` is the new frontier and a di
 gap: an operator we know running a line they do not publish a timetable for (`FCYM:4`,
 `ATWE:WSomers2`), which is a coverage fact rather than a join failure.
 
-The batch itself reported `rolled_back`: `atomic_publish` processed 69, emitted 2 and **rejected
-1**. Which dataset and why was cut off by the annotation limit, which is what the splitter now
-fixes — so that is the next thing to read rather than to guess at.
+The batch itself reported `rolled_back`, and the splitter paid for itself on its first run by
+printing the reason that three previous runs had cut off:
+
+    failed: [{ dataset: "intelligence/segment-metrics",
+               reason: "shrank by 79.6% versus version 2026-10-12T07:19:03.377Z;
+                        keeping the previous good version" }]
+
+A 25% shrink guard refused the publish, which marked it incomplete and rolled back the network
+summary and the incidents that had both published perfectly well. And the shrink was legitimate:
+how many buckets close in a window depends entirely on how much was collected in it. The 07:19
+batch read 108,821 observations accumulated across several dispatches; the 12:56 batch read only
+its own fresh collection.
+
+The guard is for a broken parse of bulk reference data — stops or services falling by four fifths
+means something failed to read, never that England lost four fifths of its bus stops. A
+closed-bucket count is a measurement _of an hour_, which is the same argument the incidents
+dataset already carries for having no shrink guard. So segment metrics no longer has one either.
+`minimumRecordCount` and `allowEmpty: false` still catch the thing worth catching, a run that
+produced nothing at all, and that case has its own test alongside the quiet-hour one.
+
+The rollback itself is left exactly as it is. It looks harsh — it threw away good data — but the
+summary and the metrics both derive from the same `settled` buckets and must never disagree, so
+publishing one without the other would trade a freshness problem for a correctness one. The fix
+belongs where the rejection was, not where the rollback is.
 
 ### 12 October: removing the gate did not restore the numbers, which settles the cause
 

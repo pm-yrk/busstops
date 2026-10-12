@@ -156,11 +156,29 @@ export async function publishIntelligence(
     }
   };
 
+  /*
+   * No shrink guard, for the same reason the incidents dataset has none — and it took a rollback
+   * to see that this dataset is the same kind of thing.
+   *
+   * The guard exists to catch a broken parse of bulk reference data: stops or services falling by
+   * four fifths means something failed to read, never that England lost four fifths of its bus
+   * stops. A closed-bucket count is not bulk reference data. It is a measurement *of a window*,
+   * and how many buckets close in one depends entirely on how much was collected — the 07:19 batch
+   * read 108,821 observations accumulated across several dispatches, the 12:56 batch read only its
+   * own fresh collection, and the count duly fell 79.6%. The guard refused it, which marked the
+   * publish incomplete and rolled back the network summary and the incidents that had both
+   * published perfectly well.
+   *
+   * `minimumRecordCount` and `allowEmpty: false` still catch the thing worth catching: a run that
+   * produced nothing at all. What is dropped is only the assumption that this hour should resemble
+   * the last one.
+   */
   await publishDataset(
     INTELLIGENCE_DATASETS.segmentMetrics,
     settled,
     options.minimumSegmentBuckets ?? 1,
     false,
+    1,
   );
 
   // Zero incidents is a legitimate and common result, so this dataset has no minimum: rejecting
