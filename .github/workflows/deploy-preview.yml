@@ -214,9 +214,14 @@ jobs:
             fi
             # Retried, because one API hiccup has no business failing a deploy.
             #
-            # Run 38254333807 died here: `wrangler secret put BODS_API_KEY` failed once, with the
-            # value present and every other step fine, and that took the frontend build, the Pages
-            # deploy, the verification and the visual sweep with it. Cloudflare's API is rate
+            # Run 38254333807 died here: setting the BODS key refused once, with the value
+            # present and every other step fine, and that took the frontend build, the Pages
+            # deploy, the verification and the visual sweep with it.
+            #
+            # (Worded that way on purpose. A contract test forbids a secret's name appearing as a
+            # literal argument after `secret put`, since the name belongs in `"$NAME"` where the
+            # loop puts it — and it reads the whole file, prose included, because a comment
+            # showing the forbidden shape is the thing somebody copies.) Cloudflare's API is rate
             # limited per account and this job had deployed several times inside the window, so a
             # single refusal is the expected shape of a bad minute rather than a fault to stop for.
             #
