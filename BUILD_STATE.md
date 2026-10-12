@@ -1,6 +1,6 @@
 # Bus Stops. Build State
 
-Last updated: 2026-10-12 (the read gate is removed — it caused the pile-up it was built to prevent)
+Last updated: 2026-10-12 (passenger core green on real data; Pro's route join resolves 14,148 vehicles)
 
 ## Current status
 
@@ -72,6 +72,95 @@ under P3 where the directive puts it. Queueing costs wall-clock, which a waiting
 charged for, so it would not slow a normal page.
 
 Classification stands: **RESILIENCE / LOAD — OPEN.** Not a passenger blocker.
+
+### 12 October, run 38245359800: the passenger core is green on a real timetable
+
+`"failures": []`, `"notes": []`. The probe — the primary regression gate — asked every question on
+the list against a deployment carrying four real service dates, and found nothing wrong.
+
+What a passenger actually gets, from that run:
+
+    search "Leeds"      20 results, 4 of them stops, first "Leeds"
+    search "Manchester" 20 results, 4 of them stops, first "Manchester Oxford Road"
+    nearby Leeds centre 25 results, 25 stops, nearest "City Square C"
+    Leeds       19  First Leeds                      3 variants  83 stops
+                Ireland Wood → Inverness Road        #42 Shaftesbury Junction C — 16 due
+    Manchester  101 Bee Network                      3 variants  56 stops
+                Wythenshawe Town Centre → Piccadilly Gardens  #29 Princess Parkway — 6 due
+    Birmingham  2   National Express West Midlands   6 variants  43 stops
+                Moor Street Station → Maypole Shops  #22 Billesley Fire Station — 20 due
+    Bristol     25  First Bristol, Bath & the West    2 variants  23 stops
+                Durnford Street → Eastgate Centre
+    journey     1 option, 1 bus leg, navigable: route A1, boarding and alighting stop ids present
+    leg → route 200, "A1"          leg → boarding board  200, "Station B"
+
+The last line is the one worth dwelling on: the probe did not merely check that a leg _carries_ a
+route id, it followed it. The route the leg names answers as "A1" and the stop it names answers as
+"Station B", so the links a journey plan now offers are links that resolve. And `middleDue` is no
+longer zero anywhere — 16, 6 and 20 due at the middle stops of three cities — which is the
+difference between an artifact with a timetable and one without.
+
+The deployed flow walk completed for the first time in four runs, having failed at its own first
+step until the search fix:
+
+    searched "Leeds" and found Leeds City Bus Station stand 1;
+    its board reads "UK002 Nelson Street Coach A 25 mins Timetable 13:50";
+    route "Route UK002" lists 5 stops, St Margaret's Bus Station → Victoria Coach Station
+    across 10 variant(s)
+
+Two product observations fall out of that, and neither is a fault in the chain. The top stop result
+for a city name is a coach-station stand, so the first board a visitor sees is National Express
+long-distance rather than a local bus — correct data, wrong emphasis. And "Route UK002" reads as a
+code with a word in front of it; UK002 is a real public name, so this is a labelling question
+rather than a leaked identifier. Both are backlog.
+
+### 12 October: Pro's route join resolves, and the fix was one column
+
+The first batch to read operators republished with `agency_noc`:
+
+    vehicles                  21,992
+    vehiclesWithOperatorRef   21,992
+    vehiclesMappedToRouteId   14,148   (was 0)
+    distinctRouteIds           4,816   (was 0)
+    unmappedOperatorRefs          10   (was 295)
+    unmappedLineRefs             350
+
+Sixty-four per cent of observed vehicles now resolve to a published route, across 4,816 routes.
+The ten operator codes still unmatched are the honest residue — `TFLO` is Transport for London,
+which publishes no BODS GTFS at all, and `SQ`, `LLCO`, `MINS`, `GTRI` are operators absent from the
+feed rather than mis-keyed. `unmappedLineRefs: 350` is the new frontier and a different kind of
+gap: an operator we know running a line they do not publish a timetable for (`FCYM:4`,
+`ATWE:WSomers2`), which is a coverage fact rather than a join failure.
+
+The batch itself reported `rolled_back`: `atomic_publish` processed 69, emitted 2 and **rejected
+1**. Which dataset and why was cut off by the annotation limit, which is what the splitter now
+fixes — so that is the next thing to read rather than to guess at.
+
+### 12 October: removing the gate did not restore the numbers, which settles the cause
+
+12 of 26 with the gate gone, against 13 of 23 with it. So the gate was a real and separate harm —
+it made `startedNotFinished` five times worse and charged every heavy request 2,500 ms — but it was
+never the reason the verification regressed. The real timetable is.
+
+The two clients disagree, and both are telling the truth. The probe asks about sixty heavy
+questions sequentially and finds nothing wrong. The verification asks more than a hundred and fifty
+— five cities × map, route and board, plus a deliberate burst of twenty-five dense map requests —
+and collects 1102s from `/v1/map`, `/v1/nearby`, `/v1/routes/:id`, boards, journeys and the London
+viewport. Single requests are sound; sustained heavy use is not. That is the resilience class, kept
+separate as the directive asks, and the passenger gate is green.
+
+**Where the cost is, measured rather than theorised.** Every dying request reports
+`residentChars=0` and every singleton at 0 — at request #88 of an isolate. The reader's own comment
+says why: _"A filtered read deliberately does not populate the shard cache."_ The board's reads are
+all filtered, which was the right fix for an earlier round of 1102s, and the side effect is that
+nothing is ever reused: every board pays the full R2 fetch and UTF-8 decode of `network/services`
+(4.7 MiB) from scratch. With an empty timetable that was affordable. With a real one it is not.
+
+The lever that follows is narrow — cache the raw body text keyed by dataset and version, separate
+from the parsed-record cache, so a filtered read reuses the text and re-runs its own cheap line
+filter. It is **not** done here. The directive closes "arbitrary cache redesign", and having just
+removed one well-intentioned mechanism that backfired, the honest move is to put the measurement on
+the table rather than to act on it unasked.
 
 ### 12 October: the read gate is removed. It caused the pile-up it was built to prevent.
 
