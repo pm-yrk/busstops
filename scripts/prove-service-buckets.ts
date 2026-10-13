@@ -34,6 +34,14 @@ async function main(): Promise<number> {
   const source = await artifacts.readCurrent<ServiceRoute>("network/services");
   report.sourceServices = source.records.length;
   report.sourceVersion = source.manifest?.version ?? null;
+  /*
+   * The size of the whole object, because that is the old path's measured cost.
+   *
+   * Every stop board used to fetch and UTF-8 decode this to resolve a handful of ids. Reporting it
+   * here, from the bucket the deployment serves, means the before-and-after comparison is two
+   * measurements rather than one measurement and one remembered figure.
+   */
+  report.sourceBytes = source.manifest?.sizeBytes ?? 0;
   if (source.records.length === 0) {
     report.outcome = "no_source";
     annotateReport("service buckets", report);

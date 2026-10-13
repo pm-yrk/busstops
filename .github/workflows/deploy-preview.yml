@@ -769,6 +769,19 @@ jobs:
         timeout-minutes: 12
         run: node scripts/measure-endpoint-cost.mjs "${{ steps.worker.outputs.url }}" --samples 30 --pace 400
 
+      # What a real stop board pays to resolve its services, which is the one cost the bucketed
+      # family was built to reduce. Both paths are still in the Worker, so both are measurable on
+      # the same deployment: a board that reads buckets reports how many it read and how many
+      # characters that was, and a board that falls back reports the size of the whole object. That
+      # is the before-and-after comparison, measured rather than assumed.
+      #
+      # Real stops, found by asking what is near four city centres, so it survives a rebuild.
+      - name: Measure what a stop board pays for its services
+        if: ${{ !cancelled() && steps.pages.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 10
+        run: node scripts/measure-board-services.mjs "${{ steps.worker.outputs.url }}" --passes 4 --pace 500
+
       - name: Verify real data through the deployed API
         id: verify
         if: ${{ !cancelled() && steps.pages.outcome == 'success' }}
