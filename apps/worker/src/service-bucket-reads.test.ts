@@ -157,6 +157,32 @@ describe("resolving a handful of service ids", () => {
     expect(reads.some((key) => key.includes("network/services/"))).toBe(false);
   });
 
+  /*
+   * The cap, which exists so that a request wanting a great many services does not open a great
+   * many objects. Tombland in Norwich measured at twenty-five distinct services on one board, so
+   * the cap is twenty-four and this asks for ids from more buckets than that.
+   */
+  it("reads the whole object when the wanted ids span more buckets than the cap allows", async () => {
+    const { reader, reads } = await published({ buckets: true });
+    reads.length = 0;
+
+    // One id from each of thirty distinct buckets, chosen deterministically rather than sampled.
+    const byBucket = new Map<number, string>();
+    for (const service of SERVICES) {
+      const bucket = serviceBucketFor(service.id);
+      if (!byBucket.has(bucket)) byBucket.set(bucket, service.id);
+      if (byBucket.size === 30) break;
+    }
+    expect(byBucket.size).toBe(30);
+
+    const ledger = new ReadLedger(1000);
+    const found = await reader.servicesByIds(new Set(byBucket.values()), ledger);
+
+    expect(found.size, "every one still comes back").toBe(30);
+    expect(ledger.toJSON().artifact?.servicesPath).toBe("whole_object");
+    expect(reads.some((key) => key.includes("network/services-bucket/"))).toBe(false);
+  });
+
   it("records which representation answered, and what it cost", async () => {
     const { reader } = await published({ buckets: true });
     const ledger = new ReadLedger(1000);

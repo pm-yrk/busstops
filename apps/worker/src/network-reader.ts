@@ -122,7 +122,21 @@ const MAX_CACHED_SHARDS = 16;
  * costs; beyond that the arithmetic turns and a request asking for fifty service ids is not a
  * board anyway.
  */
-const MAX_SERVICE_BUCKETS_PER_REQUEST = 8;
+/*
+ * How many service buckets one request may read before the whole object is the better answer.
+ *
+ * Eight was a guess made before anything was measured, and the measurement found it binding on a
+ * real board: Tombland in Norwich shows twenty departures naming twenty-five distinct services, so
+ * it spanned twenty-five buckets, exceeded the cap, and read all 4,669,154 characters of the
+ * services object. Twenty-five buckets is about 475 KiB — a tenth of that — and now that the reads
+ * are issued together it is also one round trip rather than twenty-five.
+ *
+ * Twenty-four, not more: a Workers Free invocation gets fifty subrequests in total, and a board
+ * also reads the index, its departure shards, its stop and its operators. A request wanting more
+ * services than this is not a board — it is the map, which wants every name and has its own much
+ * smaller object to read.
+ */
+const MAX_SERVICE_BUCKETS_PER_REQUEST = 24;
 /*
  * Twenty-four mebibytes, up from three, and the reason is the same CPU the old number was defending.
  *
@@ -2462,19 +2476,37 @@ export class NetworkReader {
     let bucketsPresent = 0;
     let chars = 0;
 
-    for (const [bucket, wanted] of byBucket) {
-      const want = new Set(wanted);
-      const read = await this.readShardSized<ServiceRoute>(
-        serviceBucketDataset(bucket),
-        index.version,
-        Date.now(),
-        ledger ? { ledger, family: "services", budgetReason: "service_bucket_read" } : undefined,
-        // Tested as text before anything is built, like every other filtered read here.
-        (body, start, end) => {
-          const id = valueAt(body, start, end, "id");
-          return id !== null && want.has(id);
-        },
-      );
+    /*
+     * All the buckets at once, because the saving here is bytes and CPU, not round trips.
+     *
+     * Measured on the deployment: a Manchester board wanting two services read two buckets —
+     * 40,844 characters against the whole object's 4,669,154 — and took 576 ms, while a Norwich
+     * board that fell back to the whole object took 787 ms. Reading a hundredth of the bytes had
+     * not made the board quicker, because the reads were sequential and each R2 round trip costs
+     * more wall clock than the decode it avoids.
+     *
+     * Sequentially, the cap on buckets was also a cap on latency, which is the wrong thing for it
+     * to be: it exists to stop a request reading two hundred objects, not to keep a four-service
+     * board under a deadline. In parallel the wall clock is one round trip regardless of how many
+     * buckets a board's departures happen to span.
+     */
+    const reads = await Promise.all(
+      [...byBucket].map(async ([bucket, wanted]) => {
+        const want = new Set(wanted);
+        return this.readShardSized<ServiceRoute>(
+          serviceBucketDataset(bucket),
+          index.version,
+          Date.now(),
+          ledger ? { ledger, family: "services", budgetReason: "service_bucket_read" } : undefined,
+          // Tested as text before anything is built, like every other filtered read here.
+          (body, start, end) => {
+            const id = valueAt(body, start, end, "id");
+            return id !== null && want.has(id);
+          },
+        );
+      }),
+    );
+    for (const read of reads) {
       if (read.chars > 0) bucketsPresent += 1;
       chars += read.chars;
       for (const service of read.records) found.set(service.id, service);
