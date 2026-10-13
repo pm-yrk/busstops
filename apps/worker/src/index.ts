@@ -1157,7 +1157,12 @@ router.get("/v1/stops/:id", async (_request, { env, params }) => {
    * names about ten services, and asking for those is one pass over the text instead.
    */
   const services = await boardLedger.stage("services", () =>
-    network!.servicesByIds(new Set(patterns.map((pattern) => pattern.serviceRouteId))),
+    network!.servicesByIds(
+      new Set(patterns.map((pattern) => pattern.serviceRouteId)),
+      // The board is the path the partitioned family exists for, so it is the one that records
+      // which representation answered and what it cost.
+      boardLedger,
+    ),
   );
   mark("board:services:done", { services: services.size });
 

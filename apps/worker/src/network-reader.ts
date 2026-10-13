@@ -30,6 +30,8 @@ import {
   patternTileDataset,
   searchIndex as rankSearch,
   searchPrefixDataset,
+  serviceBucketDataset,
+  serviceBucketFor,
   searchPrefixesForWord,
   searchTileDataset,
   searchTilesForBoundingBox,
@@ -109,6 +111,16 @@ export interface ReadTrack {
  * whatever is resident.
  */
 const MAX_CACHED_SHARDS = 16;
+
+/**
+ * How many service buckets one request may read before the whole object is cheaper.
+ *
+ * A board knows two or three service ids, so this is a bound on the worst case rather than an
+ * expected path. Eight buckets at about 19 KiB is 152 KiB against the 4.7 MiB the whole object
+ * costs; beyond that the arithmetic turns and a request asking for fifty service ids is not a
+ * board anyway.
+ */
+const MAX_SERVICE_BUCKETS_PER_REQUEST = 8;
 /*
  * Twenty-four mebibytes, up from three, and the reason is the same CPU the old number was defending.
  *
@@ -2362,13 +2374,91 @@ export class NetworkReader {
   }
 
   /**
-   * Only the services asked for, built by one pass over the text.
+   * The wanted services from their buckets, or null when the family is not published here.
    *
-   * No offset index is kept: building a map of 13,593 keys is itself several milliseconds of
-   * allocation, and one bounded scan per request costs less than that once. A line is parsed only
-   * when its id is wanted.
+   * Null is the signal to fall back, and it is returned only when none of the buckets the wanted
+   * ids fall into exists — which is what a version published before this family looks like. A
+   * bucket that exists and does not contain an id is an answer, not a failure.
    */
-  async servicesByIds(ids: ReadonlySet<string>): Promise<Map<string, ServiceRoute>> {
+  private async servicesFromBuckets(
+    ids: ReadonlySet<string>,
+    ledger?: ReadLedger,
+  ): Promise<Map<string, ServiceRoute> | null> {
+    const index = await this.networkIndex(Date.now());
+    if (!index) return null;
+
+    /*
+     * Grouped, so a board asking for three ids that happen to share a bucket reads one object. The
+     * cap is a bound on the worst case rather than an expected path: a request that already knows
+     * fifty service ids is not a board, and for that many the whole object is the cheaper read.
+     */
+    const byBucket = new Map<number, string[]>();
+    for (const id of ids) {
+      const bucket = serviceBucketFor(id);
+      const existing = byBucket.get(bucket);
+      if (existing) existing.push(id);
+      else byBucket.set(bucket, [id]);
+    }
+    if (byBucket.size > MAX_SERVICE_BUCKETS_PER_REQUEST) return null;
+
+    const found = new Map<string, ServiceRoute>();
+    let bucketsPresent = 0;
+    let chars = 0;
+
+    for (const [bucket, wanted] of byBucket) {
+      const want = new Set(wanted);
+      const read = await this.readShardSized<ServiceRoute>(
+        serviceBucketDataset(bucket),
+        index.version,
+        Date.now(),
+        ledger ? { ledger, family: "services", budgetReason: "service_bucket_read" } : undefined,
+        // Tested as text before anything is built, like every other filtered read here.
+        (body, start, end) => {
+          const id = valueAt(body, start, end, "id");
+          return id !== null && want.has(id);
+        },
+      );
+      if (read.chars > 0) bucketsPresent += 1;
+      chars += read.chars;
+      for (const service of read.records) found.set(service.id, service);
+    }
+
+    if (bucketsPresent === 0) {
+      ledger?.artifactNote({ servicesPath: "fallback_no_buckets", servicesWanted: ids.size });
+      return null;
+    }
+
+    ledger?.artifactNote({
+      servicesPath: "buckets",
+      servicesWanted: ids.size,
+      servicesFound: found.size,
+      serviceBucketsRead: byBucket.size,
+      serviceBucketsPresent: bucketsPresent,
+      serviceBucketChars: chars,
+    });
+    return found;
+  }
+
+  /**
+   * Only the services asked for — from their buckets where the partitioned family exists, and from
+   * the whole object where it does not.
+   *
+   * A board asks for two or three ids. Scanning the whole object for them is cheap in itself and
+   * deliberately so, but it cannot avoid fetching and UTF-8 decoding 4.7 MiB first, on every
+   * board, because a filtered read cannot populate the record cache: an entry holding one
+   * request's two services would answer the next request's question with almost nothing.
+   *
+   * So the ids are grouped by bucket and only those buckets are read — about 19 KiB each. The
+   * fallback is not a nicety: a version published before this family existed has no buckets at
+   * all, and the reader has to behave exactly as it used to against one. It falls back when *no*
+   * wanted bucket exists, not when an id is simply absent from its bucket — an unknown id is
+   * ordinary (a pattern naming a service the network no longer publishes) and must not cost a
+   * 4.7 MiB read to establish.
+   */
+  async servicesByIds(
+    ids: ReadonlySet<string>,
+    ledger?: ReadLedger,
+  ): Promise<Map<string, ServiceRoute>> {
     const found = new Map<string, ServiceRoute>();
     if (ids.size === 0) return found;
 
@@ -2378,11 +2468,24 @@ export class NetworkReader {
         const service = this.servicesCache.get(id);
         if (service) found.set(id, service);
       }
+      ledger?.artifactNote({ servicesPath: "resident", servicesWanted: ids.size });
       return found;
     }
 
+    const bucketed = await this.servicesFromBuckets(ids, ledger);
+    if (bucketed !== null) return bucketed;
+
     const text = await this.servicesText();
     if (text === null) return found;
+    /*
+     * The figure the partitioned family exists to replace. Recorded so a run can state the old
+     * cost and the new one side by side rather than asserting an improvement.
+     */
+    ledger?.artifactNote({
+      servicesPath: "whole_object",
+      servicesWanted: ids.size,
+      servicesObjectChars: text.length,
+    });
 
     let start = 0;
     while (start < text.length && found.size < ids.size) {
