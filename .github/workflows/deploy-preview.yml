@@ -57,6 +57,15 @@ on:
         # the default or one at 150. The bucket matters: 16.05 GB against R2's 10 GiB free
         # allowance, and finishing brings it to 10.06.
         default: ""
+      postcode_index:
+        description: "England's postcode index: skip | measure | publish"
+        type: choice
+        # Measure before publishing, deliberately. The index is a new artifact family and the
+        # bucket is close enough to R2's free allowance that its real size should be read off a
+        # measurement rather than an estimate. `measure` downloads Code-Point Open, parses it and
+        # reports exactly what would be written, without writing a byte.
+        options: [skip, measure, publish]
+        default: skip
       run_weather:
         description: "Also collect stop weather into the preview bucket"
         type: boolean
@@ -474,6 +483,28 @@ jobs:
         run: |
           set -o pipefail
           npx tsx pipelines/places/run-extract.ts 2>&1 | tee places.log
+
+      # England's postcodes, so that "LS1 4DY" finds the stops at the end of someone's street.
+      #
+      # Ordnance Survey Code-Point Open, chosen after both candidates were asked directly from a
+      # runner: it answers with no credential, the archive is 13.8 MB with a published md5, and the
+      # National Grid conversion it needs already exists here for NaPTAN. `measure` is separate from
+      # `publish` because this is a new artifact family and the preview bucket is close to R2's free
+      # allowance — the size it would add should be a measurement, not an estimate.
+      - name: Build England's postcode index
+        if: ${{ !cancelled() && inputs.postcode_index != 'skip' }}
+        timeout-minutes: 25
+        continue-on-error: true
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -o pipefail
+          if [ "${{ inputs.postcode_index }}" = "publish" ]; then
+            npx tsx pipelines/postcodes/run-extract.ts --publish 2>&1 | tee postcodes.log
+          else
+            npx tsx pipelines/postcodes/run-extract.ts 2>&1 | tee postcodes.log
+          fi
 
       # ----------------------------------------------------- intelligence
       # Collection then the batch, in that order, because the batch reads what collection writes.
