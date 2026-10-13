@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { ROUTE_ID, STOP_ID, STOP_RESPONSE, mockApi } from "./fixtures.js";
+import { ROUTE_ID, STOP_ID, ROUTE_DETAIL, STOP_RESPONSE, mockApi } from "./fixtures.js";
 
 /**
  * The joins between pages, which is where a passenger actually lives.
@@ -349,6 +349,36 @@ test.describe("the walk a passenger takes", () => {
 
     // And never the sentence that blames the buses.
     await expect(page.getByText(/no departures from this stop in the next hour/i)).toHaveCount(0);
+  });
+
+  /*
+   * A route with no published description still says where it goes.
+   *
+   * The deployed walk reported `route "Route UK002"` — a code with a word in front of it, which
+   * tells a passenger nothing and reads like an identifier that leaked. The page already knew the
+   * answer: the selected variant's first and last stops are drawn a few lines below the heading.
+   */
+  test("a route with no description is named by where it goes", async ({ page }) => {
+    await mockApi(page, {
+      [`/v1/routes/${ROUTE_ID}`]: {
+        ...ROUTE_DETAIL,
+        data: {
+          ...ROUTE_DETAIL.data,
+          route: { ...ROUTE_DETAIL.data.route, description: undefined },
+        },
+      },
+    });
+    await page.goto(`/routes/${ROUTE_ID}`);
+
+    const heading = page.locator("h1");
+    await expect(heading).toBeVisible();
+    const text = (await heading.textContent()) ?? "";
+
+    // Still leads with the number, because that is what somebody came for.
+    expect(text).toContain("36");
+    // And now says where it goes rather than "Route 36" and nothing else.
+    expect(text, "a heading with no destination tells a passenger nothing").toMatch(/→/);
+    expect(text).not.toBe("Route 36");
   });
 
   /*

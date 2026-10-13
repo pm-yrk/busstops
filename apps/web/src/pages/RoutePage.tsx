@@ -126,6 +126,25 @@ export function RoutePage() {
   );
   const variant = variants[selectedVariant];
 
+  /*
+   * Where the route goes, for the heading, when the timetable did not say.
+   *
+   * `route.description` is the publisher's own words — "Leeds — Ripon" — and most services have
+   * one. Where they do not, the heading fell back to "Route " plus the number, and the deployed
+   * walk duly reported `route "Route UK002"`: a code with a word in front of it, which tells a
+   * passenger nothing and reads like an identifier that leaked. The page already knows the answer
+   * — the selected variant's first and last stops are drawn a few lines below — so it says it.
+   *
+   * Only for a variant with both ends and two distinct names. A circular whose first and last stop
+   * are the same would read "Piccadilly Gardens → Piccadilly Gardens", which is worse than saying
+   * nothing, and the stop list below shows the shape better than a heading could.
+   */
+  const firstStop = variant?.stops[0]?.name;
+  const lastStop = variant?.stops[variant.stops.length - 1]?.name;
+  const whereItGoes =
+    firstStop && lastStop && firstStop !== lastStop ? `${firstStop} → ${lastStop}` : null;
+  const headingDetail = route.description ?? whereItGoes;
+
   return (
     <article className="page route-page">
       {/* Restrained edge decoration: a wall either side of the column, on wide windows only. */}
@@ -147,9 +166,7 @@ export function RoutePage() {
       */}
       <PixelVista
         title={
-          route.description
-            ? `${route.publicName} · ${route.description}`
-            : `Route ${route.publicName}`
+          headingDetail ? `${route.publicName} · ${headingDetail}` : `Route ${route.publicName}`
         }
         standfirst={
           operator ? (
