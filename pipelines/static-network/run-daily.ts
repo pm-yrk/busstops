@@ -400,6 +400,44 @@ async function main(): Promise<number> {
     }
 
     /*
+     * The services object itself, republished beside its buckets so the two agree.
+     *
+     * Found by the proof step rather than by reasoning, which is what it is for. The buckets are
+     * built from the GTFS this run downloaded — 13,027 services — and `network/services` still
+     * held the 13,626 from the national build of 30 September. The proof duly reported 849
+     * "missing" and 250 "extra" with `misplaced: 0` and `duplicated: 0`: the bucketing was
+     * perfect and the baseline was two weeks old.
+     *
+     * Left alone, that is worse than a failed comparison. A board reading buckets would get
+     * today's services and a board falling back would get September's, and two representations of
+     * the same data disagreeing is the kind of fault that surfaces as one stop naming a route
+     * another stop does not. The operators are republished here for the same reason; services
+     * belong beside them.
+     *
+     * One object of about 4.7 MiB, at the version already live. The shrink guard still applies and
+     * still should: 13,027 against 13,626 is 4.4%, well inside it, while a build that produced a
+     * tenth of the network has no business replacing one that did not.
+     */
+    try {
+      const manifest = await artifacts.publish({
+        dataset: DATASETS.services,
+        version,
+        records: network.services,
+        schemaVersion: "1.0.0",
+        sources: ["bods"],
+        partialCoverage: false,
+        notes: "Republished by a departures refresh to stay in step with its buckets.",
+      });
+      report.republishedServices = { records: manifest.recordCount, bytes: manifest.sizeBytes };
+      console.log(`Republished ${manifest.recordCount} service(s) at ${version}.`);
+    } catch (error) {
+      report.republishedServices = {
+        failed: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+      };
+      console.error("Services could not be republished; the timetable refresh still stands.");
+    }
+
+    /*
      * And the service buckets, published into the live version beside the services object rather
      * than instead of it.
      *
