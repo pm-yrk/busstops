@@ -102,6 +102,31 @@ What remains is sequenced work, not blocked work: download, filter to England by
 code, bucket by outward code the way services are now bucketed by id, and read one small object per
 search. Storage is the constraint it always was, and 14 MB of source is comfortably inside it.
 
+**Built the same day, as far as it can go without the download having run.** The transform turned
+out to be free: `osgb36ToWgs84` already exists in `@busstops/adapters`, written for NaPTAN and
+tested against the Ordnance Survey's own worked example, so ONSPD's one advantage evaporated.
+
+- `pipelines/postcodes/src/postcodes.ts` — normalisation that accepts every way the same postcode
+  gets written, the seven-character fixed-width form the source publishes included; a
+  `looksLikePostcode` that recognises one being typed, because `LS1` and `LS1 4` are the normal
+  cases; England by the ONS country code with the rest of the United Kingdom counted rather than
+  silently dropped; partitioning by outward code, so `LS1 4DY` names the one object to read and an
+  absent object is a complete answer. 14 tests, including one that would fail if the easting and
+  northing were read in the wrong order.
+- `pipelines/postcodes/run-extract.ts` — resolve, download, verify against the published md5,
+  stream every CSV inside the archive, bucket, and either report or publish. **Report is the
+  default**: it serialises every bucket to count its real bytes and writes nothing, because a new
+  artifact family's size should be measured before a bucket this close to the free allowance is
+  written to. The workflow input is `skip | measure | publish`.
+- `packages/contracts/src/source-registry.ts` — the source registered with all three notices the
+  licence requires (Ordnance Survey, Royal Mail, National Statistics), and
+  `contractVerification: published_documentation` even though an endpoint answered, because the
+  product's rows have not been parsed yet.
+
+Not wired into any production read path. The reader and the search integration come after a
+`measure` run reports what the index actually costs — the same order the service buckets were done
+in, and for the same reason.
+
 ### 12 October, run 38254333807: Pro publishes, and the figures are real but thin
 
 `analytics batch (published)` — no rollback, for the first time. What the summary carries:
