@@ -32,6 +32,8 @@ import {
   searchPrefixDataset,
   serviceBucketDataset,
   serviceBucketFor,
+  SERVICE_NAMES_DATASET,
+  type ServiceName,
   searchPrefixesForWord,
   searchTileDataset,
   searchTilesForBoundingBox,
@@ -2347,6 +2349,61 @@ export class NetworkReader {
     void now;
     this.servicesCache = new Map(result.records.map((s) => [s.id, s]));
     return this.servicesCache;
+  }
+
+  /**
+   * Every service's id and the number on its front, which is all the map ever reads.
+   *
+   * The buckets fixed the board, which wants three services, and cannot fix the map, which wants
+   * hundreds: a city viewport names a few hundred distinct services, those hash across nearly all
+   * 256 buckets, and a Workers Free invocation gets fifty subrequests. So the map correctly falls
+   * through to the whole services object, and the endpoint instrument measured what that costs —
+   * 2,182,908 characters decoded per request over thirty samples, the heaviest read left.
+   *
+   * It is not the records the map needs, though. Every use of a resolved service in `/v1/map` is
+   * `service.id` or `service.publicName`; the operator, the licence ids, the provenance and the
+   * direction descriptions are all fetched, decoded and parsed to read two strings off each
+   * record. This reads the projection instead: the same answer for about a sixth of the bytes.
+   *
+   * Null when the family is not published at this version, which is what a deployment reading an
+   * older artifact sees, and the caller falls back to the services themselves.
+   *
+   * The manifest and the object directly rather than `readCurrent`, for the reason `placeLines`
+   * does the same: `readCurrent` runs an FNV-1a hash over the whole object before anything is
+   * parsed, and the hash is pure computation in the one budget this product is short of.
+   */
+  private serviceNamesCache: Map<string, string> | null = null;
+
+  async serviceNames(ledger?: ReadLedger): Promise<Map<string, string> | null> {
+    if (this.serviceNamesCache) return this.serviceNamesCache;
+    const artifacts = new ArtifactStore(this.store);
+    try {
+      const manifest = await artifacts.readManifest(SERVICE_NAMES_DATASET);
+      if (manifest === null) return null;
+      const raw = await this.store.get(manifest.objectKey);
+      if (raw === null) return null;
+      const names = new Map<string, string>();
+      for (const line of raw.split("\n")) {
+        if (line.length === 0) continue;
+        const record = JSON.parse(line) as ServiceName;
+        if (typeof record?.id === "string" && typeof record.publicName === "string") {
+          names.set(record.id, record.publicName);
+        }
+      }
+      ledger?.artifactNote({
+        serviceNamesChars: raw.length,
+        serviceNamesRecords: names.size,
+      });
+      this.serviceNamesCache = names;
+      return names;
+    } catch {
+      /*
+       * A projection that cannot be read is not a reason to answer nothing. The caller has a
+       * complete path through the services themselves, and taking it is strictly better than a
+       * map with no route numbers on it.
+       */
+      return null;
+    }
   }
 
   /**

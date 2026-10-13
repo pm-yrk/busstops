@@ -814,14 +814,48 @@ router.get("/v1/map", async (_request, { env, url }) => {
    * The same substitution that fixed the stop board in 8828ff8 and route detail in cb610bc. The
    * geometries name their services; asking for those is one bounded scan of the text.
    */
-  const services =
+  /*
+   * And now the names only, because that is all three of the uses below read.
+   *
+   * The buckets cannot help here. A city viewport names a few hundred distinct services, which
+   * hash across nearly all 256 buckets, and reading two hundred objects is worse than reading one
+   * when an invocation gets fifty subrequests — so this path fell through to the whole services
+   * object, and the endpoint instrument measured it at 2,182,908 characters decoded per request
+   * over thirty samples. The heaviest read left, on the one endpoint that still answers
+   * Cloudflare's error page when a browser opens a page's worth of requests at once.
+   *
+   * Every use of a resolved service below is `id` or `publicName`, so the projection answers the
+   * same question for about a sixth of the bytes. Absent — a version published before the family
+   * existed — and this falls back to the services themselves, unchanged.
+   */
+  const serviceNameById =
     network && geometries.length > 0
+      ? await ledger.stage("service-names", () => network!.serviceNames(ledger))
+      : null;
+
+  const services =
+    serviceNameById === null && network && geometries.length > 0
       ? await ledger.stage("services", () =>
           network!.servicesByIds(
             new Set(geometries.map((geometry) => geometry.pattern.serviceRouteId)),
           ),
         )
       : new Map<string, ServiceRoute>();
+
+  /*
+   * One lookup over whichever of the two is present.
+   *
+   * Not a converted copy of the projection: building 13,000 `{ id, publicName }` objects to read a
+   * few hundred of them would hand back most of what the smaller object just saved. This allocates
+   * one per service actually used, which is the few hundred on the screen.
+   */
+  const serviceFor = (id: string): { id: string; publicName: string } | undefined => {
+    if (serviceNameById !== null) {
+      const publicName = serviceNameById.get(id);
+      return publicName === undefined ? undefined : { id, publicName };
+    }
+    return services.get(id);
+  };
 
   /*
    * Which services call at each stop on screen.
@@ -843,7 +877,7 @@ router.get("/v1/map", async (_request, { env, url }) => {
     // The legacy path, kept so the map still labels stops between a deploy and the next national
     // rebuild. Labelled as legacy rather than left to look like the intended route.
     for (const geometry of geometries) {
-      const service = services.get(geometry.pattern.serviceRouteId);
+      const service = serviceFor(geometry.pattern.serviceRouteId);
       if (!service) continue;
       for (const stopId of geometry.pattern.stopSequence) {
         const names = routeNamesByStopId.get(stopId);
@@ -881,7 +915,7 @@ router.get("/v1/map", async (_request, { env, url }) => {
      */
     const serviceIdByName = new Map<string, string | null>();
     for (const geometry of geometries) {
-      const service = services.get(geometry.pattern.serviceRouteId);
+      const service = serviceFor(geometry.pattern.serviceRouteId);
       if (!service) continue;
       const name = routeBadgeName(service.publicName);
       const existing = serviceIdByName.get(name);
@@ -906,7 +940,7 @@ router.get("/v1/map", async (_request, { env, url }) => {
       if (!match.best || match.confidence.level === "low") return summary;
 
       const pattern = patternsById.get(match.best.patternId);
-      const service = pattern ? services.get(pattern.serviceRouteId) : undefined;
+      const service = pattern ? serviceFor(pattern.serviceRouteId) : undefined;
       /*
        * A matched vehicle is the one case where the identity is known exactly: the match names the
        * pattern, the pattern names the service. Both travel with it so the marker can open the
