@@ -653,6 +653,26 @@ jobs:
       # Whether this run bootstrapped or not, say how many days of timetable the live artifact can
       # actually answer for. An artifact goes blank outside London the moment its horizon runs out,
       # and the only honest way to know how close that is is to count the objects in the bucket.
+      # Coverage before the reader is pointed at it, which is the order that matters.
+      #
+      # The unit tests cover the hash. This covers the *published artifact*, which is a different
+      # claim: that every service in `network/services` is in exactly one bucket, in the bucket the
+      # Worker will look in, at the version that is live. It reads all 256 and reports missing,
+      # duplicated, unexpected and misplaced records, plus named services from several operators so
+      # "coverage is complete" rests on something recognisable and not only on a count.
+      #
+      # Runs whenever a refresh ran, because a refresh is what publishes the family. It changes
+      # nothing, and a failure here is a reason not to trust the index rather than a reason to fail
+      # the deploy — the reader falls back to the whole object either way.
+      - name: Prove the service buckets cover every service
+        if: ${{ !cancelled() && inputs.refresh_departures }}
+        continue-on-error: true
+        timeout-minutes: 10
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: npx tsx scripts/prove-service-buckets.ts
+
       - name: How many days of timetable the preview holds
         if: ${{ !cancelled() }}
         env:

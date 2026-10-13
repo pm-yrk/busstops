@@ -30,6 +30,7 @@ import { encodeDepartureShardFromJsonl } from "./src/departures-index.js";
 import { MAX_PUBLISH_BYTES, publishNetworkShards } from "./src/publish-shards.js";
 import { serviceDateHorizonFromEnv } from "./src/service-dates.js";
 import { earliestServiceDateToKeep, pruneExpiredServiceDates } from "./src/prune-service-dates.js";
+import { bucketServices } from "./src/service-buckets.js";
 import { SHARDED } from "./src/shards.js";
 import { fetchStaticSources } from "./src/sources.js";
 
@@ -396,6 +397,79 @@ async function main(): Promise<number> {
         failed: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
       };
       console.error("Operators could not be republished; the timetable refresh still stands.");
+    }
+
+    /*
+     * And the service buckets, published into the live version beside the services object rather
+     * than instead of it.
+     *
+     * A stop board resolves two or three service ids and was fetching and decoding 4.7 MiB of
+     * `network/services` to do it, every time, because a filtered read cannot cache its records.
+     * Partitioned by id, the same question costs one object of about 19 KiB. The records are
+     * identical and the total data is unchanged; only the partitioning is new.
+     *
+     * Published the same way the operators are — into the version already live, so this needs no
+     * national rebuild, which a 10 GiB free allowance holding an 8 GB artifact could not take.
+     *
+     * **The old object is left exactly where it is.** That is the rollback: the reader treats an
+     * absent bucket as "no service of yours is here" and falls back to scanning the full object,
+     * so a deployment reading a version published before this family existed behaves as it always
+     * did, and withdrawing the family is a matter of ceasing to publish it rather than of undoing
+     * anything.
+     *
+     * A failure here is reported and not fatal, for the same reason as the operators: a refresh
+     * exists to carry the timetable forward and must still do that.
+     */
+    try {
+      const buckets = bucketServices(network.services);
+      let published = 0;
+      let records = 0;
+      let bytes = 0;
+      const failures: string[] = [];
+      for (const [dataset, rows] of buckets) {
+        try {
+          const manifest = await artifacts.publish({
+            dataset,
+            version,
+            records: rows,
+            schemaVersion: "1.0.0",
+            sources: ["bods"],
+            partialCoverage: false,
+            // The bucket count is a property of the hash, so a bucket shrinking is ordinary.
+            maximumShrinkFraction: 1,
+            notes: "Services partitioned by id for targeted reads.",
+          });
+          published += 1;
+          records += manifest.recordCount;
+          bytes += manifest.sizeBytes;
+        } catch (error) {
+          failures.push(
+            `${dataset}: ${error instanceof Error ? error.message : String(error)}`.slice(0, 160),
+          );
+        }
+      }
+      report.serviceBuckets = {
+        buckets: buckets.size,
+        published,
+        records,
+        bytes,
+        meanBucketBytes: published > 0 ? Math.round(bytes / published) : 0,
+        sourceServices: network.services.length,
+        // The number that decides whether the reader can be trusted: every service placed.
+        complete: records === network.services.length && failures.length === 0,
+        ...(failures.length > 0 ? { failures: failures.slice(0, 5) } : {}),
+      };
+      console.log(
+        `Published ${published} of ${buckets.size} service bucket(s) at ${version}: ` +
+          `${records} of ${network.services.length} service(s), ` +
+          `${Math.round(bytes / 1024)} KiB total, ` +
+          `${published > 0 ? Math.round(bytes / published / 1024) : 0} KiB mean per bucket.`,
+      );
+    } catch (error) {
+      report.serviceBuckets = {
+        failed: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+      };
+      console.error("Service buckets could not be published; the timetable refresh still stands.");
     }
   }
 
