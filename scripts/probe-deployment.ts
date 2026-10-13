@@ -553,6 +553,79 @@ async function main(): Promise<void> {
     );
   }
 
+  /*
+   * A postcode, which is how a great many people would start.
+   *
+   * It matched nothing at all before the index existed: stops, routes, operators and landmarks are
+   * what search held, and a postcode is none of them. Three real ones from three regions, each
+   * asserted to come back with a coordinate — a postcode result without a position is a row that
+   * cannot open anything, which is the failure mode worth catching rather than "no results".
+   *
+   * A whole district is asked for too, because half-typing is the normal case.
+   */
+  const postcodeSearches: Array<{
+    postcode: string;
+    results: number;
+    postcodes: number;
+    first: string;
+    positioned: boolean;
+  }> = [];
+  for (const postcode of ["LS1 4DY", "M1 1AE", "BS1 4DJ", "NR1"]) {
+    const search = await ask(`/v1/search?q=${encodeURIComponent(postcode)}`);
+    const results = asArray(at(search.json, "data", "results"));
+    const hits = results.filter((result) => at(result, "kind") === "postcode");
+    const first = hits[0];
+    const coordinate = first === undefined ? undefined : at(first, "coordinate");
+    console.log(
+      `GET /v1/search?q=${postcode.padEnd(9)}: HTTP ${search.status} · ${results.length} results · ` +
+        `${hits.length} postcode(s)` +
+        (first ? ` · first "${asText(at(first, "title"))}"` : "") +
+        (coordinate === undefined
+          ? ""
+          : ` at ${asText(at(coordinate, "lat"))}, ${asText(at(coordinate, "lon"))}`),
+    );
+    postcodeSearches.push({
+      postcode,
+      results: results.length,
+      postcodes: hits.length,
+      first: first ? asText(at(first, "title")) : "",
+      positioned: coordinate !== undefined,
+    });
+  }
+  report.postcodeSearches = postcodeSearches;
+
+  const foundPostcodes = postcodeSearches.filter((entry) => entry.postcodes > 0);
+  if (foundPostcodes.length === 0) {
+    /*
+     * A note rather than a failure, deliberately: the index is published separately from the
+     * Worker, so a deployment that has the reader and not the artifact is a real and recoverable
+     * state, and it must not turn the passenger gate red for every other check that passed.
+     */
+    notes.push(
+      `Search: no postcode matched any of ${postcodeSearches.length} tried ` +
+        `(${postcodeSearches.map((entry) => entry.postcode).join(", ")}). Either the index is not ` +
+        `published at this version or the reader is not reaching it.`,
+    );
+  } else {
+    const unpositioned = foundPostcodes.filter((entry) => !entry.positioned);
+    if (unpositioned.length > 0) {
+      failures.push(
+        `Search: ${unpositioned.map((entry) => entry.postcode).join(", ")} returned a postcode ` +
+          `result with no coordinate. A postcode row with no position cannot open anything.`,
+      );
+    }
+    const wrongTitle = foundPostcodes.filter(
+      (entry) => entry.postcode.includes(" ") && entry.first !== entry.postcode,
+    );
+    if (wrongTitle.length > 0) {
+      failures.push(
+        `Search: ${wrongTitle
+          .map((entry) => `asked for ${entry.postcode}, led with "${entry.first}"`)
+          .join("; ")}. A whole postcode must lead with itself.`,
+      );
+    }
+  }
+
   // Leeds city centre to Leeds Bradford Airport: two points a passenger would actually pick.
   const journey = await ask(
     `/v1/journeys?fromLat=53.79648&fromLon=-1.54785&toLat=53.86590&toLon=-1.66030`,
