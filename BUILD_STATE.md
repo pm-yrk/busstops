@@ -1,6 +1,6 @@
 # Bus Stops. Build State
 
-Last updated: 2026-10-12 (Pro publishes real figures; the passenger core is green on real data)
+Last updated: 2026-10-13 (services read by bucket; Code-Point Open needs no credential)
 
 ## Current status
 
@@ -72,6 +72,35 @@ under P3 where the directive puts it. Queueing costs wall-clock, which a waiting
 charged for, so it would not slow a normal page.
 
 Classification stands: **RESILIENCE / LOAD — OPEN.** Not a passenger blocker.
+
+### 13 October: Code-Point Open needs no key, and that settles the postcode source
+
+The earlier table in this file said Code-Point Open required an OS Data Hub key. **It does not.**
+Run 38366891204 asked the OS Downloads API from a runner with no credential of any kind and got:
+
+    Code-Point Open: product HTTP 200, version 2026-08, downloads HTTP 200
+    CSV: 14,461,176 bytes, md5 present
+
+That is the correction that decides the source, because the alternative was ONSPD at roughly a
+gigabyte of CSV inside a hundred-megabyte zip. The same probe confirms the ONS portal answers too
+— `ONSPD Online latest Postcode Centroids` HTTP 200, 156 catalogue items, and an `NSPL Online
+latest Centroids` beside it — but the newest ONSPD items are **Feature Services**, which is a live
+ArcGIS query API rather than a bulk file, and the quarterly CSV collections report no size through
+the catalogue. A 14 MB download with a published checksum is a better thing to depend on than
+either.
+
+The cost of choosing it is one piece of arithmetic: Code-Point Open gives OSGB36 eastings and
+northings, not latitude and longitude, so the pipeline has to transform them. That is a known,
+closed-form conversion and no dependency; ONSPD's advantage was only that it had already done it.
+
+`postcodes.io` answered in 493 ms with the right coordinate for `LS1 4DY`, and stays rejected for
+the request path for the reason recorded before: a live third-party lookup on every search is an
+uncapped external dependency on somebody else's hosting. It is useful as a cross-check on a
+dataset we hold, and the probe keeps measuring it as exactly that.
+
+What remains is sequenced work, not blocked work: download, filter to England by admin district
+code, bucket by outward code the way services are now bucketed by id, and read one small object per
+search. Storage is the constraint it always was, and 14 MB of source is comfortably inside it.
 
 ### 12 October, run 38254333807: Pro publishes, and the figures are real but thin
 
@@ -489,14 +518,16 @@ sequenced work rather than blocked work.
 
 **NaPTAN has no postcode column**, which is where this stalled before. The options that do:
 
-| Source                                                | Licence           | Key needed                           | Size                      | Coordinates                        |
-| ----------------------------------------------------- | ----------------- | ------------------------------------ | ------------------------- | ---------------------------------- |
-| ONS Postcode Directory (ONSPD), Open Geography Portal | OGL v3            | no                                   | ~1 GB CSV, ~100 MB zipped | lat/lon included                   |
-| OS Code-Point Open                                    | OGL v3            | OS Data Hub key for the download API | ~20 MB zipped             | easting/northing, needs conversion |
-| postcodes.io                                          | open source, free | no                                   | n/a, it is a service      | yes                                |
+| Source                                                | Licence           | Key needed                    | Size                      | Coordinates                        |
+| ----------------------------------------------------- | ----------------- | ----------------------------- | ------------------------- | ---------------------------------- |
+| ONS Postcode Directory (ONSPD), Open Geography Portal | OGL v3            | no                            | ~1 GB CSV, ~100 MB zipped | lat/lon included                   |
+| OS Code-Point Open                                    | OGL v3            | no — see 13 October, measured | 13.8 MB zipped, measured  | easting/northing, needs conversion |
+| postcodes.io                                          | open source, free | no                            | n/a, it is a service      | yes                                |
 
 ONSPD is the candidate: Open Government Licence, no credential, and it already carries lat/lon so
-no coordinate conversion is needed. OGL permits redistribution provided the attribution is carried
+no coordinate conversion is needed. _Superseded on 13 October, once both were measured from a
+runner: Code-Point Open needs no key either, and 13.8 MB beats a gigabyte by more than a
+coordinate transform costs._ OGL permits redistribution provided the attribution is carried
 ("Contains OS data © Crown copyright and database right", plus the Royal Mail and National
 Statistics notices), so a derived artifact is allowed — but it should still be fetched by the
 pipeline rather than committed.

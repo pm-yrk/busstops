@@ -1535,11 +1535,25 @@ for (const size of WIDTHS) {
           (node) => !node.closest("nav, footer, header.app__header"),
         ).length;
 
+        /*
+         * Whether it was still loading when it was photographed.
+         *
+         * `/pro` reported "0 content element(s), no controls and 39 word(s) ... and nothing saying
+         * why" — which is the message for a page that rendered nothing and explained nothing. But
+         * the control tower does render an error block with a retry button when its fetch fails,
+         * and that block and that button would both have been counted. So the page was almost
+         * certainly still showing the loading bus, which is a different fault with a different fix
+         * and reads identically in this message. Naming it costs one selector.
+         */
+        const stillLoading =
+          main.querySelector('.loading-bus, .skeleton, [aria-busy="true"]') !== null;
+
         return {
           controls,
           items: counted.size,
           words: (main.textContent ?? "").trim().split(/\s+/).filter(Boolean).length,
           declared: stateBlocks.length > 0,
+          stillLoading,
           declaredTitles: stateBlocks
             .map((block) => block.querySelector(".state-block__title")?.textContent?.trim() ?? "")
             .filter(Boolean)
@@ -1556,7 +1570,10 @@ for (const size of WIDTHS) {
           ? substance.declared
             ? `deliberately empty: ${substance.declaredTitles.join("; ") || "(state block, no title)"}`
             : `${substance.items} content element(s), no controls and ${substance.words} ` +
-              `word(s) under "${substance.heading || "(no heading)"}", and nothing saying why`
+              `word(s) under "${substance.heading || "(no heading)"}", and ` +
+              (substance.stillLoading
+                ? "still loading when it was photographed"
+                : "nothing saying why")
           : `${substance.items} content element(s), ${substance.controls} control(s), ` +
               `${substance.words} word(s)`,
       );
