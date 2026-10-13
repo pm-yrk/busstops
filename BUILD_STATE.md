@@ -73,6 +73,54 @@ charged for, so it would not slow a normal page.
 
 Classification stands: **RESILIENCE / LOAD — OPEN.** Not a passenger blocker.
 
+### 13 October, run 38365819838: the service index is complete, and 90 of 90 requests succeeded
+
+**The bucketed service family is proven.** The proof step reads all 256 buckets out of the bucket
+the deployment serves and compares them against `network/services` itself:
+
+    sourceServices     13027      servicesInBuckets  13027
+    bucketsPresent     256/256    meanBucketBytes    18238
+    missing 0   extra 0   duplicated 0   misplaced 0
+    largestBucket 79 records   smallestBucket 32 records
+    4 (Arriva Wales) → bucket 169: found;  C9 (Stagecoach South Wales) → bucket 46: found;
+    025 (National Express) → bucket 62: found;  372 (Stagecoach London) → bucket 115: found;
+    X21 (First Norfolk & Suffolk) → bucket 201: found;  17 (Konectbus) → bucket 139: found
+    outcome: complete
+
+The previous run reported `missing: 849` and `extra: 250` with `misplaced: 0` and `duplicated: 0`,
+and that pair of numbers was the proof working rather than failing: the bucketing was perfect and
+the baseline was two weeks stale. The buckets are built from the GTFS each refresh downloads
+(13,027 services) while `network/services` still held the 13,626 from 30 September. A board
+reading buckets would have seen today's services and a board falling back would have seen
+September's. The refresh now republishes the services object beside its buckets, exactly as it
+already republishes the operators, and the two agree.
+
+**The eight published samples matter more than the totals.** They are real services from eight
+operators across Wales, London, the Midlands, East Anglia and the south-west, each resolved
+through the same hash the Worker uses, each found in the bucket the Worker would look in. That is
+the claim the index needs: not "the counts match" but "a requested service maps to the expected
+object".
+
+**Resilience, measured properly for the first time.** The 26-check harness total has been shown to
+swing 9 → 11 → 12 on effectively the same code, so it has been replaced for this purpose by an
+instrument that asks the same endpoint thirty times and reports a distribution:
+
+    map (Manchester)  30/30 ok, 0 platform errors, median 221 ms, p90 845 ms, 2,182,908 chars over 4 objects
+    nearby (Leeds)    30/30 ok, 0 platform errors, median  98 ms, p90 132 ms,   999,093 chars over 1 object
+    search (Leeds)    30/30 ok, 0 platform errors, median  92 ms, p90 141 ms,   nothing read — resident
+
+Ninety paced requests, no 1102 at all. That sharpens the earlier reading rather than contradicting
+it: sequential browsing at a human pace does not produce the error. What still does is a page
+loading several heavy resources at once, which is what the visual sweep does and why its failures
+arrive as CORS messages — Cloudflare's 1102 page carries no `Access-Control-Allow-Origin`, so a
+browser cannot report it as anything else.
+
+**Storage and horizon.** 30,803 objects, 9,574,106,564 bytes — 9.57 GB of R2's 10.74 GB free
+allowance. Four dated partitions remain at 1.26 GB each; the refresh was asked for one service
+date and covered it completely (512 departure shards, 1,289 pattern-trip shards,
+`datesShortOfFullCoverage: []`). One BODS dataset answered 400 during the download and the refresh
+completed around it.
+
 ### 13 October: Code-Point Open needs no key, and that settles the postcode source
 
 The earlier table in this file said Code-Point Open required an OS Data Hub key. **It does not.**
