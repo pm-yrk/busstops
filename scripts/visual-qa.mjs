@@ -603,6 +603,9 @@ function watch(page, sink) {
  * measured the hero, the basemap and six pages reported only a stack trace about a click. A
  * failure is a failed check with a one-line reason, which is what the rest of this file does.
  */
+/** Widths that ran to the end, so a short run cannot be read as a clean one. */
+const completedWidths = [];
+
 for (const size of WIDTHS) {
   console.log(`\n${size.name} (${size.width}×${size.height})`);
   const context = await browser.newContext({
@@ -2042,13 +2045,32 @@ for (const size of WIDTHS) {
   await walker.close();
 
   await context.close();
+  completedWidths.push(size.name);
 }
 
 await browser.close();
 
+/*
+ * Which widths actually got all the way through, recorded as a check of its own.
+ *
+ * "337 of 348 passed" reads better than "447 of 454" and covered *less*: the phone width did not
+ * finish that run, so a hundred checks were never attempted and the total silently shrank with
+ * them. A sweep that stops early and reports only a ratio invites exactly the comparison this
+ * project has already been wrong about once — a smaller denominator is not a better result.
+ */
+record(
+  "the sweep reached every width",
+  completedWidths.length === WIDTHS.length,
+  `${completedWidths.join(", ") || "none"} of ${WIDTHS.map((width) => width.name).join(", ")}` +
+    (completedWidths.length === WIDTHS.length
+      ? ""
+      : " — the totals below cover fewer pages than a full run and must not be compared to one"),
+);
+
 const failures = results.filter((result) => !result.ok);
 console.log(
-  `\nVisual QA: ${results.length - failures.length} of ${results.length} checks passed against ${baseUrl}.`,
+  `\nVisual QA: ${results.length - failures.length} of ${results.length} checks passed against ${baseUrl}` +
+    ` (${completedWidths.length} of ${WIDTHS.length} width(s) completed).`,
 );
 /*
  * As annotations too. The sweep's own screenshots are uploaded as an artifact, which is exactly
