@@ -64,6 +64,19 @@ jobs:
           set -o pipefail
           npx tsx scripts/diagnose-upstreams.ts --json upstream-diagnosis.json 2>&1 | tee diagnosis.log
 
+      # Whether a postcode search can be built without ever paying for anything.
+      #
+      # "LS1 4DY" matches nothing today, and the fix is a dataset we hold rather than a geocoder we
+      # call. This asks the open candidates — ONSPD/NSPL and Code-Point Open — whether they are
+      # reachable from a runner without a credential, and reports their licence and size. It
+      # downloads nothing large and cannot fail the run; it exists so the decision to write a
+      # pipeline is made on an answer rather than on a recollection.
+      - name: Ask whether an open postcode dataset is reachable
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 5
+        run: node scripts/probe-postcode-sources.mjs
+
       - name: Summarise
         if: always()
         run: |
