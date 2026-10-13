@@ -121,28 +121,23 @@ export interface ReadTrack {
 const MAX_CACHED_SHARDS = 16;
 
 /**
- * How many service buckets one request may read before the whole object is cheaper.
+ * How many service buckets one request may read. **A subrequest budget, not a byte trade-off** —
+ * getting that backwards is what made it too small twice.
  *
- * A board knows two or three service ids, so this is a bound on the worst case rather than an
- * expected path. Eight buckets at about 19 KiB is 152 KiB against the 4.7 MiB the whole object
- * costs; beyond that the arithmetic turns and a request asking for fifty service ids is not a
- * board anyway.
+ * In bytes the buckets always win: 256 buckets at the measured 18 KiB each *is* the 4,669,134-byte
+ * object, so any number below 256 reads fewer bytes than the whole of it. What genuinely bounds
+ * this is Cloudflare's fifty subrequests per invocation, which a board also spends on the index,
+ * its stop, its departure shards, its operators, and its live and disruption reads.
+ *
+ * Eight was a guess. Twenty-four came from measuring Tombland in Norwich at twenty-five services
+ * on one board — and the next run measured that same board at twenty-six, so it fell back again.
+ * Setting the cap at the busiest board yet seen is how it keeps being exceeded by the busiest board
+ * next seen, so thirty-two sits clear of it with about eighteen subrequests left for the rest.
+ *
+ * A request wanting more than this is not a board. It is the map, which wants every name and has
+ * `network/service-names` to read instead.
  */
-/*
- * How many service buckets one request may read before the whole object is the better answer.
- *
- * Eight was a guess made before anything was measured, and the measurement found it binding on a
- * real board: Tombland in Norwich shows twenty departures naming twenty-five distinct services, so
- * it spanned twenty-five buckets, exceeded the cap, and read all 4,669,154 characters of the
- * services object. Twenty-five buckets is about 475 KiB — a tenth of that — and now that the reads
- * are issued together it is also one round trip rather than twenty-five.
- *
- * Twenty-four, not more: a Workers Free invocation gets fifty subrequests in total, and a board
- * also reads the index, its departure shards, its stop and its operators. A request wanting more
- * services than this is not a board — it is the map, which wants every name and has its own much
- * smaller object to read.
- */
-const MAX_SERVICE_BUCKETS_PER_REQUEST = 24;
+const MAX_SERVICE_BUCKETS_PER_REQUEST = 32;
 /*
  * Twenty-four mebibytes, up from three, and the reason is the same CPU the old number was defending.
  *
