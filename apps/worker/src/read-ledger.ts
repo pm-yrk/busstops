@@ -55,7 +55,9 @@ export type ArtifactFamily =
   | "route-tiles"
   | "search"
   | "departures"
-  | "trips";
+  | "trips"
+  // One small object per outward code, so a postcode search is its own line in the budget.
+  | "postcodes";
 
 export interface FamilyCost {
   /** Objects this family was asked for. */

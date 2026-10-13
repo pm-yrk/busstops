@@ -2499,15 +2499,45 @@ router.get("/v1/search", async (_request, { env, url }) => {
   }
   const hits = found.hits;
 
-  const results: SearchResult[] = hits.map((hit) => ({
-    kind: hit.entry.kind,
-    id: hit.entry.id,
-    title: hit.entry.title,
-    ...(hit.entry.subtitle === undefined ? {} : { subtitle: hit.entry.subtitle }),
-    ...(hit.entry.coordinate === undefined ? {} : { coordinate: hit.entry.coordinate }),
-    ...(hit.distanceMetres === undefined ? {} : { distanceMetres: hit.distanceMetres }),
-    hasLiveCoverage: hit.entry.hasLiveCoverage,
-  }));
+  /*
+   * And the postcodes, which the index cannot hold.
+   *
+   * "LS1 4DY" matched nothing at all: stops, routes, operators and landmarks are what the index
+   * carries, and a postcode is none of them. It costs one small object and only when the query
+   * looks like a postcode, so an ordinary search for a place name reads nothing extra — the test
+   * is a regular expression over what was typed, not a lookup.
+   *
+   * First in the list, because somebody who types a postcode means that postcode; the name matches
+   * follow it rather than being replaced by it.
+   */
+  const postcodes = network
+    ? await searchLedger.stage("postcodes", () => network!.postcodeMatches(query, 5, searchLedger))
+    : [];
+
+  const results: SearchResult[] = [...postcodes, ...hits.map((hit) => hit.entry)]
+    .slice(0, 20)
+    .map((entry) => ({
+      kind: entry.kind,
+      id: entry.id,
+      title: entry.title,
+      ...(entry.subtitle === undefined ? {} : { subtitle: entry.subtitle }),
+      ...(entry.coordinate === undefined ? {} : { coordinate: entry.coordinate }),
+      hasLiveCoverage: entry.hasLiveCoverage,
+    }));
+
+  /*
+   * The distance a near-query produced, which only the ranked hits have. Reattached by id rather
+   * than by position, because the postcodes were put in front of them.
+   */
+  const distanceById = new Map(
+    hits
+      .filter((hit) => hit.distanceMetres !== undefined)
+      .map((hit) => [hit.entry.id, hit.distanceMetres!]),
+  );
+  for (const result of results) {
+    const distance = distanceById.get(result.id);
+    if (distance !== undefined) result.distanceMetres = distance;
+  }
 
   return json(
     {

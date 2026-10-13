@@ -61,6 +61,12 @@ import {
   routePatternsDataset,
 } from "@busstops/pipeline-static-network";
 import { PLACES_DATASET, placeAsSearchEntry, type PlaceRecord } from "@busstops/pipeline-places";
+import {
+  looksLikePostcode,
+  normalisePostcode,
+  outwardCode,
+  postcodeBucketDataset,
+} from "@busstops/pipeline-postcodes";
 import type { PatternGeometry } from "@busstops/matching";
 import type { ArtifactFamily, ReadLedger } from "./read-ledger.js";
 
@@ -2363,6 +2369,127 @@ export class NetworkReader {
     void now;
     this.servicesCache = new Map(result.records.map((s) => [s.id, s]));
     return this.servicesCache;
+  }
+
+  /**
+   * The postcodes a query could mean, from the one object whose name the query contains.
+   *
+   * "LS1 4DY" matched nothing at all before this: the search index holds stops, routes, operators
+   * and landmarks, and a postcode is none of them. The index is partitioned by outward code, which
+   * is the part the query already carries — so `LS1 4DY` names `search/postcodes/LS1`, about
+   * 55 KiB, and an absent object is a complete answer rather than a reason to look elsewhere.
+   *
+   * Filtered on the id before anything is parsed, like every other read here: a district holds a
+   * few hundred to a few thousand postcodes and a query wants one of them, or the handful sharing
+   * a half-typed sector. The exact match sorts first, because somebody who typed a whole postcode
+   * means that one.
+   *
+   * Empty is the normal answer in three different cases — not a postcode, a district with no
+   * object, a prefix nothing starts with — and search then finds stops and places exactly as it
+   * did before.
+   */
+  async postcodeMatches(
+    query: string,
+    limit = 5,
+    ledger?: ReadLedger,
+  ): Promise<SearchIndexEntry[]> {
+    if (!looksLikePostcode(query)) return [];
+    const bare = query.toUpperCase().replace(/[\s-]+/g, "");
+
+    /*
+     * Which object to open, which a half-typed postcode does not always say.
+     *
+     * A whole postcode is unambiguous: `normalisePostcode` knows that `LS14DY` is `LS1 4DY` and
+     * not district LS14, because the inward code is always three characters. A prefix is not.
+     * `LS14` is district LS14 in Leeds *and* the first four characters of `LS1 4DY`, and nothing
+     * in the text decides between them.
+     *
+     * So: if the query has a separator in it, the person has already said which — `LS1 4` means
+     * district LS1. Without one, the longer reading is tried first and the shorter second, which
+     * costs a second small read only for an ambiguous prefix that the longer reading does not
+     * answer.
+     */
+    const separated = /[\s-]/.test(query.trim());
+    const outwardCandidates: string[] = [];
+    const push = (candidate: string | null | undefined) => {
+      if (
+        candidate &&
+        /^[A-Z]{1,2}\d[A-Z\d]?$/.test(candidate) &&
+        !outwardCandidates.includes(candidate)
+      ) {
+        outwardCandidates.push(candidate);
+      }
+    };
+    if (separated) {
+      push(
+        query
+          .trim()
+          .toUpperCase()
+          .split(/[\s-]+/)[0],
+      );
+    } else {
+      push(outwardCode(query));
+      push(bare.match(/^[A-Z]{1,2}\d[A-Z\d]?/)?.[0]);
+      push(bare.match(/^[A-Z]{1,2}\d/)?.[0]);
+    }
+    if (outwardCandidates.length === 0) return [];
+
+    const index = await this.networkIndex(Date.now());
+    const canonical = normalisePostcode(query);
+    /*
+     * The text to match against. A whole postcode is compared to its canonical form; a prefix is
+     * compared without its space, because `LS1 4` and `LS14` are the same thing half-typed and the
+     * stored id has a space in it.
+     */
+    const wantedBare = bare;
+
+    let outward = outwardCandidates[0]!;
+    let records: Array<{ id: string; coordinate: Coordinate }> = [];
+    let chars = 0;
+
+    for (const candidate of outwardCandidates) {
+      const read = await this.readShardSized<{ id: string; coordinate: Coordinate }>(
+        postcodeBucketDataset(candidate),
+        index?.version ?? "",
+        Date.now(),
+        ledger ? { ledger, family: "postcodes", budgetReason: "postcode_read" } : undefined,
+        (body, start, end) => {
+          const id = valueAt(body, start, end, "id");
+          if (id === null) return false;
+          return id.replace(" ", "").startsWith(wantedBare);
+        },
+      );
+      chars += read.chars;
+      if (read.records.length > 0) {
+        outward = candidate;
+        records = read.records;
+        break;
+      }
+    }
+
+    ledger?.artifactNote({
+      postcodeOutward: outward,
+      postcodeChars: chars,
+      postcodeMatches: records.length,
+    });
+
+    const matches = records
+      .filter((record) => typeof record.id === "string" && record.coordinate)
+      .sort((a, b) => (a.id === canonical ? -1 : b.id === canonical ? 1 : a.id.localeCompare(b.id)))
+      .slice(0, limit);
+
+    return matches.map((record) => ({
+      kind: "postcode" as const,
+      id: record.id,
+      title: record.id,
+      // The action, not the kind: the lozenge beside it already says "Postcode".
+      subtitle: "Stops nearby",
+      coordinate: record.coordinate,
+      tokens: [],
+      codes: [record.id],
+      hasLiveCoverage: false,
+      prominence: 0,
+    }));
   }
 
   /**
