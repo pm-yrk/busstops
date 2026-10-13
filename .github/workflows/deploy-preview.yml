@@ -752,6 +752,23 @@ jobs:
       # cost of skipping was a two-hour run that produced no evidence whatever, about a deployment
       # that was working. The bootstrap's own outcome is printed alongside, so an older artifact is
       # never mistaken for a new one.
+      # One endpoint, asked thirty times, reported as a distribution.
+      #
+      # The verification below counts how many of twenty-six checks survived, and that total has
+      # swung 9 → 11 → 12 across runs of the *same commit*. It is good for finding which endpoint
+      # is unhappy and no good for deciding whether a change helped, because one run's total is a
+      # single draw from a wide distribution — and several earlier conclusions here leaned on
+      # exactly that and were wrong.
+      #
+      # This makes no assertions and cannot fail the run. It reports success rates and the Worker's
+      # own account of what each successful request decoded, which is the figure a performance
+      # change should move. The passenger probe stays the gate.
+      - name: Measure one endpoint many times, so a conclusion is not one draw
+        if: ${{ !cancelled() && steps.pages.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 12
+        run: node scripts/measure-endpoint-cost.mjs "${{ steps.worker.outputs.url }}" --samples 30 --pace 400
+
       - name: Verify real data through the deployed API
         id: verify
         if: ${{ !cancelled() && steps.pages.outcome == 'success' }}
