@@ -137,40 +137,51 @@ export interface CodePointParse {
  * Fields are unquoted in this product, but a quoted field would be legal CSV, so the split
  * tolerates them rather than trusting the publisher's current formatting.
  */
+export type PostcodeRowOutcome =
+  | { kept: PostcodeRecord; imputed: boolean }
+  | { skipped: keyof CodePointParse["skipped"] }
+  | { blank: true };
+
+/**
+ * One row, and why it was or was not kept.
+ *
+ * Row-level rather than file-level because the extraction streams: Code-Point Open is one zip of
+ * about 120 area files and there is no reason to hold any of them in memory as a string. The
+ * file-level function below is the same logic over a whole text, which is what the tests use.
+ */
+export function parseCodePointRow(rawLine: string): PostcodeRowOutcome {
+  const line = rawLine.trim();
+  if (line.length === 0) return { blank: true };
+
+  const columns = line.split(",").map((value) => value.trim().replace(/^"|"$/g, ""));
+  if (columns.length < 5) return { skipped: "shortRow" };
+
+  const [rawPostcode, quality, easting, northing, country] = columns;
+  if (country !== ENGLAND_COUNTRY_CODE) return { skipped: "notEngland" };
+
+  const id = normalisePostcode(rawPostcode ?? "");
+  if (id === null) return { skipped: "unparseablePostcode" };
+
+  const coordinate = osgb36ToWgs84(Number(easting), Number(northing));
+  if (coordinate === null) return { skipped: "offGrid" };
+
+  return { kept: { id, coordinate }, imputed: Number(quality) >= 90 };
+}
+
 export function parseCodePointCsv(text: string): CodePointParse {
   const records: PostcodeRecord[] = [];
   const skipped = { notEngland: 0, unparseablePostcode: 0, offGrid: 0, shortRow: 0 };
   let imputed = 0;
 
   for (const rawLine of text.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (line.length === 0) continue;
-    const columns = line.split(",").map((value) => value.trim().replace(/^"|"$/g, ""));
-    if (columns.length < 5) {
-      skipped.shortRow += 1;
+    const outcome = parseCodePointRow(rawLine);
+    if ("blank" in outcome) continue;
+    if ("skipped" in outcome) {
+      skipped[outcome.skipped] += 1;
       continue;
     }
-
-    const [rawPostcode, quality, easting, northing, country] = columns;
-    if (country !== ENGLAND_COUNTRY_CODE) {
-      skipped.notEngland += 1;
-      continue;
-    }
-
-    const id = normalisePostcode(rawPostcode ?? "");
-    if (id === null) {
-      skipped.unparseablePostcode += 1;
-      continue;
-    }
-
-    const coordinate = osgb36ToWgs84(Number(easting), Number(northing));
-    if (coordinate === null) {
-      skipped.offGrid += 1;
-      continue;
-    }
-
-    if (Number(quality) >= 90) imputed += 1;
-    records.push({ id, coordinate });
+    if (outcome.imputed) imputed += 1;
+    records.push(outcome.kept);
   }
 
   return { records, skipped, imputed };
