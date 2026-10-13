@@ -121,6 +121,39 @@ date and covered it completely (512 departure shards, 1,289 pattern-trip shards,
 `datesShortOfFullCoverage: []`). One BODS dataset answered 400 during the download and the refresh
 completed around it.
 
+### 13 October: the scheduler is dead account-wide, and the merge proved it rather than fixing it
+
+Established by watching for it rather than inferred. Three crons were registered and `active` on
+`main` — `publish-readme-assets.yml` at `*/5`, `disruptions.yml` at `*/10`, `weather.yml` at
+`*/30` — and a watcher sat on the scheduled-run list across the 12:00 and 12:10 UTC slots. Nothing
+fired. The most recent scheduled run in the repository is still **2026-09-04T07:58**, thirty-nine
+days ago.
+
+What this rules out, each checked rather than assumed:
+
+- **Not which branch the files were on.** That was the real defect and it is fixed: five workflows
+  — the two departure ones, weather, disruptions and retention — did not exist on `main` before
+  today and GitHub reads a schedule only from the default branch, so they could never have fired.
+  They are registered now. `publish-readme-assets.yml` is the control: it has been on `main` with a
+  `*/5` cron since well after 4 September, is registered, is `active`, and has never run.
+- **Not Actions being disabled.** `workflow_dispatch` works — `prove-horizon`, `weather` and
+  `disruptions` were all dispatched from `main` this morning and two of the three succeeded.
+- **Not inactivity.** GitHub's sixty-day rule sets a workflow's state to `disabled_inactivity`;
+  every one of the eighteen reads `active`. The repository was pushed to minutes ago.
+- **Not a fork, archived or disabled repository**, and not a billing constraint on minutes: it is
+  public, so Actions minutes are free and the £0 rule is not at risk either way.
+
+So whatever stops scheduled events is account- or repository-level and not visible from here: this
+session's proxy refuses `actions/permissions`, `actions/permissions/workflow` and the OIDC
+endpoints alike. **The one action that cannot be done from this container:** open the repository's
+Actions tab and look for GitHub's "scheduled workflows have been disabled" banner, which carries
+its own enable button; failing that, check the account's billing page, because scheduled runs are
+the first thing GitHub stops when an Actions payment or spending limit is in trouble.
+
+Until then departures stay on manual life support — a dispatched `Deploy Preview` with
+`refresh_departures` — and that is now the only manual requirement left, rather than one of
+several.
+
 ### 13 October: main carries the schedules, and England's postcodes are published
 
 **The branch is merged.** Pull request 3 went into `main` at 55526d1 once its checks were green.
