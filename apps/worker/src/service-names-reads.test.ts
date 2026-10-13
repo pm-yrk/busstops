@@ -10,8 +10,8 @@ import { ReadLedger } from "./read-ledger.js";
  *
  * Buckets answer "these three ids"; they cannot answer "all of them", because a city viewport
  * names a few hundred distinct services that hash across nearly every bucket and an invocation
- * gets fifty subrequests. So that path read the whole national object, and the endpoint instrument
- * measured it at 2,182,908 characters per request.
+ * gets fifty subrequests. So that path read the whole national object, which the bucket proof
+ * measures at 4,669,134 bytes.
  *
  * These tests are about which object the reader opens and what it hands back — the saving is bytes
  * not fetched, and the keys read are the only honest evidence of it. The absent case matters as

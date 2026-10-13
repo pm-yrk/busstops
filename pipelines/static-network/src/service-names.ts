@@ -7,10 +7,15 @@
  * which wants hundreds: a viewport in a city holds a few hundred pattern geometries naming a few
  * hundred distinct services, and those hash across almost every one of the 256 buckets. Reading
  * 200 small objects is worse than reading one large one — a Workers Free invocation gets fifty
- * subrequests — so the map correctly falls through to the whole `network/services` object, and the
- * endpoint instrument measures what that costs: 2,182,908 characters decoded per request over
- * thirty samples, the heaviest read left in the product and the one endpoint still answering
- * Cloudflare's error page when a browser opens a page's worth of requests at once.
+ * subrequests — so the map correctly falls through to the whole `network/services` object, which
+ * the bucket proof measures at 4,669,134 bytes. Fetched, UTF-8 decoded and parsed on the one
+ * endpoint that still answers Cloudflare's error page when a browser opens a page's worth of
+ * requests at once.
+ *
+ * (The endpoint instrument's 2,182,908 characters is *not* this read. That figure counts tracked
+ * shard reads — the stop and pattern tiles — and the services read reports itself through the
+ * ledger's artifact notes instead, which the instrument did not surface until it was corrected to.
+ * Attributing the tile figure to the services read was wrong and is recorded as such.)
  *
  * But the map does not want services. Reading `/v1/map`, every use of a resolved service is one of
  * two fields: `service.id`, to link a marker to its route page, and `service.publicName`, to put

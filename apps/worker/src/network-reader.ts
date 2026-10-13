@@ -2498,8 +2498,9 @@ export class NetworkReader {
    * The buckets fixed the board, which wants three services, and cannot fix the map, which wants
    * hundreds: a city viewport names a few hundred distinct services, those hash across nearly all
    * 256 buckets, and a Workers Free invocation gets fifty subrequests. So the map correctly falls
-   * through to the whole services object, and the endpoint instrument measured what that costs —
-   * 2,182,908 characters decoded per request over thirty samples, the heaviest read left.
+   * through to the whole services object, which the bucket proof measures at 4,669,134 bytes. It
+   * is not counted in the endpoint instrument's `charsDecoded` — that is tracked shard reads, the
+   * tiles — which is why this records its own cost in the artifact notes below.
    *
    * It is not the records the map needs, though. Every use of a resolved service in `/v1/map` is
    * `service.id` or `service.publicName`; the operator, the licence ids, the provenance and the

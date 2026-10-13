@@ -121,6 +121,30 @@ date and covered it completely (512 departure shards, 1,289 pattern-trip shards,
 `datesShortOfFullCoverage: []`). One BODS dataset answered 400 during the download and the refresh
 completed around it.
 
+### 13 October: I attributed the map's cost to the wrong number, and the instrument now says so
+
+Recorded because it is the same mistake as the harness score, in a new place.
+
+The map was the one endpoint still failing under a page's worth of parallel requests, and the
+endpoint instrument reported `map (Manchester): 2,182,908 chars decoded over 4 objects`. I read
+that as the services object and built a smaller projection — `network/service-names`, id and
+public name only — to replace it. The projection is right and worth having. The attribution was
+wrong: `charsDecoded` counts _tracked shard reads_, which for the map are the stop and pattern
+tiles, and the whole-object services read reports itself through the ledger's artifact notes
+instead. So after the projection shipped the figure came back **byte-for-byte identical**,
+2,182,908 over 4 objects, which is exactly what it should do if that number never included the
+read I changed.
+
+The real figure for the read the projection replaces comes from the bucket proof, which reads the
+object out of R2: `sourceBytes: 4,669,134`. The projection is about 700 KiB of the same answer.
+That is still a sixfold reduction in bytes fetched, decoded and parsed on the map path — it is
+just not something the endpoint instrument had measured, and saying it had was wrong.
+
+The instrument now surfaces the artifact notes per endpoint, so the next run states which
+representation each endpoint used and what it cost, and a claim like this one can be checked
+rather than inferred. The in-code comments that cited the tile figure have been corrected in
+place, because a load-bearing comment carrying the wrong number is worse than no comment.
+
 ### 13 October: Code-Point Open needs no key, and that settles the postcode source
 
 The earlier table in this file said Code-Point Open required an OS Data Hub key. **It does not.**

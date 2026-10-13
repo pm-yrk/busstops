@@ -66,6 +66,14 @@ async function sample(path) {
       platform: isPlatformPage(response.status, text),
       status: response.status,
       diagnostics: body?.meta?.diagnostics ?? body?.data?.diagnostics ?? null,
+      /*
+       * The ledger's artifact notes, which are where the reads that are *not* tracked as shard
+       * reads report themselves — the whole-object services read, the bucketed one, the names
+       * projection. `charsDecoded` counts tracked shard reads only, so a change to one of those
+       * other reads moves nothing in it, and reading this instrument's output as though it covered
+       * them is how a claim gets attributed to the wrong number.
+       */
+      artifact: body?.meta?.diagnostics?.artifact ?? body?.data?.diagnostics?.artifact ?? null,
     };
   } catch (error) {
     return {
@@ -75,6 +83,7 @@ async function sample(path) {
       status: 0,
       timedOut: /abort|timeout/i.test(String(error?.message ?? error)),
       diagnostics: null,
+      artifact: null,
     };
   }
 }
@@ -130,6 +139,28 @@ async function main() {
           ? Number((objects.reduce((a, b) => a + b, 0) / objects.length).toFixed(1))
           : null,
     };
+    /*
+     * Whatever the ledger's artifact notes said, median over the successes. Reported as given
+     * rather than interpreted: these keys name which representation answered and what it cost, and
+     * that is the evidence a read change has to be judged on.
+     */
+    const noteKeys = new Set();
+    for (const sample of ok) {
+      for (const key of Object.keys(sample.artifact ?? {})) noteKeys.add(key);
+    }
+    const notes = {};
+    for (const key of [...noteKeys].sort()) {
+      const values = ok
+        .map((sample) => sample.artifact?.[key])
+        .filter((value) => value !== undefined);
+      const numbers = values.filter((value) => typeof value === "number");
+      notes[key] =
+        numbers.length === values.length && numbers.length > 0
+          ? quantile(numbers, 0.5)
+          : [...new Set(values.map(String))].slice(0, 3).join(", ");
+    }
+    if (noteKeys.size > 0) row.artifactNotes = notes;
+
     report.endpoints[name] = row;
     lines.push(
       `${name}: ${row.ok}/${row.samples} ok (${(row.successRate * 100).toFixed(0)}%), ` +

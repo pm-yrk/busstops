@@ -820,9 +820,10 @@ router.get("/v1/map", async (_request, { env, url }) => {
    * The buckets cannot help here. A city viewport names a few hundred distinct services, which
    * hash across nearly all 256 buckets, and reading two hundred objects is worse than reading one
    * when an invocation gets fifty subrequests — so this path fell through to the whole services
-   * object, and the endpoint instrument measured it at 2,182,908 characters decoded per request
-   * over thirty samples. The heaviest read left, on the one endpoint that still answers
-   * Cloudflare's error page when a browser opens a page's worth of requests at once.
+   * object, which the bucket proof measures at 4,669,134 bytes — fetched, decoded and parsed on
+   * the one endpoint that still answers Cloudflare's error page when a browser opens a page's
+   * worth of requests at once. (Not the endpoint instrument's 2,182,908 characters: that counts
+   * tracked shard reads, the tiles, and this read reports itself in the artifact notes instead.)
    *
    * Every use of a resolved service below is `id` or `publicName`, so the projection answers the
    * same question for about a sixth of the bytes. Absent — a version published before the family
