@@ -14,9 +14,25 @@
   background: var(--colour-amber-pale);
 }
 
+/* Same shape as the other two notices, in the amber the example badges use. */
+.pro-mode--illustrative {
+  border-left-color: var(--colour-amber);
+  background: var(--colour-amber-pale);
+}
+
 .pro-mode--unavailable {
   border-left-color: var(--colour-critical);
   background: var(--colour-critical-pale);
+}
+
+/*
+ * Real observations, but old. Quieter than the other two on purpose: the figures are genuine and
+ * the reader is being told their age, not warned that something is broken. The default amber would
+ * read as a fault where this is a date.
+ */
+.pro-mode--stale {
+  border-left-color: var(--colour-muted);
+  background: var(--colour-canvas);
 }
 
 .pro-mode strong {
@@ -63,6 +79,12 @@
 .pro-metric {
   /* A grid child sizes to its content unless told it may be narrower than that. */
   min-width: 0;
+  /*
+   * Every tile in a row is the same height, and the facts sit on the same line across all of
+   * them. Comparing four figures means comparing four tiles, and four different baselines makes
+   * that a scan rather than a glance.
+   */
+  height: 100%;
   display: grid;
   gap: var(--space-sm);
   padding: var(--space-md);
@@ -72,12 +94,99 @@
   align-content: start;
 }
 
+/*
+ * Three states, told apart by more than a sentence.
+ *
+ * A measured figure, one withheld for want of observations, and one this pipeline does not
+ * produce at all were the same tile with different words in it — and the third is permanent
+ * where the others are not. The left edge carries the difference: ink for a real measurement,
+ * amber for a figure that more data would fill, and a hairline for one that no amount of data
+ * will. Never colour alone; the suppression sentence is still there and still says which.
+ */
+.pro-metric[data-state="measured"] {
+  border-left: 3px solid var(--colour-ink);
+}
+
+.pro-metric[data-state="withheld"] {
+  border-left: 3px solid var(--colour-amber);
+}
+
+/*
+ * An illustration, marked so it cannot be mistaken for a measurement.
+ *
+ * A dashed edge and a badge rather than a colour alone: the difference between an example and a
+ * real figure is the single most important thing on this page to get across, and colour is the
+ * one channel a reader may not have.
+ */
+.pro-metric[data-state="illustrative"] {
+  border-left: 3px dashed var(--colour-amber);
+  background: var(--colour-amber-pale);
+}
+
+.pro-metric__demo-badge {
+  margin-inline-start: auto;
+  font-family: var(--font-pixel);
+  font-size: var(--font-size-small);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 0.1rem 0.4rem;
+  border: 1px solid var(--colour-amber);
+  border-radius: var(--radius-sm);
+  color: var(--colour-ink);
+  background: var(--colour-surface);
+  white-space: nowrap;
+}
+
+.pro-metric__illustrative {
+  margin: 0;
+  font-size: var(--font-size-small);
+  color: var(--colour-ink);
+}
+
+.pro-metric[data-state="unmeasured"] {
+  border-left: 3px solid var(--colour-hairline);
+  /* Recessive, because it is not news and it is not a fault: it is a stage that does not exist. */
+  background: color-mix(in srgb, var(--colour-surface) 92%, var(--colour-ink));
+}
+
 .pro-metric header {
+  min-width: 0;
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: var(--space-sm);
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--space-xs);
   flex-wrap: wrap;
+}
+
+/* The mark sits on the label's line, at the label's weight, never above it. */
+.pro-metric__mark {
+  flex: none;
+  opacity: 0.75;
+}
+
+/*
+ * Confidence, under the figure it qualifies.
+ *
+ * It used to share the header row with the label, where at tile width it wrapped onto a line of
+ * its own and pushed the number down — so a row of four tiles had its four figures at four
+ * different heights, which is the one thing a row of comparable numbers must not do.
+ */
+.pro-metric__confidence {
+  margin: 0;
+}
+
+/*
+ * A dash, at label size rather than heading size.
+ *
+ * An em dash set at `--font-size-h2` is a rule right across the tile and reads as a loading
+ * skeleton. Nothing further is loading: this metric has no figure, now, for a reason the
+ * sentence underneath gives.
+ */
+.pro-metric__absent {
+  font-size: var(--font-size-h3);
+  /* Muted, not hairline: it has to be legible as a deliberate absence rather than look unpainted. */
+  color: var(--colour-muted);
+  letter-spacing: -0.1em;
 }
 
 .pro-metric h3 {
@@ -93,6 +202,29 @@
   font-size: var(--font-size-h2);
   font-variant-numeric: tabular-nums;
   line-height: 1;
+  /* Baseline-aligned so the unit sits on the digits' feet rather than floating beside them. */
+  display: flex;
+  align-items: baseline;
+  gap: 0.3ch;
+}
+
+/*
+ * The unit, small.
+ *
+ * "613" set large with "buses" beside it at the same size is two things competing for one
+ * glance. The number is what a reader is looking for; the unit qualifies it and should not have
+ * to be read first.
+ */
+.pro-metric__unit {
+  font-size: var(--font-size-small);
+  color: var(--colour-muted);
+  font-variant-numeric: normal;
+}
+
+/* A dash is not a figure and should not be set like one. */
+.pro-metric[data-state="withheld"] .pro-metric__value,
+.pro-metric[data-state="unmeasured"] .pro-metric__value {
+  color: var(--colour-muted);
 }
 
 .pro-metric__comparison,
@@ -106,9 +238,24 @@
   color: var(--colour-amber);
 }
 
+/*
+ * Except where more data is not the answer. Amber says "waiting would help"; this one is a
+ * statement about the pipeline, so it is set as ordinary muted prose.
+ */
+.pro-metric[data-state="unmeasured"] .pro-metric__suppressed {
+  color: var(--colour-muted);
+}
+
+/*
+ * The tile is a grid, and an `auto` track never shrinks below the min-content of what it holds.
+ * This list was that min-content: two `1fr` columns whose own automatic minimum is the widest
+ * unbreakable row inside them. A 235px tile therefore laid out a 281px column and pushed the
+ * whole Pro page 48px sideways at tablet width. `minmax(0, ...)` lets a track be narrower than
+ * its contents, and wrapping each row lets the label and figure stack rather than spill.
+ */
 .pro-metric__facts {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--space-xs) var(--space-md);
   margin: 0;
   padding-top: var(--space-sm);
@@ -117,8 +264,10 @@
 
 .pro-metric__facts > div {
   display: flex;
+  flex-wrap: wrap;
+  min-width: 0;
   justify-content: space-between;
-  gap: var(--space-sm);
+  gap: 0 var(--space-sm);
   font-size: var(--font-size-micro);
 }
 
@@ -194,4 +343,283 @@
 .pro-mode p {
   margin: 0;
   grid-column: 1 / -1;
+}
+
+/*
+ * The KPI tile, given a hierarchy.
+ *
+ * Everything on it used to be the same weight: the figure, the comparison, four facts and a
+ * disclosure, all in a row of equal grey. A control tower is read at a glance and then
+ * interrogated, so the figure leads, the comparison sits under it, and the provenance stays put
+ * but recedes.
+ */
+.pro-metric__value {
+  font-size: clamp(2rem, 4.5vw, 2.75rem);
+  font-weight: 700;
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  margin: var(--space-xs) 0 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.pro-metric__delta {
+  margin-right: var(--space-xs);
+  font-size: var(--font-size-small);
+}
+
+.pro-metric__delta[data-direction="up"],
+.pro-metric__delta[data-direction="down"] {
+  color: var(--colour-ink);
+}
+
+.pro-metric__delta[data-direction="flat"] {
+  color: var(--colour-muted);
+}
+
+/*
+ * A thin mark anchored to its baseline, with a rounded data end — the track is the whole scope
+ * and the fill is the part of it that could be measured.
+ */
+.pro-metric__coverage {
+  height: 6px;
+  margin-top: var(--space-sm);
+  border-radius: 3px;
+  background: var(--colour-hairline);
+  overflow: hidden;
+}
+
+.pro-metric__coverage-fill {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--colour-ink);
+}
+
+.pro-metric__facts {
+  margin-top: var(--space-sm);
+  font-size: var(--font-size-small);
+  color: var(--colour-muted);
+}
+
+/*
+ * Compare bars: now against typical, on one scale.
+ *
+ * Thin marks, a 4px rounded data-end, anchored to the baseline. The track is the surface the bar
+ * is drawn on rather than a second series, so it stays a hairline wash.
+ */
+.pro-compare {
+  display: grid;
+  gap: 4px;
+  margin: var(--space-sm) 0 0;
+}
+
+.pro-compare__row {
+  display: grid;
+  grid-template-columns: 4.5rem 1fr 3.5rem;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.pro-compare__name,
+.pro-compare__value {
+  font-size: var(--font-size-small);
+  color: var(--colour-muted);
+}
+
+.pro-compare__value {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--colour-ink);
+}
+
+.pro-compare__track,
+.pro-rank__track {
+  display: block;
+  height: 8px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--colour-ink) 8%, transparent);
+  overflow: hidden;
+}
+
+.pro-compare__fill,
+.pro-rank__fill {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+}
+
+/* One hue, two steps: the darker step is the measurement, the lighter one its baseline. */
+.pro-compare__fill--now {
+  background: var(--colour-ink);
+}
+
+.pro-compare__fill--typical {
+  background: color-mix(in srgb, var(--colour-ink) 34%, transparent);
+}
+
+.pro-rank {
+  display: grid;
+  gap: 2px;
+  margin-top: var(--space-xs);
+}
+
+.pro-rank__fill {
+  background: color-mix(in srgb, var(--colour-red) 72%, transparent);
+}
+
+.pro-rank__label {
+  font-size: var(--font-size-small);
+  color: var(--colour-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * Severity distribution: one bar, four steps of one hue.
+ *
+ * Severity is an ordering, not four unrelated categories, so it takes a sequential ramp rather
+ * than four hues — and the bands are counted and named in the legend beneath, so a reader who
+ * cannot separate the steps loses nothing. The 2px gap between segments is the surface showing
+ * through, which is what keeps two adjacent bands from reading as one.
+ */
+.pro-severity {
+  margin: var(--space-sm) 0 var(--space-md);
+  display: grid;
+  gap: var(--space-xs);
+}
+
+.pro-severity__bar {
+  display: flex;
+  gap: 2px;
+  height: 10px;
+}
+
+.pro-severity__band {
+  display: block;
+  border-radius: 3px;
+  min-width: 4px;
+}
+
+.pro-severity__band--highly_abnormal {
+  background: var(--colour-red-dark);
+}
+
+.pro-severity__band--abnormal {
+  background: var(--colour-red);
+}
+
+.pro-severity__band--elevated {
+  background: color-mix(in srgb, var(--colour-red) 45%, transparent);
+}
+
+.pro-severity__band--typical {
+  background: color-mix(in srgb, var(--colour-ink) 18%, transparent);
+}
+
+.pro-severity__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs) var(--space-md);
+  font-size: var(--font-size-small);
+  color: var(--colour-muted);
+}
+
+.pro-severity__key {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pro-severity__key strong {
+  color: var(--colour-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.pro-severity__swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex: none;
+}
+
+/*
+ * The Daily Brief masthead.
+ *
+ * Editorial weight where the product is publishing rather than displaying: a kicker, the date at
+ * heading scale, a standfirst, and a rule underneath in the ink rather than the hairline so the
+ * edition reads as printed.
+ */
+.pro-brief {
+  margin-bottom: var(--space-lg);
+  padding-bottom: var(--space-md);
+  border-bottom: 3px solid var(--colour-ink);
+}
+
+.pro-brief__kicker {
+  margin: 0;
+  font-size: var(--font-size-small);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  /*
+   * The dark red, measured rather than chosen. Axe put the brand red at 4.2:1 on the warm white
+   * at 13px — under the 4.5 that normal-weight text needs — on all three widths of the deployed
+   * brief. This is a kicker on a published document, so it is small type by design and cannot be
+   * sized out of the problem; the darker step of the same hue carries it.
+   */
+  color: var(--colour-red-dark);
+}
+
+.pro-brief__date {
+  margin: var(--space-xs) 0 0;
+  font-size: var(--font-size-h1);
+  line-height: 1.1;
+}
+
+.pro-brief__standfirst {
+  margin: var(--space-xs) 0 0;
+  max-width: 46ch;
+  color: var(--colour-muted);
+  font-size: var(--font-size-small);
+}
+
+/*
+ * The one band the severity ramp does not cover: something that is fine.
+ *
+ * Health runs good-to-bad where severity runs bad-to-mild, so the strip needs a step at the good
+ * end. Ink rather than green: green here would be a status colour doing the work of a legend, and
+ * the band is named and counted beside it anyway.
+ */
+.pro-severity__band--healthy {
+  background: color-mix(in srgb, var(--colour-ink) 55%, transparent);
+}
+
+/*
+ * Which kind of real figure this is.
+ *
+ * Deliberately quieter than the example badge. "Example figure" is a warning and is set like
+ * one; "Observed" and "Calculated" are provenance, and a reader should be able to ignore them
+ * while scanning and find them when they stop to ask. So: no border, muted ink, same position.
+ * The example badge keeps its amber frame and stays the loudest thing in the header.
+ */
+.pro-metric__basis {
+  margin-inline-start: auto;
+  font-family: var(--font-pixel);
+  font-size: var(--font-size-small);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 0.1rem 0.4rem;
+  color: var(--colour-muted);
+  white-space: nowrap;
+  /* It carries a title attribute, so it should look like something worth hovering. */
+  cursor: help;
+}
+
+/* A counted figure is the stronger claim of the two, and reads a shade more definite. */
+.pro-metric__basis--observed {
+  color: var(--colour-ink);
+}
+
+@media (prefers-contrast: more) {
+  .pro-metric__basis {
+    color: var(--colour-ink);
+  }
 }

@@ -38,8 +38,17 @@ export function LoadingBus({
       {/* One polite announcement, not a stream of updates. */}
       <span className="visually-hidden">{label}</span>
       <div className="loading-bus__scene" aria-hidden="true">
+        {/* Two wheel frames, alternated, so the bus is travelling rather than sliding. */}
         <div className="loading-bus__vehicle">
-          <PixelBusSide size={compact ? 20 : 32} />
+          <PixelBusSide
+            size={compact ? 22 : 44}
+            className="loading-bus__frame loading-bus__frame--a"
+          />
+          <PixelBusSide
+            frame="b"
+            size={compact ? 22 : 44}
+            className="loading-bus__frame loading-bus__frame--b"
+          />
         </div>
         <div className="loading-bus__road" />
       </div>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { FloodNotice, RoadEvent, VehicleObservation } from "@busstops/contracts";
+import type { FloodNotice, Incident, RoadEvent, VehicleObservation } from "@busstops/contracts";
 import {
   InMemoryObjectStore,
   ArtifactStore,
@@ -7,7 +7,7 @@ import {
 } from "@busstops/pipeline-core";
 import { deterministicUuid } from "@busstops/adapters";
 import { StageRunner } from "./stages.js";
-import { sampleSegmentsForTrace, type RoadSegment } from "./segments.js";
+import { indexSegments, sampleSegmentsForTrace, type RoadSegment } from "./segments.js";
 import { aggregateSegmentSamples, bucketKey, type SegmentIntervalBucket } from "./aggregates.js";
 import { rollUpBuckets, planPruning, rollUpChain, type PruneCandidate } from "./rollup.js";
 import { takeInventory, projectStorage } from "./inventory.js";
@@ -18,8 +18,13 @@ import {
   joinStreetWorks,
   weatherCacheKey,
 } from "./enrichment.js";
-import { incidentKey, reconcileIncidents, type IncidentObservation } from "./incidents.js";
-import { publishIntelligence, INTELLIGENCE_DATASETS } from "./publish.js";
+import {
+  incidentKey,
+  reconcileIncidents,
+  type IncidentObservation,
+  type TrackedIncident,
+} from "./incidents.js";
+import { publishIntelligence, INTELLIGENCE_DATASETS, MAX_PUBLISHED_INCIDENTS } from "./publish.js";
 import { runAnalyticsBatch } from "./run.js";
 
 const NOW = new Date("2026-09-03T09:00:00.000Z");
@@ -158,6 +163,122 @@ describe("segment sampling", () => {
     const result = sampleSegmentsForTrace(stationary, [SEGMENT], null);
     expect(result.samples).toHaveLength(0);
     expect(result.discardedImplausible).toBe(1);
+  });
+
+  /*
+   * Locality, which run 45 showed is both the speed problem and the accuracy problem.
+   *
+   * Every trace was handed all 76,298 segments: 2,927 vehicles took 960 seconds and 2,184 of them
+   * were rejected for low confidence. A bus in Leeds offered a road in Bristol has nothing to
+   * reason from.
+   */
+  it("offers a trace the roads near it rather than the roads in the country", () => {
+    const elsewhere: RoadSegment = {
+      ...SEGMENT,
+      id: "seg-far",
+      // Cornwall, three hundred miles from the fixture trace.
+      path: SEGMENT.path.map((point) => ({ lat: 50.26, lon: point.lon - 5.05 })),
+    };
+    const index = indexSegments([SEGMENT, elsewhere]);
+    const near = index.near(traversal("veh-1", 0));
+    expect(near.map((candidate) => candidate.id)).toEqual(["seg-a"]);
+    expect(index.size).toBe(2);
+
+    // And the answer through the index is the answer without it.
+    const viaIndex = sampleSegmentsForTrace(traversal("veh-1", 0), index, "route-1");
+    const viaArray = sampleSegmentsForTrace(traversal("veh-1", 0), [SEGMENT, elsewhere], "route-1");
+    expect(viaIndex.samples).toEqual(viaArray.samples);
+  });
+
+  it("files a segment under every cell its path crosses, so a road is found from either side", () => {
+    // A segment spanning a grid boundary: found whichever side the trace is on.
+    const crossing: RoadSegment = {
+      ...SEGMENT,
+      id: "seg-crossing",
+      path: [
+        { lat: 53.74, lon: -1.5 },
+        { lat: 53.76, lon: -1.5 },
+      ],
+    };
+    const index = indexSegments([crossing]);
+    const south = index.near([{ coordinate: { lat: 53.7401, lon: -1.5 } }]);
+    const north = index.near([{ coordinate: { lat: 53.7599, lon: -1.5 } }]);
+    expect(south.map((candidate) => candidate.id)).toEqual(["seg-crossing"]);
+    expect(north.map((candidate) => candidate.id)).toEqual(["seg-crossing"]);
+  });
+
+  it("counts a trace with no road near it as unmatched rather than as a bad match", () => {
+    const index = indexSegments([SEGMENT]);
+    const atSea = [observation("veh-1", 50.0, 0), observation("veh-1", 50.001, 60)].map((o) => ({
+      ...o,
+      coordinate: { lat: o.coordinate.lat, lon: -8.5 },
+    }));
+    const result = sampleSegmentsForTrace(atSea, index, null);
+    expect(result.unmatchedTraces).toBe(1);
+    expect(result.discardedLowConfidence).toBe(0);
+  });
+});
+
+describe("a stage that cannot starve the ones after it", () => {
+  /*
+   * Run 45's `segment_samples` reported `completed` after 960 seconds and both stages after it
+   * were skipped for want of time, so the batch published nothing and Pro fell back to its demo
+   * snapshot. A complete first stage that leaves the run with no output is not a success.
+   */
+  it("gives a stage its declared share of the budget, not the whole of it", async () => {
+    let clock = 0;
+    const runner = new StageRunner("run-share", {
+      now: () => new Date(clock),
+      budgetMs: 1000,
+    });
+
+    let sawAtStart = 0;
+    let sawAfterHalf = 0;
+    await runner.run(
+      {
+        name: "greedy",
+        budgetShare: 0.5,
+        run: (_input, context) => {
+          sawAtStart = context.remainingMs();
+          clock += 400;
+          sawAfterHalf = context.remainingMs();
+          return { value: null, metrics: {} };
+        },
+      },
+      null,
+    );
+
+    expect(sawAtStart).toBe(500);
+    // 500 of its own share minus the 400 it spent, not 600 of the run's.
+    expect(sawAfterHalf).toBe(100);
+  });
+
+  it("still hands a stage with no declared share whatever the run has left", async () => {
+    let clock = 0;
+    const runner = new StageRunner("run-rest", { now: () => new Date(clock), budgetMs: 1000 });
+    let seen = 0;
+    await runner.run(
+      {
+        name: "first",
+        budgetShare: 0.5,
+        run: () => {
+          clock += 300;
+          return { value: null, metrics: {} };
+        },
+      },
+      null,
+    );
+    await runner.run(
+      {
+        name: "second",
+        run: (_input, context) => {
+          seen = context.remainingMs();
+          return { value: null, metrics: {} };
+        },
+      },
+      null,
+    );
+    expect(seen).toBe(700);
   });
 });
 
@@ -671,6 +792,61 @@ describe("atomic publication", () => {
     expect(manifest?.recordCount).toBe(1);
   });
 
+  /*
+   * The rollback that cost Pro a good publish.
+   *
+   * How many buckets close in a window depends entirely on how much was collected in it: the 07:19
+   * batch read 108,821 observations accumulated across several dispatches, the 12:56 batch read
+   * only its own fresh collection, and the count fell 79.6%. The 25% shrink guard refused the
+   * publish, which marked it incomplete and rolled back the network summary and the incidents that
+   * had both published perfectly well. The guard is for a broken parse of bulk reference data, not
+   * for a measurement of an hour.
+   */
+  it("publishes a window far smaller than the last one, because that is a quiet hour", async () => {
+    const store = new InMemoryObjectStore(() => NOW);
+    const many = Array.from({ length: 50 }, (_, i) => ({ ...bucket, segmentId: `seg-${i}` }));
+
+    const first = await publishIntelligence(
+      store,
+      { buckets: many, incidents: [] },
+      { version: "v1", coverage: 1, sources: ["bods"], now: () => NOW },
+    );
+    expect(first.complete).toBe(true);
+
+    // One bucket against fifty: a 98% fall, far past the guard that used to apply.
+    const second = await publishIntelligence(
+      store,
+      { buckets: [bucket], incidents: [] },
+      { version: "v2", coverage: 1, sources: ["bods"], now: () => NOW },
+    );
+
+    expect(second.failed, "a quiet hour is not a broken parse").toEqual([]);
+    expect(second.complete).toBe(true);
+
+    const artifacts = new ArtifactStore(store);
+    const manifest = await artifacts.readManifest(INTELLIGENCE_DATASETS.segmentMetrics);
+    expect(manifest?.version).toBe("v2");
+    expect(manifest?.recordCount).toBe(1);
+  });
+
+  /*
+   * And the thing the guard was actually there for is still caught, by a different rule: a run
+   * that produced nothing at all does not get to replace a version that had something.
+   */
+  it("still refuses a window with no closed bucket at all", async () => {
+    const store = new InMemoryObjectStore(() => NOW);
+    const result = await publishIntelligence(
+      store,
+      { buckets: [], incidents: [] },
+      { version: "v1", coverage: 1, sources: ["bods"], now: () => NOW },
+    );
+
+    expect(result.complete).toBe(false);
+    expect(result.failed.map((entry) => entry.dataset)).toContain(
+      INTELLIGENCE_DATASETS.segmentMetrics,
+    );
+  });
+
   it("does not publish an open bucket, whose figure is still going to change", async () => {
     const store = new InMemoryObjectStore(() => NOW);
     const result = await publishIntelligence(
@@ -691,6 +867,59 @@ describe("atomic publication", () => {
     );
     expect(result.failed).toEqual([]);
     expect(result.published.map((m) => m.dataset)).toContain(INTELLIGENCE_DATASETS.incidents);
+  });
+
+  /*
+   * The edge reads this dataset whole to build the control tower, and how many incidents there
+   * are is a property of how disrupted England is rather than of this pipeline. Without a ceiling
+   * here the isolate has one nobody chose — the same shape as the disruption notices, which are
+   * capped at publish for exactly this reason.
+   */
+  it("caps what it publishes and drops the mildest first, not an arbitrary slice", async () => {
+    const store = new InMemoryObjectStore(() => NOW);
+    const tracked = (index: number, severity: Incident["severity"]): TrackedIncident => ({
+      incident: {
+        id: deterministicUuid("incident", `cap-${index}`),
+        provenance: { source: "derived", retrievedAt: NOW.toISOString(), externalIds: [] },
+        ingestedAt: NOW.toISOString(),
+        qualityFlags: ["ok"],
+        type: "congestion",
+        startedAt: NOW.toISOString(),
+        endedAt: null,
+        geometry: { corridorId: `corridor-${index}` },
+        affectedRouteIds: [],
+        affectedVehicleRefs: [],
+        severity,
+        confidence: { level: "medium", score: 0.6, reasons: ["test"] },
+        evidence: [],
+        officialStatus: "derived",
+        lifecycle: "active",
+        narrative: `incident ${index}`,
+      },
+      detectionCount: 1,
+      lastDetectedAt: NOW.toISOString(),
+    });
+
+    // One severe incident buried at the end of a list longer than the cap.
+    const many = [
+      ...Array.from({ length: MAX_PUBLISHED_INCIDENTS + 40 }, (_, i) => tracked(i, "typical")),
+      tracked(9999, "highly_abnormal"),
+    ];
+
+    const result = await publishIntelligence(
+      store,
+      { buckets: [bucket], incidents: many },
+      { version: "v1", coverage: 1, sources: ["bods"], now: () => NOW },
+    );
+
+    const artifacts = new ArtifactStore(store);
+    const manifest = await artifacts.readManifest(INTELLIGENCE_DATASETS.incidents);
+    expect(manifest?.recordCount).toBe(MAX_PUBLISHED_INCIDENTS);
+    expect(result.notes.join(" ")).toMatch(/41 of 1541 incidents were not published/);
+
+    // And the one that mattered survived the cut.
+    const published = await artifacts.readRecords<Incident>(manifest!);
+    expect(published.some((incident) => incident.severity === "highly_abnormal")).toBe(true);
   });
 });
 

@@ -11,7 +11,7 @@ import type {
 import { ControlTowerPage } from "./ControlTowerPage.js";
 import { OperatorsPage } from "./OperatorsPage.js";
 import { ProLayout } from "./ProLayout.js";
-import { DataModeBanner, ProMetricTile } from "./ProPrimitives.js";
+import { BandStrip, DataModeBanner, ProMetricTile, ProTableWrap } from "./ProPrimitives.js";
 import { apiClient } from "../lib/api.js";
 
 afterEach(() => {
@@ -41,6 +41,7 @@ function metric(overrides: Partial<ProMetric> = {}): ProMetric {
     suppressionReason: null,
     baselineValue: 0.75,
     evidence: [],
+    illustrative: false,
     ...overrides,
   };
 }
@@ -48,10 +49,65 @@ function metric(overrides: Partial<ProMetric> = {}): ProMetric {
 describe("ProMetricTile", () => {
   it("shows the denominator, window and coverage beside the figure", () => {
     render(<ProMetricTile metric={metric()} />);
-    expect(screen.getByText("72%")).toBeTruthy();
+    /*
+     * The figure and its unit are two elements now — "72" set large with "%" small beside it, so
+     * the number is what the eye lands on — so this reads the tile's text the way a person does
+     * rather than looking for one node containing both.
+     */
+    const tile = screen.getByTestId("metric-punctuality");
+    expect(tile.querySelector(".pro-metric__value")?.textContent).toBe("72%");
     expect(screen.getByText("1,103")).toBeTruthy();
     expect(screen.getByText("last 60 minutes")).toBeTruthy();
     expect(screen.getByText("86%")).toBeTruthy();
+  });
+
+  it("tells a withheld figure from one this pipeline does not produce", () => {
+    /*
+     * Two different suppressions that read identically as "amber text under a dash", and only
+     * one of them would be filled by waiting. A reader who cannot tell them apart will keep
+     * waiting for a number that is never coming.
+     */
+    const withheld = metric({
+      value: null,
+      suppressed: true,
+      suppressionReason: "Based on 3 observations; 20 are needed before a figure is published.",
+    });
+    const { unmount } = render(<ProMetricTile metric={withheld} />);
+    expect(screen.getByTestId("metric-punctuality").dataset.state).toBe("withheld");
+    unmount();
+
+    const unmeasured = metric({
+      value: null,
+      suppressed: true,
+      suppressionReason:
+        "Not measured yet. This figure compares actual against scheduled time, and the " +
+        "intelligence pipeline currently measures road-segment traversals only — it does not " +
+        "read the timetable.",
+    });
+    render(<ProMetricTile metric={unmeasured} />);
+    expect(screen.getByTestId("metric-punctuality").dataset.state).toBe("unmeasured");
+  });
+
+  it("makes an example figure impossible to mistake for a measurement", () => {
+    /*
+     * This badge is the whole safety mechanism for the demo preview. If it ever stops rendering,
+     * simulated numbers sit on the page looking exactly like measured ones — so it is asserted
+     * by its own words, not only by a class.
+     */
+    render(<ProMetricTile metric={metric({ illustrative: true })} />);
+    const tile = screen.getByTestId("metric-punctuality");
+    expect(tile.dataset.state).toBe("illustrative");
+    expect(screen.getByText("Example figure")).toBeInTheDocument();
+    expect(screen.getByText(/Illustrative value, not a measurement/i)).toBeInTheDocument();
+  });
+
+  it("marks a measured figure as measured", () => {
+    render(<ProMetricTile metric={metric()} />);
+    expect(screen.getByTestId("metric-punctuality").dataset.state).toBe("measured");
+    // And carries the mark from the shared vocabulary, so Pro reads as the same design system.
+    expect(
+      screen.getByTestId("metric-punctuality").querySelector(".pro-metric__mark"),
+    ).toBeTruthy();
   });
 
   it("compares against the baseline rather than presenting the figure alone", () => {
@@ -279,5 +335,153 @@ describe("OperatorsPage", () => {
     // The section heading and the lozenge both say it; both are intentional.
     expect(screen.getByText(/Only 12 comparable observations/)).toBeTruthy();
     expect(screen.getAllByText("Not comparable").length).toBeGreaterThan(0);
+  });
+});
+
+describe("BandStrip", () => {
+  /*
+   * The zero band is the point of the component. A legend that lists "0 down" beside "4 healthy"
+   * makes a reader check a thing that is not there, and on a strip it draws a band of no width
+   * with a border, which reads as one more source.
+   */
+  it("leaves out a band nothing falls into", () => {
+    const { container } = render(
+      <BandStrip
+        label="Sources by health"
+        bands={[
+          { tone: "healthy", label: "healthy", count: 4 },
+          { tone: "abnormal", label: "stale", count: 0 },
+          { tone: "highly_abnormal", label: "down", count: 1 },
+        ]}
+      />,
+    );
+
+    expect(container.querySelectorAll(".pro-severity__band--healthy").length).toBe(2);
+    expect(container.querySelector(".pro-severity__band--abnormal")).toBeNull();
+    expect(screen.queryByText("stale")).toBeNull();
+    expect(screen.getByText("down")).toBeTruthy();
+  });
+
+  it("draws nothing at all rather than an empty frame when every band is zero", () => {
+    const { container } = render(
+      <BandStrip
+        label="Sources by health"
+        bands={[{ tone: "healthy", label: "healthy", count: 0 }]}
+      />,
+    );
+    expect(container.querySelector(".pro-severity")).toBeNull();
+  });
+});
+
+describe("ProTableWrap", () => {
+  /*
+   * The regression this exists for: every Pro table is wider than a phone, so its wrapper scrolls,
+   * and a wrapper that scrolls without taking focus hides its right-hand columns from a keyboard
+   * entirely. It only surfaced once the tables had rows — an empty table does not overflow — so
+   * populating Pro for the demo is what introduced it.
+   */
+  it("can be reached and scrolled by keyboard, and says what it is", () => {
+    render(
+      <ProTableWrap label="Route performance">
+        <table>
+          <tbody>
+            <tr>
+              <td>4</td>
+            </tr>
+          </tbody>
+        </table>
+      </ProTableWrap>,
+    );
+
+    const region = screen.getByRole("region", { name: "Route performance" });
+    expect(region.tabIndex).toBe(0);
+  });
+});
+
+describe("what Pro says about the age of its own figures", () => {
+  /*
+   * `dataMode: "live"` was doing two jobs and only admitting to one. It says the figures come from
+   * real observations rather than the demonstration snapshot; it says nothing about when those
+   * observations were. The deployed Pro has reported "live" with its newest settled window a
+   * fortnight old, and the only place that appeared was a sentence among the coverage caveats — so
+   * an operations dashboard looked current while describing a period two weeks gone.
+   */
+  const at = (iso: string) => new Date(iso);
+
+  it("says nothing when a live measurement is recent", () => {
+    render(
+      <DataModeBanner
+        provenance={{
+          dataMode: "live",
+          snapshotDate: null,
+          notice: null,
+          measuredAt: "2026-10-04T09:00:00.000Z",
+        }}
+        now={at("2026-10-04T09:40:00.000Z")}
+      />,
+    );
+    expect(screen.queryByTestId("pro-data-mode")).toBeNull();
+  });
+
+  it("says how old a live measurement is, in hours, once it is not recent", () => {
+    render(
+      <DataModeBanner
+        provenance={{
+          dataMode: "live",
+          snapshotDate: null,
+          notice: null,
+          measuredAt: "2026-10-04T03:00:00.000Z",
+        }}
+        now={at("2026-10-04T09:00:00.000Z")}
+      />,
+    );
+    expect(screen.getByTestId("pro-data-mode").textContent).toContain("6 hours");
+    // Still credited as real data, because it is.
+    expect(screen.getByTestId("pro-data-mode").textContent).toContain("Real observations");
+  });
+
+  it("says it in days when it is a fortnight, which is what the deployment reported", () => {
+    render(
+      <DataModeBanner
+        provenance={{
+          dataMode: "live",
+          snapshotDate: null,
+          notice: null,
+          measuredAt: "2026-09-20T14:25:00.000Z",
+        }}
+        now={at("2026-10-04T09:00:00.000Z")}
+      />,
+    );
+    expect(screen.getByTestId("pro-data-mode").textContent).toContain("14 days");
+    expect(screen.getByTestId("pro-data-mode").textContent).toContain("not as the state of the");
+  });
+
+  /* Nothing measured is a different fact from measured long ago, and must not borrow its wording. */
+  it("says nothing when there is no measurement to date", () => {
+    render(
+      <DataModeBanner
+        provenance={{ dataMode: "live", snapshotDate: null, notice: null, measuredAt: null }}
+        now={at("2026-10-04T09:00:00.000Z")}
+      />,
+    );
+    expect(screen.queryByTestId("pro-data-mode")).toBeNull();
+  });
+
+  it("still labels the demonstration snapshot as a snapshot", () => {
+    render(
+      <DataModeBanner
+        provenance={{
+          dataMode: "demo_snapshot",
+          snapshotDate: "2026-08-14",
+          notice: "Demonstration snapshot from 2026-08-14.",
+          measuredAt: null,
+        }}
+        now={at("2026-10-04T09:00:00.000Z")}
+      />,
+    );
+    const banner = screen.getByTestId("pro-data-mode");
+    expect(banner.textContent).toContain("Demonstration snapshot");
+    expect(banner.textContent).toContain("2026-08-14");
+    expect(banner.textContent).not.toContain("Real observations");
   });
 });

@@ -3,8 +3,9 @@ import type { LiveOperationsItem, LiveOperationsResponse } from "@busstops/contr
 import { LoadingBus } from "../components/LoadingBus.js";
 import { EmptyState, ErrorState, StateLozenge } from "../components/primitives.js";
 import { apiClient } from "../lib/api.js";
-import { useFetch } from "../lib/use-fetch.js";
-import { DataModeBanner, ScopeFilters } from "./ProPrimitives.js";
+import { useFetch, useTicker } from "../lib/use-fetch.js";
+import { BandStrip, DataModeBanner, ProTableWrap, ScopeFilters } from "./ProPrimitives.js";
+import { PixelSectionHeading } from "../components/pixel/PixelSectionHeading.js";
 
 /**
  * The priority exception inbox (docs/10_BUS_STOPS_PRO.md "Disruptions and reports").
@@ -33,6 +34,8 @@ export function ProDisruptionsPage() {
   const [sortKey, setSortKey] = useState<SortKey>("severity");
   const [officialOnly, setOfficialOnly] = useState(false);
   const [lifecycle, setLifecycle] = useState("");
+  // Ticks so "for 42 min" keeps being true on a screen left open on a wall.
+  const now = useTicker(30_000).getTime();
 
   const fetcher = useCallback(
     (signal: AbortSignal) => apiClient.proLiveOperations({ windowMinutes }, signal),
@@ -121,15 +124,19 @@ export function ProDisruptionsPage() {
       </div>
 
       <section className="pro-section" aria-labelledby="disruptions-heading">
-        <h2 id="disruptions-heading">Exception inbox</h2>
+        <PixelSectionHeading mark="works" id="disruptions-heading">
+          Exception inbox
+        </PixelSectionHeading>
         <p className="muted small">
           {items.length} of {operations.items.length} shown. An item marked <em>emerging</em> has
           been detected once and is not yet confirmed; it is shown rather than hidden so nothing
           appears without warning, but it should not be acted on alone.
         </p>
 
+        <SeveritySummary items={items} />
+
         {items.length > 0 ? (
-          <div className="pro-table-wrap">
+          <ProTableWrap label="Current exceptions with severity, status, confidence and source">
             <table className="pro-table">
               <caption className="visually-hidden">
                 Current exceptions with severity, status, confidence and source
@@ -149,11 +156,11 @@ export function ProDisruptionsPage() {
               </thead>
               <tbody>
                 {items.map((item) => (
-                  <ExceptionRow key={item.incident.id} item={item} />
+                  <ExceptionRow key={item.incident.id} item={item} now={now} />
                 ))}
               </tbody>
             </table>
-          </div>
+          </ProTableWrap>
         ) : (
           <EmptyState
             title="Nothing in the inbox"
@@ -164,7 +171,9 @@ export function ProDisruptionsPage() {
 
       {operations.feedProblems.length > 0 ? (
         <section className="pro-section" aria-labelledby="disruptions-feeds">
-          <h2 id="disruptions-feeds">Feeds not reporting</h2>
+          <PixelSectionHeading mark="warning" id="disruptions-feeds">
+            Feeds not reporting
+          </PixelSectionHeading>
           <p className="muted small">
             These are exceptions too. Where a feed is down, the services behind it are unmeasured
             rather than running normally, and no item above can speak for them.
@@ -190,7 +199,40 @@ export function ProDisruptionsPage() {
   );
 }
 
-function ExceptionRow({ item }: { item: LiveOperationsItem }) {
+/**
+ * How long this has been going on, from its own start time.
+ *
+ * An inbox sorted by severity hides the time dimension entirely: a highly abnormal item detected
+ * four minutes ago and one that has been running for three hours sit next to each other looking
+ * identical, and they are completely different operational situations.
+ */
+function elapsedLabel(startedAt: string, now: number): string | null {
+  const started = Date.parse(startedAt);
+  if (!Number.isFinite(started)) return null;
+  const minutes = Math.floor((now - started) / 60_000);
+  if (minutes < 0) return null;
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m`;
+}
+
+const SEVERITY_ORDER = ["highly_abnormal", "abnormal", "elevated", "typical"] as const;
+
+/** What the inbox is made of, before anybody reads a row of it. */
+function SeveritySummary({ items }: { items: readonly LiveOperationsItem[] }) {
+  return (
+    <BandStrip
+      label="Exceptions by severity"
+      bands={SEVERITY_ORDER.map((severity) => ({
+        tone: severity,
+        label: severity.replace(/_/g, " "),
+        count: items.filter((item) => item.incident.severity === severity).length,
+      }))}
+    />
+  );
+}
+
+function ExceptionRow({ item, now }: { item: LiveOperationsItem; now: number }) {
   return (
     <tr>
       <th scope="row">{item.incident.narrative}</th>
@@ -207,7 +249,15 @@ function ExceptionRow({ item }: { item: LiveOperationsItem }) {
           {item.incident.severity.replace(/_/g, " ")}
         </StateLozenge>
       </td>
-      <td>{item.incident.lifecycle}</td>
+      <td>
+        {item.incident.lifecycle}
+        {elapsedLabel(item.incident.startedAt, now) ? (
+          <>
+            <br />
+            <span className="muted small">for {elapsedLabel(item.incident.startedAt, now)}</span>
+          </>
+        ) : null}
+      </td>
       <td>{item.recoveryTrend}</td>
       <td>
         {item.incident.confidence.level}

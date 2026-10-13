@@ -1,0 +1,58 @@
+/*
+ * "Bus not come?" — help, not an alarm.
+ *
+ * Set apart from the board above it by a surface and a rule rather than by colour: a passenger
+ * reading this is already worried, and a red panel would tell them something is wrong when the
+ * commonest reason a bus is late is that it is late.
+ */
+.waiting-help {
+  display: grid;
+  gap: var(--space-md);
+  padding: var(--space-lg);
+  background: var(--colour-surface);
+  border: 1px solid var(--colour-hairline);
+}
+
+.waiting-help__state {
+  margin: 0;
+}
+
+.waiting-help__block {
+  display: grid;
+  gap: var(--space-xs);
+}
+
+.waiting-help__block h3 {
+  margin: 0;
+  font-size: var(--font-size-small);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.waiting-help__block p {
+  margin: 0;
+}
+
+.waiting-help__due,
+.waiting-help__routes,
+.waiting-help__nearby,
+.waiting-help__actions {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-xs);
+}
+
+.waiting-help__routes a,
+.waiting-help__nearby a {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-xs);
+}
+
+.waiting-help__limit {
+  margin: 0;
+  padding-top: var(--space-sm);
+  border-top: 1px solid var(--colour-hairline);
+}

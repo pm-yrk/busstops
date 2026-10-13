@@ -1,7 +1,9 @@
 import { useCallback, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import type { StopDeparturesResponse } from "@busstops/contracts";
+import type { SearchResponse, StopDeparturesResponse } from "@busstops/contracts";
+import { AccessibilityCard } from "../components/AccessibilityCard.js";
 import { ArrivalBoard } from "../components/ArrivalBoard.js";
+import { OfficialNotices } from "../components/OfficialNotices.js";
 import { LoadingBus } from "../components/LoadingBus.js";
 import {
   ConfidenceChip,
@@ -11,7 +13,10 @@ import {
   ServiceBanner,
   StateLozenge,
 } from "../components/primitives.js";
+import { PixelSectionHeading } from "../components/pixel/PixelSectionHeading.js";
+import { WeatherVignette } from "../components/WeatherVignette.js";
 import { WillIMakeItPanel } from "../components/WillIMakeItPanel.js";
+import { WaitingHelp } from "../components/WaitingHelp.js";
 import { apiClient, ApiError } from "../lib/api.js";
 import { useFetch, useTicker } from "../lib/use-fetch.js";
 import { formatLondonTime, walkingMinutes } from "../lib/format.js";
@@ -49,6 +54,36 @@ export function StopPage() {
   });
 
   const now = useTicker();
+
+  /*
+   * Stops nearby, for the passenger whose bus has not come.
+   *
+   * Asked for by coordinate rather than by stop id, because that is the endpoint that exists, and
+   * only once the board itself has answered — a second request racing the first would compete for
+   * the same ten milliseconds of Worker CPU on the page that most needs them. `enabled` is what
+   * sequences them.
+   */
+  /*
+   * The two numbers, not the object that holds them.
+   *
+   * `response.data.stop.locationCoordinate` is a fresh object on every render, so a callback
+   * depending on it would be rebuilt every render and the fetch effect would re-run every render
+   * — a request per frame against the endpoint this page can least afford to hammer. Depending on
+   * the latitude and longitude themselves gives a stable identity and satisfies the exhaustive
+   * dependency rule honestly, rather than by silencing it.
+   */
+  const stopLat = response?.data.stop.locationCoordinate.lat ?? null;
+  const stopLon = response?.data.stop.locationCoordinate.lon ?? null;
+  const nearbyFetcher = useCallback(
+    (signal: AbortSignal) =>
+      stopLat !== null && stopLon !== null
+        ? apiClient.nearby({ lat: stopLat, lon: stopLon }, 500, signal)
+        : Promise.reject(new Error("the stop's coordinate is not known yet")),
+    [stopLat, stopLon],
+  );
+  const { data: nearbyResponse, error: nearbyError } = useFetch<SearchResponse>(nearbyFetcher, {
+    enabled: stopLat !== null && stopLon !== null,
+  });
 
   const ageSeconds = useMemo(() => {
     if (!response?.meta.observedAt) return null;
@@ -102,6 +137,7 @@ export function StopPage() {
       <div className="page">
         {isNotFound ? (
           <EmptyState
+            art="bus"
             title="We could not find that stop"
             description="The link may be out of date, or the stop may have been withdrawn. Try searching for it by name or code."
             action={
@@ -145,6 +181,14 @@ export function StopPage() {
     setFavouriteState({ atcoCode: stop.atcoCode, favourited: isFavourited("stop", stop.atcoCode) });
   };
 
+  /*
+   * Every shard the reader asked for was absent and none answered: there is no timetable published
+   * for today at this stop. The same test `ArrivalBoard` and `WaitingHelp` apply, derived once here
+   * so the page cannot disagree with itself about it.
+   */
+  const coverage = response.data.timetableCoverage;
+  const noTimetablePublished =
+    coverage !== undefined && coverage.read === 0 && coverage.missing > 0;
   return (
     <div className="page stop-page">
       <ServiceBanner meta={response.meta} />
@@ -154,13 +198,31 @@ export function StopPage() {
       </nav>
 
       <ArrivalBoard
+        /*
+         * The stop is this page's subject, so its name is the page's heading.
+         *
+         * This page had no `<h1>` — the one a search result, a journey leg and every map marker
+         * lands on. The board's own `h2` was the first heading on it, which leaves a screen reader
+         * with no page title and the outline starting a level down.
+         */
+        headingLevel={1}
         stopName={stop.name}
         stopCode={stop.naptanCode ?? stop.atcoCode}
         departures={departures}
         now={now}
         ageSeconds={ageSeconds}
         degraded={response.meta.degradation !== "normal"}
+        timetableCoverage={response.data.timetableCoverage}
       />
+
+      {response.data.disruptions.length > 0 ? (
+        <OfficialNotices
+          notices={response.data.disruptions}
+          sourcesQueried={[]}
+          collectedAt={response.meta.observedAt}
+          headingId="stop-official-now"
+        />
+      ) : null}
 
       <div className="stop-page__actions">
         <button
@@ -198,16 +260,69 @@ export function StopPage() {
 
       <WillIMakeItPanel departures={departures} stop={stop} now={now} />
 
+      {/*
+        "Bus not come?" — the question this page exists to answer when the board does not.
+
+        Placed directly after the board and the official notices, and deliberately above the full
+        departures list and the weather. It used to sit sixth, below a weather scene, which is the
+        wrong order for the only moment it matters: somebody standing at a stop whose bus has not
+        arrived is not scrolling past a forecast to find help. A passenger who can see their bus
+        coming reads the board and stops there, so nothing is lost by putting this early; a
+        passenger who cannot has it in front of them.
+
+        `BusStoppedPanel` answers the neighbouring question and only exists on the vehicle page,
+        reached by clicking a bus on the live map: somebody standing at a stop is not looking at
+        a bus, and before this panel existed the page offered them nothing at all.
+      */}
+      <WaitingHelp
+        stop={stop}
+        departures={departures}
+        routes={response.data.routes}
+        disruptions={response.data.disruptions}
+        degradation={response.meta.degradation}
+        now={now}
+        ageSeconds={ageSeconds}
+        timetableCoverage={response.data.timetableCoverage}
+        nearby={
+          nearbyResponse
+            ? nearbyResponse.data.results
+                .filter((result) => result.kind === "stop" && result.id !== stop.id)
+                .map((result) => ({
+                  id: result.id,
+                  title: result.title,
+                  distanceMetres: result.distanceMetres,
+                }))
+            : null
+        }
+        nearbyFailed={nearbyError !== null}
+        walkingUrl={walkingUrl}
+      />
+
       <section className="stop-page__departures" aria-labelledby="all-departures-heading">
-        <h2 id="all-departures-heading">All departures</h2>
+        <PixelSectionHeading mark="clock" id="all-departures-heading">
+          All departures
+        </PixelSectionHeading>
 
         {departures.length === 0 ? (
+          /*
+           * Three states, and the third used to be reported as the first.
+           *
+           * "There are no departures from this stop in the next hour" is a statement about the
+           * buses. When every timetable shard the reader asked for was absent it is a statement
+           * about us, and saying the former is reporting our own staleness as a fact about the
+           * service — on every stop outside London, for as long as the horizon is expired. The
+           * board and "Bus not come?" have always distinguished these; this section did not, which
+           * is the one place on the page a passenger could be told something untrue.
+           */
           <EmptyState
-            title="No departures to show"
+            art="bus"
+            title={noTimetablePublished ? "No timetable for today" : "No departures to show"}
             description={
-              response.meta.degradation === "scheduled_only"
-                ? "Live tracking is unavailable for this stop right now, and we have no timetabled departures in the next hour."
-                : "There are no departures from this stop in the next hour."
+              noTimetablePublished
+                ? "We have no timetable published for today at this stop, so we cannot say what is due. That is a gap on our side, not a statement that nothing runs."
+                : response.meta.degradation === "scheduled_only"
+                  ? "Live tracking is unavailable for this stop right now, and we have no timetabled departures in the next hour."
+                  : "There are no departures from this stop in the next hour."
             }
           />
         ) : (
@@ -232,8 +347,105 @@ export function StopPage() {
         )}
       </section>
 
+      {/*
+       * What it is like standing here — the stop page's picture, and this is where it belongs.
+       *
+       * It was briefly in the map's click panel as well. That panel is a board: somebody who taps
+       * a stop on a map wants the next bus, and a 384-pixel illustration above the fold pushes
+       * the one thing they came for underneath it. The full page is where there is room to be
+       * generous, and it is what "Everything about this stop" promises.
+       *
+       * Always drawn, never gated on there being a reading. The weather job publishes a degree
+       * square at a time and a square it has not reached has none — but hiding the section then
+       * leaves a hole where the page's only illustration should be, which reads as broken rather
+       * than as unmeasured. The vignette draws the shelter and the person in a neutral state and
+       * says so in words. Nothing about the sky is invented.
+       */}
+      <section className="stop-page__weather" aria-labelledby="stop-weather-heading">
+        <PixelSectionHeading mark="weather" id="stop-weather-heading">
+          At the stop
+        </PixelSectionHeading>
+        <WeatherVignette
+          weather={response.data.weather ?? null}
+          atcoCode={stop.atcoCode}
+          now={now}
+          /*
+           * The wide composition, which is what this section is for.
+           *
+           * The map's panel gets the portrait: it is answering "when is my bus" and the picture
+           * is the second question. This is the page "Everything about this stop" leads to, and
+           * it has the width for the street the shelter actually stands on.
+           */
+          geometry="world"
+          /*
+           * Two, not three.
+           *
+           * The fitting scale takes the largest whole multiple that fits, and on a 1148-pixel
+           * column that is three — a 960-pixel picture with 150 pixels of readings beside it,
+           * which is a photograph with a caption squeezed into the gutter. At two the scene is
+           * 640 and the temperature, the advice and the four facts have room to be read.
+           */
+          scale={2}
+          /*
+           * Drawn only when a bus genuinely is due. `expectedTime` is the live or estimated time,
+           * so a bus inside the quarter hour is one a passenger can expect to see — and a bus in
+           * the picture when none is coming would be the artwork telling a lie the rest of the
+           * page is careful not to.
+           */
+          busApproaching={departures.some((departure) => {
+            if (!departure.expectedTime) return false;
+            const minutes = (Date.parse(departure.expectedTime) - now.getTime()) / 60_000;
+            return minutes >= 0 && minutes <= 15;
+          })}
+        />
+      </section>
+
+      {/*
+        Where the buses that call here actually go.
+        
+        The map's selected-stop panel has linked to each route since it was built; this page — the
+        one a passenger reaches from a search result, from a journey leg, or from "Everything about
+        this stop" — did not link to a route at all. So the only way to see a service's stop sequence
+        was to find it on the map first, which is backwards: the stop page is the page somebody lands
+        on. Every route calling here is a link to its own ordered stop list.
+      */}
+      {response.data.routes.length > 0 ? (
+        <section className="stop-page__routes" aria-labelledby="stop-routes-heading">
+          <PixelSectionHeading mark="route" id="stop-routes-heading">
+            Routes calling here
+          </PixelSectionHeading>
+          {/*
+            A list read short must not look like a complete one.
+
+            The Worker bounds the read behind this and a busy interchange can reach the bound. A
+            route missing from the list reads as a route that does not stop here — a statement about
+            the bus service made out of a limit of ours.
+          */}
+          {response.data.routesComplete === false ? (
+            <p className="stop-page__routes-note small muted" role="status">
+              We could not read every route that calls here inside one request, so this list may be
+              short. It is not a statement that a route misses this stop.
+            </p>
+          ) : null}
+          <ul className="stop-page__route-list">
+            {response.data.routes.map((route) => (
+              <li key={route.id}>
+                <Link to={`/routes/${encodeURIComponent(route.id)}`}>
+                  <span className="route-badge route-badge--inline">{route.publicName}</span>
+                  <span className="stop-page__route-operator">{route.operatorName}</span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
+      <AccessibilityCard accessibility={response.data.accessibility} />
+
       <section className="stop-page__details" aria-labelledby="stop-details-heading">
-        <h2 id="stop-details-heading">About this stop</h2>
+        <PixelSectionHeading mark="stop" id="stop-details-heading">
+          About this stop
+        </PixelSectionHeading>
         <dl className="stop-page__facts">
           <div>
             <dt>NaPTAN code</dt>
@@ -259,23 +471,6 @@ export function StopPage() {
           </div>
         </dl>
 
-        {/* Amenities are shown only when a source states them; nothing is inferred. */}
-        {stop.amenities.length === 0 ? (
-          <p className="muted small">
-            We do not have sourced accessibility or facilities information for this stop, so none is
-            shown.
-          </p>
-        ) : (
-          <ul className="stop-page__amenities">
-            {stop.amenities.map((amenity) => (
-              <li key={amenity.key}>
-                {amenity.key.replace(/_/g, " ")} — {amenity.value ? "yes" : "no"}{" "}
-                <span className="muted small">({amenity.provenance})</span>
-              </li>
-            ))}
-          </ul>
-        )}
-
         <p className="stop-page__sources small muted">
           Sources: {response.meta.sources.map((s) => s.source).join(", ") || "timetable data"}.{" "}
           <DataAge seconds={ageSeconds} />
@@ -298,12 +493,18 @@ function DepartureList({
 }) {
   return (
     <div className="departure-list">
-      <h3 className="departure-list__heading">
-        {heading}{" "}
-        <StateLozenge tone={heading === "Live" ? "live" : "neutral"}>
-          {departures.length}
-        </StateLozenge>
-      </h3>
+      <PixelSectionHeading
+        level={3}
+        mark={heading === "Live" ? "bus" : "clock"}
+        className="departure-list__heading"
+        aside={
+          <StateLozenge tone={heading === "Live" ? "live" : "neutral"}>
+            {departures.length}
+          </StateLozenge>
+        }
+      >
+        {heading}
+      </PixelSectionHeading>
       <p className="muted small">{description}</p>
 
       <ul className="departure-list__items">

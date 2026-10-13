@@ -1,5 +1,6 @@
 import type { DeparturePrediction } from "@busstops/contracts";
 import { countdownLabel, formatLondonTime, freshnessLabel } from "../lib/format.js";
+import { PixelBusSide } from "./pixel/PixelArt.js";
 import "./ArrivalBoard.css";
 
 /**
@@ -14,6 +15,17 @@ import "./ArrivalBoard.css";
 export interface ArrivalBoardProps {
   stopName: string;
   stopCode: string;
+  /**
+   * Whether this board's stop name is the page's own heading.
+   *
+   * Two places draw this board and they are not the same page. On the stop page the stop *is* the
+   * subject, and that page had no `<h1>` at all — the busiest page in the product, reached from
+   * every search result, journey leg and map marker, with a document outline starting at `h2` and
+   * nothing for a screen reader to announce as the page. Axe did not catch it: "page has no level
+   * one heading" is a best-practice rule, not a violation. On the live map the page is the map and
+   * a selected stop is a panel within it, so there `h2` is right.
+   */
+  headingLevel?: 1 | 2;
   departures: readonly DeparturePrediction[];
   now: Date;
   /** Age of the underlying data in seconds; drives the freshness line. */
@@ -21,6 +33,15 @@ export interface ArrivalBoardProps {
   maxRows?: number;
   onViewAll?: () => void;
   degraded?: boolean;
+  /**
+   * Whether a timetable for today was published at all.
+   *
+   * Without it the board had one empty state for two different facts, and chose the misleading
+   * one: "No departures in the next hour" is a statement about the bus service, and a passenger
+   * reads it as "don't wait here". When the timetable for today was never published, the truth
+   * is about us, not about the buses.
+   */
+  timetableCoverage?: { read: number; missing: number; serviceDates: string[] };
 }
 
 export function ArrivalBoard({
@@ -29,49 +50,78 @@ export function ArrivalBoard({
   departures,
   now,
   ageSeconds,
+  headingLevel = 2,
   maxRows = 4,
   onViewAll,
   degraded = false,
+  timetableCoverage,
 }: ArrivalBoardProps) {
   const rows = departures.slice(0, maxRows);
+  /*
+   * A gap in our data, not a quiet stop.
+   *
+   * Every shard the reader asked for was absent and none answered: there is no timetable
+   * published for today at this stop, so we cannot say whether a bus is coming. Saying "no
+   * departures" here would be reporting our own staleness as a fact about the service.
+   */
+  const noTimetablePublished =
+    rows.length === 0 &&
+    timetableCoverage !== undefined &&
+    timetableCoverage.missing > 0 &&
+    timetableCoverage.read === 0;
 
   return (
     <section className="arrival-board" aria-labelledby="arrival-board-heading">
+      {/* The bezel: a printed label on the housing, not part of the display. */}
       <header className="arrival-board__header">
-        <div>
+        <div className="arrival-board__plate">
+          <PixelBusSide size={22} className="arrival-board__mark" />
           <p className="arrival-board__next">NEXT BUS</p>
-          <h2 id="arrival-board-heading" className="arrival-board__stop">
-            {stopName}
-          </h2>
+        </div>
+        <div>
+          {headingLevel === 1 ? (
+            <h1 id="arrival-board-heading" className="arrival-board__stop">
+              {stopName}
+            </h1>
+          ) : (
+            <h2 id="arrival-board-heading" className="arrival-board__stop">
+              {stopName}
+            </h2>
+          )}
           <p className="arrival-board__code">Stop {stopCode}</p>
         </div>
       </header>
 
-      {rows.length === 0 ? (
-        <p className="arrival-board__empty">
-          {degraded
-            ? "No live departures available right now. Timetabled departures are shown below where we have them."
-            : "No departures in the next hour."}
-        </p>
-      ) : (
-        <table className="arrival-board__table">
-          <caption className="visually-hidden">
-            Next departures from {stopName}, stop {stopCode}
-          </caption>
-          <thead>
-            <tr>
-              <th scope="col">Route</th>
-              <th scope="col">Destination</th>
-              <th scope="col">Due</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((departure) => (
-              <ArrivalRow key={departure.id} departure={departure} now={now} />
-            ))}
-          </tbody>
-        </table>
-      )}
+      {/* The screen. Everything inside it is under the dot matrix. */}
+      <div className="arrival-board__screen">
+        {rows.length === 0 ? (
+          <p className="arrival-board__empty">
+            {noTimetablePublished
+              ? "We have no timetable published for today at this stop, so we cannot say what is due. This is a gap in our data, not a gap in the service."
+              : degraded
+                ? "No live departures available right now. Timetabled departures are shown below where we have them."
+                : "No departures in the next hour."}
+          </p>
+        ) : (
+          <table className="arrival-board__table">
+            <caption className="visually-hidden">
+              Next departures from {stopName}, stop {stopCode}
+            </caption>
+            <thead>
+              <tr>
+                <th scope="col">Route</th>
+                <th scope="col">Destination</th>
+                <th scope="col">Due</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((departure) => (
+                <ArrivalRow key={departure.id} departure={departure} now={now} />
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
 
       <footer className="arrival-board__footer">
         <p className="arrival-board__freshness micro">
@@ -109,8 +159,9 @@ function ArrivalRow({ departure, now }: { departure: DeparturePrediction; now: D
               ? countdownLabel(new Date(time), now)
               : "—"}
         </span>
-        {/* Status is never colour alone: it is always spelled out. */}
+        {/* Status is never colour alone: a lamp, and the word beside it. */}
         <span className={`arrival-board__state arrival-board__state--${state.tone}`}>
+          <span className="arrival-board__lamp" aria-hidden="true" />
           {state.label}
         </span>
         {time && (

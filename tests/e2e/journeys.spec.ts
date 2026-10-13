@@ -1,5 +1,13 @@
 import { expect, test } from "@playwright/test";
-import { EMPTY_MAP, META, STOP_ID, STOP_RESPONSE, mockApi } from "./fixtures.js";
+import {
+  EMPTY_MAP,
+  MAP_WITH_TRAFFIC,
+  META,
+  ROUTE_ID,
+  STOP_ID,
+  STOP_RESPONSE,
+  mockApi,
+} from "./fixtures.js";
 
 /**
  * Passenger journeys end to end (docs/15_TESTING.md "End-to-end").
@@ -50,6 +58,60 @@ test.describe("stop page", () => {
     // The two departures must be distinguishable, not merged into one undifferentiated list.
     await expect(page.getByText(/Live/).first()).toBeVisible();
     await expect(page.getByText(/Timetable/).first()).toBeVisible();
+  });
+
+  /*
+   * A stop leads to the routes that call at it.
+   *
+   * The map's selected-stop panel has linked to each route since it was built; this page did not
+   * link to one at all, so the only way to reach a service's stop sequence was to find it on the map
+   * first — backwards, because the stop page is the one a search result, a journey leg and
+   * "Everything about this stop" all land on.
+   */
+  test("leads to the routes that call here", async ({ page }) => {
+    await mockApi(page);
+    await page.goto(`/stops/${STOP_ID}`);
+
+    const routeLink = page.getByRole("link", { name: /72/ }).first();
+    await expect(routeLink).toBeVisible();
+    await expect(routeLink).toHaveAttribute("href", "/routes/00000000-0000-5000-8000-0000000000e1");
+    await expect(page.getByText("First West Yorkshire").first()).toBeVisible();
+  });
+
+  /*
+   * And says when that list is short, rather than drawing a short one like a complete one.
+   *
+   * The Worker bounds the read behind it — three quarters of a mebibyte of pattern text — and the
+   * boards that have to fall back to that read are the busy interchanges whose tiles are largest.
+   * A route missing from the list reads as a route that does not stop here, which would be a
+   * statement about the bus service made out of a limit of ours.
+   */
+  test("says when the route list was read short, and what that does not mean", async ({ page }) => {
+    await mockApi(page, {
+      [`/v1/stops/${STOP_ID}`]: {
+        ...STOP_RESPONSE,
+        data: { ...STOP_RESPONSE.data, routesComplete: false },
+      },
+    });
+    await page.goto(`/stops/${STOP_ID}`);
+
+    await expect(page.getByText(/this list may be short/)).toBeVisible();
+    await expect(page.getByText(/not a statement that a route misses this stop/)).toBeVisible();
+    // The routes it did read are still there and still followable.
+    await expect(page.getByRole("link", { name: /72/ }).first()).toBeVisible();
+  });
+
+  test("draws no such warning when the route list is all of them", async ({ page }) => {
+    await mockApi(page, {
+      [`/v1/stops/${STOP_ID}`]: {
+        ...STOP_RESPONSE,
+        data: { ...STOP_RESPONSE.data, routesComplete: true },
+      },
+    });
+    await page.goto(`/stops/${STOP_ID}`);
+
+    await expect(page.getByRole("link", { name: /72/ }).first()).toBeVisible();
+    await expect(page.getByText(/this list may be short/)).toHaveCount(0);
   });
 
   test("a favourite is saved with no account and survives a reload", async ({ page }) => {
@@ -105,6 +167,64 @@ test.describe("degraded and stale states", () => {
     // The map is never the only way to read the data.
     const listRegion = page.getByRole("list").or(page.getByText(/no (stops|vehicles|buses)/i));
     await expect(listRegion.first()).toBeVisible();
+  });
+
+  /*
+   * A bus you can open.
+   *
+   * The buses were drawn and inert, and the list under the map named destinations with nothing to
+   * click. The list is the map's accessible equal, so it is the right place to assert this: the
+   * painted bus and the listed bus go to the same URL, and that URL has to carry a viewport,
+   * because the live feeds are area-scoped and a bare reference cannot be looked up.
+   */
+  test("every bus in view can be opened, and the link carries the viewport", async ({ page }) => {
+    await mockApi(page, { "/v1/map": MAP_WITH_TRAFFIC });
+    await page.goto("/live");
+
+    const link = page.getByRole("link", { name: "Ripon" });
+    await expect(link).toBeVisible();
+    const href = await link.getAttribute("href");
+    expect(href).toContain("/vehicles/v1");
+    expect(href).toContain("bbox=");
+  });
+
+  /*
+   * `/live/stops/:stopId` was a route nothing read.
+   *
+   * The page opened on its default camera with no board, so the link a stop page offers back to
+   * the map, and any link anyone shared, was a link to Leeds in general.
+   */
+  test("a link to a stop on the map opens that stop's board", async ({ page }) => {
+    await mockApi(page, { "/v1/map": MAP_WITH_TRAFFIC });
+    await page.goto("/live/stops/450010001");
+
+    await expect(page.getByText("Leeds City Bus Station").first()).toBeVisible();
+    await expect(page.getByRole("link", { name: /everything about this stop/i })).toBeVisible();
+  });
+
+  /*
+   * The map's panel is a board; the picture is on the page the board links to.
+   *
+   * This asserted the opposite — that the vignette was in the panel — and the panel grew to 80vh
+   * of viewport to hold it, which put the artwork above the fold and the next bus underneath it.
+   * Somebody who taps a stop on a map wants the next bus. "Everything about this stop" is where
+   * there is room to be generous, and it is what that link promises.
+   */
+  test("the stop board over the map is a board, and the picture is on the stop page", async ({
+    page,
+  }) => {
+    await mockApi(page, { "/v1/map": MAP_WITH_TRAFFIC });
+    await page.goto("/live/stops/450010001");
+
+    const panel = page.locator(".selected-stop");
+    await expect(panel).toBeVisible();
+    await expect(panel.locator(".vignette")).toHaveCount(0);
+    // The board keeps what a board is for.
+    await expect(panel.getByText(/next bus/i).first()).toBeVisible();
+
+    await panel.getByRole("link", { name: /everything about this stop/i }).click();
+    await expect(page.locator(".stop-page__weather .vignette")).toBeVisible();
+    await expect(page.locator(".stop-page__weather").getByText(/Open-Meteo/i)).toBeVisible();
   });
 });
 
@@ -218,7 +338,13 @@ test.describe("unsubscribe", () => {
 });
 
 test.describe("responsive layout", () => {
-  for (const path of ["/", "/live", "/pro", `/stops/${STOP_ID}`]) {
+  /*
+   * The route page joins this sweep because it is now the page the product is judged on, and it
+   * is the one most likely to overflow: a long ordered list of stop names, a variant tablist that
+   * grows a tab per pattern — York's 20 has six — and a badge beside each name. All four viewport
+   * projects run this, so 320px is covered.
+   */
+  for (const path of ["/", "/live", "/pro", `/stops/${STOP_ID}`, `/routes/${ROUTE_ID}`]) {
     test(`never scrolls horizontally at ${path}`, async ({ page }) => {
       await mockApi(page);
       await page.goto(path);

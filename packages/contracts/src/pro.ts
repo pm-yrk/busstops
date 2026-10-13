@@ -30,6 +30,19 @@ export const ProProvenanceSchema = z.object({
   snapshotDate: z.string().nullable(),
   /** One sentence the UI must display verbatim when the mode is not `live`. */
   notice: z.string().nullable(),
+  /**
+   * The end of the newest settled measurement behind these figures.
+   *
+   * `dataMode` was doing two jobs and only admitting to one. "Live" means the figures come from
+   * real observations rather than from the demonstration snapshot — it says nothing about *when*
+   * those observations were, and the deployed Pro has reported `live` while its newest settled
+   * window was a fortnight old. An operations dashboard that looks current and is not is worse
+   * than one that says how old it is, so the age is its own field and the banner reads it.
+   *
+   * Optional so an older client is not broken by its arrival; null when nothing has been measured
+   * at all, which is a different fact again from old.
+   */
+  measuredAt: IsoInstantSchema.nullable().optional(),
 });
 export type ProProvenance = z.infer<typeof ProProvenanceSchema>;
 
@@ -69,8 +82,41 @@ export const ProMetricSchema = z.object({
   baselineValue: z.number().nullable(),
   /** What a reader can click through to in order to check the figure. */
   evidence: z.array(z.string()).default([]),
+  /**
+   * True when this figure is an illustration, not a measurement.
+   *
+   * Pro's live path produces four of its eight headline figures today; the rest wait on pipeline
+   * stages that do not exist yet, and an empty card teaches a reader nothing about what the
+   * product is for. So a card may carry an example value — but the reader must never be able to
+   * mistake one for the other, which is what this flag exists to make impossible: it drives a
+   * visible badge on the card and is set per figure, never per page, so a real measurement
+   * sitting beside an illustration is still unambiguously real.
+   *
+   * Default false. A figure is measured unless it says otherwise.
+   */
+  illustrative: z.boolean().default(false),
+  /**
+   * Where the number came from, in the three kinds a reader needs to tell apart.
+   *
+   * `illustrative` already separated example figures from real ones, but it left the real ones in
+   * one undifferentiated group — and "1,284 buses observed" and "median segment time 44s" are not
+   * the same kind of claim. The first is a count of what was seen; the second is a statistic
+   * computed over matched traversals, with every assumption that implies. A reader deciding
+   * whether to trust an operational dashboard needs to know which they are looking at.
+   *
+   *  - `observed`     — a direct count or state taken from what the feed reported.
+   *  - `calculated`   — derived from observations by the analytics batch.
+   *  - `illustrative` — an example, not a measurement. Always matches `illustrative: true`.
+   *
+   * Optional so an older deployment's response still validates; absent reads as `calculated`,
+   * which is the more cautious of the two real kinds.
+   */
+  basis: z.enum(["observed", "calculated", "illustrative"]).optional(),
 });
 export type ProMetric = z.infer<typeof ProMetricSchema>;
+
+/** The three kinds, in the order a reader should trust them. */
+export const PRO_METRIC_BASES = ["observed", "calculated", "illustrative"] as const;
 
 export const ProScopeSchema = z.object({
   /** Area, operator or route the view is scoped to; null means all of England. */

@@ -1,7 +1,9 @@
 import { useState } from "react";
+import type { ReactNode } from "react";
 import type { ProMetric, ProProvenance } from "@busstops/contracts";
 import { StateLozenge } from "../components/primitives.js";
 import { PixelClock, PixelWarning } from "../components/pixel/PixelArt.js";
+import { SECTION_MARKS, type SectionMark } from "../components/pixel/PixelSectionHeading.js";
 import "./ProPrimitives.css";
 
 /**
@@ -13,8 +15,84 @@ import "./ProPrimitives.css";
  * eleven journeys looks exactly like one from nine hundred unless the component refuses to let it.
  */
 
-export function DataModeBanner({ provenance }: { provenance: ProProvenance }) {
-  if (provenance.dataMode === "live") return null;
+/**
+ * Says so at the top of the page when anything below it is an illustration.
+ *
+ * The per-card badge is what makes an individual figure unmistakable; this is what stops a
+ * reader forming an impression of the whole page before they read a single card. It appears only
+ * when at least one illustrative figure is actually on the page, so a fully measured Pro carries
+ * no caveat it does not need.
+ */
+export function IllustrativeBanner({ metrics }: { metrics: readonly ProMetric[] }) {
+  const count = metrics.filter((entry) => entry.illustrative).length;
+  if (count === 0) return null;
+
+  return (
+    <div className="pro-mode pro-mode--illustrative" role="status" data-testid="pro-illustrative">
+      <PixelWarning size={18} className="pro-mode__mark" />
+      <strong>Demo preview — live analytics pipeline still being connected</strong>
+      <p>
+        {count} figure{count === 1 ? " on this page is" : "s on this page are"} marked{" "}
+        <em>Example figure</em>: illustrative values shown so the layout can be understood. Every
+        other figure here is measured from real observations and says how and when.
+      </p>
+    </div>
+  );
+}
+
+/**
+ * How old a live measurement may be before the page has to say so.
+ *
+ * The analytics batch aggregates five-minute windows and runs hourly, so a couple of hours is
+ * ordinary and anything beyond it is not. The deployed Pro has reported "live" with its newest
+ * settled window **a fortnight** old, and the only place that appeared was a sentence among the
+ * coverage caveats.
+ */
+const STALE_MEASUREMENT_SECONDS = 2 * 60 * 60;
+
+/** "three hours", "nine days" — the age as somebody would say it, never as a bare number. */
+function spokenAge(seconds: number): string {
+  const hours = Math.round(seconds / 3600);
+  if (hours < 1) return "under an hour";
+  if (hours < 48) return `${hours} hour${hours === 1 ? "" : "s"}`;
+  const days = Math.round(hours / 24);
+  return `${days} day${days === 1 ? "" : "s"}`;
+}
+
+export function DataModeBanner({
+  provenance,
+  now = new Date(),
+}: {
+  provenance: ProProvenance;
+  /** Passed in by tests; the age is relative to the reader's clock, not the payload's. */
+  now?: Date;
+}) {
+  /*
+   * Live is a statement about the source, not about the clock.
+   *
+   * This returned `null` for live mode, full stop — so a dashboard whose newest observation was
+   * two weeks old said nothing at all and looked current. "Live" still means these are real
+   * observations rather than the demonstration snapshot; how old they are is a separate fact and
+   * it is the one a reader is entitled to before they believe a number.
+   */
+  if (provenance.dataMode === "live") {
+    const measuredAt = provenance.measuredAt ?? null;
+    if (!measuredAt) return null;
+    const ageSeconds = Math.max(0, (now.getTime() - Date.parse(measuredAt)) / 1000);
+    if (!Number.isFinite(ageSeconds) || ageSeconds < STALE_MEASUREMENT_SECONDS) return null;
+
+    return (
+      <div className="pro-mode pro-mode--stale" role="status" data-testid="pro-data-mode">
+        <PixelClock size={18} className="pro-mode__mark" />
+        <strong>Real observations, {spokenAge(ageSeconds)} old</strong>
+        <p>
+          These figures come from observed vehicle data rather than a demonstration snapshot, but
+          the newest settled measurement behind them ended {spokenAge(ageSeconds)} ago. Read them as
+          a record of that period, not as the state of the network now.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -38,6 +116,52 @@ export function DataModeBanner({ provenance }: { provenance: ProProvenance }) {
   );
 }
 
+/**
+ * A mark per figure, from the same sixteen-unit vocabulary the section headings use.
+ *
+ * Pro's tiles were a bordered box with a number in it, which is the one place on this site where
+ * nothing said which design system it belonged to. These are chosen from the metric's own key —
+ * a bus for the vehicles observed, a route for the segments, a clock for a duration — so the
+ * mark is a property of what is being counted rather than decoration applied on top.
+ *
+ * Unknown keys get no mark rather than a generic one. A shape that means nothing in particular
+ * is worse than none: it reads as a category the reader is failing to recognise.
+ */
+const METRIC_MARKS: Record<string, SectionMark> = {
+  network_health: "chart",
+  active_vehicles: "bus",
+  punctuality: "clock",
+  reliability: "chart",
+  median_delay: "clock",
+  median_segment_traversal: "clock",
+  segments_measured: "route",
+  abnormal_disruptions: "warning",
+};
+
+/**
+ * The value split from its unit, so the number is the thing you read first.
+ *
+ * "613" set large with "buses" small beside it is a figure; "613" alone is a number in a box,
+ * and the unit crammed into the same type size competes with the digits for the same glance.
+ */
+function splitMetricValue(metric: ProMetric): { value: string; unit: string | null } {
+  if (metric.value === null) return { value: "—", unit: null };
+  switch (metric.unit) {
+    case "percent":
+      return { value: `${(metric.value * 100).toFixed(metric.value < 0.1 ? 1 : 0)}`, unit: "%" };
+    case "seconds":
+      return { value: `${Math.round(metric.value)}`, unit: "sec" };
+    case "minutes":
+      return { value: `${Math.round(metric.value)}`, unit: "min" };
+    case "vehicle_minutes":
+      return { value: metric.value.toFixed(1), unit: "bus-min" };
+    case "points":
+      return { value: `${Math.round(metric.value)}`, unit: "/100" };
+    case "count":
+      return { value: metric.value.toLocaleString("en-GB"), unit: null };
+  }
+}
+
 export function formatMetricValue(metric: ProMetric): string {
   if (metric.value === null) return "—";
   switch (metric.unit) {
@@ -56,6 +180,24 @@ export function formatMetricValue(metric: ProMetric): string {
   }
 }
 
+/**
+ * How old the figure is, in the units a person thinks in.
+ *
+ * This said "900s", which is both unreadable and about to become the normal case: a segment
+ * metric comes from a five-minute bucket that closes ten minutes after it ends, so every live
+ * figure Pro can honestly publish is a quarter of an hour old or more. A number that large in
+ * seconds reads as an error; in minutes it reads as what it is, which is a measurement that has
+ * settled rather than one still being revised.
+ */
+export function freshnessLabel(seconds: number | null): string {
+  if (seconds === null) return "not applicable";
+  if (seconds < 90) return `${Math.round(seconds)} seconds ago`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 90) return `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
+  const hours = Math.round(seconds / 3600);
+  return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+}
+
 function comparisonText(metric: ProMetric): string | null {
   if (metric.value === null || metric.baselineValue === null || metric.suppressed) return null;
   const difference = metric.value - metric.baselineValue;
@@ -71,12 +213,93 @@ function comparisonText(metric: ProMetric): string | null {
 export function ProMetricTile({ metric }: { metric: ProMetric }) {
   const [showDefinition, setShowDefinition] = useState(false);
   const comparison = comparisonText(metric);
+  const { value, unit } = splitMetricValue(metric);
+  const mark = METRIC_MARKS[metric.key];
+  const Mark = mark ? SECTION_MARKS[mark] : null;
+
+  /*
+   * Three states, not two.
+   *
+   * A figure can be measured, withheld because too few observations support it, or not measured
+   * by this pipeline at all — and the third is permanent where the first two are not. They read
+   * identically as "amber text under a dash", which tells a reader that waiting would help when
+   * for one of them it never will. The state is on the element, so the stylesheet can make the
+   * difference visible rather than leaving it to the sentence.
+   */
+  const state = metric.illustrative
+    ? "illustrative"
+    : !metric.suppressed
+      ? "measured"
+      : /does not read the timetable/.test(metric.suppressionReason ?? "")
+        ? "unmeasured"
+        : "withheld";
 
   return (
-    <article className="pro-metric" data-testid={`metric-${metric.key}`}>
+    <article className="pro-metric" data-state={state} data-testid={`metric-${metric.key}`}>
       <header>
+        {Mark ? <Mark size={16} className="pro-metric__mark" /> : null}
         <h3>{metric.label}</h3>
-        {metric.confidence ? (
+        {/*
+          The badge that makes the figure below unmistakable.
+ 
+          It sits in the header rather than under the value so it is read before the number, and
+          it says "example" rather than anything that could be skimmed as a data mode. A reader
+          must not be able to take an illustration for a measurement at a glance.
+        */}
+        {metric.illustrative ? (
+          <span className="pro-metric__demo-badge">Example figure</span>
+        ) : (
+          /*
+            And which kind of real figure it is.
+ 
+            "Buses observed: 1,284" and "Median segment time: 44s" are not the same claim. One is
+            a count of what the feed reported; the other is a statistic computed over matched
+            traversals, with every assumption that implies. A reader deciding whether to trust an
+            operational dashboard needs to tell them apart, and the badge is the only place that
+            distinction can be made without a paragraph. Absent `basis` reads as calculated, the
+            more cautious of the two.
+          */
+          <span
+            className={`pro-metric__basis pro-metric__basis--${metric.basis ?? "calculated"}`}
+            title={
+              (metric.basis ?? "calculated") === "observed"
+                ? "Counted directly from what the feed reported."
+                : "Derived from observations by the analytics batch."
+            }
+          >
+            {(metric.basis ?? "calculated") === "observed" ? "Observed" : "Calculated"}
+          </span>
+        )}
+      </header>
+
+      <p className="pro-metric__value">
+        {/*
+          A dash is not a figure and must not be set like one. At heading size an em dash is a
+          rule across the tile — it read as a loading skeleton, which is the one thing it is not:
+          nothing further is coming for this metric right now.
+        */}
+        {metric.value === null ? (
+          <span className="pro-metric__absent" aria-label="no figure">
+            —
+          </span>
+        ) : (
+          <>
+            {value}
+            {unit ? <span className="pro-metric__unit">{unit}</span> : null}
+          </>
+        )}
+      </p>
+
+      {/*
+        Confidence sits under the figure it qualifies, not beside the label.
+ 
+        In the header it competed with the label for one row and wrapped onto its own line at
+        tile width, which pushed the number down and left the four tiles in a row with their
+        figures at four different heights. It belongs with the number anyway: it is a statement
+        about the value, not about what the value is called.
+      */}
+      {metric.confidence ? (
+        <p className="pro-metric__confidence">
           <StateLozenge
             tone={
               metric.confidence.level === "high"
@@ -88,16 +311,66 @@ export function ProMetricTile({ metric }: { metric: ProMetric }) {
           >
             {metric.confidence.level} confidence
           </StateLozenge>
-        ) : null}
-      </header>
+        </p>
+      ) : null}
 
-      <p className="pro-metric__value">{formatMetricValue(metric)}</p>
-
-      {metric.suppressed ? (
+      {metric.illustrative ? (
+        <p className="pro-metric__illustrative">
+          Illustrative value, not a measurement — shown so the card can be understood while this
+          part of the pipeline is still being connected.
+        </p>
+      ) : metric.suppressed ? (
         <p className="pro-metric__suppressed">{metric.suppressionReason}</p>
       ) : (
-        <p className="pro-metric__comparison">{comparison ?? "No comparable baseline yet."}</p>
+        <p className="pro-metric__comparison">
+          {metric.value !== null && metric.baselineValue !== null ? (
+            <span
+              className="pro-metric__delta"
+              data-direction={
+                metric.value > metric.baselineValue
+                  ? "up"
+                  : metric.value < metric.baselineValue
+                    ? "down"
+                    : "flat"
+              }
+            >
+              {/*
+                A direction and a word, not a colour on its own. Whether up is good depends on the
+                metric — a rise in "buses running" and a rise in "average delay" are opposite news
+                — so the arrow states the change and the sentence beside it states the baseline.
+              */}
+              {metric.value > metric.baselineValue
+                ? "▲"
+                : metric.value < metric.baselineValue
+                  ? "▼"
+                  : "■"}
+            </span>
+          ) : null}
+          {comparison ?? "No comparable baseline yet."}
+        </p>
       )}
+
+      {/*
+        Coverage as a bar as well as a number.
+
+        The share of the requested scope with usable data is the figure that decides how much of
+        the rest of the tile to believe, and it was a percentage in the fourth row of a definition
+        list. One thin bar, one hue, anchored to its baseline — magnitude, so sequential rather
+        than a status colour, because "87% of the network" is not good news or bad news on its own.
+
+        `aria-hidden`, because the same number is announced from the facts list below and a screen
+        reader does not need it twice.
+      */}
+      <div
+        className="pro-metric__coverage"
+        aria-hidden="true"
+        title={`${(metric.coverage * 100).toFixed(0)}% of this scope had usable data`}
+      >
+        <span
+          className="pro-metric__coverage-fill"
+          style={{ width: `${Math.max(2, Math.round(metric.coverage * 100))}%` }}
+        />
+      </div>
 
       <dl className="pro-metric__facts">
         <div>
@@ -113,12 +386,12 @@ export function ProMetricTile({ metric }: { metric: ProMetric }) {
           <dd>{(metric.coverage * 100).toFixed(0)}%</dd>
         </div>
         <div>
-          <dt>Freshness</dt>
-          <dd>
-            {metric.freshnessSeconds === null
-              ? "not applicable"
-              : `${Math.round(metric.freshnessSeconds)}s`}
-          </dd>
+          {/*
+            Named for what it answers. "Freshness: 900s" was a number nobody could act on; the
+            question a reader actually has is when the thing being described happened.
+          */}
+          <dt>Measured</dt>
+          <dd>{freshnessLabel(metric.freshnessSeconds)}</dd>
         </div>
       </dl>
 
@@ -205,6 +478,141 @@ export function ScopeFilters({
           </select>
         </label>
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * Two measurements on one scale: what a segment is doing now against what it usually does.
+ *
+ * The numbers were there already — "142s now, 96s typical" in a row of spans — and nobody reads a
+ * row of spans as "half as long again". Two bars sharing a maximum make the gap the thing you see
+ * first, and the figures stay beside them because an operations team quotes numbers, not pictures.
+ *
+ * One hue, because this is magnitude. Whether the gap is bad is a judgement the card's confidence
+ * and frequency lines make in words; a red bar would make it for them.
+ */
+export function CompareBar({
+  nowSeconds,
+  typicalSeconds,
+  label,
+}: {
+  nowSeconds: number;
+  typicalSeconds: number;
+  label: string;
+}) {
+  const scale = Math.max(nowSeconds, typicalSeconds, 1);
+  const rows: Array<{ name: string; value: number; kind: "now" | "typical" }> = [
+    { name: "Now", value: nowSeconds, kind: "now" },
+    { name: "Typical", value: typicalSeconds, kind: "typical" },
+  ];
+
+  return (
+    <figure className="pro-compare" aria-label={label}>
+      {rows.map((row) => (
+        <div className="pro-compare__row" key={row.kind}>
+          <span className="pro-compare__name">{row.name}</span>
+          <span className="pro-compare__track">
+            <span
+              className={`pro-compare__fill pro-compare__fill--${row.kind}`}
+              style={{ width: `${Math.max(2, Math.round((row.value / scale) * 100))}%` }}
+            />
+          </span>
+          <span className="pro-compare__value">{Math.round(row.value)}s</span>
+        </div>
+      ))}
+    </figure>
+  );
+}
+
+/**
+ * Where this row sits against the biggest in the list it is part of.
+ *
+ * A ranked list says which is worst and hides by how much: first and second can differ by a factor
+ * of ten or by nothing at all, and an operations decision is different in each case. One thin bar
+ * anchored to the baseline, scaled to the list's own maximum, with the value written out.
+ */
+export function RankBar({ value, max, label }: { value: number; max: number; label: string }) {
+  if (max <= 0) return null;
+  return (
+    <div className="pro-rank" title={label}>
+      <span className="pro-rank__track" aria-hidden="true">
+        <span
+          className="pro-rank__fill"
+          style={{ width: `${Math.max(2, Math.round((value / max) * 100))}%` }}
+        />
+      </span>
+      <span className="pro-rank__label">{label}</span>
+    </div>
+  );
+}
+
+/**
+ * A count broken into named bands, drawn as one proportional bar.
+ *
+ * "Fourteen exceptions" and "fourteen exceptions, nine of them highly abnormal" are different
+ * pieces of news, and a sentence of counts can only give the second by being read carefully. One
+ * bar gives it at a glance — and because every band is named and counted in the legend beneath,
+ * identity is never carried by colour alone.
+ *
+ * `tone` names the band's step in the CSS rather than carrying a colour, so severity and source
+ * health look like the same product rather than two people's charts. A band with a count of zero
+ * is left out entirely: a legend entry for something that is not there is a reader's time spent
+ * on nothing.
+ */
+export interface Band {
+  tone: string;
+  label: string;
+  count: number;
+}
+
+export function BandStrip({ bands, label }: { bands: readonly Band[]; label: string }) {
+  const present = bands.filter((band) => band.count > 0);
+  if (present.length === 0) return null;
+
+  return (
+    <figure className="pro-severity" aria-label={label}>
+      <div className="pro-severity__bar" aria-hidden="true">
+        {present.map((band) => (
+          <span
+            key={band.tone}
+            className={`pro-severity__band pro-severity__band--${band.tone}`}
+            style={{ flexGrow: band.count }}
+          />
+        ))}
+      </div>
+      <figcaption className="pro-severity__legend">
+        {present.map((band) => (
+          <span className="pro-severity__key" key={band.tone}>
+            <span
+              className={`pro-severity__swatch pro-severity__band--${band.tone}`}
+              aria-hidden="true"
+            />
+            <strong>{band.count}</strong> {band.label}
+          </span>
+        ))}
+      </figcaption>
+    </figure>
+  );
+}
+
+/*
+ * A table that scrolls sideways, reachable by keyboard.
+ *
+ * Every Pro table is wider than a phone, so its wrapper scrolls. A sighted mouse user drags it; a
+ * keyboard user could not reach it at all, because a plain overflow container takes no focus and
+ * holds nothing focusable — the columns past the fold were simply unavailable. That is axe's
+ * scrollable-region-focusable, and it only appeared once the tables had rows in live mode: an empty
+ * table does not overflow, so populating Pro is what exposed it.
+ *
+ * `role="region"` plus a name makes it an announced landmark rather than an anonymous focus stop,
+ * and the name repeats the caption the table already carries so a screen reader hears the same
+ * words either way.
+ */
+export function ProTableWrap({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="pro-table-wrap" role="region" aria-label={label} tabIndex={0}>
+      {children}
     </div>
   );
 }

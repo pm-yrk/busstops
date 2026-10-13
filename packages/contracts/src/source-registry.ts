@@ -188,6 +188,50 @@ export const SOURCE_REGISTRY: readonly SourceRegistryEntry[] = [
     },
   },
   {
+    source: "os_code_point",
+    displayName: "Ordnance Survey Code-Point Open",
+    owner: "Ordnance Survey",
+    purpose: "Postcode positions, so a postcode finds the stops near it",
+    geography: "Great Britain; only England's postcodes are kept",
+    baseUrl: "https://api.os.uk/downloads/v1/products/CodePointOpen",
+    licenceUrl: "https://www.ordnancesurvey.co.uk/licensing/using-creative-commons-licensing",
+    /*
+     * Three notices, not one. Code-Point Open is Ordnance Survey data that incorporates Royal Mail
+     * data and is distributed under the Open Government Licence, and the licence requires all
+     * three to be carried by anything derived from it.
+     */
+    attribution:
+      "Contains OS data © Crown copyright and database right; " +
+      "Contains Royal Mail data © Royal Mail copyright and database right; " +
+      "Contains National Statistics data © Crown copyright and database right",
+    credentialEnvName: null,
+    // Quarterly product. A month is well inside its real cadence and keeps the artifact honest.
+    freshnessSlaSeconds: 2592000,
+    cacheTtlSeconds: 86400,
+    termsNotes:
+      "Open Government Licence v3.0. Attribution must travel with any derived artifact. " +
+      "Download once per schedule from the published product endpoint; the full product is a " +
+      "single 13.8 MB zip, so there is no case for repeated or partial fetching.",
+    /*
+     * `published_documentation`, deliberately, even though an endpoint answered.
+     *
+     * What was observed is that the product and download endpoints answer without a credential —
+     * not that this project has parsed a row of Code-Point Open. The row shape below is still
+     * taken from the published specification, and claiming otherwise is exactly the kind of
+     * upgrade this field exists to prevent. It moves to `live_response` when an extraction has
+     * read the archive.
+     */
+    contractVerification: {
+      method: "published_documentation",
+      at: "2026-10-13T08:06:19.739Z",
+      note:
+        "Run 38366891204 asked the OS Downloads API from a runner with no credential: the product " +
+        "endpoint answered HTTP 200 for version 2026-08 and the download list answered HTTP 200 " +
+        "with a 14,461,176-byte CSV archive and a published md5. The archive's contents have not " +
+        "yet been parsed, so the row shape is still from published documentation.",
+    },
+  },
+  {
     source: "open_meteo",
     displayName: "Open-Meteo",
     owner: "Open-Meteo",

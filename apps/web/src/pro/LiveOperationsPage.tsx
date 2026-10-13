@@ -5,6 +5,7 @@ import { EmptyState, ErrorState, StateLozenge } from "../components/primitives.j
 import { apiClient } from "../lib/api.js";
 import { useFetch } from "../lib/use-fetch.js";
 import { DataModeBanner, ScopeFilters } from "./ProPrimitives.js";
+import { PixelSectionHeading } from "../components/pixel/PixelSectionHeading.js";
 
 /**
  * Live Operations (docs/10_BUS_STOPS_PRO.md).
@@ -91,7 +92,9 @@ export function LiveOperationsPage() {
 
       {operations.feedProblems.length > 0 ? (
         <section className="pro-section" aria-labelledby="lo-feeds">
-          <h2 id="lo-feeds">Feed problems</h2>
+          <PixelSectionHeading mark="warning" id="lo-feeds">
+            Feed problems
+          </PixelSectionHeading>
           <p className="muted small">
             A feed that has stopped reporting is an operational exception in its own right: the
             services behind it are unmeasured, not running normally.
@@ -110,7 +113,9 @@ export function LiveOperationsPage() {
       ) : null}
 
       <section className="pro-section" aria-labelledby="lo-exceptions">
-        <h2 id="lo-exceptions">Current exceptions</h2>
+        <PixelSectionHeading mark="bus" id="lo-exceptions">
+          Current exceptions
+        </PixelSectionHeading>
         {filtered.length > 0 ? (
           <ul className="pro-list">
             {filtered.map((item) => (

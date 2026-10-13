@@ -1,0 +1,70 @@
+name: Prune Network Artifacts
+
+# Deleting superseded national publishes from the preview bucket.
+#
+# A national build writes about six and a half thousand objects and a gigabyte and a half, and
+# nothing removed the publish it replaced: no retention class matched `data/network/...`, so the
+# job that watches the free tier classified the national timetable as "unclassified" and left it
+# alone. R2 gives 10 GB, so a handful of builds is the whole allowance.
+#
+# Dispatch-only and dry-run by default, because this deletes data and a schedule that deletes data
+# is a schedule nobody reads until it has. Run it once to see the inventory, then again with
+# `apply` if the plan is right.
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: "Actually delete the superseded versions (otherwise report only)"
+        type: boolean
+        default: false
+      keep_versions:
+        description: "How many published versions to keep, including the live one"
+        type: string
+        default: "2"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prune-artifacts
+  cancel-in-progress: false
+
+env:
+  R2_BUCKET_ARTIFACTS: busstops-artifacts-preview
+
+jobs:
+  prune:
+    name: Report, and delete only when asked
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+
+      - name: Plan, and apply only on request
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          KEEP_NETWORK_VERSIONS: ${{ inputs.keep_versions }}
+        run: |
+          # The job's own exit code is what decides the run, but the report is written either way
+          # and is the only description of what was in the bucket.
+          if [ "${{ inputs.apply }}" = "true" ]; then
+            npx tsx pipelines/static-network/run-prune.ts --apply
+          else
+            npx tsx pipelines/static-network/run-prune.ts
+          fi
+
+      - name: Upload the prune report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: prune-report
+          path: prune-report.json
+          retention-days: 14
+          if-no-files-found: ignore

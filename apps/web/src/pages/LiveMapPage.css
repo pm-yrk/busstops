@@ -61,12 +61,10 @@
   margin-bottom: var(--space-xl);
 }
 
-.live-map__section h2 {
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
-  font-size: var(--font-size-h3);
-}
+/*
+ * The list sections' headings are the shared `PixelSectionHeading`, which brings its own type and
+ * its own rule; the flex row and the size that used to be here went with it.
+ */
 
 .live-map__list {
   list-style: none;
@@ -129,4 +127,28 @@
 /* The map and the board it opens share a stacking context, so the board can sit over the map. */
 .live-map__canvas {
   position: relative;
+}
+
+/*
+ * On a desktop window the map is the page, not an illustration inside it.
+ *
+ * The shared component sizes itself for a map embedded in a longer document, which on a 900px
+ * screen left it under half the height with empty warm white below — the first thing a visitor
+ * sees is then mostly nothing. Here it takes the window and stops short, so the "Buses in view"
+ * heading still shows underneath and says the list is there.
+ */
+@media (min-width: 901px) {
+  .live-map__canvas .map-view {
+    height: clamp(360px, calc(100vh - 250px), 780px);
+  }
+}
+
+/*
+ * A notice above the canvas, not in place of it.
+ *
+ * When `/v1/map` is refused the page keeps its basemap and says what is missing beside it. Margin
+ * below so the notice never sits flush against the map it is talking about.
+ */
+.live-map__notice {
+  margin: 0 0 var(--space-sm);
 }

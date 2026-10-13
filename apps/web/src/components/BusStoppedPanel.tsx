@@ -22,6 +22,17 @@ import "./BusStoppedPanel.css";
  * to the user's own maps app.
  */
 
+/**
+ * Whether the surrounding context has actually been gathered.
+ *
+ * The panel used to take `otherVehiclesObserved={0}`, `otherVehiclesMoving={null}` and
+ * `nextServices={[]}` whether the lookup had finished, failed, or genuinely found nothing — three
+ * different facts rendered as one sentence. "No other departures to suggest" over a lookup that
+ * never returned is the empty-state lie this product is not allowed to tell, so the state travels
+ * with the numbers and only `ready` licences a statement about the world.
+ */
+export type BusStoppedContextState = "loading" | "ready" | "unavailable";
+
 export interface BusStoppedPanelProps extends BusStoppedInput {
   /** Next departures at the stop the user is waiting at, already filtered to useful ones. */
   nextServices: ReadonlyArray<{
@@ -34,11 +45,30 @@ export interface BusStoppedPanelProps extends BusStoppedInput {
   walkingUrl: string | null;
   operatorContactUrl: string | null;
   operatorName: string | null;
+  /** Defaults to `ready` so a caller that genuinely has the facts need not say so. */
+  contextState?: BusStoppedContextState;
+  /** Offered when the context lookup failed, so the passenger can ask again. */
+  onRetryContext?: () => void;
   onDismiss?: () => void;
 }
 
 export function BusStoppedPanel(props: BusStoppedPanelProps) {
-  const assessment = assessBusStopped(props);
+  const contextState = props.contextState ?? "ready";
+  const contextKnown = contextState === "ready";
+
+  /*
+   * An unfinished lookup is not an observation.
+   *
+   * `otherVehiclesMoving: false` with `otherVehiclesObserved: 0` reads to `assessBusStopped` as
+   * "nothing nearby is moving", which is a claim about the road. Until the lookup lands there is
+   * no such claim to make, so the peer counts go in as null and the assessment reasons without
+   * them. Only the peers are withheld: freshness, the end of the route and the official incidents
+   * all arrive with the vehicle itself, and an announced closure is the one thing here that can
+   * explain a stationary bus outright.
+   */
+  const assessment = assessBusStopped(
+    contextKnown ? props : { ...props, otherVehiclesMoving: null, otherVehiclesObserved: 0 },
+  );
 
   return (
     <section className="bus-stopped" aria-labelledby="bus-stopped-heading">
@@ -72,7 +102,13 @@ export function BusStoppedPanel(props: BusStoppedPanelProps) {
           </p>
         )}
 
-        {props.otherVehiclesMoving === null ? (
+        {!contextKnown ? (
+          <p className="bus-stopped__pending">
+            {contextState === "loading"
+              ? "Checking what else is moving nearby\u2026"
+              : "We could not check what else is moving nearby just now."}
+          </p>
+        ) : props.otherVehiclesMoving === null ? (
           <p>We cannot tell whether other buses nearby are moving.</p>
         ) : props.otherVehiclesMoving ? (
           <p>
@@ -106,7 +142,20 @@ export function BusStoppedPanel(props: BusStoppedPanelProps) {
 
       <div className="bus-stopped__block">
         <h3>What you can do now</h3>
-        {props.nextServices.length > 0 ? (
+        {!contextKnown ? (
+          <EmptyState
+            title={
+              contextState === "loading"
+                ? "Looking for another way on"
+                : "We could not look up other departures"
+            }
+            description={
+              contextState === "loading"
+                ? "Reading the board at the stop this bus is heading for."
+                : "The departure board and the stops nearby could not be read just now, so we cannot say whether there is another service."
+            }
+          />
+        ) : props.nextServices.length > 0 ? (
           <ul className="bus-stopped__services">
             {props.nextServices.slice(0, 3).map((service) => (
               <li key={`${service.routeName}-${service.expectedTime}`}>
@@ -127,14 +176,22 @@ export function BusStoppedPanel(props: BusStoppedPanelProps) {
           />
         )}
 
-        {props.alternativeStop ? (
+        {contextState === "unavailable" && props.onRetryContext ? (
+          <p>
+            <button type="button" className="bus-stopped__retry" onClick={props.onRetryContext}>
+              Try again
+            </button>
+          </p>
+        ) : null}
+
+        {contextKnown && props.alternativeStop ? (
           <p>
             <Link to={`/stops/${props.alternativeStop.id}`}>{props.alternativeStop.name}</Link> is
             about {props.alternativeStop.walkingMinutes} minutes' walk and may be served sooner.
           </p>
         ) : null}
 
-        {props.walkingUrl ? (
+        {contextKnown && props.walkingUrl ? (
           <p>
             <a href={props.walkingUrl} rel="noreferrer noopener" target="_blank">
               Open walking directions

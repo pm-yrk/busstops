@@ -1,6 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
-import { STOP_ID, mockApi } from "./fixtures.js";
+import { MAP_WITH_TRAFFIC, STOP_ID, mockApi } from "./fixtures.js";
 
 /**
  * Automated accessibility (docs/15_TESTING.md "UI quality"), targeting WCAG 2.2 AA.
@@ -17,14 +17,39 @@ const PAGES = [
   { path: "/journey", name: "journey planner" },
   { path: "/saved", name: "saved" },
   { path: "/methodology", name: "methodology" },
+  /*
+   * The two passenger surfaces this list had been missing.
+   *
+   * "Accessibility regressions" is asked of every surface, and the live map and the disruptions
+   * board were the two a passenger is most likely to be sent to and the two with the most
+   * conditional rendering — a map with a list equivalent beside it, and a board with two layers
+   * that must not be mistaken for each other.
+   */
+  /*
+   * With stops and buses on it, not the empty map.
+   *
+   * `mockApi`'s default `/v1/map` is `EMPTY_MAP`, so this page scanned clean because there was
+   * nothing on it to scan — and the deployed sweep then found `target-size` on the stop links at
+   * phone width, which this could never have caught. An accessibility pass over an empty list is
+   * not an accessibility pass.
+   */
+  { path: "/live", name: "live map", overrides: { "/v1/map": MAP_WITH_TRAFFIC } },
+  { path: "/disruptions", name: "disruptions" },
   { path: "/pro", name: "Pro control tower" },
+  /* And the Pro sections that were left out: each reads different artifacts and draws differently. */
+  { path: "/pro/live", name: "Pro live operations" },
+  { path: "/pro/routes", name: "Pro routes" },
+  { path: "/pro/operators", name: "Pro operators" },
+  { path: "/pro/congestion", name: "Pro congestion" },
+  { path: "/pro/analytics", name: "Pro analytics" },
+  { path: "/pro/reports", name: "Pro reports" },
   { path: "/pro/disruptions", name: "Pro disruptions" },
   { path: "/pro/settings", name: "Pro settings" },
 ];
 
-for (const { path, name } of PAGES) {
+for (const { path, name, overrides } of PAGES) {
   test(`${name} has no automatically detectable accessibility violations`, async ({ page }) => {
-    await mockApi(page);
+    await mockApi(page, overrides ?? {});
     await page.goto(path);
     await page.waitForLoadState("networkidle");
 

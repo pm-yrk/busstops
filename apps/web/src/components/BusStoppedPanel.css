@@ -123,3 +123,32 @@
     padding: var(--space-md);
   }
 }
+
+/*
+ * A lookup that has not landed reads differently from an answer.
+ *
+ * Muted and italic so the eye files it with "we are still looking" rather than with the
+ * statements above it, which are observations.
+ */
+.bus-stopped__pending {
+  margin: 0;
+  color: var(--colour-muted);
+  font-style: italic;
+}
+
+.bus-stopped__retry {
+  background: none;
+  border: 1px solid var(--colour-hairline);
+  border-radius: var(--radius-sm);
+  padding: var(--space-xs) var(--space-sm);
+  font: inherit;
+  font-size: var(--font-size-small);
+  cursor: pointer;
+  color: var(--colour-ink);
+}
+
+.bus-stopped__retry:hover,
+.bus-stopped__retry:focus-visible {
+  border-color: var(--colour-accent);
+  color: var(--colour-accent);
+}

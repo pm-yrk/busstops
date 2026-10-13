@@ -8,6 +8,11 @@
  * exactly the set of defects this preview kept shipping. So this runs against the deployed URL,
  * at three real widths, and reports numbers rather than opinions.
  *
+ * What it cannot do is judge the artwork. Every check here is structural: that a drawing loaded,
+ * that it is scaled by a whole number, that nothing overflows. Whether a bus looks like a bus is
+ * a question for the screenshots this saves, and answering it by counting nodes is how
+ * placeholder art survives a green build.
+ *
  * It lives outside the Playwright projects on purpose: those build and serve the app themselves,
  * and the point here is the thing that is actually deployed, basemap and CSP included.
  *
@@ -16,14 +21,16 @@
 
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import AxeBuilder from "@axe-core/playwright";
 // From @playwright/test rather than `playwright`, which is only a transitive dependency.
 import { chromium } from "@playwright/test";
+import { annotateResults } from "./annotate.mjs";
 
 /*
  * The bodies passed to page.evaluate are serialised and run inside the browser, not here, so the
  * DOM globals they use are legitimately undefined in this file's own scope.
  */
-/* global document, window, getComputedStyle */
+/* global document, window, getComputedStyle, NodeFilter */
 
 const [, , baseUrl, screenshotDir = "visual-qa", apiUrlArg] = process.argv;
 
@@ -38,13 +45,95 @@ const WIDTHS = [
   { name: "phone", width: 390, height: 844 },
 ];
 
+/*
+ * York as well as Leeds, by deep link.
+ *
+ * One city proves the map renders; two prove it renders wherever the data is, which is the claim
+ * being made. York is also the destination this product is meant to plan a journey to, and it had
+ * never been looked at.
+ */
+const YORK_BBOX = "-1.12,53.94,-1.03,53.99";
+
+/*
+ * A viewport to look a bus up in.
+ *
+ * `/vehicles/:ref` needs one: the live feeds are area-scoped, so without a bounding box the page
+ * renders "This link needs a map area" and nothing else. The sweep pushed a bare path, so every
+ * run of it has screenshotted that empty state at three sizes and called the vehicle page looked
+ * at. The reference is found in this box, so this is the box it is looked up in.
+ */
+const MANCHESTER_BBOX = "-2.26,53.46,-2.21,53.50";
+
 const PAGES = [
   { name: "home", path: "/" },
   { name: "live", path: "/live" },
+  { name: "live-york", path: `/live?bbox=${encodeURIComponent(YORK_BBOX)}` },
   { name: "search", path: "/search" },
+  /*
+   * A search with something in it, which no sweep had ever run.
+   *
+   * `/search` on its own photographs a form. The defect this product actually had was in the
+   * results: a route or an operator linked to `/search?q=<its own title>` — back to the same page
+   * with the same query, a loop that read as a broken link. That is only visible with results on
+   * the screen, so the sweep now puts some there and follows one.
+   */
+  { name: "search-results", path: `/search?q=${encodeURIComponent("Leeds")}` },
   { name: "journey", path: "/journey" },
+  /*
+   * A journey with a plan on it, not just the form.
+   *
+   * `/journey` alone photographs two inputs and a button, which says nothing about whether the
+   * planner works or whether a result is legible. The endpoints are seeded the way the map seeds
+   * them when a destination is tapped: Leeds city centre to Leeds Bradford Airport, which is the
+   * corridor the verification plans as well, so the two agree about what "works" means.
+   */
+  {
+    name: "journey-result",
+    path:
+      "/journey?fromLat=53.7965&fromLon=-1.5478&fromLabel=" +
+      encodeURIComponent("Leeds City Centre") +
+      "&toLat=53.8659&toLon=-1.6606&toLabel=" +
+      encodeURIComponent("Leeds Bradford Airport"),
+    /* The plan is fetched after the page settles, so the shot waits for a result or a reason. */
+    settleOn: ".journey-strip, .state-block",
+  },
+  /*
+   * A second corridor, in a different city and on a different scale.
+   *
+   * Leeds to its airport is a long inter-urban hop; York Station to the Minster is a short walk
+   * plus one hop across a city centre, which is the journey most people actually plan. A strip
+   * that reads well for the first and badly for the second is a strip that only works when the
+   * legs are long, and one example would never say so.
+   */
+  {
+    name: "journey-result-york",
+    path:
+      "/journey?fromLat=53.9579&fromLon=-1.0934&fromLabel=" +
+      encodeURIComponent("York Station") +
+      "&toLat=53.9623&toLon=-1.0819&toLabel=" +
+      encodeURIComponent("York Minster"),
+    settleOn: ".journey-strip, .state-block",
+  },
   { name: "disruptions", path: "/disruptions" },
+  { name: "saved", path: "/saved" },
+  { name: "methodology", path: "/methodology" },
+  /*
+   * Every Pro section, not just its front page.
+   *
+   * "all Pro sections" is the requirement and one screenshot of the control tower is not that:
+   * each of these reads different artifacts and degrades differently when one is missing, which
+   * is precisely the state a sweep exists to catch.
+   */
   { name: "pro", path: "/pro" },
+  { name: "pro-live", path: "/pro/live" },
+  { name: "pro-routes", path: "/pro/routes" },
+  { name: "pro-operators", path: "/pro/operators" },
+  { name: "pro-congestion", path: "/pro/congestion" },
+  { name: "pro-analytics", path: "/pro/analytics" },
+  { name: "pro-disruptions", path: "/pro/disruptions" },
+  { name: "pro-reports", path: "/pro/reports" },
+  { name: "pro-brief", path: "/pro/brief" },
+  { name: "pro-settings", path: "/pro/settings" },
 ];
 
 /**
@@ -55,27 +144,371 @@ const PAGES = [
  * than the page. Whether any bus is moving is a property of the hour — at three in the morning
  * the honest answer is none — so this returns null and the sweep says so.
  */
-async function findVehicleRef(apiUrl) {
+
+/**
+ * Clicks a stop where the renderer actually drew one.
+ *
+ * There is no element to click any more: stops are a symbol layer. This asks the map for a stop
+ * feature on screen, converts its position back to the page, and clicks there — which is what a
+ * person does, and the only way the map's own click handler can be exercised.
+ */
+async function clickPaintedStop(page, sink) {
+  await waitForPaintedFeatures(page, ["stop-pips", "stop-flags", "stop-clusters"]);
+  const point = await page.evaluate(() => {
+    const map = globalThis.__busstopsMap;
+    if (!map) return null;
+    const features = map.queryRenderedFeatures({ layers: ["stop-flags", "stop-pips"] });
+    const feature = features[0];
+    if (!feature) return null;
+    const projected = map.project(feature.geometry.coordinates);
+    const box = map.getCanvas().getBoundingClientRect();
+    return { x: box.left + projected.x, y: box.top + projected.y };
+  });
+  if (!point) {
+    throw new Error(
+      `no stop was painted, so none could be clicked — ${describeVehicleLayers(
+        await vehicleLayerState(page),
+      )}${describeConsole(sink)}`,
+    );
+  }
+  await page.mouse.click(point.x, point.y);
+}
+
+/**
+ * Clicks a bus where the renderer actually drew one.
+ *
+ * The same problem as a stop and, until now, without the same answer: the buses were a symbol
+ * layer with no click handler at all, so a passenger watching the 36 go past could not ask it
+ * anything. This exercises the handler the way a person does — find where a bus was painted,
+ * convert it back to the page, click there.
+ */
+/**
+ * Clicks a bus that is actually clickable.
+ *
+ * It used to take the first painted feature and click where the map says it is, which is a
+ * different question: a panel, a zoom control or the attribution can be sitting on top of that
+ * point, and a click there lands on them. Run 59 failed this on desktop and phone and passed it
+ * on tablet, which is the signature of a geometric accident rather than a product defect — the
+ * sweep had opened a stop board the step before and never closed it, so on a phone the bottom
+ * sheet covered most of the map and on a desktop the side panel covered the right third.
+ *
+ * So the point is tested before it is used. `elementFromPoint` is the browser's own answer to
+ * "what would this click hit", and a bus under something else is skipped for the next one rather
+ * than clicked and reported as a broken panel.
+ */
+/**
+ * Everything the renderer can be asked about the vehicle layers, in one call.
+ *
+ * "No bus was painted" was one message for several unrelated failures: no map object at all, a
+ * source with no features in it, features in the source that no layer drew, an icon the style
+ * never registered, or a zoom above the layer's `maxzoom`. Those have nothing in common but the
+ * symptom, and the sweep reported the symptom — so a run that failed said only that something
+ * about buses was wrong.
+ *
+ * This is deliberately read-only and returns numbers, so the failure message can name which of
+ * them it was. `querySourceFeatures` asks what the data has; `queryRenderedFeatures` asks what
+ * the renderer drew; the gap between the two is where an icon or a filter is at fault.
+ */
+/**
+ * What the browser complained about, attached to the failure it probably explains.
+ *
+ * The sweep already records console errors and reports them as their own check, which is a
+ * different line in a log of several hundred. A missing sprite or a rejected tile request is the
+ * likely cause of a layer drawing nothing, and the two being far apart in the output is how a
+ * cause gets read as an unrelated warning.
+ */
+function describeConsole(sink) {
+  const errors = sink?.consoleErrors ?? [];
+  const bad = sink?.failedRequests ?? [];
+  if (errors.length === 0 && bad.length === 0) return "; console clean";
+  return (
+    `; console: ${errors.slice(0, 2).join(" | ") || "clean"}` +
+    (bad.length > 0 ? `; failed requests: ${bad.slice(0, 2).join(", ")}` : "")
+  );
+}
+
+async function vehicleLayerState(page) {
+  return page.evaluate(() => {
+    const map = globalThis.__busstopsMap;
+    if (!map) return { map: false };
+    const rendered = (layers) => {
+      try {
+        return map.queryRenderedFeatures({ layers }).length;
+      } catch {
+        // A layer that does not exist throws rather than returning nothing, and "the layer is
+        // missing" is itself an answer worth keeping apart from "the layer drew nothing".
+        return -1;
+      }
+    };
+    let sourceFeatures = -1;
+    let clusters = 0;
+    try {
+      const features = map.querySourceFeatures("busstops-vehicles");
+      sourceFeatures = features.length;
+      clusters = features.filter((feature) => feature.properties?.point_count !== undefined).length;
+    } catch {
+      /* left at -1: the source itself is missing */
+    }
+    return {
+      map: true,
+      zoom: Number(map.getZoom().toFixed(2)),
+      styleLoaded: map.isStyleLoaded(),
+      sourceFeatures,
+      clusters,
+      renderedBuses: rendered(["vehicle-buses"]),
+      renderedPips: rendered(["vehicle-pips"]),
+      renderedClusters: rendered(["vehicle-clusters"]),
+      // The icons the style actually holds. A symbol layer whose `icon-image` is not in this
+      // list draws nothing at all and reports no error, which is how `vehicle-pips` was blank
+      // on the deployment once before.
+      images: typeof map.listImages === "function" ? map.listImages().sort() : [],
+      layers: (map.getStyle()?.layers ?? [])
+        .map((layer) => layer.id)
+        .filter((id) => id.startsWith("vehicle")),
+    };
+  });
+}
+
+function describeVehicleLayers(state) {
+  if (!state?.map) return "the map object was never attached to the page";
+  return (
+    `zoom ${state.zoom}, style ${state.styleLoaded ? "loaded" : "NOT loaded"}; ` +
+    `source held ${state.sourceFeatures} feature(s) of which ${state.clusters} cluster(s); ` +
+    `rendered buses=${state.renderedBuses} pips=${state.renderedPips} ` +
+    `clusters=${state.renderedClusters}; vehicle layers [${state.layers.join(", ") || "none"}]; ` +
+    `icons [${state.images.join(", ") || "none"}]`
+  );
+}
+
+/**
+ * Wait until the renderer has actually drawn something on these layers.
+ *
+ * Run 71's diagnostics said what four runs of "no bus was painted" could not. At the moment of
+ * the click the map reported `source held 0 feature(s)`, `rendered buses=0 pips=0`, and in two
+ * cases `vehicle layers [none]` or `style NOT loaded` — with the tile host aborting requests.
+ * The sweep was clicking before the style had finished loading, before the layers had been
+ * added, and before the viewport's vehicles had reached the source.
+ *
+ * So it waits for paint, which is the precondition of "a painted bus can be clicked" rather than
+ * a relaxation of it. A layer that never paints inside the bound still fails, and still fails
+ * with the full diagnostic — what changes is that a slow map is no longer reported as a missing
+ * one.
+ */
+async function waitForPaintedFeatures(page, layers, timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const drawn = await page.evaluate((names) => {
+      const map = globalThis.__busstopsMap;
+      if (!map || !map.isStyleLoaded()) return 0;
+      try {
+        return map.queryRenderedFeatures({ layers: names }).length;
+      } catch {
+        // The layers are not on the style yet, which is one of the states being waited out.
+        return 0;
+      }
+    }, layers);
+    if (drawn > 0) return drawn;
+    await page.waitForTimeout(500);
+  }
+  return 0;
+}
+
+async function clickPaintedBus(page, sink) {
+  await waitForPaintedFeatures(page, ["vehicle-buses", "vehicle-pips"]);
+  const point = await page.evaluate(() => {
+    const map = globalThis.__busstopsMap;
+    if (!map) return null;
+    const features = map.queryRenderedFeatures({ layers: ["vehicle-buses", "vehicle-pips"] });
+    if (features.length === 0) return null;
+
+    const canvas = map.getCanvas();
+    const box = canvas.getBoundingClientRect();
+    let covered = 0;
+    let offscreen = 0;
+    /*
+     * What blocked it, not merely that something did.
+     *
+     * "All 113 painted buses were under something else" has been reported three runs running with
+     * no way to tell an overlay from an off-screen projection from a quirk of `elementFromPoint`
+     * over a canvas. Naming the element it hit, and counting the ones that were simply not on the
+     * screen, separates three different faults that read as one sentence.
+     */
+    const blockers = [];
+    for (const feature of features) {
+      const projected = map.project(feature.geometry.coordinates);
+      const x = box.left + projected.x;
+      const y = box.top + projected.y;
+      if (x < 0 || y < 0 || x > globalThis.innerWidth || y > globalThis.innerHeight) {
+        offscreen += 1;
+        continue;
+      }
+      const hit = document.elementFromPoint(x, y);
+      if (hit === canvas || canvas.contains(hit)) {
+        return { x, y, covered, offscreen, of: features.length };
+      }
+      covered += 1;
+      if (blockers.length < 3 && hit) {
+        blockers.push(
+          `${hit.tagName.toLowerCase()}${hit.className ? `.${String(hit.className).split(/\s+/).slice(0, 2).join(".")}` : ""}`,
+        );
+      }
+    }
+    return { blocked: covered, offscreen, of: features.length, blockers };
+  });
+
+  if (!point) {
+    /*
+     * Ask the renderer what it actually had before calling this a product defect.
+     *
+     * We have had exactly this finding be false once already, from a stale preview server, and
+     * the message gave no way to tell. Now it says whether the data arrived, whether a layer
+     * drew it, and whether the icon it needs is registered — three different faults that were
+     * one sentence.
+     */
+    throw new Error(
+      `no bus was painted, so none could be clicked — ${describeVehicleLayers(
+        await vehicleLayerState(page),
+      )}${describeConsole(sink)}`,
+    );
+  }
+  if (point.x === undefined) {
+    /*
+     * Try again with a bus in the middle of the map before calling this a defect.
+     *
+     * Three runs reported "none of the painted buses could be clicked" and named the blocker:
+     * `label.live-map__layer` and `fieldset.live-map__layers` — the layer switcher, which is a
+     * real control the passenger uses, sitting over a corner of the map. Every bus in the viewport
+     * happening to be behind it is a fact about where the buses are, not about whether clicking a
+     * bus works, and conflating the two cost three runs of looking at the wrong thing.
+     *
+     * So the map is re-centred on one of them. The centre of the canvas is the part no overlay
+     * claims, and if a bus is clickable there then the handler works; if it still is not, that is
+     * the product defect this check was looking for and the message says which case it is.
+     */
+    const recentred = await page.evaluate(async () => {
+      const map = globalThis.__busstopsMap;
+      if (!map) return null;
+      const features = map.queryRenderedFeatures({ layers: ["vehicle-buses", "vehicle-pips"] });
+      const first = features[0];
+      if (!first) return null;
+
+      map.jumpTo({ center: first.geometry.coordinates });
+      // One frame, so the projection below describes what is on the screen now.
+      await new Promise((resolve) => globalThis.requestAnimationFrame(() => resolve(undefined)));
+
+      const canvas = map.getCanvas();
+      const box = canvas.getBoundingClientRect();
+      const projected = map.project(first.geometry.coordinates);
+      const x = box.left + projected.x;
+      const y = box.top + projected.y;
+      const hit = document.elementFromPoint(x, y);
+      if (hit === canvas || canvas.contains(hit)) return { x, y };
+      /*
+       * Three different findings used to arrive as one sentence.
+       *
+       * A bus under the layer switcher is a fact about where the buses are. A bus under a
+       * collapsed canvas is a layout fault. And a page showing "The map could not be loaded"
+       * is not a clicking fault at all — the map component replaces itself with a message, so
+       * there is no canvas to click and the map object left over from a previous render still
+       * answers `queryRenderedFeatures`. Reporting that as "clicking a bus is broken" sent three
+       * runs after the wrong thing.
+       */
+      return {
+        blocker: hit
+          ? `${hit.tagName.toLowerCase()}${hit.className ? `.${String(hit.className).split(/\s+/)[0]}` : ""}`
+          : "nothing identifiable",
+        mapUnavailable: document.querySelector(".map-view--unavailable") !== null,
+        mapMessage: (document.querySelector(".map-view--unavailable p")?.textContent ?? "").trim(),
+        canvasBox: { width: Math.round(box.width), height: Math.round(box.height) },
+      };
+    });
+
+    if (!recentred || recentred.x === undefined) {
+      // The one case that is not a clicking fault, said first and said plainly.
+      if (recentred?.mapUnavailable) {
+        throw new Error(
+          `the map is not showing: "${recentred.mapMessage || "no message"}" — so there was no ` +
+            `canvas to click. ${point.of} bus(es) came back from the API and are listed below the ` +
+            `map, which is the documented fallback; this is a map-load failure, not a click one.`,
+        );
+      }
+      throw new Error(
+        `none of the ${point.of} painted bus(es) could be clicked: ${point.blocked} were under ` +
+          `something else${point.blockers.length > 0 ? ` (${point.blockers.join(", ")})` : ""}` +
+          `, ${point.offscreen} were off the screen; and with one centred on the map it was still ` +
+          `covered by ${recentred?.blocker ?? "nothing identifiable"}` +
+          (recentred?.canvasBox
+            ? ` (canvas ${recentred.canvasBox.width}x${recentred.canvasBox.height})`
+            : ""),
+      );
+    }
+    await page.mouse.click(recentred.x, recentred.y);
+    return;
+  }
+  await page.mouse.click(point.x, point.y);
+}
+
+async function api(apiUrl, path) {
   if (!apiUrl) return null;
   try {
-    const response = await fetch(
-      `${apiUrl.replace(/\/$/, "")}/v1/map?bbox=-2.26,53.46,-2.21,53.50&zoom=15`,
-      { signal: AbortSignal.timeout(20_000) },
-    );
+    const response = await fetch(`${apiUrl.replace(/\/$/, "")}${path}`, {
+      signal: AbortSignal.timeout(20_000),
+    });
     if (!response.ok) return null;
-    const body = await response.json();
-    return body?.data?.vehicles?.[0]?.vehicleRef ?? null;
+    return await response.json();
   } catch {
     return null;
   }
 }
 
-const vehicleRef = await findVehicleRef(apiUrlArg);
+/*
+ * The real stop, route, operator and bus this deployment actually has.
+ *
+ * The sweep covered home, live, search, journey, disruptions and Pro, and the four pages a
+ * passenger spends most of their time on were not in it — because each needs a real identifier
+ * and inventing one would photograph a not-found page. So each is discovered from the one before
+ * it: a viewport names a stop, the stop names its routes, the route names its operator.
+ */
+const map = await api(apiUrlArg, `/v1/map?bbox=${MANCHESTER_BBOX}&zoom=15`);
+const vehicleRef = map?.data?.vehicles?.[0]?.vehicleRef ?? null;
 if (vehicleRef) {
-  PAGES.push({ name: "vehicle", path: `/vehicles/${encodeURIComponent(vehicleRef)}` });
+  PAGES.push({
+    name: "vehicle",
+    // With the viewport it was found in. Without one this page is "This link needs a map area".
+    path: `/vehicles/${encodeURIComponent(vehicleRef)}?bbox=${encodeURIComponent(MANCHESTER_BBOX)}`,
+  });
   console.log(`Following a real vehicle: ${vehicleRef}`);
 } else {
   console.log("No live vehicle to follow, so the vehicle page is not in this sweep.");
+}
+
+const stops = map?.data?.stops ?? [];
+// A stop with a service on it, so the board is photographed with something on it.
+const stop = stops.find((entry) => (entry.routePublicNames ?? []).length > 0) ?? stops[0] ?? null;
+if (stop) {
+  PAGES.push({ name: "stop", path: `/stops/${encodeURIComponent(stop.id)}` });
+  // And the same stop as a selected board on the map, which is a different layout entirely.
+  PAGES.push({ name: "live-stop-deeplink", path: `/live/stops/${encodeURIComponent(stop.id)}` });
+  console.log(`Looking at a real stop: ${stop.name}`);
+
+  const detail = await api(apiUrlArg, `/v1/stops/${encodeURIComponent(stop.id)}`);
+  const route = detail?.data?.routes?.[0] ?? null;
+  if (route?.id) {
+    PAGES.push({ name: "route", path: `/routes/${encodeURIComponent(route.id)}` });
+    console.log(`Looking at a real route: ${route.publicName ?? route.id}`);
+    const routeDetail = await api(apiUrlArg, `/v1/routes/${encodeURIComponent(route.id)}`);
+    const operatorId = routeDetail?.data?.operator?.id ?? null;
+    if (operatorId) {
+      PAGES.push({ name: "operator", path: `/operators/${encodeURIComponent(operatorId)}` });
+      console.log(`Looking at a real operator: ${routeDetail.data.operator.name}`);
+    } else {
+      console.log("The route named no operator, so the operator page is not in this sweep.");
+    }
+  } else {
+    console.log("No route calls at that stop, so the route page is not in this sweep.");
+  }
+} else {
+  console.log("No stop came back, so the stop, route and operator pages are not in this sweep.");
 }
 
 const results = [];
@@ -103,6 +536,18 @@ function watch(page, sink) {
   });
   page.on("response", (response) => {
     const url = response.url();
+    /*
+     * Which resource 404ed, not merely that one did.
+     *
+     * Chromium's console message for a failed subresource is "Failed to load resource: the server
+     * responded with a status of 404 ()" — no URL in the text, so run 60 reported the vehicle
+     * page failing at all three widths and named nothing. A status without a subject is a fact
+     * nobody can act on, which is how it survived a run.
+     */
+    const status = response.status();
+    if (status >= 400 && sink.badResponses) {
+      sink.badResponses.push(`${status} ${url.replace(/^https?:\/\/[^/]+/, "")}`);
+    }
     if (url.includes("openfreemap") || url.includes("tiles")) {
       sink.tileResponses.push({ url, status: response.status() });
     }
@@ -125,7 +570,7 @@ for (const size of WIDTHS) {
   });
 
   for (const target of PAGES) {
-    const sink = { consoleErrors: [], failedRequests: [], tileResponses: [] };
+    const sink = { consoleErrors: [], failedRequests: [], tileResponses: [], badResponses: [] };
     const page = await context.newPage();
     watch(page, sink);
 
@@ -140,7 +585,22 @@ for (const size of WIDTHS) {
         waitUntil: "domcontentloaded",
         timeout: 60_000,
       });
-      await page.waitForTimeout(target.name === "live" ? 9_000 : 2_000);
+      await page.waitForTimeout(target.name.startsWith("live") ? 9_000 : 2_000);
+
+      /*
+       * Some pages only become themselves after a request lands — a journey has a form until the
+       * planner answers. A page that declares what "settled" looks like waits for it before it is
+       * measured or photographed, so the shot is of the result rather than of the spinner.
+       */
+      if (target.settleOn) {
+        await page
+          .locator(target.settleOn)
+          .first()
+          .waitFor({ state: "visible", timeout: 20_000 })
+          .catch(() => {
+            /* Never settling is itself reported, by the emptiness check below. */
+          });
+      }
 
       await page.screenshot({
         path: join(screenshotDir, `${size.name}-${target.name}.png`),
@@ -198,11 +658,46 @@ for (const size of WIDTHS) {
         overflow.px <= 0 ? "0px" : `${overflow.px}px — ${overflow.culprit}`,
       );
 
+      /*
+       * Raw identifiers, on the page, where a passenger would read them.
+       *
+       * `White_Rose_Shopping_Centre` and `Easterly_Road_Hollin_Park_Mount` reached the live map
+       * and the arrival boards, and they were found by a person looking at a screenshot. The
+       * humanising happens at the read boundary in the Worker, so a new endpoint or a new field
+       * can reintroduce them anywhere — which makes this a sweep rather than a unit test.
+       *
+       * An underscore between two letters is the shape of a NaPTAN or headsign identifier and is
+       * not something English writes. The legitimate punctuation this must never flag —
+       * `King's Cross`, `Stratford-upon-Avon`, `Park & Ride` — has no underscore in it at all.
+       */
+      const rawIdentifiers = await page.evaluate(() => {
+        const found = new Set();
+        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          const parent = node.parentElement;
+          if (!parent) continue;
+          // Code samples and the methodology page legitimately show identifiers as identifiers.
+          if (parent.closest("code, pre, [data-raw-identifier-ok]")) continue;
+          for (const match of String(node.nodeValue ?? "").matchAll(/[A-Za-z]+_[A-Za-z]+\w*/g)) {
+            found.add(match[0]);
+          }
+        }
+        return [...found].slice(0, 5);
+      });
+      record(
+        `${size.name}/${target.name} shows no raw identifiers`,
+        rawIdentifiers.length === 0,
+        rawIdentifiers.length === 0 ? "none" : rawIdentifiers.join(", "),
+      );
+
       if (sink.consoleErrors.length > 0) {
         record(
           `${size.name}/${target.name} loads without console errors`,
           false,
-          sink.consoleErrors.slice(0, 3).join(" | "),
+          sink.consoleErrors.slice(0, 3).join(" | ") +
+            (sink.badResponses.length > 0
+              ? ` — from: ${sink.badResponses.slice(0, 3).join(", ")}`
+              : ""),
         );
       }
 
@@ -222,9 +717,40 @@ for (const size of WIDTHS) {
             ctaTop: cta?.getBoundingClientRect().top ?? null,
             viewportHeight: window.innerHeight,
             // Both compositions are in the DOM and one is hidden, so only the drawn one counts.
-            sceneRects: [...document.querySelectorAll(".home__hero-scene .street-scene__canvas")]
-              .filter((svg) => svg.getBoundingClientRect().height > 0)
-              .reduce((total, svg) => total + svg.querySelectorAll("rect").length, 0),
+            street: (() => {
+              const shown = [...document.querySelectorAll(".street-scene__street")].find(
+                (el) => el.getBoundingClientRect().height > 0,
+              );
+              const ground = shown?.querySelector(".street-scene__ground");
+              if (!ground) return null;
+              const box = ground.getBoundingClientRect();
+              return {
+                natural: `${ground.naturalWidth}x${ground.naturalHeight}`,
+                drawn: `${Math.round(box.width)}x${Math.round(box.height)}`,
+                scale: ground.naturalWidth ? box.width / ground.naturalWidth : 0,
+                complete: ground.complete && ground.naturalWidth > 0,
+                /*
+                 * The traffic, wherever it is — which is not inside the composition.
+                 *
+                 * This counted `.street-scene__vehicle img` within `.street-scene__street`, and
+                 * the lanes are deliberately a *sibling* of it: the composition is exactly as
+                 * wide as the artwork and clips what overflows, so a bus confined to it drove
+                 * two thirds of the way across a desktop window and vanished. Moving the traffic
+                 * out is what lets a bus enter beyond one edge and leave beyond the other, and
+                 * this check had been reporting that fix as "0 vehicle frames" ever since.
+                 *
+                 * Scoped to the shown variant by its own suffix, so the hidden composition's
+                 * traffic is not counted instead.
+                 */
+                buses: (() => {
+                  const variant = shown.className.includes("--wide") ? "wide" : "tall";
+                  const traffic = document.querySelector(`.street-scene__traffic--${variant}`);
+                  return traffic
+                    ? traffic.querySelectorAll(".street-scene__vehicle img").length
+                    : 0;
+                })(),
+              };
+            })(),
           };
         });
 
@@ -233,10 +759,31 @@ for (const size of WIDTHS) {
           hero.heroBottom !== null && Math.abs(hero.heroBottom - hero.viewportHeight) <= 2,
           `hero ends at ${Math.round(hero.heroBottom ?? -1)}, viewport ${hero.viewportHeight}`,
         );
+        /*
+         * Structural only, and named so. Whether the artwork is any good is a question for the
+         * screenshots this sweep saves, not for a number: a node count says nothing about
+         * whether a bus looks like a bus, and reporting one as if it did is how placeholder art
+         * survives a green build. What can be checked mechanically is that the drawing loaded,
+         * that it is the composition meant for this shape of window, and that it is scaled by a
+         * whole number — pixel art at 2.4x is a photograph of pixel art.
+         */
+        const street = hero.street;
         record(
-          `${size.name}/home street scene is drawn, not a row of icons`,
-          hero.sceneRects >= 60 && (hero.sceneHeight ?? 0) > 100,
-          `${hero.sceneRects} shapes, ${Math.round(hero.sceneHeight ?? 0)}px tall`,
+          `${size.name}/home hero artwork loads`,
+          !!street && street.complete && street.buses >= 2,
+          street
+            ? `${street.natural} drawn at ${street.drawn}, ${street.buses} vehicle frames`
+            : "(no street found)",
+        );
+        record(
+          `${size.name}/home hero artwork is scaled by a whole number`,
+          !!street && street.scale >= 2 && Number.isInteger(Math.round(street.scale * 1000) / 1000),
+          street ? `${street.scale}x` : "(no street found)",
+        );
+        record(
+          `${size.name}/home hero artwork actually paints`,
+          (hero.sceneHeight ?? 0) > 100,
+          `${Math.round(hero.sceneHeight ?? 0)}px tall`,
         );
         record(
           `${size.name}/home keeps the explanation below the fold`,
@@ -250,16 +797,98 @@ for (const size of WIDTHS) {
         );
       }
 
-      if (target.name === "live") {
+      if (target.name.startsWith("live")) {
         const map = await page.evaluate(() => {
           const canvas = document.querySelector("canvas.maplibregl-canvas");
           const unavailable = document.querySelector(".map-view--unavailable");
+
+          /*
+           * What the renderer actually painted, rather than what the DOM contains.
+           *
+           * The old version of this counted `.map-marker` elements and then checked each one's
+           * rectangle against the map's, because a CSS rule had once dropped every marker into
+           * normal flow: the DOM held 197 buses and the screen showed none. There are no marker
+           * elements any more — stops and buses are GeoJSON layers — so that whole class of bug
+           * is gone, and the question is answered directly instead. `queryRenderedFeatures` is
+           * the renderer's own answer to "what is on screen".
+           */
+          const instance = globalThis.__busstopsMap;
+          const painted = (layers) => {
+            if (!instance) return 0;
+            try {
+              return instance.queryRenderedFeatures({ layers }).length;
+            } catch {
+              // A layer that does not exist at this zoom is not an error; it is the point.
+              return 0;
+            }
+          };
+          const clusterTotal = (layers) => {
+            if (!instance) return 0;
+            try {
+              return instance
+                .queryRenderedFeatures({ layers })
+                .reduce((sum, f) => sum + (Number(f.properties?.point_count) || 0), 0);
+            } catch {
+              return 0;
+            }
+          };
+
           return {
             hasCanvas: !!canvas,
             unavailable: !!unavailable,
-            markers: document.querySelectorAll(".map-marker").length,
+            // The page's own error state, which is a different thing from a missing map.
+            apiError: !!document.querySelector(".state-block--error"),
+            zoom: instance ? Math.round(instance.getZoom() * 10) / 10 : null,
+            scale: document.querySelector(".map-view")?.getAttribute("data-scale") ?? null,
+            busesDrawn: painted(["vehicle-buses", "vehicle-pips"]),
+            busesClustered: clusterTotal(["vehicle-clusters"]),
+            stopsDrawn: painted(["stop-flags", "stop-pips"]),
+            stopsClustered: clusterTotal(["stop-clusters"]),
+            degraded: !!document.querySelector(".map-view__degraded"),
+            // A map taller than its own box would mean something is in flow, which layers cannot
+            // do — kept because it costs nothing and would catch a regression that reintroduced it.
+            mapScrollHeight: document.querySelector(".maplibregl-map")?.scrollHeight ?? 0,
+            // What the list says, which is what the API returned for this viewport.
+            listedBuses: Number(
+              document.querySelector("#vehicles-heading .lozenge")?.textContent?.trim() ?? "0",
+            ),
             attribution:
               document.querySelector(".maplibregl-ctrl-attrib")?.textContent?.trim() ?? "",
+            /*
+             * Semantic zoom, as the renderer sees it rather than as the code intends it.
+             *
+             * `text-font` on the bus layer is the one thing that cannot be read from the source:
+             * it is borrowed from whatever stack the basemap style actually serves, and when that
+             * lookup comes back empty the whole text block is dropped and every bus on the street
+             * is an anonymous red shape. The layer would still be there, still painting, and the
+             * screenshot would look almost right.
+             */
+            busesLabelled: (() => {
+              if (!instance) return null;
+              try {
+                const layout = instance.getLayoutProperty("vehicle-buses", "text-field");
+                const font = instance.getLayoutProperty("vehicle-buses", "text-font");
+                if (!layout || !font) return "no font borrowed from the basemap: buses unlabelled";
+                const withRoute = instance
+                  .queryRenderedFeatures({ layers: ["vehicle-buses"] })
+                  .filter((feature) => String(feature.properties?.route ?? "").length > 0).length;
+                return `font ${JSON.stringify(font)}, ${withRoute} drawn bus(es) carry a route`;
+              } catch {
+                return null;
+              }
+            })(),
+            /* Pointing the way they are going: how many of the drawn buses took the mirrored texture. */
+            busesFacingWest: (() => {
+              if (!instance) return null;
+              try {
+                return instance
+                  .queryRenderedFeatures({ layers: ["vehicle-buses"] })
+                  .filter((feature) => Number(feature.properties?.bearing) > 180).length;
+              } catch {
+                return null;
+              }
+            })(),
+            selectedRings: painted(["stop-selected", "vehicle-selected"]),
           };
         });
 
@@ -287,17 +916,199 @@ for (const size of WIDTHS) {
         const tileHits = sink.tileResponses.filter((r) => r.status === 200).length;
         const tileErrors = sink.tileResponses.filter((r) => r.status >= 400);
 
+        /*
+         * Three outcomes, not two.
+         *
+         * This asked whether there was a canvas and no list-only fallback, and reported anything
+         * else as "canvas absent, list-only fallback not shown" — which run 51 produced when the
+         * API itself had failed and the page was showing its error state with a retry button.
+         * That reads as a blank screen and is not one; the page was being honest and the check
+         * could not see it. An API failure is a real failure, but it is the API's, and calling it
+         * a missing fallback sends the next person looking in the wrong place.
+         */
+        /*
+         * A deep-linked stop has to arrive with its board open.
+         *
+         * `/live/stops/:id` is an acceptance criterion in its own right — "must actually
+         * initialise and open the selected stop board" — and the sweep was photographing the page
+         * without ever asking whether it had. A link that lands on the map with nothing selected
+         * looks identical in a screenshot to one that worked.
+         */
+        if (target.name === "live-stop-deeplink") {
+          const board = await page
+            .locator(".selected-stop")
+            .first()
+            .isVisible()
+            .catch(() => false);
+          /*
+           * Bounded, because this one read cost a whole page.
+           *
+           * `textContent()` waits for its element with the default thirty-second timeout, and in
+           * run 54 the board was open while its heading had not rendered yet. The throw escaped
+           * into the per-page catch, so `tablet/live-stop-deeplink` reported only "could be
+           * inspected at all — Timeout 30000ms exceeded" and every other check on that page was
+           * lost. A heading that is not there yet is a fact to report, not a reason to stop.
+           */
+          const heading = board
+            ? ((await page
+                .locator(".selected-stop h2, .selected-stop h3")
+                .first()
+                .textContent({ timeout: 5_000 })
+                .catch(() => null)) ?? "(no heading yet)")
+            : "";
+          await page.screenshot({
+            path: `${screenshotDir}/${size.name}-live-selected-stop.png`,
+            fullPage: false,
+          });
+
+          record(
+            `${size.name}/${target.name} opens the stop board it was linked to`,
+            board,
+            board ? `board open: ${heading.trim().slice(0, 60)}` : "no stop board on the page",
+          );
+
+          /*
+           * The board is a board; the picture is one click further on.
+           *
+           * This used to measure the vignette inside `.selected-stop`, and that is no longer
+           * where it lives. Somebody who taps a stop on a map wants the next bus, and a
+           * 384-pixel illustration above the fold pushed the one thing they came for underneath
+           * it — so the scene moved to the page "Everything about this stop" promises, where
+           * there is room to be generous.
+           *
+           * Both halves of that rule are checked, because only checking the second would let the
+           * picture quietly come back to the panel: the board must not carry a scene, and the
+           * page it links to must.
+           */
+          record(
+            `${size.name}/${target.name} keeps the stop board board-focused`,
+            (await page.locator(".selected-stop .vignette").count()) === 0,
+            "the map panel carries no weather scene, so the next bus is what is above the fold",
+          );
+
+          const more = page.getByRole("link", { name: /everything about this stop/i }).first();
+          if ((await more.count()) > 0) {
+            await more.click();
+            await page.waitForLoadState("domcontentloaded");
+            await page.waitForTimeout(1200);
+
+            /*
+             * Measured rather than admired.
+             *
+             * "Technically present but effectively invisible" is a thing a screenshot shows and
+             * no assertion could: the scene is drawn at a whole multiple of 176 art pixels, so
+             * whether it got two of them or one is the whole difference between a picture and a
+             * stamp. The layer counts are reported, never asserted — a clear noon has no effect
+             * layers and that is correct, and a square the collector has not reached has no
+             * reading at all and must say so rather than draw one.
+             */
+            const scene = await page.evaluate(() => {
+              const figure = document.querySelector(".stop-page__weather .vignette");
+              if (!figure) return null;
+              const box = figure.querySelector(".vignette__scene")?.getBoundingClientRect();
+              const section = document
+                .querySelector(".stop-page__weather")
+                ?.getBoundingClientRect();
+              return {
+                width: Math.round(box?.width ?? 0),
+                height: Math.round(box?.height ?? 0),
+                sectionWidth: Math.round(section?.width ?? 0),
+                effects: figure.querySelectorAll(".vignette__effect").length,
+                person: figure.querySelector(".vignette__person") !== null,
+                accessory: figure.querySelector(".vignette__accessory") !== null,
+                bus: figure.querySelector(".vignette__bus") !== null,
+                unavailable: figure.classList.contains("vignette--unavailable"),
+                caption: (figure.querySelector("figcaption")?.textContent ?? "")
+                  .trim()
+                  .slice(0, 80),
+              };
+            });
+
+            record(
+              `${size.name}/${target.name} draws the weather scene on the stop page`,
+              scene !== null && scene.width >= 176 * 2,
+              scene === null
+                ? "no vignette on the stop page at all"
+                : `${scene.width}x${scene.height} scene in a ${scene.sectionWidth}px section ` +
+                    `(scale ${Math.round(scene.width / 176)}), ` +
+                    `${scene.effects} effect layer(s), person ${scene.person}, ` +
+                    `accessory ${scene.accessory}, bus ${scene.bus}, ` +
+                    `${scene.unavailable ? "no reading: " : "reading: "}${scene.caption}`,
+            );
+
+            await page.screenshot({
+              path: join(screenshotDir, `${size.name}-stop-page-weather.png`),
+              fullPage: true,
+            });
+            await page.goBack();
+            await page.waitForTimeout(800);
+          }
+        }
+
         record(
-          `${size.name}/live renders a map rather than the fallback`,
-          map.hasCanvas && !map.unavailable,
-          `canvas ${map.hasCanvas ? "present" : "absent"}, list-only fallback ${
-            map.unavailable ? "shown" : "not shown"
-          }`,
+          `${size.name}/${target.name} renders a map rather than the fallback`,
+          map.hasCanvas ? !map.unavailable : map.apiError,
+          map.hasCanvas
+            ? `canvas present, list-only fallback ${map.unavailable ? "shown" : "not shown"}`
+            : map.apiError
+              ? "no canvas: the API failed and the page says so, with a retry"
+              : "canvas absent and nothing said about why",
         );
         record(
-          `${size.name}/live basemap actually paints`,
+          `${size.name}/${target.name} basemap actually paints`,
           paintedBytes > BLANK_CANVAS_BYTES,
           `${paintedBytes} bytes of rendered map (a blank one is a few hundred)`,
+        );
+
+        /*
+         * The check this whole script exists for: when the API returned buses, buses must be on
+         * the screen. Reported when the viewport genuinely has none, failed when it has some and
+         * none of them made it into the map's rectangle.
+         */
+        const busesOnScreen = map.busesDrawn + map.busesClustered;
+        if (map.listedBuses === 0) {
+          record(
+            `${size.name}/${target.name} shows the buses the API returned`,
+            true,
+            "no buses in this viewport at this moment, so there is nothing to draw",
+          );
+        } else {
+          record(
+            `${size.name}/${target.name} shows the buses the API returned`,
+            busesOnScreen > 0,
+            `${busesOnScreen} bus(es) painted at zoom ${map.zoom} (${map.scale} scale): ` +
+              `${map.busesDrawn} drawn individually, ${map.busesClustered} inside clusters; ` +
+              `the list says ${map.listedBuses}`,
+          );
+        }
+        record(
+          `${size.name}/${target.name} draws its stops`,
+          map.stopsDrawn + map.stopsClustered > 0,
+          `${map.stopsDrawn} stop(s) drawn and ${map.stopsClustered} inside clusters`,
+        );
+        /*
+         * A bus with no number on it is a red shape. The layer would still be there, still
+         * painting, and the screenshot would look almost right — so this asks the renderer
+         * whether the text block survived the basemap font lookup, and how many of the buses it
+         * drew are facing the other way.
+         *
+         * Only where individual buses are drawn: at city and neighbourhood scale there is no text
+         * layer to interrogate and saying so would be noise on every page.
+         */
+        if (map.busesDrawn > 0 && map.scale === "street") {
+          record(
+            `${size.name}/${target.name} puts route numbers on the buses`,
+            typeof map.busesLabelled === "string" && !map.busesLabelled.startsWith("no font"),
+            map.busesLabelled ?? "(the map instance could not be reached)",
+          );
+          console.log(
+            `        ${map.busesFacingWest ?? "?"} of ${map.busesDrawn} drawn bus(es) face west`,
+          );
+        }
+        record(
+          `${size.name}/${target.name} keeps its map out of normal flow`,
+          map.mapScrollHeight > 0 && map.mapScrollHeight < 2000,
+          `the map's scrollHeight is ${map.mapScrollHeight}px`,
         );
         record(
           `${size.name}/live loads tiles from the configured host`,
@@ -309,7 +1120,11 @@ for (const size of WIDTHS) {
           map.attribution.length > 0,
           map.attribution.slice(0, 80) || "(none)",
         );
-        console.log(`        markers on the map: ${map.markers}`);
+        console.log(
+          `        ${map.scale} scale at zoom ${map.zoom}: ${map.stopsDrawn}+${map.stopsClustered} stops, ` +
+            `${map.busesDrawn}+${map.busesClustered} buses` +
+            (map.degraded ? " (route names degraded)" : ""),
+        );
 
         /*
          * Clicking a stop is the one interaction the whole Live page exists for, and nothing else
@@ -317,7 +1132,7 @@ for (const size of WIDTHS) {
          * suite runs against a mocked map. Only here is it a real marker, drawn from real published
          * stops, opening a real board.
          */
-        if (map.markers > 0) {
+        if (map.stopsDrawn > 0) {
           /*
            * `force`, and inside a try. Four hundred stops in a city centre genuinely overlap, and
            * some sit under the sticky header, so the browser's actionability check refuses a click
@@ -327,19 +1142,43 @@ for (const size of WIDTHS) {
            */
           let clickFailed = null;
           try {
-            await page.locator(".map-marker--stop").first().click({ force: true, timeout: 5_000 });
+            // Stops are painted by the renderer now, so the click goes to where one was drawn.
+            await clickPaintedStop(page, sink);
           } catch (error) {
             clickFailed = error instanceof Error ? error.message.split("\n")[0] : String(error);
           }
           await page.waitForTimeout(3_000);
           const board = await page.evaluate(() => {
             const panel = document.querySelector(".selected-stop");
+            const text = (row, selector) =>
+              row.querySelector(selector)?.textContent?.trim().replace(/\s+/g, " ") ?? "";
             return {
               open: !!panel,
               heading: panel?.querySelector(".arrival-board__stop")?.textContent?.trim() ?? "",
               label: panel?.querySelector(".arrival-board__next")?.textContent?.trim() ?? "",
               rows: panel?.querySelectorAll(".arrival-board__table tbody tr").length ?? 0,
               error: panel?.querySelector(".selected-stop__error")?.textContent?.trim() ?? "",
+              /*
+               * What the board actually says, not how many rows it has.
+               *
+               * A row count proves a table was drawn. "4F to Acomb, 7 min, Timetable" proves a
+               * reader was told when their bus is coming, which is the thing the product is for —
+               * and it is the evidence a row count could never be, because an empty board and a
+               * board full of blanks both count the same.
+               */
+              departures: [...(panel?.querySelectorAll(".arrival-board__table tbody tr") ?? [])]
+                .slice(0, 3)
+                .map((row) =>
+                  [
+                    text(row, ".arrival-board__route"),
+                    `to ${text(row, ".arrival-board__destination") || "(no destination)"}`,
+                    text(row, ".arrival-board__countdown") || "(no time)",
+                    text(row, ".arrival-board__clock"),
+                    text(row, ".arrival-board__state"),
+                  ]
+                    .filter(Boolean)
+                    .join(" "),
+                ),
             };
           });
           await page.screenshot({
@@ -352,14 +1191,655 @@ for (const size of WIDTHS) {
             clickFailed !== null
               ? `the click did not land: ${clickFailed}`
               : board.open
-                ? `${board.label || "(no label)"} — ${board.heading || "(no stop)"}, ${board.rows} row(s)${
-                    board.error ? `, error: ${board.error}` : ""
-                  }`
+                ? `${board.label || "(no label)"} — ${board.heading || "(no stop)"}, ${board.rows} row(s)` +
+                  (board.departures.length > 0 ? `: ${board.departures.join("; ")}` : "") +
+                  (board.error ? `, error: ${board.error}` : "")
                 : "no board opened",
           );
+
+          /*
+           * And the same rule on the path a passenger actually takes.
+           *
+           * The deep link proved the page can draw a scene; it did not prove that clicking a stop
+           * on the map leads to one, and those are different journeys through the same component.
+           * The normal interaction is the one that has to be reliable, so it is asked the same
+           * two questions: the board stays a board, and the page behind "Everything about this
+           * stop" has the picture on it.
+           *
+           * The condition is reported, never asserted: a clear night has no effect layers and
+           * that is the truth about the sky, not a defect.
+           */
+          if (board.open) {
+            record(
+              `${size.name}/live keeps the clicked stop board board-focused`,
+              (await page.locator(".selected-stop .vignette").count()) === 0,
+              "the panel opened by a click carries no weather scene, only the board",
+            );
+
+            /* The panel as a passenger meets it. */
+            await page.screenshot({
+              path: join(screenshotDir, `${size.name}-live-stop-board.png`),
+              fullPage: false,
+            });
+
+            const more = page.getByRole("link", { name: /everything about this stop/i }).first();
+            if ((await more.count()) > 0) {
+              await more.click();
+              await page.waitForLoadState("domcontentloaded");
+              await page.waitForTimeout(1200);
+
+              const scene = await page.evaluate(() => {
+                const figure = document.querySelector(".stop-page__weather .vignette");
+                if (!figure) return null;
+                const box = figure.querySelector(".vignette__scene")?.getBoundingClientRect();
+                const section = document
+                  .querySelector(".stop-page__weather")
+                  ?.getBoundingClientRect();
+                const effects = [...figure.querySelectorAll(".vignette__effect")].map(
+                  (node) => (node.className.match(/vignette__effect--(\w+)/) ?? [])[1],
+                );
+                return {
+                  width: Math.round(box?.width ?? 0),
+                  height: Math.round(box?.height ?? 0),
+                  sectionWidth: Math.round(section?.width ?? 0),
+                  /* Is any of it on screen, or is it below where anybody will look? */
+                  visible: (box?.top ?? 0) < globalThis.innerHeight && (box?.bottom ?? 0) > 0,
+                  effects,
+                  accessory: figure.querySelector(".vignette__accessory") !== null,
+                  bus: figure.querySelector(".vignette__bus") !== null,
+                  unavailable: figure.classList.contains("vignette--unavailable"),
+                  reading:
+                    figure.querySelector(".vignette__reading")?.textContent?.trim().slice(0, 60) ??
+                    "",
+                };
+              });
+
+              record(
+                `${size.name}/live reaches the weather scene from a clicked stop`,
+                scene !== null && scene.width >= 176 * 2,
+                scene === null
+                  ? "the stop page reached by clicking carries no vignette at all"
+                  : `${scene.width}x${scene.height} (scale ${Math.round(scene.width / 176)}) in a ` +
+                      `${scene.sectionWidth}px section, ${scene.visible ? "in the first screen" : "below the fold"}; ` +
+                      (scene.unavailable
+                        ? "no reading, neutral scene"
+                        : `reading "${scene.reading}", effects [${scene.effects.join(", ") || "none"}], ` +
+                          `accessory ${scene.accessory}, approaching bus ${scene.bus}`),
+              );
+
+              await page.screenshot({
+                path: join(screenshotDir, `${size.name}-stop-page-from-map.png`),
+                fullPage: true,
+              });
+              await page.goBack();
+              await page.waitForTimeout(800);
+            }
+          }
         } else {
           // Not a failure of the page: no stops in view is a data question, answered elsewhere.
           console.log("        no stop markers to click, so the board was not exercised");
+        }
+
+        /*
+         * And a bus, which is the interaction that did not exist at all.
+         *
+         * Whether any bus is on screen is a property of the hour, so an empty street is reported
+         * rather than failed. What is checked when one is there is that clicking it opens a panel
+         * that says which bus it is and where it is going — the questions a person points at a
+         * bus to ask.
+         */
+        if (map.busesDrawn > 0) {
+          /*
+           * Close the stop board first, the way a passenger would.
+           *
+           * The step above opens one and it stays open — it is a panel over the map, so a click
+           * where a bus is drawn underneath it correctly lands on the panel. Leaving it open and
+           * then reporting "no bus panel opened" measures the sweep's own sequencing.
+           */
+          await page.keyboard.press("Escape");
+          await page
+            .locator(".selected-stop")
+            .waitFor({ state: "detached", timeout: 5_000 })
+            .catch(() => {
+              /* Already gone, or never opened. Either way the map is clear enough to try. */
+            });
+
+          let busClickFailed = null;
+          try {
+            await clickPaintedBus(page, sink);
+          } catch (error) {
+            busClickFailed = error instanceof Error ? error.message.split("\n")[0] : String(error);
+          }
+          /*
+           * Wait for the panel to settle, rather than for three seconds.
+           *
+           * The panel has three states — loading, error, loaded — and a fixed timeout reads
+           * whichever one happens to be on screen. Run 54 reported "(no route) to (no
+           * destination) — no facts" at all three widths and that was the loading state being
+           * photographed, not an empty panel: the component renders `LoadingBus` while its
+           * lookup is in flight and shows a real message when it fails. Reporting that as a
+           * product defect is the same mistake as run 51's "blank screen", so the check now
+           * waits for the loading indicator to go and says outright when it never did.
+           */
+          await page
+            .locator(".selected-vehicle .loading-bus")
+            .waitFor({ state: "detached", timeout: 15_000 })
+            .catch(() => {
+              /* Still loading is an outcome, reported below rather than thrown. */
+            });
+          const busPanel = await page.evaluate(() => {
+            const panel = document.querySelector(".selected-vehicle");
+            if (!panel) return { open: false };
+            return {
+              open: true,
+              loading: panel.querySelector(".loading-bus") !== null,
+              route: panel.querySelector(".route-badge")?.textContent?.trim() ?? "",
+              destination:
+                panel.querySelector(".selected-vehicle__destination")?.textContent?.trim() ?? "",
+              facts: [...panel.querySelectorAll(".selected-vehicle__facts dd")].map((node) =>
+                node.textContent.trim(),
+              ),
+              routeLink:
+                panel
+                  .querySelector(".selected-vehicle__links a[href*='/routes/']")
+                  ?.getAttribute("href") ?? "",
+              vehicleLink:
+                panel
+                  .querySelector(".selected-vehicle__links a[href*='/vehicles/']")
+                  ?.getAttribute("href") ?? "",
+              error: panel.querySelector(".selected-vehicle__error")?.textContent?.trim() ?? "",
+            };
+          });
+          await page.screenshot({
+            path: join(screenshotDir, `${size.name}-live-bus-selected.png`),
+            fullPage: false,
+          });
+          /*
+           * The selected bus, photographed. Every other state of this map has a shot and this one
+           * — the panel a passenger opens by tapping a vehicle — had none, so "does it look
+           * finished" could only be answered for the map and never for the thing on top of it.
+           */
+          await page.screenshot({
+            path: `${screenshotDir}/${size.name}-live-selected-bus.png`,
+            fullPage: false,
+          });
+
+          record(
+            `${size.name}/live opens a bus when one is clicked`,
+            busClickFailed === null &&
+              busPanel.open &&
+              !busPanel.loading &&
+              busPanel.error === "" &&
+              busPanel.destination.length > 0,
+            busClickFailed !== null
+              ? `the click did not land: ${busClickFailed}`
+              : !busPanel.open
+                ? "no bus panel opened"
+                : busPanel.loading
+                  ? "the panel was still loading after 15s — the lookup never answered"
+                  : `${busPanel.route || "(no route)"} to ${busPanel.destination || "(no destination)"} — ` +
+                    `${busPanel.facts.join(", ") || "no facts"}` +
+                    (busPanel.routeLink
+                      ? `; route link ${busPanel.routeLink}`
+                      : "; no route link") +
+                    (busPanel.error ? `; error: ${busPanel.error}` : ""),
+          );
+          /*
+           * A link built from the number on the front would be a link to somebody else's route.
+           * When there is one at all it has to be an identifier, not "36".
+           */
+          if (busPanel.open && busPanel.routeLink) {
+            record(
+              `${size.name}/live links a bus to its route by identity`,
+              /\/routes\/[0-9a-f]{8}-/.test(busPanel.routeLink),
+              busPanel.routeLink,
+            );
+          }
+        } else {
+          console.log("        no buses in view, so the bus panel was not exercised");
+        }
+      }
+
+      /*
+       * "Bus stopped?", which no sweep had ever opened.
+       *
+       * The panel is behind a button and gathers its own context — the other buses in the
+       * viewport, the board at the stop this one is heading for — so nothing about it is exercised
+       * by loading the page. Its whole purpose is to be honest about what it does not know, and
+       * the specific failure it is capable of is telling somebody "no other departures to suggest"
+       * about a board it never managed to read. So the check waits for the lookup to settle and
+       * then insists the panel says which of the three it is.
+       */
+      /*
+       * Axe, against the deployed page rather than a fixture.
+       *
+       * The e2e accessibility suite runs eighteen pages against mocked responses, and the four a
+       * passenger spends most of their time on are not among them because each needs a real
+       * identifier. Those are exactly the pages this sweep has already discovered, with real data
+       * in them — a departure board with real destinations, a route with a real operator — and
+       * real data is where the contrast failures and the unlabelled controls actually appear. At
+       * every width, because a barrier introduced by a phone layout is invisible at desktop.
+       */
+      const axe = await new AxeBuilder({ page })
+        .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"])
+        .analyze()
+        .catch((error) => ({ error: error instanceof Error ? error.message : String(error) }));
+
+      if (axe.error) {
+        record(`${size.name}/${target.name} could be scanned for accessibility`, false, axe.error);
+      } else {
+        /*
+         * Axe's own measurement, not just the selector.
+         *
+         * Run 54 reported `target-size (serious)` on a map control and a stop link, and neither
+         * could be reproduced here — this container cannot reach the basemap host, so MapLibre
+         * never draws its controls at all. A selector alone does not say how big the target
+         * actually was or what it was too close to, which is the difference between a fix and a
+         * guess. `failureSummary` carries the measured numbers, so the next run says outright
+         * what to change.
+         */
+        const violations = axe.violations.map(
+          (violation) =>
+            `${violation.id} (${violation.impact ?? "unrated"}) on ` +
+            violation.nodes
+              .slice(0, 2)
+              .map((node) => {
+                const why = (node.failureSummary ?? "")
+                  .split("\n")
+                  .map((line) => line.trim())
+                  .filter((line) => line.length > 0 && !line.startsWith("Fix"))
+                  .join(" ");
+                return `${node.target.join(" ")}${why ? ` [${why.slice(0, 160)}]` : ""}`;
+              })
+              .join(", "),
+        );
+        record(
+          `${size.name}/${target.name} has no automatically detectable accessibility violations`,
+          violations.length === 0,
+          violations.length === 0 ? "none" : violations.join("; "),
+        );
+      }
+
+      /*
+       * A page that is empty on purpose, or a page that is accidentally empty.
+       *
+       * These are different things and they look identical in a screenshot. A deliberate empty
+       * state says what is missing and why — `EmptyState` and `ErrorState` both render a
+       * `.state-block` with a title — and an accident is a heading over a blank panel. The sweep
+       * could not tell them apart, so a page that had quietly lost its data passed every check on
+       * it except a human noticing.
+       *
+       * The test is: did this page put anything substantive on the screen, and if not, did it say
+       * why? Substantive means content a passenger reads — list items, table rows, cards,
+       * figures — rather than the chrome that is on every page.
+       */
+      const substance = await page.evaluate(() => {
+        const main = document.querySelector("main") ?? document.body;
+        const CONTENT = [
+          "li",
+          "tbody tr",
+          ".surface",
+          "dl div",
+          "figure",
+          ".route-badge",
+          ".state-block",
+          /*
+           * A page whose job is to take input is not empty when it is showing the input.
+           *
+           * Search, Journey and Pro settings were all reported accidentally empty at all three
+           * widths, and all three were fine: a search box, two endpoint pickers and a column of
+           * preference controls are exactly what those pages are for, and none of them is a list,
+           * a table or a card. Counting the controls is what makes this check about the page
+           * rather than about the shape of its markup.
+           *
+           * It does not let a broken results page through. Whether a plan was drawn is a
+           * different question, asked separately by the journey-strip check, which is the one
+           * that caught the planner never running on arrival.
+           */
+          "input",
+          "select",
+          "textarea",
+        ];
+        const counted = new Set();
+        for (const selector of CONTENT) {
+          for (const node of main.querySelectorAll(selector)) {
+            // Nav and footer are on every page and say nothing about this one.
+            if (node.closest("nav, footer, header.app__header")) continue;
+            counted.add(node);
+          }
+        }
+        const stateBlocks = [...main.querySelectorAll(".state-block")];
+        /*
+         * Controls are counted apart from content, because they answer a different question.
+         *
+         * Adding them to the same tally did not help: Search still had one element and Journey
+         * two, against a threshold of three. A search page is a heading and a search box, and
+         * that is the finished page rather than a thin one — so the rule is that a page offering
+         * something to use is never accidentally empty, and the count-and-words test applies to
+         * pages that offer only reading.
+         */
+        /*
+         * Buttons count too, and leaving them out is what made this fire on the journey page.
+         *
+         * `EndpointPicker` renders a text input only while its endpoint is empty; once one is
+         * chosen it renders the chosen place and a "Change" button. So a journey arrived at from a
+         * link — both ends supplied, which is the case the sweep photographs — has two Change
+         * buttons and a Plan button and not one `input`, and the check reported "no controls and
+         * 91 words, and nothing saying why" at two widths for three runs. The page was offering
+         * three things to press.
+         *
+         * Counting them does not blunt the check: nav, footer and header are excluded, and a page
+         * whose only button is the retry inside a state block already passes through `declared`.
+         */
+        const controls = [...main.querySelectorAll("input, select, textarea, button")].filter(
+          (node) => !node.closest("nav, footer, header.app__header"),
+        ).length;
+
+        /*
+         * Whether it was still loading when it was photographed.
+         *
+         * `/pro` reported "0 content element(s), no controls and 39 word(s) ... and nothing saying
+         * why" — which is the message for a page that rendered nothing and explained nothing. But
+         * the control tower does render an error block with a retry button when its fetch fails,
+         * and that block and that button would both have been counted. So the page was almost
+         * certainly still showing the loading bus, which is a different fault with a different fix
+         * and reads identically in this message. Naming it costs one selector.
+         */
+        const stillLoading =
+          main.querySelector('.loading-bus, .skeleton, [aria-busy="true"]') !== null;
+
+        return {
+          controls,
+          items: counted.size,
+          words: (main.textContent ?? "").trim().split(/\s+/).filter(Boolean).length,
+          declared: stateBlocks.length > 0,
+          stillLoading,
+          declaredTitles: stateBlocks
+            .map((block) => block.querySelector(".state-block__title")?.textContent?.trim() ?? "")
+            .filter(Boolean)
+            .slice(0, 2),
+          heading: main.querySelector("h1")?.textContent?.trim() ?? "",
+        };
+      });
+
+      const looksEmpty = substance.controls === 0 && (substance.items < 3 || substance.words < 40);
+      record(
+        `${size.name}/${target.name} is not accidentally empty`,
+        !looksEmpty || substance.declared,
+        looksEmpty
+          ? substance.declared
+            ? `deliberately empty: ${substance.declaredTitles.join("; ") || "(state block, no title)"}`
+            : `${substance.items} content element(s), no controls and ${substance.words} ` +
+              `word(s) under "${substance.heading || "(no heading)"}", and ` +
+              (substance.stillLoading
+                ? "still loading when it was photographed"
+                : "nothing saying why")
+          : `${substance.items} content element(s), ${substance.controls} control(s), ` +
+              `${substance.words} word(s)`,
+      );
+
+      /*
+       * A journey that reads as a journey.
+       *
+       * The emptiness check would pass on a page that rendered three sentences about legs, and
+       * the milestone asks for the itinerary to be drawn: a walk, a boarding stop, the bus with
+       * its route number, where it is going, any change, and the final walk. So the shape is
+       * measured — how many legs, how many of the bus legs carry a route badge, whether a change
+       * is marked — and a planner that found nothing has to have said why instead.
+       */
+      if (target.name.startsWith("journey-result")) {
+        const strip = await page.evaluate(() => {
+          const first = document.querySelector(".journey-strip");
+          if (!first) {
+            const block = document.querySelector(".state-block__title");
+            return { drawn: false, reason: block?.textContent?.trim() ?? "" };
+          }
+          const legs = [...first.querySelectorAll(".journey-strip__leg")];
+          return {
+            drawn: true,
+            options: document.querySelectorAll(".journey-strip").length,
+            legs: legs.length,
+            rides: legs.filter((leg) => leg.querySelector(".route-badge")).length,
+            changes: first.querySelectorAll(".journey-strip__change").length,
+            arrival:
+              document
+                .querySelector(".journey-option__arrival")
+                ?.textContent?.trim()
+                .slice(0, 60) ?? "",
+          };
+        });
+
+        record(
+          `${size.name}/${target.name} draws the itinerary or says why it cannot`,
+          strip.drawn ? strip.legs > 0 : strip.reason.length > 0,
+          strip.drawn
+            ? `${strip.options} option(s), ${strip.legs} leg(s) in the first, ` +
+                `${strip.rides} with a route badge, ${strip.changes} change marker(s) — ${strip.arrival}`
+            : strip.reason
+              ? `no plan, and the page says: ${strip.reason}`
+              : "no journey strip and nothing saying why",
+        );
+      }
+
+      /*
+       * What each Pro section actually has to say, page by page.
+       *
+       * "dataMode=live" is a single figure from one endpoint and it has been true while every
+       * section underneath reported no observations — a live mode with no intelligence in it.
+       * The brief asks for this traced per page, so the sweep counts what is on each one: how
+       * many metric tiles carry a figure rather than a dash, how many are suppressed and say
+       * why, and how many rows the tables hold. Reported rather than asserted, because a section
+       * with genuinely nothing to show is a legitimate state — what is not legitimate is not
+       * knowing which of the two it is.
+       */
+      if (target.name.startsWith("pro")) {
+        const pro = await page.evaluate(() => {
+          const tiles = [...document.querySelectorAll(".pro-metric")];
+          const value = (tile) =>
+            tile.querySelector(".pro-metric__value")?.textContent?.trim() ?? "";
+          return {
+            mode:
+              document.querySelector("[data-testid='pro-data-mode'] strong")?.textContent?.trim() ??
+              "live",
+            tiles: tiles.length,
+            withFigure: tiles.filter((tile) => value(tile) !== "—" && value(tile) !== "").length,
+            suppressed: tiles.filter((tile) => tile.querySelector(".pro-metric__suppressed"))
+              .length,
+            rows: document.querySelectorAll(".pro-table tbody tr").length,
+            cards: document.querySelectorAll(".pro-card").length,
+            blocks: [...document.querySelectorAll(".state-block__title")].map((node) =>
+              node.textContent?.trim(),
+            ),
+          };
+        });
+
+        console.log(
+          `        ${target.name}: mode ${pro.mode}; ${pro.withFigure}/${pro.tiles} tile(s) ` +
+            `carry a figure, ${pro.suppressed} suppressed; ${pro.rows} table row(s), ` +
+            `${pro.cards} card(s)${pro.blocks.length > 0 ? `; states: ${pro.blocks.join(" / ")}` : ""}`,
+        );
+      }
+
+      if (target.name === "search-results") {
+        const results = await page.evaluate(() => {
+          const items = [...document.querySelectorAll(".search-page__result")];
+          return items.map((item) => ({
+            title: item.querySelector(".search-page__result-title")?.textContent?.trim() ?? "",
+            kind: item.querySelector(".lozenge")?.textContent?.trim() ?? "",
+            href: item.querySelector("a.search-page__result-link")?.getAttribute("href") ?? "",
+          }));
+        });
+
+        record(
+          `${size.name}/search-results finds something for a real place name`,
+          results.length > 0,
+          results.length === 0
+            ? "no results for Leeds"
+            : `${results.length} result(s): ${results
+                .slice(0, 4)
+                .map((result) => `${result.title} [${result.kind}]`)
+                .join(", ")}`,
+        );
+
+        /*
+         * The loop, as a check. A result whose link is a search for its own title is the exact
+         * shape of the defect, and it is cheaper to assert than to photograph.
+         */
+        const loops = results.filter((result) => result.href.startsWith("/search"));
+        record(
+          `${size.name}/search-results never links a result back to the search page`,
+          loops.length === 0,
+          loops.length === 0
+            ? "every result links to its own page"
+            : loops.map((result) => `${result.title} -> ${result.href}`).join(", "),
+        );
+
+        if (results.length > 0) {
+          const first = results[0];
+          await page.locator("a.search-page__result-link").first().click();
+          await page.waitForLoadState("networkidle", { timeout: 15_000 }).catch(() => {});
+          const landed = await page.evaluate(() => ({
+            path: window.location.pathname,
+            heading: document.querySelector("h1")?.textContent?.trim() ?? "",
+            notFound: document.body.textContent?.includes("We could not find that page") ?? false,
+          }));
+          record(
+            `${size.name}/search-results opens the thing it found`,
+            !landed.path.startsWith("/search") && !landed.notFound && landed.heading.length > 0,
+            `${first.title} [${first.kind}] -> ${landed.path} (${landed.heading || "no heading"})`,
+          );
+          await page.goBack().catch(() => {});
+        }
+      }
+
+      if (target.name === "vehicle") {
+        const trigger = page.locator(".vehicle-page__stopped-trigger");
+        if ((await trigger.count()) > 0) {
+          await trigger.first().click();
+          await page.locator(".bus-stopped").waitFor({ state: "visible", timeout: 10_000 });
+          // The lookup is two API calls; give it room, then read whatever it settled on.
+          await page
+            .locator(".bus-stopped__pending")
+            .waitFor({ state: "detached", timeout: 20_000 })
+            .catch(() => {
+              /* Still pending is itself a readable outcome, reported below. */
+            });
+
+          const stopped = await page.evaluate(() => {
+            const panel = document.querySelector(".bus-stopped");
+            if (!panel) return null;
+            const text = panel.textContent ?? "";
+            return {
+              pending: panel.querySelector(".bus-stopped__pending")?.textContent?.trim() ?? "",
+              retry: panel.querySelector(".bus-stopped__retry") !== null,
+              states: panel.querySelectorAll(".bus-stopped__states li").length,
+              services: panel.querySelectorAll(".bus-stopped__services li").length,
+              claimsNothingDue: /no other departures to suggest/i.test(text),
+              claimsBreakdown: /broken down|breakdown|cancelled|cancellation/i.test(text),
+              emergency: /999/.test(text),
+            };
+          });
+
+          const looking = stopped !== null && stopped.pending.length > 0;
+          record(
+            `${size.name}/vehicle opens Bus stopped? and lists what it can see`,
+            stopped !== null && stopped.states > 0 && stopped.emergency,
+            stopped === null
+              ? "the panel did not render"
+              : `${stopped.states} explanation(s), ${stopped.services} onward service(s)` +
+                  (looking ? `; still looking: ${stopped.pending}` : "") +
+                  (stopped.retry ? "; retry offered" : ""),
+          );
+          /*
+           * The empty-state lie, stated as its own check because it is the one this panel is
+           * capable of: "nothing is due" is a claim about a departure board, and it may only be
+           * made once the board has actually been read.
+           */
+          record(
+            `${size.name}/vehicle never says nothing is due about a board it could not read`,
+            stopped !== null && !(looking && stopped.claimsNothingDue),
+            stopped === null
+              ? "the panel did not render"
+              : looking
+                ? `pending (${stopped.pending}) and claimsNothingDue=${stopped.claimsNothingDue}`
+                : "the lookup settled before any claim was made",
+          );
+          record(
+            `${size.name}/vehicle never asserts a breakdown`,
+            stopped !== null && !stopped.claimsBreakdown,
+            stopped === null ? "the panel did not render" : "no breakdown or cancellation claimed",
+          );
+          await page.screenshot({
+            path: `${screenshotDir}/${size.name}-vehicle-bus-stopped.png`,
+            fullPage: true,
+          });
+        } else {
+          console.log("        no Bus stopped? trigger on this vehicle page");
+        }
+      }
+
+      /*
+       * The two navigation paths nothing had ever followed.
+       *
+       * P4 names three: Map to Vehicle, Route to Vehicle, Vehicle to Route. The first is checked
+       * where the bus panel is opened, and its route link is checked for being an identifier
+       * rather than the number on the front. The other two had only ever been checked as markup —
+       * that a link was rendered — and the failure they actually had was the link resolving to
+       * "This link needs a map area", which is a page that renders perfectly and helps nobody. So
+       * both are clicked, and what they land on is read.
+       */
+      if (target.name === "vehicle" || target.name === "route") {
+        const selector =
+          target.name === "vehicle"
+            ? "a[href^='/routes/']"
+            : ".route-page__vehicles a[href^='/vehicles/']";
+        const link = page.locator(selector).first();
+        if ((await link.count()) > 0) {
+          const href = await link.getAttribute("href");
+          await link.click();
+          /*
+           * Wait for a heading, not for the network.
+           *
+           * These pages refresh on a ticker, so `networkidle` never arrives and the wait always
+           * expired — leaving the DOM read before the page had rendered anything, which is what
+           * "(no heading)" meant in run 54 rather than a broken link. A heading or an error state
+           * is what "the page arrived" actually looks like; still having neither after fifteen
+           * seconds is its own reported outcome.
+           */
+          await page
+            .locator("h1, .state-block--error")
+            .first()
+            .waitFor({ state: "visible", timeout: 15_000 })
+            .catch(() => {
+              /* Neither appeared; reported below rather than thrown. */
+            });
+          const landed = await page.evaluate(() => {
+            const body = document.body.textContent ?? "";
+            return {
+              path: window.location.pathname,
+              heading: document.querySelector("h1")?.textContent?.trim() ?? "",
+              needsViewport: body.includes("needs a map area"),
+              notFound: body.includes("could not find"),
+              errored: document.querySelector(".state-block--error") !== null,
+            };
+          });
+          record(
+            `${size.name}/${target.name} follows its ${target.name === "vehicle" ? "route" : "vehicle"} link to a real page`,
+            landed.heading.length > 0 &&
+              !landed.needsViewport &&
+              !landed.notFound &&
+              !landed.errored,
+            `${href} -> ${landed.path} (${landed.heading || "no heading after 15s"})` +
+              (landed.needsViewport ? "; asked for a map area" : "") +
+              (landed.notFound ? "; not found" : "") +
+              (landed.errored ? "; error state" : ""),
+          );
+          await page.goBack().catch(() => {});
+          await page.waitForLoadState("networkidle", { timeout: 15_000 }).catch(() => {});
+        } else {
+          console.log(
+            `        no ${target.name === "vehicle" ? "route" : "live vehicle"} link on this page right now`,
+          );
         }
       }
 
@@ -378,6 +1858,148 @@ for (const size of WIDTHS) {
     await page.close();
   }
 
+  /*
+   * The chain, walked in a browser against the real deployment.
+   *
+   * Every page above is photographed on its own. The *joins* between them are what a passenger
+   * actually experiences, and they were verified only against fixtures — which is how the stop
+   * page came to have no route links at all for weeks with nothing failing. This follows the links
+   * rather than typing the URLs: search for a real place, click the stop it finds, click a route
+   * that calls there, click a stop from the middle of that route's sequence, and read the board.
+   *
+   * Reported as what it saw, not as a pass. "Route 19 — Leeds, 83 stops, #42 opens with 4 due" is
+   * checkable by a person; "flow ok" is not.
+   */
+  const walker = await context.newPage();
+  // Declared outside the try so the failure path can report how far the walk got.
+  const seenSoFar = [];
+  try {
+    const seen = seenSoFar;
+    await walker.goto(`${baseUrl}/search?q=${encodeURIComponent("Leeds")}`, {
+      waitUntil: "domcontentloaded",
+    });
+    const firstStop = walker.locator('a[href^="/stops/"]').first();
+    /*
+     * Said before it is waited for, so a timeout names what was missing.
+     *
+     * "got no further than the search" was already far better than the bare exception it replaced,
+     * but it still did not distinguish a search that returned nothing from a search that returned
+     * only places — a city name legitimately matches places and areas as well as stops, and only
+     * a stop result carries a /stops/ link.
+     */
+    seen.push('searched "Leeds" and waited for a stop result');
+    try {
+      await firstStop.waitFor({ state: "visible", timeout: 20_000 });
+      seen.pop();
+    } catch (error) {
+      /*
+       * Say what the page DID show before giving up.
+       *
+       * "waited for a stop result; then timeout" was already far better than the bare exception,
+       * and still did not distinguish a search that returned nothing from one that returned only
+       * places — a town name legitimately matches places and areas as well as stops, and only a
+       * stop result carries a /stops/ link. The answer was one `evaluate` away the whole time.
+       */
+      const showed = await walker.evaluate(() => {
+        const links = [...document.querySelectorAll(".search-page__result-link")];
+        return {
+          results: links.length,
+          hrefs: links.slice(0, 4).map((link) => link.getAttribute("href") ?? ""),
+          titles: links.slice(0, 4).map((link) => (link.textContent ?? "").trim().slice(0, 40)),
+          saidSo: /no results|nothing|could not/i.test(document.body.textContent ?? ""),
+        };
+      });
+      seen.pop();
+      seen.push(
+        `searched "Leeds" and the page showed ${showed.results} result(s)` +
+          (showed.results > 0
+            ? ` — ${showed.titles.map((title, i) => `${title} → ${showed.hrefs[i]}`).join("; ")} — but none a stop`
+            : showed.saidSo
+              ? " and said so"
+              : " at all"),
+      );
+      throw error;
+    }
+    const stopName = ((await firstStop.textContent()) ?? "").trim().slice(0, 40);
+    seen.push(`searched "Leeds" and found ${stopName}`);
+
+    await firstStop.click();
+    await walker.locator("h1").first().waitFor({ state: "visible", timeout: 20_000 });
+    const board = await walker.evaluate(() => {
+      const rows = [...document.querySelectorAll(".arrival-board__table tbody tr")];
+      return rows.slice(0, 1).map((row) =>
+        [...row.querySelectorAll("td")]
+          .map((cell) => (cell.textContent ?? "").trim())
+          .filter(Boolean)
+          .join(" "),
+      );
+    });
+    seen.push(board[0] ? `its board reads "${board[0]}"` : "its board had no row to read");
+
+    const routeLink = walker.locator('a[href^="/routes/"]').first();
+    if ((await routeLink.count()) === 0) {
+      record(
+        `${size.name}/flow a passenger can walk`,
+        false,
+        seen.join("; ") + "; and the stop names no route to follow",
+      );
+    } else {
+      await routeLink.click();
+      await walker.locator(".route-page__stops li").first().waitFor({ timeout: 20_000 });
+      const route = await walker.evaluate(() => {
+        const stops = [...document.querySelectorAll(".route-page__stops li a")];
+        return {
+          heading: (document.querySelector("h1")?.textContent ?? "").trim(),
+          operator: (
+            document.querySelector(".pixel-vista__standfirst a, .route-page__section a")
+              ?.textContent ?? ""
+          ).trim(),
+          count: stops.length,
+          first: (stops[0]?.textContent ?? "").trim(),
+          last: (stops[stops.length - 1]?.textContent ?? "").trim(),
+          variants: document.querySelectorAll('[role="tab"]').length,
+        };
+      });
+      seen.push(
+        `route "${route.heading}" lists ${route.count} stops, ${route.first} → ${route.last}` +
+          (route.variants > 0 ? ` across ${route.variants} variant(s)` : ""),
+      );
+
+      const middleIndex = Math.floor(route.count / 2);
+      const middle = walker.locator(".route-page__stops li a").nth(middleIndex);
+      const middleName = ((await middle.textContent()) ?? "").trim();
+      await middle.click();
+      await walker.locator("h1").first().waitFor({ state: "visible", timeout: 20_000 });
+      const due = await walker.evaluate(
+        () => document.querySelectorAll(".arrival-board__table tbody tr").length,
+      );
+      seen.push(`stop #${middleIndex + 1} ${middleName} opens with ${due} row(s) due`);
+
+      record(
+        `${size.name}/flow a passenger can walk`,
+        route.count > 1 && due >= 0,
+        seen.join("; "),
+      );
+    }
+  } catch (error) {
+    /*
+     * With everything it had got to before it stopped.
+     *
+     * The first version recorded only the exception, so four viewports reported
+     * "locator.waitFor: Timeout 20000ms exceeded" and nothing else — which does not say whether
+     * the search found nothing, the board never arrived, or the route page was the step that
+     * failed. The walk's whole value is that it says where it got to.
+     */
+    const far =
+      seenSoFar.length > 0 ? `${seenSoFar.join("; ")}; then ` : "got no further than the search: ";
+    record(
+      `${size.name}/flow a passenger can walk`,
+      false,
+      far + (error instanceof Error ? error.message.split("\n")[0] : String(error)),
+    );
+  }
+  await walker.close();
+
   await context.close();
 }
 
@@ -387,5 +2009,11 @@ const failures = results.filter((result) => !result.ok);
 console.log(
   `\nVisual QA: ${results.length - failures.length} of ${results.length} checks passed against ${baseUrl}.`,
 );
+/*
+ * As annotations too. The sweep's own screenshots are uploaded as an artifact, which is exactly
+ * the thing that cannot be fetched from the container this work happens in — so what the sweep
+ * *said* has to come back some other way. See scripts/annotate.mjs.
+ */
+annotateResults("visual", results);
 console.log(`Screenshots in ${screenshotDir}/.`);
 process.exit(failures.length > 0 ? 1 : 0);

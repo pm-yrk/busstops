@@ -40,42 +40,146 @@
   cursor: pointer;
   display: grid;
   place-items: center;
-  /* Consumed by the sprite markup, so one element can be red, blue or hollow without new SVG. */
-  --marker-body: var(--colour-red);
-  --marker-roof: var(--colour-red-dark);
-  --marker-flag: var(--colour-ink);
+  /*
+   * No `position` here. MapLibre sets `position: absolute` on every marker it owns and then moves
+   * it with a transform; this rule used to say `relative`, which has the same specificity as
+   * MapLibre's and comes later in the bundle, so ours won and every marker dropped back into
+   * normal flow. They then stacked vertically inside the map — scrollHeight 26,682px for one
+   * Leeds viewport — and the transform offset each from its flow position instead of from the
+   * map's origin.
+   *
+   * The visible effect was specific and misleading: stops are added before vehicles, so the
+   * handful of markers that happened to land inside the 648px window were all stop flags, and
+   * every one of the 197 buses sat somewhere around y=18,000, clipped by the map's own
+   * `overflow: hidden`. The list said "Buses in view 197" beside a map with no buses on it.
+   *
+   * It survived the art bench because six markers all flow within the first 264px. It needs
+   * more than about fifteen markers to appear at all, which is every real viewport and no test
+   * fixture. `position: absolute` still establishes the containing block the route chip and the
+   * heading pip need, so nothing below has to change.
+   */
 }
 
-.map-marker--selected {
-  --marker-flag: var(--colour-red);
-}
-
-.map-marker--selected svg {
-  transform: scale(1.25);
-}
-
-.map-marker--vehicle {
-  /* Rotation follows the reported bearing, offset because the sprite is drawn facing east. */
-  transform: rotate(calc(var(--bearing, 90deg) - 90deg));
-}
-
-/* Heading west, the bus is mirrored rather than turned upside down. */
-.map-marker--westbound {
-  transform: rotate(calc(270deg - var(--bearing, 90deg))) scaleX(-1);
+.map-marker__art {
+  display: block;
+  /* Square pixels: the marker is the hero artwork reduced, and it is drawn at whole multiples. */
+  image-rendering: pixelated;
 }
 
 /*
- * A stale position is hollow as well as paler: never colour alone, and never a bus drawn exactly
- * like a fresh one when we do not know where it is any more.
+ * The bus stays upright and faces the way it is going.
+ *
+ * It used to rotate to the reported bearing, which looked right heading east and put the bus on
+ * its back end heading north: the sprite is a side view — the bus a passenger sees from the
+ * pavement, and the same drawing as the hero scene — and a side view has no top-down rotation to
+ * give. An arbitrary angle also destroys the pixel grid, so a rotated marker was blurred as well
+ * as wrong. Mirroring is the one turn a side view can honestly make.
  */
-.map-marker--stale {
-  --marker-body: var(--colour-surface);
-  --marker-roof: var(--colour-muted);
-  opacity: 0.75;
+.map-marker--westbound .map-marker__art {
+  transform: scaleX(-1);
 }
 
-.map-marker--stale svg {
+/*
+ * A bus does not swallow a click meant for a stop.
+ *
+ * Vehicles are added to the map after stops, so they paint on top — and a vehicle marker is a
+ * `role="img"` div with no click handler, so every click it intercepted did nothing at all. On
+ * the deployed Leeds camera, 169 buses over 400 stops, the arrival board stopped opening
+ * entirely; in York, with the markers further apart, the same click worked at every width. That
+ * is a product defect at real density and not a test artifact: the denser the city, the less
+ * likely a passenger is to be able to select the stop they are standing at.
+ *
+ * When vehicles become interactive — selecting a bus to see its route and next stops — this has
+ * to be revisited properly, because then two things want the same pixel and the answer is a
+ * deliberate hit-priority rather than the DOM order they happened to be added in.
+ */
+.map-marker--vehicle {
+  pointer-events: none;
+}
+
+/*
+ * The compass direction, as a pip that orbits the bus.
+ *
+ * Chrome rather than artwork, so it can point at any angle without the pixel grid caring. It is
+ * applied to a wrapper inside the marker because MapLibre writes its own transform onto the
+ * marker element to position it, and an inline style wins.
+ */
+.map-marker__heading {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  /*
+   * Wider than the marker on purpose. The bus is 48 art pixels across inside a 44px target, so a
+   * pip orbiting at the target's own radius disappears behind the vehicle exactly when it is
+   * pointing east or west — which is most buses. This orbit clears the artwork at every angle.
+   */
+  width: 68px;
+  height: 68px;
+  margin: -34px 0 0 -34px;
+  pointer-events: none;
+  transform: rotate(var(--bearing, 0deg));
+}
+
+.map-marker__heading::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 0;
+  height: 0;
+  margin-left: -4px;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-bottom: 6px solid var(--colour-ink);
+  /* A halo, so the pip is still legible over dark ground or a busy tile. */
+  filter: drop-shadow(0 0 1px var(--colour-canvas));
+}
+
+.map-marker--stale .map-marker__heading::before {
+  border-bottom-color: var(--colour-muted);
+}
+
+/*
+ * A stale position is a different vehicle, ringed and faded: never colour alone, and never a bus
+ * drawn exactly like a fresh one when we do not know where it is any more.
+ */
+.map-marker--stale {
+  opacity: 0.8;
+}
+
+.map-marker--stale .map-marker__art {
   outline: 1px dashed var(--colour-muted);
+  outline-offset: 1px;
+}
+
+/*
+ * The route number, on the vehicle rather than in a legend. Hidden until the marker is pointed at
+ * or focused, because a hundred numbered chips at once is a worse map than a hundred buses.
+ */
+.map-marker__route {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translate(-50%, 2px);
+  font-family: var(--font-pixel);
+  font-size: var(--font-size-micro);
+  line-height: 1;
+  padding: 2px 4px;
+  color: var(--colour-canvas);
+  background: var(--colour-ink);
+  border: 1px solid var(--colour-canvas);
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--duration-fast) ease;
+}
+
+.map-marker--vehicle:hover .map-marker__route,
+.map-marker--vehicle:focus-visible .map-marker__route,
+.map-marker--vehicle:focus-within .map-marker__route,
+/* A quiet viewport shows every number at once; MapView decides when it is quiet enough. */
+.map-view--labelled .map-marker--vehicle .map-marker__route {
+  opacity: 1;
 }
 
 .map-marker:focus-visible {

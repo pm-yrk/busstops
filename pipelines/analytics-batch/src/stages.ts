@@ -46,7 +46,13 @@ export interface Checkpoint {
 export interface StageContext {
   runId: string;
   now: () => Date;
-  /** Remaining wall-clock budget for the whole run, in milliseconds. */
+  /**
+   * Milliseconds this stage may still spend.
+   *
+   * The run's remaining budget, or this stage's own share of it where it declares one — whichever
+   * is smaller. A stage that watches this stops itself; one that does not is still cut off at the
+   * next stage boundary, which is how run 45 ended with a complete first stage and no output.
+   */
   remainingMs: () => number;
 }
 
@@ -54,6 +60,16 @@ export interface StageDefinition<TIn, TOut> {
   name: string;
   /** Stages that must have completed for this one to run. */
   dependsOn?: readonly string[];
+  /**
+   * The fraction of the run's budget this stage may spend, when it is one that can stop early.
+   *
+   * Run 45's `segment_samples` ran for 960 seconds, reported `completed`, and left nothing for
+   * `interval_aggregates` or `incident_lifecycle` — so the batch produced no published metrics
+   * and Pro fell back to its demo snapshot. A stage that can work on a prefix of its input and
+   * still be useful declares a share here; the stages that must see all of their input, like the
+   * publish, declare none and get whatever is left.
+   */
+  budgetShare?: number;
   run: (input: TIn, context: StageContext) => Promise<StageResult<TOut>> | StageResult<TOut>;
 }
 
@@ -135,11 +151,20 @@ export class StageRunner {
       return null;
     }
 
+    const beganAt = this.now().getTime();
+    const share =
+      budgetMs === undefined || stage.budgetShare === undefined
+        ? null
+        : budgetMs * stage.budgetShare;
     const context: StageContext = {
       runId: this.runId,
       now: this.now,
-      remainingMs: () =>
-        budgetMs === undefined ? Number.POSITIVE_INFINITY : budgetMs - this.elapsedMs(),
+      remainingMs: () => {
+        const runRemaining =
+          budgetMs === undefined ? Number.POSITIVE_INFINITY : budgetMs - this.elapsedMs();
+        if (share === null) return runRemaining;
+        return Math.min(runRemaining, share - (this.now().getTime() - beganAt));
+      },
     };
 
     try {

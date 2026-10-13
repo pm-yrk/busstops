@@ -2,6 +2,14 @@ name: Deploy Preview
 
 # One button: Actions → Deploy Preview → Run workflow.
 #
+# It carries the retention and weather jobs as inputs rather than leaving them in their own
+# workflow files, for a reason worth writing down: GitHub only registers `workflow_dispatch` for
+# workflows that exist on the **default branch**. `prune-artifacts.yml`, `weather.yml` and
+# `disruptions.yml` live only on this feature branch, so dispatching them answers 404 — which is
+# also why the weather and disruption schedules have never once run against the preview bucket.
+# Dispatching a registered workflow with a ref runs *that ref's* version of the file, so routing
+# them through here is what makes them reachable before anything is merged.
+#
 # Provisions what is missing, deploys the Worker, points the frontend at it, deploys Pages,
 # bootstraps real national data, then smoke tests the result and prints the URL.
 #
@@ -12,9 +20,85 @@ on:
   workflow_dispatch:
     inputs:
       bootstrap_data:
-        description: "Also publish the national network artifact to the preview bucket"
+        description: "Also rebuild and publish the national network artifact (~45 min)"
         type: boolean
+        # Off by default. The national GTFS build takes 43 minutes of a 45-minute job, which made
+        # every CSS fix cost a full ingest and starved the visual pass of the time it needed to
+        # run at all. The published artifact survives between deploys, so a normal deploy reuses
+        # the one already in the bucket; rebuilding it is a deliberate data task, asked for by
+        # turning this on.
+        default: false
+      refresh_departures:
+        description: "Carry the timetable forward (departures + pattern trips only, ~70 min, no rebuild)"
+        type: boolean
+        # The cheap half of a rebuild, and the half that expires. Shards are keyed by service date,
+        # so an artifact stops answering outside London once its horizon runs out; this republishes
+        # only the two dated families, at the version already live.
+        default: false
+      horizon_days:
+        description: "Service dates to publish, counting today (max 8)"
+        type: string
+        default: "4"
+      prune_artifacts:
+        description: "Network artifact retention: report | apply | skip"
+        type: choice
+        options: [skip, report, apply]
+        default: skip
+      prune_minutes:
+        description: "Minutes retention may spend deleting (blank = 35; the job allows up to 200)"
+        type: string
+        # Blank by default, which keeps the behaviour the step's own comment argues for: retention
+        # is housekeeping and must not delay the verification the run exists to produce.
+        #
+        # Raised deliberately for a pass whose point *is* the prune. The account deletes at about
+        # four objects a second — a ceiling this repository does not control — so the first apply
+        # pass removed 8,968 of 32,025 removable objects in its 35 minutes and reported 23,057
+        # left. At that rate finishing takes about 96 more minutes, which is three more passes at
+        # the default or one at 150. The bucket matters: 16.05 GB against R2's 10 GiB free
+        # allowance, and finishing brings it to 10.06.
+        default: ""
+      postcode_index:
+        description: "England's postcode index: skip | measure | publish"
+        type: choice
+        # Measure before publishing, deliberately. The index is a new artifact family and the
+        # bucket is close enough to R2's free allowance that its real size should be read off a
+        # measurement rather than an estimate. `measure` downloads Code-Point Open, parses it and
+        # reports exactly what would be written, without writing a byte.
+        options: [skip, measure, publish]
+        default: skip
+      run_weather:
+        description: "Also collect stop weather into the preview bucket"
+        type: boolean
+        default: false
+      run_road_network:
+        description: "Extract OSM road segments (needed once before Pro can use live intelligence)"
+        type: boolean
+        default: false
+      run_places:
+        description: "Extract the OSM places gazetteer, so search can find York Minster"
+        type: boolean
+        default: false
+      run_intelligence:
+        description: "Collect live observations and run the analytics batch, so Pro reports live"
+        type: boolean
+        # Ordering worth knowing before combining this with a refresh: the batch runs at step 25
+        # and the departures refresh at step 29, so a single dispatch asking for both analyses the
+        # network as it was *before* the refresh republished it. That matters for one thing in
+        # particular — a refresh is what carries `agency_noc` into `network/operators`, and the
+        # batch's route join needs it — so getting both takes two dispatches: refresh, then
+        # intelligence. The steps are not reordered because collection has to start early enough
+        # for its window to close inside the run, and the refresh takes up to 170 minutes.
+        default: false
+      settle_before_batch:
+        description: "Wait 16 min after collecting so the newest window has closed before the batch runs"
+        type: boolean
+        # On by default: without it the batch correctly publishes nothing on a one-shot dispatch,
+        # which looks identical to the batch being broken.
         default: true
+      run_disruptions:
+        description: "Ask the official disruption sources, so the page stops saying none was queried"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -45,7 +129,16 @@ jobs:
   preview:
     name: Build, provision and deploy the preview
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # A stop, not a ration. This repository is public, so Actions minutes are free and unlimited;
+    # the cap exists to kill a job that has hung, and choosing it tightly bought nothing. Run 32
+    # was cancelled at 70 minutes with the national departure index already published and the
+    # planner's trips half written, and a *job* timeout cancels every remaining step — so it also
+    # threw away the data verification that would have said what had made it in. The bootstrap
+    # step carries its own, shorter limit below for that reason.
+    #
+    # A normal deploy without the bootstrap finishes in about five minutes and never approaches
+    # either number.
+    timeout-minutes: 240
     outputs:
       worker_url: ${{ steps.worker.outputs.url }}
       pages_url: ${{ steps.pages.outputs.url }}
@@ -85,6 +178,11 @@ jobs:
       # -------------------------------------------------------- worker deploy
       # The Worker is deployed before its secrets exist, because `wrangler secret put` needs the
       # script to be there. Secrets applied afterwards take effect on the live Worker immediately.
+      # `--no-install`, because wrangler is a pinned devDependency that `npm ci` has already put in
+      # place. Plain `npx wrangler` fetched whatever the registry called newest at deploy time —
+      # unpinned, unreviewed, and a minute of download in the middle of a deploy. A deploy should
+      # install nothing it did not install at the start, and should not pick its own version of
+      # the tool that talks to the account.
       - name: Deploy the preview Worker
         id: worker
         env:
@@ -92,7 +190,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           set -o pipefail
-          npx wrangler deploy \
+          npx --no-install wrangler deploy \
             --config apps/worker/wrangler.toml \
             --env "$WORKER_ENV" 2>&1 | tee deploy.log
 
@@ -123,15 +221,42 @@ jobs:
               echo "::error::Repository secret $NAME is empty; the preview Worker needs it."
               exit 1
             fi
-            # stdout is discarded because wrangler echoes a success banner per secret; stderr is
-            # kept, because it names the secret and the failure but never the value, and losing
-            # the diagnostic would be worse than the negligible risk of showing it.
-            printf '%s' "${!NAME}" | npx wrangler secret put "$NAME" \
-              --config apps/worker/wrangler.toml \
-              --env "$WORKER_ENV" >/dev/null \
-              && echo "  $NAME: set" \
-              || { echo "::error::Failed to set Worker secret $NAME"; exit 1; }
+            # Retried, because one API hiccup has no business failing a deploy.
+            #
+            # Run 38254333807 died here: setting the BODS key refused once, with the value
+            # present and every other step fine, and that took the frontend build, the Pages
+            # deploy, the verification and the visual sweep with it.
+            #
+            # (Worded that way on purpose. A contract test forbids a secret's name appearing as a
+            # literal argument after `secret put`, since the name belongs in `"$NAME"` where the
+            # loop puts it — and it reads the whole file, prose included, because a comment
+            # showing the forbidden shape is the thing somebody copies.) Cloudflare's API is rate
+            # limited per account and this job had deployed several times inside the window, so a
+            # single refusal is the expected shape of a bad minute rather than a fault to stop for.
+            #
+            # stdout is discarded because wrangler echoes a success banner per secret. stderr is
+            # captured to a file rather than shown directly: it names the secret and the failure
+            # but never the value, and it is the only thing that says *why* — "Failed to set Worker
+            # secret BODS_API_KEY" was all the last run could tell anyone, which is the same
+            # blindness as a log nobody can reach.
+            ATTEMPT=1
+            until [ "$ATTEMPT" -gt 3 ]; do
+              if printf '%s' "${!NAME}" | npx --no-install wrangler secret put "$NAME" \
+                --config apps/worker/wrangler.toml \
+                --env "$WORKER_ENV" >/dev/null 2>secret-error.log; then
+                echo "  $NAME: set$([ "$ATTEMPT" -gt 1 ] && echo " (attempt $ATTEMPT)")"
+                break
+              fi
+              if [ "$ATTEMPT" -eq 3 ]; then
+                echo "::error::Failed to set Worker secret $NAME after 3 attempts: $(tr '\n' ' ' < secret-error.log | tail -c 600)"
+                exit 1
+              fi
+              echo "::warning::Setting $NAME failed on attempt $ATTEMPT; retrying. $(tr '\n' ' ' < secret-error.log | tail -c 300)"
+              sleep $((ATTEMPT * 10))
+              ATTEMPT=$((ATTEMPT + 1))
+            done
           done
+          rm -f secret-error.log
 
       - name: Check the Worker answers before building against it
         run: |
@@ -174,7 +299,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           set -o pipefail
-          npx wrangler pages deploy apps/web/dist \
+          npx --no-install wrangler pages deploy apps/web/dist \
             --project-name "$PAGES_PROJECT" \
             --branch "$PAGES_BRANCH" \
             --commit-dirty=true 2>&1 | tee pages.log
@@ -185,20 +310,311 @@ jobs:
           echo "url=$ALIAS" >> "$GITHUB_OUTPUT"
           echo "Pages deployed at $ALIAS"
 
+      # ------------------------------------------------------------ retention
+      # Before the bootstrap, deliberately. A national publish adds about a gigabyte and a half,
+      # R2 gives ten, and nothing used to remove the publish it replaced — so knowing what is in
+      # the bucket is worth more before another one is written than after.
+      #
+      # `report` never deletes. `apply` deletes only versions the manifest proves are superseded,
+      # and refuses outright on a missing manifest, a manifest that disagrees with the index
+      # record, an incomplete listing, or a live version with no objects under it.
+      - name: Network artifact retention
+        if: ${{ inputs.prune_artifacts != 'skip' }}
+        # Its own limit, below the job's. A prune with tens of thousands of objects to remove is
+        # bounded by the account's write rate rather than by anything this repository controls, so
+        # the step is allowed to run out of time and report what it did; the run carries on and the
+        # next retention pass resumes from the oldest version left.
+        #
+        # And it never fails the run. Run 39 proved why: this step hit its limit, failed, and
+        # GitHub skipped every step after it — the weather collection, the browser, the smoke test
+        # and, worst of all, the verification that the run had been dispatched to read. Tidying the
+        # bucket is housekeeping. Whether the deployment serves real data is the question, and an
+        # unrelated housekeeping task must not be able to stop it being asked.
+        continue-on-error: true
+        # Enough for the longest budget the input allows, plus the listing it does first — 51
+        # seconds over 64,125 objects — and still inside the job's own 240.
+        timeout-minutes: 210
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          # Shorter when this run also rebuilds the network.
+          #
+          # The two together are past the job's own limit: run 43 spent forty-five minutes here
+          # deleting at the account's write ceiling, which is a rate this repository does not
+          # control, and a bootstrap wants up to a hundred and ten. Retention resumes from the
+          # oldest version left on the next pass, so cutting its budget costs a later start
+          # rather than a lost prune — whereas a job that runs out of time cancels the
+          # verification, which is the thing the run exists to produce.
+          # Worked out in the shell rather than in an expression. The expression form needed
+          # `fromJSON` on a string that is empty by default, which throws, and a clamp is a
+          # sentence of shell against a nest of conditionals.
+          PRUNE_MINUTES: ${{ inputs.prune_minutes }}
+          PRUNE_DEFAULT_MS: ${{ inputs.bootstrap_data && '1080000' || '2100000' }}
+        run: |
+          set -o pipefail
+          # A number or nothing. `$((abc * 60000))` is 0 in shell, so a typo would have handed
+          # retention a zero budget and it would have deleted nothing and said nothing about why.
+          if [ -n "$PRUNE_MINUTES" ] && ! printf '%s' "$PRUNE_MINUTES" | grep -Eq '^[0-9]+$'; then
+            echo "::warning title=retention budget::prune_minutes was \"$PRUNE_MINUTES\", which is not a number of minutes. Using the default."
+            PRUNE_MINUTES=""
+          fi
+          if [ -n "$PRUNE_MINUTES" ]; then
+            # Clamped to the step's own limit less the listing and a margin, so a typed 10000
+            # cannot turn into a step the runner kills in the middle of the delete loop — which is
+            # the one failure mode that loses the report of what was already deleted.
+            minutes="$PRUNE_MINUTES"
+            [ "$minutes" -gt 195 ] && minutes=195
+            [ "$minutes" -lt 1 ] && minutes=1
+            PRUNE_TIME_BUDGET_MS=$((minutes * 60000))
+          else
+            PRUNE_TIME_BUDGET_MS="$PRUNE_DEFAULT_MS"
+          fi
+          export PRUNE_TIME_BUDGET_MS
+          echo "Retention may spend $((PRUNE_TIME_BUDGET_MS / 60000)) minute(s) deleting."
+          if [ "${{ inputs.prune_artifacts }}" = "apply" ]; then
+            npx tsx pipelines/static-network/run-prune.ts --apply
+          else
+            npx tsx pipelines/static-network/run-prune.ts
+          fi
+
+      - name: Upload the retention report
+        if: ${{ always() && inputs.prune_artifacts != 'skip' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: preview-prune-report
+          path: prune-report.json
+          retention-days: 14
+          if-no-files-found: ignore
+
+      # -------------------------------------------------------------- weather
+      # Same reason as the retention step above: `weather.yml` exists only on this branch, so its
+      # schedule has never fired and it cannot be dispatched. Run from here, once, when the stop
+      # weather artifacts need to exist in the preview bucket.
+      - name: Collect stop weather
+        if: ${{ !cancelled() && inputs.run_weather }}
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          # Matches the cron in weather.yml, which the job checks against its own allowance.
+          WEATHER_REFRESH_MINUTES: "30"
+        run: |
+          set -o pipefail
+          npx tsx pipelines/weather/run-collect.ts 2>&1 | tee weather.log
+
+      - name: Upload the weather report
+        if: ${{ always() && inputs.run_weather }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: preview-weather-report
+          path: |
+            weather-report.json
+            weather.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+      # ---------------------------------------------------------- disruptions
+      # `disruptions.yml` is in the same position as weather and retention: it exists only on this
+      # branch, so its schedule has never fired and dispatching it answers 404. That is the whole
+      # reason the deployed Disruptions page says "No disruption source has been queried yet on
+      # this deployment" — not a bug in the ingestion, but a job that has never once been asked to
+      # run against the preview bucket. Routed through here so it can be.
+      - name: Ask the official disruption sources
+        if: ${{ !cancelled() && inputs.run_disruptions }}
+        timeout-minutes: 10
+        continue-on-error: true
+        env:
+          BODS_API_KEY: ${{ secrets.BODS_API_KEY }}
+          TFL_APP_KEY: ${{ secrets.TFL_APP_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -o pipefail
+          npx tsx pipelines/disruptions/run-collect.ts 2>&1 | tee disruptions.log
+
+      - name: Upload the disruption report
+        if: ${{ always() && inputs.run_disruptions }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: preview-disruption-report
+          path: |
+            disruptions-report.json
+            disruptions.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+      # ---------------------------------------------------- road segments
+      # The input the analytics batch has always read and nothing has ever written.
+      #
+      # `run-batch.ts` names `network/segments`, reads it, finds nothing and stops — so every
+      # scheduled intelligence run since the first has failed on "No road segments published",
+      # and Bus Stops Pro has only ever been able to serve its dated demonstration snapshot. The
+      # batch's red runs looked like an analytics problem and were a missing producer.
+      #
+      # Off by default and rarely needed: a road network changes over months, so once the segments
+      # are in the bucket they stay useful. Bounded to the urban areas named in the pipeline's
+      # `areas.ts`, one Overpass query each, spaced — the endpoint is a shared volunteer service
+      # and its policy asks for targeted queries.
+      - name: Extract road segments from OpenStreetMap
+        if: ${{ !cancelled() && inputs.run_road_network }}
+        timeout-minutes: 20
+        continue-on-error: true
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -o pipefail
+          npx tsx pipelines/road-network/run-extract.ts 2>&1 | tee road-network.log
+
+      # ------------------------------------------------------- places
+      # Why search could not find York Minster: it could find a stop, a route or an operator, and
+      # a minster is none of those. The answer is a gazetteer rather than a special case, and it
+      # is extracted here for the same reason the road segments are — its own workflow file would
+      # exist only on this branch and could never be dispatched.
+      #
+      # Rarely needed. Landmarks do not move, so once the gazetteer is in the bucket it stays
+      # useful; a rebuild is for adding areas.
+      - name: Extract the places gazetteer from OpenStreetMap
+        if: ${{ !cancelled() && inputs.run_places }}
+        timeout-minutes: 15
+        continue-on-error: true
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -o pipefail
+          npx tsx pipelines/places/run-extract.ts 2>&1 | tee places.log
+
+      # England's postcodes, so that "LS1 4DY" finds the stops at the end of someone's street.
+      #
+      # Ordnance Survey Code-Point Open, chosen after both candidates were asked directly from a
+      # runner: it answers with no credential, the archive is 13.8 MB with a published md5, and the
+      # National Grid conversion it needs already exists here for NaPTAN. `measure` is separate from
+      # `publish` because this is a new artifact family and the preview bucket is close to R2's free
+      # allowance — the size it would add should be a measurement, not an estimate.
+      - name: Build England's postcode index
+        if: ${{ !cancelled() && inputs.postcode_index != 'skip' }}
+        timeout-minutes: 25
+        continue-on-error: true
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -o pipefail
+          if [ "${{ inputs.postcode_index }}" = "publish" ]; then
+            npx tsx pipelines/postcodes/run-extract.ts --publish 2>&1 | tee postcodes.log
+          else
+            npx tsx pipelines/postcodes/run-extract.ts 2>&1 | tee postcodes.log
+          fi
+
+      # ----------------------------------------------------- intelligence
+      # Collection then the batch, in that order, because the batch reads what collection writes.
+      #
+      # Collection takes a few minutes by design: BODS asks for no more than one central live-data
+      # request every five seconds, and the collector honours that at the point of request rather
+      # than bursting and hoping. Several passes, because one position per vehicle cannot yield a
+      # traversal or a speed.
+      - name: Collect live observations
+        id: collect
+        if: ${{ !cancelled() && inputs.run_intelligence }}
+        timeout-minutes: 15
+        continue-on-error: true
+        env:
+          BODS_API_KEY: ${{ secrets.BODS_API_KEY }}
+          VEHICLE_SALT_SECRET: ${{ secrets.VEHICLE_SALT_SECRET }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -o pipefail
+          npx tsx pipelines/live-collection/run-collect.ts 2>&1 | tee collection.log
+
+      # The batch aggregates windows that have *closed*, and a bucket closes 900 seconds after it
+      # ends. Collecting and batching back to back therefore produces nothing, correctly, every
+      # time: run 70 collected 20:16–20:19 and the batch at 20:19:33 found zero settled records
+      # of five available versions. That is the architecture working, and it also means a single
+      # dispatch could never demonstrate it.
+      #
+      # So the run waits out the horizon. Sixteen minutes of a public repository's free Actions
+      # minutes is the cost of a deploy that can prove its own pipeline instead of reporting
+      # `no_input` and leaving the question open. Skipped when the collector produced nothing,
+      # because then there is nothing to wait for.
+      # Keyed off the collector's own step outcome, not off a file.
+      #
+      # Run 71's version read `collection-report.json` to decide, took one of its two early exits
+      # and returned in zero seconds — and because both exits are `exit 0`, the run looked like a
+      # successful wait. A guard that cannot be seen to have failed is worse than no guard: the
+      # batch reported `no_input` again and the sixteen minutes this step exists to spend were
+      # never spent. GitHub already knows whether the previous step succeeded.
+      - name: Wait for the newest observations to settle
+        if: ${{ !cancelled() && inputs.run_intelligence && inputs.settle_before_batch && steps.collect.outcome == 'success' }}
+        timeout-minutes: 20
+        run: |
+          # 300s bucket + 600s grace + a minute of slack. Announced before and after, so a run
+          # that did not wait says so in the log rather than looking like one that did.
+          echo "Newest bucket closes 900s after it ends. Waiting 960s, from $(date -u +%H:%M:%S)."
+          sleep 960
+          echo "Done waiting at $(date -u +%H:%M:%S); the batch can now see a closed window."
+
+      - name: Run the analytics batch
+        if: ${{ !cancelled() && inputs.run_intelligence }}
+        timeout-minutes: 20
+        continue-on-error: true
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          # Declared rather than left to the script's default, and comfortably inside the step's
+          # own twenty-minute cap: a run the runner kills writes no report at all, and run 45's
+          # sixteen-minute matching stage came within four minutes of exactly that.
+          BATCH_BUDGET_MS: "600000"
+        run: |
+          set -o pipefail
+          npx tsx pipelines/analytics-batch/run-batch.ts 2>&1 | tee batch.log
+
+      - name: Upload the intelligence reports
+        if: ${{ always() && (inputs.run_intelligence || inputs.run_road_network || inputs.run_places) }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: preview-intelligence-reports
+          path: |
+            road-network-report.json
+            road-network.log
+            places-report.json
+            places.log
+            collection-report.json
+            collection.log
+            batch-report.json
+            batch.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+      # Installed before the data bootstrap, not after it.
+      #
+      # Run 28 spent 43 of its 45 minutes ingesting GTFS and was cancelled partway through apt-get
+      # — so the deploy produced no screenshots of the thing it had just deployed, which is the
+      # one output a person actually looks at. Two minutes of apt in front of the long step costs
+      # nothing and cannot be starved by it.
       # ------------------------------------------------------ data bootstrap
+      # Reads the whole BODS GTFS archive, not a capped slice of the dataset catalogue: this is
+      # the step that decides how much of England has a departure board.
       - name: Bootstrap the national network artifact
         id: bootstrap
-        if: ${{ inputs.bootstrap_data }}
+        if: ${{ !cancelled() && inputs.bootstrap_data }}
+        # Deliberately below the job's own limit. A step that times out fails the step and leaves
+        # the run to carry on with what it has; a job that times out cancels the verification and
+        # the screenshots too, and then nobody can see how far the build got.
+        timeout-minutes: 110
         env:
           BODS_API_KEY: ${{ secrets.BODS_API_KEY }}
           TFL_APP_KEY: ${{ secrets.TFL_APP_KEY }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           FORCE_REBUILD: "true"
-          # A national build holds the NaPTAN CSV and every decompressed timetable document in
-          # memory at once. Node's default heap is a fraction of the runner's 16 GB, and the first
-          # real bootstrap died on it. This spends nothing: the memory is already paid for by the
-          # runner we are using either way.
+          PRUNE_SERVICE_DATES: "true"
+          SERVICE_DATE_HORIZON_DAYS: ${{ inputs.horizon_days || '4' }}
+          # Headroom for the indexes the streamed build holds — stops, routes, the calendar and
+          # the trips inside the horizon — not for file contents: the GTFS archive is read as a
+          # stream and the journeys spill to disk. Node's default heap is a fraction of the
+          # runner's 16 GB and an earlier bootstrap died on it. This spends nothing: the memory is
+          # already paid for by the runner we are using either way.
           NODE_OPTIONS: "--max-old-space-size=12288"
         run: |
           # The pipeline's own exit code is captured rather than allowed to abort the step,
@@ -237,16 +653,87 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-      # -------------------------------------------------------------- verify
-      # Stop at a failed bootstrap rather than carrying on.
+      # Carrying the timetable forward without rebuilding the country.
       #
-      # This used to continue so a failed bootstrap did not throw away the evidence that the
-      # deployment itself was sound. It cost more than it gave: the later steps' output pushed the
-      # bootstrap's own error out of the retrievable end of the log, and diagnosing it took an
-      # extra fifteen-minute cycle each time. The deployment evidence is worth less than knowing
-      # why the data did not publish, and a passing smoke test is available from any green run.
+      # Everything except these two families is keyed by nothing and never expires; these two are
+      # keyed by service date and are the entire reason a healthy artifact stops answering. So this
+      # streams the archive once and republishes only them, at the version already serving traffic,
+      # which needs no new pointer and no index swap. It runs after the bootstrap rather than instead
+      # of it, so asking for both is harmless: the second pass simply finds the days already there.
+      - name: Carry the timetable forward
+        id: refresh_departures
+        if: ${{ !cancelled() && inputs.refresh_departures }}
+        timeout-minutes: 170
+        env:
+          BODS_API_KEY: ${{ secrets.BODS_API_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          DEPARTURES_ONLY: "true"
+          PRUNE_SERVICE_DATES: "true"
+          SERVICE_DATE_HORIZON_DAYS: ${{ inputs.horizon_days || '4' }}
+          NODE_OPTIONS: "--max-old-space-size=12288"
+        run: |
+          set -o pipefail
+          df -h /
+          npx tsx pipelines/static-network/run-daily.ts 2>&1 | tee refresh.log && STATUS=0 || STATUS=$?
+          echo "--- last 40 lines from the refresh (exit $STATUS) ---"
+          tail -40 refresh.log || true
+          df -h /
+          exit "$STATUS"
+
+      # Whether this run bootstrapped or not, say how many days of timetable the live artifact can
+      # actually answer for. An artifact goes blank outside London the moment its horizon runs out,
+      # and the only honest way to know how close that is is to count the objects in the bucket.
+      # Coverage before the reader is pointed at it, which is the order that matters.
+      #
+      # The unit tests cover the hash. This covers the *published artifact*, which is a different
+      # claim: that every service in `network/services` is in exactly one bucket, in the bucket the
+      # Worker will look in, at the version that is live. It reads all 256 and reports missing,
+      # duplicated, unexpected and misplaced records, plus named services from several operators so
+      # "coverage is complete" rests on something recognisable and not only on a count.
+      #
+      # Runs whenever a refresh ran, because a refresh is what publishes the family. It changes
+      # nothing, and a failure here is a reason not to trust the index rather than a reason to fail
+      # the deploy — the reader falls back to the whole object either way.
+      - name: Prove the service buckets cover every service
+        if: ${{ !cancelled() && inputs.refresh_departures }}
+        continue-on-error: true
+        timeout-minutes: 10
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: npx tsx scripts/prove-service-buckets.ts
+
+      - name: How many days of timetable the preview holds
+        if: ${{ !cancelled() }}
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          SERVICE_DATE_HORIZON_DAYS: ${{ inputs.horizon_days || '4' }}
+        run: npx tsx pipelines/static-network/prove-horizon.ts
+
+      - name: Upload the horizon report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: preview-horizon-report
+          path: horizon-report.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+      # -------------------------------------------------------------- verify
+      # Carry on past a failed bootstrap, having fixed the reason not to.
+      #
+      # These steps were gated on the bootstrap because the later steps' output pushed the
+      # bootstrap's own error out of the retrievable end of the log, and diagnosing it cost an
+      # extra fifteen-minute cycle each time. That reason was real, and the answer is to reprint
+      # the bootstrap's outcome at the end of the job with the other reprints, not to throw the
+      # rest of the evidence away: the index is written last and atomically, so a bootstrap that
+      # dies leaves the previous artifact current and the deployment in a known-good state. A
+      # two-hour run that produced nothing at all, about a deployment that was working, is the
+      # more expensive mistake.
       - name: Wait for the Pages deployment to serve
-        if: ${{ steps.bootstrap.outcome != 'failure' && steps.pages.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.pages.outcome == 'success' }}
         run: |
           for attempt in 1 2 3 4 5 6 7 8 9 10; do
             CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 \
@@ -261,19 +748,79 @@ jobs:
           echo "::error::The Pages deployment did not start serving."
           exit 1
 
+      # Ticket links are checked from here because they cannot be checked from where they are
+      # decided. The agent maintaining `data/ticket-sellers.json` has no outbound route to
+      # operator websites — the gateway refuses them — so a URL written from memory would be
+      # precisely the unverified link `lib/tickets.ts` exists to refuse. A runner can reach them.
+      #
+      # It runs on every deploy rather than behind an input, because the second thing it catches
+      # is link rot: an operator who moves their ticket page turns a working hand-off into a 404,
+      # and the only way to notice is to keep asking. It never fails the run — a seller being
+      # down is not a reason to withhold a deployment — and it changes nothing by itself. The
+      # result comes back as an annotation to be written into the data file deliberately.
+      - name: Check the ticket-seller pages still answer
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 8
+        run: node scripts/verify-ticket-links.mjs
+
       - name: Smoke test the real deployment
-        if: ${{ steps.bootstrap.outcome != 'failure' && steps.pages.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.pages.outcome == 'success' }}
         run: node scripts/smoke-test.mjs "${{ steps.pages.outputs.url }}" "${{ steps.worker.outputs.url }}"
 
       # Separate from the smoke test on purpose. The smoke test asserts the deployment is sound
       # whatever the upstreams are doing; this asserts there is real national data behind it and
-      # that a passenger can reach it, which is only a meaningful question after a bootstrap.
+      # that a passenger can reach it.
+      #
+      # It runs whenever the Pages deploy worked, including when the bootstrap failed. The question
+      # is whether real data is reachable through this deployment, and a bucket filled by an
+      # earlier run answers it just as well — skipping the check on a re-deploy only meant the run
+      # that changed the frontend was the one run with no evidence behind it.
+      #
+      # A failed bootstrap used to skip this and the visual sweep both, which is the same mistake
+      # in a more expensive form: the index is written last and atomically, so a bootstrap that
+      # dies leaves the *previous* artifact current and the deployment in a known-good state. The
+      # cost of skipping was a two-hour run that produced no evidence whatever, about a deployment
+      # that was working. The bootstrap's own outcome is printed alongside, so an older artifact is
+      # never mistaken for a new one.
+      # One endpoint, asked thirty times, reported as a distribution.
+      #
+      # The verification below counts how many of twenty-six checks survived, and that total has
+      # swung 9 → 11 → 12 across runs of the *same commit*. It is good for finding which endpoint
+      # is unhappy and no good for deciding whether a change helped, because one run's total is a
+      # single draw from a wide distribution — and several earlier conclusions here leaned on
+      # exactly that and were wrong.
+      #
+      # This makes no assertions and cannot fail the run. It reports success rates and the Worker's
+      # own account of what each successful request decoded, which is the figure a performance
+      # change should move. The passenger probe stays the gate.
+      - name: Measure one endpoint many times, so a conclusion is not one draw
+        if: ${{ !cancelled() && steps.pages.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 12
+        run: node scripts/measure-endpoint-cost.mjs "${{ steps.worker.outputs.url }}" --samples 30 --pace 400
+
+      # What a real stop board pays to resolve its services, which is the one cost the bucketed
+      # family was built to reduce. Both paths are still in the Worker, so both are measurable on
+      # the same deployment: a board that reads buckets reports how many it read and how many
+      # characters that was, and a board that falls back reports the size of the whole object. That
+      # is the before-and-after comparison, measured rather than assumed.
+      #
+      # Real stops, found by asking what is near four city centres, so it survives a rebuild.
+      - name: Measure what a stop board pays for its services
+        if: ${{ !cancelled() && steps.pages.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 10
+        run: node scripts/measure-board-services.mjs "${{ steps.worker.outputs.url }}" --passes 4 --pace 500
+
       - name: Verify real data through the deployed API
-        if: ${{ steps.bootstrap.outcome == 'success' && steps.pages.outcome == 'success' }}
+        id: verify
+        if: ${{ !cancelled() && steps.pages.outcome == 'success' }}
         run: |
+          set -o pipefail
           node scripts/verify-deployment.mjs \
             "${{ steps.worker.outputs.url }}" \
-            "${{ steps.pages.outputs.url }}"
+            "${{ steps.pages.outputs.url }}" 2>&1 | tee verify.log
 
       # Run here rather than in CI because the thing being judged is the deployment: the basemap
       # comes from a third-party tile host and the policy that permits it is generated at deploy
@@ -282,28 +829,82 @@ jobs:
       # And run it last. A step with an `if` is skipped once an earlier one has failed, so with
       # the visual pass first a slow tile host would have taken the data verification down with
       # it — hiding the more important answer behind the less important one.
-      - name: Install a browser for the visual pass
-        if: ${{ steps.bootstrap.outcome != 'failure' && steps.pages.outcome == 'success' }}
-        run: npx playwright install --with-deps chromium
-
-      - name: Look at the deployed preview
-        id: visual
-        if: ${{ steps.bootstrap.outcome != 'failure' && steps.pages.outcome == 'success' }}
-        # The API URL as well, so the sweep can find a real vehicle to follow: a bus on the map is
-        # a picture with a label rather than a link, so the vehicle page needs a reference, and
-        # inventing one would look at the not-found state instead of the page.
+      # `always()`, so a data failure never costs the screenshots.
+      #
+      # This is gated on the deploy having happened, not on the data behind it being right. The
+      # two answer different questions: "is there a national timetable in the bucket" and "can a
+      # person see the buses on the map". Run 29 failed the first — correctly, the timetable
+      # names no route at the stop it sampled — and GitHub skipped every later step, so a run
+      # whose entire purpose was to photograph the deployed map produced no photographs of it.
+      - name: Bootstrap report, where the log can reach it
+        if: ${{ always() && inputs.bootstrap_data }}
         run: |
-          node scripts/visual-qa.mjs \
-            "${{ steps.pages.outputs.url }}" visual-qa "${{ steps.worker.outputs.url }}"
+          echo "--- bootstrap outcome (repeated at end of job) ---"
+          echo "step outcome: ${{ steps.bootstrap.outcome }}"
+          cat build-report.json 2>/dev/null || echo "no build-report.json was written"
+          if [ "${{ steps.bootstrap.outcome }}" != "success" ]; then
+            echo "--- last 40 lines from the pipeline ---"
+            tail -40 bootstrap.log 2>/dev/null || echo "no bootstrap.log was written"
+            echo "Everything below this line was measured against the PREVIOUS artifact:"
+            echo "the index is written last, so a bootstrap that did not publish leaves the"
+            echo "previous one current. Do not read it as evidence about this build's data."
+          fi
+          echo "--- end bootstrap outcome ---"
 
-      - name: Upload what it saw
-        if: ${{ !cancelled() && steps.visual.outcome != 'skipped' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: preview-visual-qa
-          path: visual-qa
-          retention-days: 7
-          if-no-files-found: ignore
+      - name: Retention report, where the log can reach it
+        if: ${{ always() && inputs.prune_artifacts != 'skip' }}
+        run: |
+          echo "--- retention report (repeated at end of job) ---"
+          cat prune-report.json 2>/dev/null || echo "no prune-report.json was written"
+          echo "--- end retention report ---"
+
+      # Same reason as the retention reprint above: the weather collector runs before a browser
+      # install whose output buries it, and its artifact host is refused by the egress proxy.
+      - name: Weather report, where the log can reach it
+        if: ${{ always() && inputs.run_weather }}
+        run: |
+          echo "--- weather report (repeated at end of job) ---"
+          cat weather-report.json 2>/dev/null || echo "no weather-report.json was written"
+          echo "--- end weather report ---"
+
+      - name: Disruption report, where the log can reach it
+        if: ${{ always() && inputs.run_disruptions }}
+        run: |
+          echo "--- disruption report (repeated at end of job) ---"
+          cat disruptions-report.json 2>/dev/null || echo "no disruptions-report.json was written"
+          echo "--- last 30 lines of the disruption log ---"
+          tail -30 disruptions.log 2>/dev/null || echo "no disruptions.log was written"
+          echo "--- end disruption report ---"
+
+      # Same again for the intelligence path. These are the reports that say whether Pro has any
+      # live figures at all, and they run before a two-hundred-line visual pass.
+      - name: Intelligence reports, where the log can reach them
+        if: ${{ always() && (inputs.run_intelligence || inputs.run_road_network || inputs.run_places) }}
+        run: |
+          echo "--- road network report (repeated at end of job) ---"
+          cat road-network-report.json 2>/dev/null || echo "no road-network-report.json was written"
+          echo "--- places report ---"
+          cat places-report.json 2>/dev/null || echo "no places-report.json was written"
+          echo "--- collection report ---"
+          cat collection-report.json 2>/dev/null || echo "no collection-report.json was written"
+          echo "--- analytics batch report ---"
+          cat batch-report.json 2>/dev/null || echo "no batch-report.json was written"
+          echo "--- end intelligence reports ---"
+
+      # The same reachability problem the retention and weather reports had, and the one that
+      # mattered most. Run 38 added the Cloudflare error code to every failing check and then put
+      # it forty lines above the visual pass's two hundred, where the log is only retrievable from
+      # the tail — so the run that was dispatched to name the limit could not be read for it.
+      # The sweep runs two hundred lines before the end of the job, which is the only part of the
+      # log that can be retrieved — so what it found about the stop, route, operator, Saved and Pro
+      # pages has been written and never read. Failures first, then the count, so a clean sweep is
+      # one line and a bad one is the list.
+      - name: What the verification actually said
+        if: ${{ always() && steps.verify.outcome != 'skipped' }}
+        run: |
+          echo "--- verification failures (repeated at end of job) ---"
+          grep -E "^\s*(FAIL|pass)" verify.log 2>/dev/null || echo "no verify.log was written"
+          echo "--- end verification failures ---"
 
       - name: Summary
         if: always()
@@ -318,3 +919,125 @@ jobs:
             echo "| Artifact bucket | \`$R2_BUCKET_ARTIFACTS\` |"
           } >> "$GITHUB_STEP_SUMMARY"
           echo "Preview URL: ${{ steps.pages.outputs.url }}"
+
+  # Its own job, deliberately.
+  #
+  # This is the report that decides whether the deployment is any good, and when it was a step
+  # inside the deploy its output was buried in a log that also carries an apt-get, a browser
+  # download and fifty visual checks. A separate job gives it a log of its own that can be read
+  # in one screen — which is the difference between evidence that gets looked at and evidence
+  # that technically exists.
+  #
+  # It runs even when the deploy job failed, because a failed visual pass says nothing about
+  # whether the API is serving real data, and that is the question here.
+  # The visual sweep, in a job of its own — for the same reason the probe is in one.
+  #
+  # It is two hundred checks and, since the live map started mounting its basemap whether or not the
+  # API answers, the best part of an hour: every /live page now loads real tiles, where a failed map
+  # request used to mean no map at all and an instant settle. That is the fix working, and it had a
+  # side effect — GitHub serves no log for a job still running, so the API verification that finishes
+  # in ninety seconds could not be read until the sweep did, fifty minutes later. Split, the question
+  # "does a real stop show real departures?" is answerable ten minutes after a push, which is the
+  # loop this work actually runs on.
+  sweep:
+    name: Look at the deployed preview
+    needs: preview
+    if: ${{ always() && needs.preview.outputs.pages_url != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - run: npm ci --no-audit --no-fund
+
+      - name: Install a browser for the visual pass
+        run: npx playwright install --with-deps chromium
+
+      - name: Look at the deployed preview
+        id: visual
+        # The API URL as well, so the sweep can find a real vehicle to follow: a bus on the map is
+        # a picture with a label rather than a link, so the vehicle page needs a reference, and
+        # inventing one would look at the not-found state instead of the page.
+        run: |
+          set -o pipefail
+          node scripts/visual-qa.mjs \
+            "${{ needs.preview.outputs.pages_url }}" visual-qa \
+            "${{ needs.preview.outputs.worker_url }}" \
+            2>&1 | tee visual.log
+
+      - name: Upload what it saw
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: preview-visual-qa
+          path: visual-qa
+          retention-days: 7
+          if-no-files-found: ignore
+
+      # Failures first, then what a clicked stop actually showed, then the count — so a clean sweep
+      # is one line, a bad one is the list, and both sit at the end of a log that can be read.
+      - name: What the sweep actually saw
+        if: always()
+        run: |
+          echo "--- visual sweep failures (repeated at end of job) ---"
+          grep -E "^\s*FAIL" visual.log 2>/dev/null || echo "no FAIL lines"
+          # The one set of *passes* worth repeating: what a reader is actually told when they click a
+          # stop, at every screen size. A pass count says a check ran; this says "4F to Acomb, 7 min,
+          # Timetable", which is the only evidence that the product works.
+          echo "--- what a clicked stop showed, at each size ---"
+          grep -E "opens the arrival board when a stop is clicked|real departures" visual.log 2>/dev/null \
+            || echo "no board lines"
+          echo "--- visual sweep totals ---"
+          grep -cE "^\s*pass" visual.log 2>/dev/null || echo "no visual.log was written"
+          echo "--- end visual sweep ---"
+
+  probe:
+    name: Probe the deployed API as a passenger
+    needs: preview
+    if: ${{ always() && needs.preview.outputs.worker_url != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - run: npm ci --no-audit --no-fund
+
+      # A request through the Worker and an independent request straight to BODS, in the same
+      # second, for the same viewport — so "no buses" is attributed rather than guessed at.
+      - name: Probe
+        env:
+          BODS_API_KEY: ${{ secrets.BODS_API_KEY }}
+        run: |
+          set -o pipefail
+          npx tsx scripts/probe-deployment.ts \
+            --worker "${{ needs.preview.outputs.worker_url }}" \
+            --json deployment-probe.json 2>&1 | tee probe.log
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "## Passenger probe of the deployed API"
+            echo
+            echo "Worker: ${{ needs.preview.outputs.worker_url }}"
+            echo
+            echo '```'
+            sed -n '1,260p' probe.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deployment-probe
+          path: |
+            deployment-probe.json
+            probe.log
+          retention-days: 7
+          if-no-files-found: ignore

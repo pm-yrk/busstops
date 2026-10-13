@@ -8,6 +8,8 @@ import {
   londonDateString,
   londonMinuteOfDay,
   londonOffsetMinutes,
+  MAX_SCHEDULED_HOUR,
+  parseTimeOfDay,
   resolveScheduledInstant,
   serviceDate,
   weekdayType,
@@ -92,6 +94,33 @@ describe("resolveScheduledInstant", () => {
     expect(() => resolveScheduledInstant("2026-01-15", "nine-thirty")).toThrow(
       /Invalid time of day/,
     );
+  });
+
+  /*
+   * England's national GTFS extract contains 106:25:00. It used to be rejected for being three
+   * digits wide, which threw and ended a 1.3 GiB national build with nothing published — and the
+   * same rule would have accepted 99:00:00, four days out, without a word. The bound is now the
+   * thing that actually matters: how far past the service date the time lands.
+   */
+  it("places an overnight time and refuses one that is days out", () => {
+    expect(parseTimeOfDay("25:10")).toEqual({ hours: 25, minutes: 10, seconds: 0 });
+    expect(parseTimeOfDay("30:05:30")).toEqual({ hours: 30, minutes: 5, seconds: 30 });
+
+    // The bound itself is allowed; a minute past it is not.
+    expect(parseTimeOfDay(`${MAX_SCHEDULED_HOUR}:00:00`)).not.toBeNull();
+    expect(parseTimeOfDay(`${MAX_SCHEDULED_HOUR + 1}:00:00`)).toBeNull();
+
+    expect(parseTimeOfDay("106:25:00")).toBeNull();
+    expect(parseTimeOfDay("99:00:00")).toBeNull();
+    expect(parseTimeOfDay("nine-thirty")).toBeNull();
+
+    expect(() => resolveScheduledInstant("2026-01-15", "106:25:00")).toThrow(/Invalid time of day/);
+  });
+
+  it("carries a 47-hour time onto the day after tomorrow rather than wrapping it", () => {
+    // 47:30 is 23:30 two nights later, not 23:30 the same night.
+    const instant = resolveScheduledInstant("2026-01-15", "47:30");
+    expect(instant.toISOString()).toBe("2026-01-16T23:30:00.000Z");
   });
 });
 

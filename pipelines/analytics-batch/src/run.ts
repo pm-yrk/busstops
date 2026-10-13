@@ -3,7 +3,15 @@ import type { ObjectStore } from "@busstops/pipeline-core";
 import { toIso } from "@busstops/pipeline-core";
 import { activeDegradationSteps, isAtLeast } from "@busstops/governor";
 import { StageRunner, type Checkpoint, type RunReport } from "./stages.js";
-import { sampleSegmentsForTrace, type RoadSegment, type SegmentSample } from "./segments.js";
+import {
+  coverageGaps,
+  emptySegmentMatchProfile,
+  indexSegments,
+  sampleSegmentsForTrace,
+  summariseSegmentMatchProfile,
+  type RoadSegment,
+  type SegmentSample,
+} from "./segments.js";
 import {
   aggregateSegmentSamples,
   type AggregationResult,
@@ -27,6 +35,8 @@ export interface BatchInput {
   traces: ReadonlyMap<string, readonly VehicleObservation[]>;
   /** Route id per vehicle where matching established one; null where it did not. */
   routeByVehicle: ReadonlyMap<string, string | null>;
+  /** What that map cost to build, for the summary Pro reads. */
+  routeJoin?: { distinctRouteNames: number; vehiclesMappedToRouteId: number };
   segments: readonly RoadSegment[];
   existingBuckets: ReadonlyMap<string, SegmentIntervalBucket>;
   existingIncidents: readonly TrackedIncident[];
@@ -81,39 +91,123 @@ export async function runAnalyticsBatch(
     (await runner.run<BatchInput, SegmentSample[]>(
       {
         name: "segment_samples",
-        run: (batch) => {
+        /*
+         * Half the run, not all of it. Matching is the expensive stage and the only one that can
+         * usefully stop part way, so it takes the largest share and leaves the aggregation, the
+         * incident reconciliation and the publish the other half.
+         */
+        budgetShare: 0.5,
+        run: (batch, context) => {
           const collected: SegmentSample[] = [];
           let lowConfidence = 0;
           let implausible = 0;
           let unmatched = 0;
+          let processed = 0;
+          let ranOutOfTime = false;
+
+          /*
+           * The index is built once for the whole batch.
+           *
+           * This loop used to hand every trace the entire segment array, which rebuilt a
+           * seventy-six-thousand-entry candidate list per vehicle and matched each bus against
+           * every road in the country. Run 45 measured it at 960 seconds for 2,927 traces — the
+           * whole run's budget — with 2,184 of them rejected for low confidence, which is what a
+           * matcher offered the wrong city returns.
+           */
+          const index = indexSegments(batch.segments);
+          /*
+           * The stage measures itself.
+           *
+           * Run 67 processed a quarter of its traces in a full budget and rejected half of what
+           * it did process below the confidence floor. Both numbers are outcomes; neither says
+           * where the time went or which of the confidence's three factors did the rejecting,
+           * and those have different fixes. The floor stays where it is until this says why the
+           * matches are weak.
+           */
+          const profile = emptySegmentMatchProfile();
 
           for (const [vehicleRef, trace] of batch.traces) {
+            /*
+             * And a share of the clock, so this stage cannot starve the ones after it.
+             *
+             * When it overran, `interval_aggregates` and `incident_lifecycle` were both skipped
+             * for want of time and Pro published nothing — so a complete first stage bought a
+             * batch with no output at all. A sample is a sample: aggregating the traces that were
+             * processed is worth more than processing every trace and aggregating none.
+             */
+            if (context.remainingMs() <= 0) {
+              ranOutOfTime = true;
+              break;
+            }
             const result = sampleSegmentsForTrace(
               trace,
-              batch.segments,
+              index,
               batch.routeByVehicle.get(vehicleRef) ?? null,
+              {},
+              profile,
             );
             collected.push(...result.samples);
             lowConfidence += result.discardedLowConfidence;
             implausible += result.discardedImplausible;
             unmatched += result.unmatchedTraces;
+            processed += 1;
           }
 
           return {
             value: collected,
             metrics: {
-              processed: batch.traces.size,
+              processed,
               emitted: collected.length,
               rejected: lowConfidence + implausible + unmatched,
               lowConfidenceTraces: lowConfidence,
               implausibleTraversals: implausible,
+              segmentsIndexed: index.size,
+              ...summariseSegmentMatchProfile(profile),
+              // Cells carrying enough traces to judge, and how many of those are badly covered.
+              coverageCellsJudged: coverageGaps(profile, { limit: 10_000 }).length,
+              coverageCellsBelowHalf: coverageGaps(profile, { limit: 10_000 }).filter(
+                (gap) => gap.matchedShare < 0.5,
+              ).length,
             },
-            notes:
-              lowConfidence > 0
+            notes: [
+              /*
+               * Said in one line, because the counters answer a question that is asked out loud
+               * on every run: are the matches weak because the roads are missing, because the
+               * positions are far from them, or because the decode never settled.
+               */
+              `match profile: ${profile.candidatesMax} candidates at most, ` +
+                `${Math.round(profile.candidateSearchMs)}ms finding them and ` +
+                `${Math.round(profile.decodeMs)}ms decoding; rejections were ` +
+                `${profile.rejectedByCoverage} coverage / ${profile.rejectedByDistance} distance / ` +
+                `${profile.rejectedByInstability} instability`,
+              /*
+               * Coverage as a map, said separately from performance.
+               *
+               * The finer grid makes the search cheap everywhere and puts no road under a bus
+               * that has none. These two lines are deliberately not one: the first says whether
+               * the matcher is fast, the second says whether the extraction reached this part of
+               * England, and only the second is a reason to re-run the road-network job.
+               */
+              `road-network coverage, worst cells: ${
+                coverageGaps(profile)
+                  .map(
+                    (gap) =>
+                      `${gap.cell} ${(gap.matchedShare * 100).toFixed(0)}% matched of ` +
+                      `${gap.traces} trace(s), ${(gap.noCandidateShare * 100).toFixed(0)}% with no road at all`,
+                  )
+                  .join("; ") || "no cell carried enough traces to judge"
+              }`,
+              ...(lowConfidence > 0
                 ? [
                     `${lowConfidence} traces produced no samples because their map match was below the confidence floor`,
                   ]
-                : [],
+                : []),
+              ...(ranOutOfTime
+                ? [
+                    `stopped after ${processed} of ${batch.traces.size} traces to leave time for the stages after this one`,
+                  ]
+                : []),
+            ],
           };
         },
       },
@@ -188,7 +282,12 @@ export async function runAnalyticsBatch(
         run: async () => {
           const result = await publishIntelligence(
             options.store!,
-            { buckets: aggregation.buckets, incidents },
+            {
+              buckets: aggregation.buckets,
+              incidents,
+              samples,
+              ...(input.routeJoin === undefined ? {} : { routeJoin: input.routeJoin }),
+            },
             {
               version: options.version ?? toIso(startedAt).replace(/[:.]/g, "-"),
               coverage: input.coverage,

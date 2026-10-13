@@ -33,6 +33,93 @@ export interface MapMatchCandidateGeometry {
   path: readonly Coordinate[];
   /** Direction of travel along `path`, when the geometry is one-way. */
   oneWay?: boolean;
+  /**
+   * The path's bounding box, when the caller has one to hand.
+   *
+   * Purely an optimisation, and an exact one: a point outside the box expanded by `maxSnapMetres`
+   * cannot be within `maxSnapMetres` of the path inside it, so the projection is skipped rather
+   * than computed and discarded. The decode is unchanged.
+   *
+   * It belongs to the caller because it is static: a road's extent does not vary by trace, and
+   * recomputing it for every vehicle is the repeated geometry work this exists to remove. The
+   * segment index computes it once when it files the segment.
+   */
+  bounds?: { minLat: number; minLon: number; maxLat: number; maxLon: number };
+}
+
+/**
+ * What the decode cost and where the cost went.
+ *
+ * Run 67 processed 4,265 of 17,270 traces in a full five-minute budget and rejected 2,178 of them
+ * below the confidence floor. Neither number says why: "slow" could be the candidate search or
+ * the projection, and "weak" could be coverage, distance or instability, which have completely
+ * different fixes. Nothing here changes the decode; it counts what the decode did, so the next
+ * change is made against a measurement rather than a guess.
+ */
+export interface MapMatchProfile {
+  points: number;
+  /** Candidate geometries the caller offered for this trace. */
+  candidatesOffered: number;
+  /** Projections actually computed: the dominant cost, points times surviving candidates. */
+  projections: number;
+  /** Projections the bounding-box test removed, which is what precomputation is worth. */
+  projectionsSkippedByBounds: number;
+  /** Candidates with no usable bounding box, which the test cannot help. */
+  candidatesWithoutBounds: number;
+  /** States kept after the per-point cap, which is what the Viterbi pass actually walks. */
+  statesKept: number;
+  /** Points where no candidate came within `maxSnapMetres`; these break the chain. */
+  pointsWithNoState: number;
+}
+
+export function emptyMapMatchProfile(): MapMatchProfile {
+  return {
+    points: 0,
+    candidatesOffered: 0,
+    projections: 0,
+    projectionsSkippedByBounds: 0,
+    candidatesWithoutBounds: 0,
+    statesKept: 0,
+    pointsWithNoState: 0,
+  };
+}
+
+export function addMapMatchProfile(total: MapMatchProfile, part: MapMatchProfile): void {
+  total.points += part.points;
+  total.candidatesOffered += part.candidatesOffered;
+  total.projections += part.projections;
+  total.projectionsSkippedByBounds += part.projectionsSkippedByBounds;
+  total.candidatesWithoutBounds += part.candidatesWithoutBounds;
+  total.statesKept += part.statesKept;
+  total.pointsWithNoState += part.pointsWithNoState;
+}
+
+/** Metres per degree of latitude. Constant enough at this scale; the margin is a safety bound. */
+const METRES_PER_DEGREE_LAT = 111_320;
+
+/**
+ * Whether a point could possibly be within `margin` metres of the box.
+ *
+ * Deliberately generous. The longitude margin is computed at whichever of the box's latitudes is
+ * furthest from the equator, because a degree of longitude is shortest there — using the point's
+ * own latitude would be tighter and could, at a boundary, exclude a path that was in range.
+ */
+function withinBounds(
+  point: Coordinate,
+  bounds: NonNullable<MapMatchCandidateGeometry["bounds"]>,
+  marginMetres: number,
+): boolean {
+  const latMargin = marginMetres / METRES_PER_DEGREE_LAT;
+  const worstLatitude = Math.max(Math.abs(bounds.minLat), Math.abs(bounds.maxLat));
+  const lonMargin =
+    marginMetres /
+    (METRES_PER_DEGREE_LAT * Math.max(0.1, Math.cos((worstLatitude * Math.PI) / 180)));
+  return (
+    point.lat >= bounds.minLat - latMargin &&
+    point.lat <= bounds.maxLat + latMargin &&
+    point.lon >= bounds.minLon - lonMargin &&
+    point.lon <= bounds.maxLon + lonMargin
+  );
 }
 
 export interface MapMatchPoint {
@@ -80,6 +167,16 @@ export interface MapMatchResult {
   switchCount: number;
   /** 0..1 overall confidence. Low-confidence matches must not create incidents. */
   confidence: number;
+  /**
+   * The three factors the confidence is the product of.
+   *
+   * A single number cannot say why a match was weak, and the three have nothing in common as
+   * problems: poor `coverage` means the roads are not there, low `meanPointConfidence` means the
+   * positions sit far from the centreline, and low `stability` means the decode never settled.
+   * Each calls for a different change, and the floor should not be touched until the batch can
+   * say which of them is doing the rejecting.
+   */
+  components: { coverage: number; meanPointConfidence: number; stability: number };
   reasons: string[];
 }
 
@@ -99,6 +196,8 @@ export function mapMatch(
   points: readonly MapMatchPoint[],
   geometries: readonly MapMatchCandidateGeometry[],
   options: Partial<typeof MAP_MATCH_DEFAULTS> = {},
+  /** Filled in as the decode runs, when the caller wants to know what it cost. */
+  profile?: MapMatchProfile,
 ): MapMatchResult {
   const config = { ...MAP_MATCH_DEFAULTS, ...options };
   const reasons: string[] = [];
@@ -118,8 +217,14 @@ export function mapMatch(
       unmatchedCount: points.length,
       switchCount: 0,
       confidence: 0,
+      components: { coverage: 0, meanPointConfidence: 0, stability: 0 },
       reasons: [geometries.length === 0 ? "no candidate geometries" : "no positions to match"],
     };
+  }
+
+  if (profile) {
+    profile.points += points.length;
+    profile.candidatesOffered += geometries.length;
   }
 
   // Layer of states per point, each already scored for emission.
@@ -129,6 +234,24 @@ export function mapMatch(
     const states: State[] = [];
 
     for (const geometry of geometries) {
+      /*
+       * The cheap test before the expensive one.
+       *
+       * `projectOntoPath` walks every vertex of the road; the bounding-box test is four
+       * comparisons against numbers the index computed once. The decode is identical either way —
+       * a point outside the box by more than `maxSnapMetres` would have been discarded by the
+       * line below — so this removes work rather than candidates.
+       */
+      if (geometry.bounds) {
+        if (!withinBounds(point.coordinate, geometry.bounds, config.maxSnapMetres)) {
+          if (profile) profile.projectionsSkippedByBounds += 1;
+          continue;
+        }
+      } else if (profile) {
+        profile.candidatesWithoutBounds += 1;
+      }
+
+      if (profile) profile.projections += 1;
       const projection = projectOntoPath(point.coordinate, geometry.path);
       if (!projection || projection.distanceMetres > config.maxSnapMetres) continue;
 
@@ -149,7 +272,12 @@ export function mapMatch(
     }
 
     states.sort((a, b) => b.score - a.score);
-    layers.push(states.slice(0, config.maxCandidatesPerPoint));
+    const kept = states.slice(0, config.maxCandidatesPerPoint);
+    if (profile) {
+      profile.statesKept += kept.length;
+      if (kept.length === 0) profile.pointsWithNoState += 1;
+    }
+    layers.push(kept);
   }
 
   // Viterbi forward pass. Layers with no states break the chain; the decode restarts after them
@@ -298,6 +426,7 @@ export function mapMatch(
     unmatchedCount,
     switchCount,
     confidence: coverage * meanPointConfidence * stability,
+    components: { coverage, meanPointConfidence, stability },
     reasons,
   };
 }

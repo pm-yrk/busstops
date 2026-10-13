@@ -4,8 +4,13 @@ import {
   type GovernorState,
   type MapResponseData,
   type SearchResult,
+  type ServiceRoute,
 } from "@busstops/contracts";
 import { safeModeActive } from "@busstops/governor";
+import { DisruptionReader, noticesFor } from "./disruption-reader.js";
+import { stopAccessibility } from "./stop-accessibility.js";
+import { WeatherReader } from "./weather-reader.js";
+import { DepartureReader } from "./departure-reader.js";
 import {
   boundingBoxAreaSquareDegrees,
   corridorBoundingBox,
@@ -18,15 +23,224 @@ import {
   LiveService,
   buildMeta,
   cacheTtlSeconds,
+  isLondonAtcoCode,
   oldestObservedAt,
+  sourcesForBoundingBox,
   toMapVehicle,
 } from "./live-service.js";
-import { NetworkReader } from "./network-reader.js";
+import { MAX_CACHED_SHARD_CHARS, NetworkReader } from "./network-reader.js";
+import { ReadLedger } from "./read-ledger.js";
+import { beginBreadcrumb, endBreadcrumb, mark, takeUnfinished } from "./breadcrumb.js";
+import {
+  passengerName,
+  patternTilesForBoundingBox,
+  stopTilesForBoundingBox,
+  routeBadgeName,
+} from "@busstops/pipeline-static-network";
+
+/** A destination as a passenger should read it, or nothing when the feed published nothing. */
+function displayDestination(value: string | null | undefined): string | null {
+  return value ? passengerName(value) : null;
+}
+
+/**
+ * How long a map request will spend on optional enrichment before it stops and says so.
+ *
+ * Not a guess at Cloudflare's limit — nobody outside Cloudflare knows whether 1102 was CPU or
+ * memory here, and the error page does not say. It is a figure this handler can keep to: stops
+ * and vehicles are read first and are never skipped, so whatever is left is spent on route names,
+ * and a screen that has not got them in this long is better served a labelled map than a 503.
+ *
+ * Raised from nine hundred once the byte caps were doing the real work. What bounds memory is
+ * five mebibytes of stop text and three of pattern text, read two objects at a time; the clock is
+ * a backstop against a slow upstream rather than the thing keeping the isolate alive. At nine
+ * hundred milliseconds the essential half spent the whole budget and enrichment never ran at all,
+ * so every dense viewport came back truthfully degraded and permanently unlabelled — honest, and
+ * not the product.
+ */
+const MAP_ENRICHMENT_BUDGET_MS = 1_800;
+
+/**
+ * How much stop text one map request will open.
+ *
+ * The shared twelve-mebibyte request budget is far more than this endpoint can use: the response
+ * carries at most a few hundred stops however many were read, so the rest of what a dense
+ * viewport decodes is thrown away — after being parsed, which is the expensive part. Five
+ * mebibytes is more stop text than four hundred stops can come from, and a viewport that wants
+ * more than that says `truncated.stops` rather than spending the isolate on stops nobody sees.
+ */
+const MAP_STOP_READ_CHARS = 5 * 1024 * 1024;
+
+/**
+ * And how much of the stop-routes index, which is the cheap half of the same question.
+ *
+ * A row is a stop id and a handful of route numbers, so a viewport's worth is measured in tens of
+ * kilobytes where the pattern tiles it replaces were measured in megabytes. Two mebibytes is far
+ * more than any viewport needs and is here so that a future grid change cannot make this the
+ * unbounded read.
+ */
+const MAP_STOP_ROUTES_CHARS = 2 * 1024 * 1024;
+
+/**
+ * The same idea for route detail, though it should never come near it.
+ *
+ * With the route-pattern index a route is one object and one line; the budget is here so that the
+ * legacy tile path, on an artifact published before the index, cannot run away either.
+ */
+const ROUTE_DETAIL_BUDGET_MS = 1_200;
+
+/**
+ * How much stop text one route page will open.
+ *
+ * A route's stops come from the three or four quarter-degree tiles its shape runs through, and a
+ * dense one of those is 3,959,355 bytes. Four mebibytes buys the tiles a city route needs without
+ * letting an intercity route open a county's worth of stops on its way past — and a route that
+ * wants more is reported incomplete rather than served short.
+ */
+const ROUTE_STOP_READ_CHARS = 4 * 1024 * 1024;
+
+/**
+ * Live lookups snapped outward to a coarse grid.
+ *
+ * A SIRI-VM datafeed is fetched per bounding box and coalesced per URL, so an unsnapped route box
+ * is a cache key no other request will ever produce: twenty route pages in one city were twenty
+ * separate feed fetches and twenty XML parses. Snapped, they share one. The grid matches the stop
+ * tile size, which is about the smallest snap that actually makes neighbours collide.
+ */
+/**
+ * How long a journey plan may spend, and how much stop text its corridor may open.
+ *
+ * Longer than the map's budget, because a plan is something a passenger asked for and waited on
+ * rather than a pan of the map — but a budget all the same, and owned here. Leeds to Leeds
+ * Bradford Airport answered Cloudflare error 1102, and the platform ending a request is not a
+ * budget: it produces no answer, no reason and an error page with no CORS header on it.
+ */
+const JOURNEY_BUDGET_MS = 6_000;
+const JOURNEY_STOP_READ_CHARS = 5 * 1024 * 1024;
+
+/** What one plan may decode in total, against the 3 MiB every other request gets. See the ledger. */
+const JOURNEY_TEXT_CHARS = 4 * 1024 * 1024;
+/**
+ * Above this many pattern tiles, a corridor asks the index instead of reading the tiles.
+ *
+ * Two, paired with the pattern budget below. Run 44 planned Leeds to Leeds Bradford Airport from
+ * a single corridor tile; run 48 measured two tiles at 4.21 MiB, which that budget covers. Beyond
+ * two the index is used instead, because tiles have no ceiling of their own and a cross-country
+ * corridor would open them without end.
+ */
+const JOURNEY_PATTERN_TILE_LIMIT = 2;
+
+/**
+ * What a corridor's pattern tiles may cost, as against a viewport's.
+ *
+ * This is a byte limit being raised, so it is worth being exact about why. Three mebibytes is the
+ * map's cap and it protects against a viewport, which on the pattern grid can span ninety-six
+ * tiles. A journey corridor is narrow: run 48's spanned four, and the map's cap stopped the read
+ * after two tiles and 4.21 MiB — so the slice came back incomplete and the planner refused before
+ * a single trip had been read.
+ *
+ * The same run measured what the alternative costs. The index path spent 12.23 MiB across 91
+ * buckets to resolve 112 of 197 patterns; those two tiles held 625 patterns for 4.21 MiB — about
+ * fifteen times more pattern per byte. The cheap read was being stopped by a number chosen to
+ * protect against the expensive one.
+ *
+ * Six mebibytes covers two corridor tiles with room, and every other bound is unchanged: the
+ * request's own twelve-mebibyte ceiling still caps it, the six-second clock still ends it, and
+ * `JOURNEY_PATTERN_TILE_LIMIT` still sends a wider corridor to the index rather than opening tiles
+ * without end. A corridor that still cannot be read in full is still refused rather than planned
+ * around.
+ */
+const JOURNEY_PATTERN_READ_CHARS = 6 * 1024 * 1024;
+
+/** The same clock every other read has. "Stops near me" is one tile's worth of question. */
+const NEARBY_BUDGET_MS = 1_500;
+
+/**
+ * And the same for a search, which had no budget at all.
+ *
+ * A visitor's first act is to type a place name, and until run 79 that read up to twelve prefix
+ * buckets in parallel with nothing counting them. The clock is short for the same reason the
+ * reads are: a search that takes two seconds has already failed as a search.
+ */
+const SEARCH_BUDGET_MS = 1_500;
+
+/**
+ * The stop board's clock.
+ *
+ * This endpoint had no ledger at all, which is why run 68's weather failure could be seen from
+ * the outside (a 1102 on `/v1/stops/:id`) and not from the inside: no stage times, no residency,
+ * no isolate request number, and — the part that matters most — no breadcrumb, so a request
+ * killed here left nothing for the next one to carry out. The budget is generous because the
+ * board is the product's most important page; it exists to be *measured*, not to cut work short.
+ */
+const STOP_BOARD_BUDGET_MS = 3_000;
+
+/**
+ * What an endpoint with no read ledger of its own gives the live feed.
+ *
+ * The map and route detail hand over whatever their own budget has left. The vehicle and live
+ * endpoints have no staged budget to subtract from, so they name a figure — comfortably inside
+ * one upstream round trip, and far inside the three attempts and two backoffs that a slow BODS
+ * used to cost them.
+ */
+const LIVE_LOOKUP_BUDGET_MS = 2_500;
+
+const LIVE_BBOX_SNAP_DEGREES = 0.25;
+
+/** Snapped outward, so the box still contains everything it contained before. */
+function snapBoundingBox(
+  bbox: { west: number; south: number; east: number; north: number },
+  step = LIVE_BBOX_SNAP_DEGREES,
+): { west: number; south: number; east: number; north: number } {
+  return {
+    west: Math.floor(bbox.west / step) * step,
+    south: Math.floor(bbox.south / step) * step,
+    east: Math.ceil(bbox.east / step) * step,
+    north: Math.ceil(bbox.north / step) * step,
+  };
+}
+
+/**
+ * The same area limit a map viewport has, applied to a route's live lookup.
+ *
+ * `/v1/map` refuses a box larger than 1.5 square degrees; a route page had no such limit, so a
+ * cross-country service asked the live feed for more ground than any viewport is allowed. The box
+ * shrinks around its own centre, which keeps the middle of the route live and loses its ends —
+ * and the response says the area was capped rather than presenting a short list of vehicles as
+ * all of them. Returned unchanged when it already fits, so a caller can tell by identity.
+ */
+function capBoundingBoxArea(
+  bbox: { west: number; south: number; east: number; north: number },
+  maxArea = MAP_QUERY_LIMITS.maxBboxAreaSquareDegrees,
+): { west: number; south: number; east: number; north: number } {
+  const width = bbox.east - bbox.west;
+  const height = bbox.north - bbox.south;
+  const area = width * height;
+  if (area <= maxArea || area <= 0) return bbox;
+
+  const factor = Math.sqrt(maxArea / area);
+  const centreLon = (bbox.west + bbox.east) / 2;
+  const centreLat = (bbox.south + bbox.north) / 2;
+  return {
+    west: centreLon - (width * factor) / 2,
+    east: centreLon + (width * factor) / 2,
+    south: centreLat - (height * factor) / 2,
+    north: centreLat + (height * factor) / 2,
+  };
+}
+import {
+  DEPARTURE_GRACE_MINUTES,
+  DEPARTURE_WINDOW_MINUTES,
+  departuresFromRows,
+  serviceDatesForBoard,
+} from "./stop-departures.js";
 import { JOURNEY_LIMITS, JourneyService } from "./journey-service.js";
+import { isCoherentItinerary } from "./itinerary-check.js";
 import { ProService, resolveScope, DEFAULT_WINDOW_MINUTES } from "./pro-service.js";
 import {
   boundingBoxOf,
   publishedMetric,
+  distinguishVariantDescriptions,
   routeVariants,
   routesForOperator,
   routesServingStop,
@@ -54,7 +268,187 @@ let network: NetworkReader | null = null;
 let liveService: LiveService | null = null;
 let journeyService: JourneyService | null = null;
 let proService: ProService | null = null;
+let disruptions: DisruptionReader | null = null;
+let weather: WeatherReader | null = null;
+let departures2: DepartureReader | null = null;
 const rateLimiter = new RateLimiter();
+
+/**
+ * How many requests this isolate has answered, and how much it was holding when each began.
+ *
+ * The readers are module-level on purpose — a warm cache is the whole point of an isolate — and
+ * that is also the thing the per-request diagnostics could never see. Run 45's route detail
+ * reported six requests of 300–900ms each, reading two or three mebibytes apiece, and the platform
+ * killed the seventh: on those numbers alone there is no way to tell an expensive request from a
+ * full isolate, and both readings have been possible for four runs.
+ *
+ * So every instrumented handler now trims the shard cache to a floor before it starts and reports
+ * what was resident either side. The floor is a third of the cache's own ceiling: enough that a
+ * repeat request still finds its tile, low enough that the peak is the floor plus one request's
+ * work rather than the ceiling plus it.
+ *
+ * This is not a claim that memory is the limit. Nothing measured says whether 1102 is CPU or
+ * memory, and this is the measurement that would show it if it is — or rule it out if the counts
+ * come back flat and the request that dies is no different from the five before it.
+ */
+/**
+ * How much shard text survives the trim at the start of each request — now the cache's own
+ * ceiling, which is to say: nothing is trimmed.
+ *
+ * The trim was introduced as a measurement and then kept as a fix, and the measurement it produced
+ * says it should not have been. Every residency figure the deployed runs have reported is between
+ * 0.00 and 0.79 MiB against an isolate of 128 MiB. Memory was never close, and the trim was
+ * therefore buying nothing while costing two things that are real: a discarded tile has to be
+ * fetched and decoded again on the next request, which is the CPU the ten-millisecond budget is
+ * short of, and discarding one every request makes garbage that some later request pays to
+ * collect.
+ *
+ * What the runs show is an isolate that answers its first requests and kills its later ones —
+ * `/v1/map` passing as check one and answering error 1102 as check nine — which is the signature
+ * of an isolate that never gets to keep anything. So nothing is trimmed, and the shard cache's own
+ * LRU eviction is the only bound. It is raised with it, below, because at 3 MiB a single city stop
+ * tile could not be held at all.
+ */
+const RESIDENT_FLOOR_CHARS = MAX_CACHED_SHARD_CHARS;
+
+/**
+ * What a route page keeps back for the live feed, or skips it.
+ *
+ * National SIRI-VM was measured at 499,188 characters on the request that died parsing it. XML
+ * costs more per character to walk than JSONL, and the page is worth more than the buses on it, so
+ * a route detail that cannot afford the parse says the live layer was skipped and serves the stop
+ * sequence — which is what the page is for.
+ */
+const SIRI_PARSE_RESERVE_CHARS = 1_200_000;
+
+/**
+ * Whether a route page filters the national live feed for its own buses.
+ *
+ * Off. It is the one stage that has killed this page in every run that measured it, it costs half a
+ * mebibyte of XML to produce at most sixty pins, and the live map already shows the same buses for a
+ * viewport without filtering a national feed. The page reports `liveSkipped`, so a reader is told
+ * the live layer is not on rather than being shown an empty one.
+ */
+const ROUTE_PAGE_SHOWS_LIVE_BUSES = false;
+let requestsServed = 0;
+/**
+ * How many instrumented requests are inside the Worker right now.
+ *
+ * The open question after runs 90 to 96, stated as a measurement rather than argued about. Every
+ * surviving request in those runs is cheap — a Leeds viewport 1.02 MiB, a route page 0.48 + 0.54
+ * MiB, a journey corridor 222 stops in 59 ms — and yet requests die, reliably, once an isolate has
+ * served about seventy of them. Per-request work cannot explain that and four rounds of reducing
+ * it have not stopped it.
+ *
+ * One isolate answers many requests at once, and an invocation's ten milliseconds of CPU is its
+ * own but the isolate's memory is shared. So a request that dies while eight others are mid-parse
+ * is a different event from one that dies alone, and nothing has been able to tell them apart.
+ *
+ * **What this number is, exactly.** Started minus finished — and a request the platform kills never
+ * reaches the line that would decrement it, so this is concurrency *plus* every death the isolate
+ * has accumulated. That is not a flaw to be corrected, it is two readings in one, and they are
+ * distinguishable: a figure that rises and falls is live concurrency, and a floor that only ever
+ * climbs is the number of requests this isolate has lost. Either one is worth more than the
+ * nothing there is now. Named for what it measures rather than for what I first assumed it would.
+ */
+let startedNotFinished = 0;
+/** The highest that figure has reached in this isolate, which is what a ceiling would show. */
+let peakStartedNotFinished = 0;
+
+/**
+ * Trim before the work, and report either side of it.
+ *
+ * Returns the "after" half as a callback so a handler reads as: open the ledger, begin, and stamp
+ * residency once the reads are done.
+ */
+function beginResidency(ledger: ReadLedger, handler = "unnamed"): () => void {
+  requestsServed += 1;
+  const served = requestsServed;
+  /*
+   * Start a breadcrumb, and pick up whatever the last request left behind.
+   *
+   * A request the platform kills never reaches its own response, so its ledger is lost — which
+   * is why four runs of diagnostics have described only the requests that survived. A breadcrumb
+   * still set when this one starts belongs to a request that never finished.
+   */
+  beginBreadcrumb(handler, served);
+  startedNotFinished += 1;
+  if (startedNotFinished > peakStartedNotFinished) peakStartedNotFinished = startedNotFinished;
+  const before = network?.residency() ?? null;
+  const evicted = network?.trimTo(RESIDENT_FLOOR_CHARS) ?? 0;
+  mark("reads:begin", {
+    cold: served === 1,
+    residentChars: before?.chars ?? 0,
+    /*
+     * The departure reader's own cache, which the breadcrumb reported none of.
+     *
+     * `residentChars` is the `NetworkReader`'s, and every dying request all day reported it as
+     * zero — correctly, because the board's reads are filtered and filtered reads cache no
+     * records. Meanwhile `DepartureReader` holds up to four departure shards and six mebibytes of
+     * text of its own, and with a real timetable a shard is about 4.6 MB where with an expired one
+     * it is absent. So "nothing is resident" was true of one reader and badly misleading about the
+     * isolate, which is the sort of gap that sends a day's diagnosis the wrong way.
+     */
+    departureShardsResident: departures2?.cachedShardCount ?? 0,
+    departureChars: departures2?.cachedChars ?? 0,
+    // Counted including this one, so 1 means it is alone and nothing has been lost.
+    startedNotFinished,
+    peakStartedNotFinished,
+  });
+  return () => {
+    startedNotFinished = Math.max(0, startedNotFinished - 1);
+    const after = network?.residency() ?? null;
+    const died = takeUnfinished();
+    if (died) {
+      ledger.artifactNote({
+        diedRequest: died.request,
+        diedHandler: died.handler,
+        diedPhase: died.phase,
+        diedAtMs: died.atMs,
+        /*
+         * The reporting request's own number, so survival can be told from replacement.
+         *
+         * A fresh isolate starts its counter at 1. A death reported by request 2 is consistent
+         * with the isolate having been replaced; a death reported by request 26 is consistent
+         * with it having survived. Neither is worth stating from one observation, which is why
+         * the number is carried rather than interpreted here.
+         */
+        diedReportedBy: served,
+        /*
+         * The path it took, not only where it stopped.
+         *
+         * One phase name is a position; the sequence with its timings is what says whether the
+         * request was already slow before the stage it died in, which is the difference between
+         * "the parse is expensive" and "everything on this isolate was".
+         */
+        diedTrail: (died.trail ?? []).join(" > "),
+        ...Object.fromEntries(Object.entries(died.detail ?? {}).map(([k, v]) => [`died_${k}`, v])),
+      });
+    }
+    /*
+     * Deliberately not ended here. Residency is stamped when the reads finish, and the handler
+     * still has to compose and serialise its response afterwards — a request killed in that tail
+     * would leave nothing if the breadcrumb were cleared at this point. Dispatch's `finally`
+     * clears it once the response has actually been returned.
+     */
+    ledger.residency({
+      requestsServed: served,
+      shardsBefore: before?.shards ?? 0,
+      charsBefore: before?.chars ?? 0,
+      recordsBefore: before?.records ?? 0,
+      evicted,
+      shardsAfter: after?.shards ?? 0,
+      charsAfter: after?.chars ?? 0,
+      recordsAfter: after?.records ?? 0,
+      singletons: {
+        operators: after?.operators ?? 0,
+        services: after?.services ?? 0,
+        placeLines: after?.placeLines ?? 0,
+        routeTiles: after?.routeTiles ?? 0,
+      },
+    });
+  };
+}
 
 interface RequestContext {
   waitUntil?: (promise: Promise<unknown>) => void;
@@ -126,6 +520,61 @@ router.get("/v1/sources/health", async (_request, { env }) => {
   );
 });
 
+/**
+ * Why a viewport has no buses.
+ *
+ * The preview reported zero live vehicles while every structural check passed, and the Worker had
+ * no way to say which of four things had happened: the request never left, it was refused, the
+ * body was empty, or the body was full and we rejected all of it. This answers that question from
+ * inside the deployment, which is the only place some of those distinctions exist.
+ *
+ * It publishes counts, reasons and ages. It never publishes a vehicle, a position or a source
+ * vehicle reference, and it costs exactly what the same /v1/map request costs, because it shares
+ * the same bounding-box limits and the same request coalescing.
+ */
+router.get("/v1/diagnostics/live", async (_request, { env, url }) => {
+  const state = governorState(env);
+  const bboxResult = parseBoundingBox(url);
+  if (!bboxResult.ok) return errorResponse("bad_request", bboxResult.message, 400);
+  const bbox = bboxResult.bbox;
+
+  if (boundingBoxAreaSquareDegrees(bbox) > MAP_QUERY_LIMITS.maxBboxAreaSquareDegrees) {
+    return errorResponse("bbox_too_large", "Requested area is too large; zoom in.", 400);
+  }
+
+  const now = new Date();
+  initialiseWorker(env);
+  if (!liveService) {
+    return errorResponse(
+      "upstream_unavailable",
+      "Live sources are not configured on this deployment",
+      503,
+    );
+  }
+
+  const live = await liveService.vehiclesInBoundingBox(bbox, LIVE_LOOKUP_BUDGET_MS);
+  return json(
+    {
+      meta: buildMeta({
+        sources: live.health,
+        observedAt: oldestObservedAt(live.observations),
+        coverage: live.failedSources.length === 0 ? 1 : 0,
+        governorState: state,
+        now,
+        failedSources: live.failedSources,
+        safeMode: safeModeActive(state),
+      }),
+      data: {
+        boundingBox: bbox,
+        sourcesConsulted: sourcesForBoundingBox(bbox),
+        vehiclesReturned: live.observations.length,
+        diagnostics: live.diagnostics,
+      },
+    },
+    15,
+  );
+});
+
 router.get("/v1/map", async (_request, { env, url }) => {
   const state = governorState(env);
   const flags = readFeatureFlags(env);
@@ -157,13 +606,25 @@ router.get("/v1/map", async (_request, { env, url }) => {
   }
 
   const now = new Date();
+  const ledger = new ReadLedger(MAP_ENRICHMENT_BUDGET_MS);
+  const endResidency = beginResidency(ledger, "map");
+
   // Only the tiles this viewport covers are read. The national stop set is 198 MiB against a
   // 128 MiB isolate, so "load it and filter" is not an option that exists.
-  const index = network ? await network.networkIndex() : null;
-  const stopsResult = network
-    ? await network.stopsInBoundingBox(bbox, MAP_QUERY_LIMITS.maxStops)
-    : { stops: [], truncated: false };
+  const index = network ? await ledger.stage("index", () => network!.networkIndex()) : null;
 
+  /*
+   * Essential first, and unconditionally: the stops are the map.
+   *
+   * The order in this handler is the whole fix for error 1102. A map request used to read its
+   * stops, then every pattern tile the viewport crossed, then its live vehicles, and a viewport
+   * over central Leeds spans enough four-megabyte pattern tiles to put the isolate over its limit
+   * — at which point Cloudflare answers with its own page and the passenger gets nothing at all.
+   * Not a map with fewer route names on it: nothing, and in a browser, a CORS error, because the
+   * platform's error page carries no CORS header.
+   *
+   * Stops and vehicles are what the screen is for. They are read first and are never skipped.
+   */
   let vehicles: MapResponseData["vehicles"] = [];
   let vehiclesTruncated = false;
   let sources: Awaited<ReturnType<LiveService["vehiclesInBoundingBox"]>>["health"] = [];
@@ -171,21 +632,262 @@ router.get("/v1/map", async (_request, { env, url }) => {
   let observedAt: string | null = null;
 
   const liveAllowed = flags.liveVehicles && state !== "critical";
-  if (liveAllowed && liveService) {
-    const live = await liveService.vehiclesInBoundingBox(bbox);
+
+  /*
+   * Together, because they are not competing for the same thing.
+   *
+   * These ran one after the other, and in run 43 the live feed took 828ms of an 1800ms budget
+   * while the stop read sat behind it — so the route-name enrichment, which runs on what is left,
+   * was declined before it started and every stop on the map came back with no services on it.
+   * The reads that were deliberately serialised elsewhere in this file are serialised because
+   * they compete for the isolate's memory. These two do not: one is object storage and the other
+   * is an HTTP request to a third party, and the vehicle list is capped at three hundred whatever
+   * comes back. What they were queueing for was wall-clock time, which is the one thing there is
+   * no reason to spend twice.
+   */
+  /*
+   * The map projection first, the two general families only if the artifact has no projection.
+   *
+   * Measured: a viewport read 7.00 MiB across the stop and stop-route tiles, and walking that text
+   * costs about three milliseconds a mebibyte before an object is built — against a ten-millisecond
+   * budget. Filtering the parse took the objects from 23,806 to 788 and the text stayed exactly as
+   * large, so the bytes are the floor. `network/map-stops` is those two families projected to what
+   * a marker draws, in one read instead of two.
+   */
+  const projected = network
+    ? await network.mapStopsInBoundingBox(
+        bbox,
+        MAP_QUERY_LIMITS.maxStops,
+        Date.now(),
+        ledger,
+        MAP_STOP_READ_CHARS,
+      )
+    : null;
+
+  /*
+   * Which path this request took, and what the artifact offered it.
+   *
+   * Three runs read the same 490 records at 1.97 MiB against three different artifacts — one of
+   * them deployed minutes after `map-stops` published cleanly, one of them a Worker with no warm
+   * isolate to be stale. Every number already reported is identical whichever branch runs, so the
+   * diagnostics could not tell "the reader ignored the projection" from "the projection is not in
+   * the index". This states both, which costs one object in the payload and ends the guessing.
+   */
+  if (network) {
+    const declared = await network.networkIndex(Date.now());
+    ledger.artifactNote({
+      version: declared?.version ?? "(no index)",
+      mapStopTiles: declared?.mapStopTiles?.length ?? 0,
+      stopDetailBuckets: declared?.stopDetailBuckets?.length ?? 0,
+      projectionUsed: projected !== null,
+    });
+  }
+
+  const [stopsResult, liveObservations] = await ledger.stage("essentials", () =>
+    Promise.all([
+      projected
+        ? Promise.resolve({ stops: projected.stops, truncated: projected.truncated })
+        : network
+          ? network.stopsInBoundingBox(
+              bbox,
+              MAP_QUERY_LIMITS.maxStops,
+              Date.now(),
+              ledger,
+              MAP_STOP_READ_CHARS,
+            )
+          : Promise.resolve({ stops: [], truncated: false }),
+      liveAllowed && liveService
+        ? /*
+           * With the map's own remaining time, for the reason route detail already has it.
+           *
+           * `fetchText` retries three times with backoff and its timeout bounds one attempt, so an
+           * upstream that is slow costs three attempts and their gaps — three to four seconds
+           * against a 1,800ms budget. Run 52 measured the consequence with route detail bounded
+           * and this one not: the platform answered `/v1/map` on the first attempt of the first
+           * city, and took `/v1/search` and `/v1/nearby` on the same isolate down with it. A
+           * request holding a four-second retry does not fail alone.
+           */
+          liveService.vehiclesInBoundingBox(bbox, Math.max(300, ledger.remainingMs))
+        : Promise.resolve(null),
+    ]),
+  );
+  ledger.count({ stops: stopsResult.stops.length });
+
+  /*
+   * Optional, and last: which services call where, and what route a vehicle is on.
+   *
+   * This is the expensive half — pattern tiles carry geometry and reach four megabytes each — and
+   * it is the half a passenger can do without. A map with unlabelled stops is a working map; a map
+   * that 503s is not. So it runs on whatever time is left, stops the moment the budget is spent,
+   * and says so in the response rather than pretending it finished.
+   */
+  /*
+   * Which services call at each stop, from the index that answers exactly that.
+   *
+   * This read pattern tiles, which carry route geometry. A dense one is 3,935,975 bytes against a
+   * three-mebibyte cap, so in Leeds or Manchester the read truncated on its first tile every
+   * single time and every stop came back with no services on it — a cap on bytes turned into
+   * permanent degradation, which is worse than either the cost or the error it was avoiding.
+   * `network/stop-routes` is the same answer published as the answer, on the stops' own grid: a
+   * list of names where a polyline was.
+   */
+  /*
+   * The projection already carries the names, so this whole read disappears when it is present.
+   * That is the second half of the saving: one family read instead of two.
+   */
+  const stopRoutes = projected
+    ? {
+        byStopId: new Map(projected.stops.map((stop) => [stop.id, stop.routePublicNames])),
+        /*
+         * Always complete, because the names arrive attached to the stops.
+         *
+         * `projected.truncated` answers a different question: did we return every stop in the
+         * box, or did we stop at the four hundred markers the map draws. A dense city always
+         * exceeds that, so this read `!truncated` and reported every Leeds viewport as degraded
+         * for `stop_routes_budget` — while every one of the four hundred stops it drew carried
+         * its full route list, from the same row it came in on. The map was calling its own
+         * labels unreliable on the strength of a display limit.
+         *
+         * How many stops were returned is reported honestly and separately, as `truncated.stops`.
+         */
+        complete: true,
+        available: true,
+      }
+    : network
+      ? await ledger.stage("stop-routes", () =>
+          network!.routeNamesForStopTiles(
+            stopTilesForBoundingBox(bbox),
+            Date.now(),
+            ledger,
+            MAP_STOP_ROUTES_CHARS,
+            // The stops this response carries, so the parse builds four hundred rows rather than
+            // every row in a quarter of a degree. They are already resolved by the stage above.
+            new Set(stopsResult.stops.map((stop) => stop.id)),
+          ),
+        )
+      : { byStopId: new Map<string, string[]>(), complete: true, available: true };
+
+  /*
+   * The tiles, only for what the index cannot answer.
+   *
+   * Two things still need geometry: matching a live vehicle to a route, and an artifact published
+   * before the stop-routes family existed. Neither is worth a four-megabyte read when there is
+   * nothing to match — a viewport with no live vehicles skips it entirely.
+   */
+  /*
+   * Geometry only for a bus we cannot otherwise name.
+   *
+   * This was "are there any vehicles", which in a city is always yes — so the map went on reading
+   * three mebibytes of pattern tiles on top of its stops and its stop-routes, and run 44 answered
+   * error 1102 on the request either side of the one that reported `12.01 MiB decoded, 26445
+   * record(s)`. More was being decoded than before the index existed, which is the opposite of
+   * what it was for.
+   *
+   * A SIRI-VM record carries the line name on the front of the bus, and that is enough to draw a
+   * marker and — through this viewport's own services — to identify the route. Matching against
+   * shapes is the fallback for a feed that publishes no line name, so it is read when there is a
+   * bus in that state and not otherwise.
+   */
+  const unnamedVehicles = (liveObservations?.observations ?? []).filter(
+    (observation) =>
+      !liveObservations?.journeyContext.get(observation.vehicleRef)?.publishedLineName,
+  ).length;
+  const needsGeometry = !stopRoutes.available || unnamedVehicles > 0;
+  const enrichment =
+    network && needsGeometry
+      ? await ledger.stage("patterns", () =>
+          network!.patternsInTilesDetailed(patternTilesForBoundingBox(bbox), Date.now(), ledger),
+        )
+      : { geometries: [], complete: true };
+  const geometries = enrichment.geometries;
+  /*
+   * The services these geometries belong to, not all 13,626 of them.
+   *
+   * `services()` is `readCurrent`: an FNV-1a hash over a 4.7 MiB object *and* a `JSON.parse` of
+   * every one of its 13,626 records, before a caller takes the few hundred it wants. That is tens
+   * of milliseconds of pure computation against the ten a Workers Free invocation gets — so the
+   * first request in any isolate that reaches this line dies, and every request after it, reading
+   * the same work out of the isolate's cache, is fine. That is exactly the intermittency the
+   * deployed runs show: `/v1/map` passes as check one and answers Cloudflare's error page as check
+   * nine, and the map's own diagnostics print `services=13626` to say the parse happened.
+   *
+   * The same substitution that fixed the stop board in 8828ff8 and route detail in cb610bc. The
+   * geometries name their services; asking for those is one bounded scan of the text.
+   */
+  const services =
+    network && geometries.length > 0
+      ? await ledger.stage("services", () =>
+          network!.servicesByIds(
+            new Set(geometries.map((geometry) => geometry.pattern.serviceRouteId)),
+          ),
+        )
+      : new Map<string, ServiceRoute>();
+
+  /*
+   * Which services call at each stop on screen.
+   *
+   * `routePublicNames` was a literal `[]` in this projection. The contract declares it, the map
+   * marker reads it, and the deployed check that asks whether a viewport's stops carry their
+   * services could only ever fail — which it did, reporting "not one stop in the viewport carries
+   * a service" and blaming the national timetable for a hard-coded empty array.
+   *
+   * Built by walking the patterns once rather than per stop: a viewport holds a few hundred
+   * patterns and a few hundred stops, and the per-stop version is the product of the two.
+   */
+  const routeNamesByStopId = new Map<string, Set<string>>();
+  if (stopRoutes.available) {
+    for (const [stopId, names] of stopRoutes.byStopId) {
+      routeNamesByStopId.set(stopId, new Set(names.map(routeBadgeName)));
+    }
+  } else {
+    // The legacy path, kept so the map still labels stops between a deploy and the next national
+    // rebuild. Labelled as legacy rather than left to look like the intended route.
+    for (const geometry of geometries) {
+      const service = services.get(geometry.pattern.serviceRouteId);
+      if (!service) continue;
+      for (const stopId of geometry.pattern.stopSequence) {
+        const names = routeNamesByStopId.get(stopId);
+        if (names) names.add(routeBadgeName(service.publicName));
+        else routeNamesByStopId.set(stopId, new Set([routeBadgeName(service.publicName)]));
+      }
+    }
+  }
+
+  if (liveObservations) {
+    const live = liveObservations;
     sources = live.health;
     failedSources = live.failedSources;
     observedAt = oldestObservedAt(live.observations);
 
-    // Matching only needs the routes that run through the viewport being drawn.
-    const geometries = network ? await network.patternsInBoundingBox(bbox) : [];
     const capped = live.observations.slice(0, MAP_QUERY_LIMITS.maxVehicles);
     vehiclesTruncated = live.observations.length > capped.length;
 
     const patternsById = new Map(
       geometries.map((geometry) => [geometry.pattern.id, geometry.pattern]),
     );
-    const services = network ? await network.services() : new Map();
+
+    /*
+     * Which service a route number refers to, where this viewport can say so unambiguously.
+     *
+     * A live feed publishes "36" and nothing that identifies the service, and the map was
+     * carrying that straight through as though it were an identifier — so a bus could only ever
+     * link to a route page by its public name, which several operators share. Within one viewport
+     * the name is usually unique, and where it is not, the answer here is null: a bus linked to
+     * somebody else's 36 is a worse answer than a bus with no route link.
+     *
+     * Built once by walking the viewport's services rather than matching per vehicle, because
+     * running the geometry matcher for three hundred vehicles against several hundred patterns is
+     * exactly the kind of work that took this endpoint over its limit.
+     */
+    const serviceIdByName = new Map<string, string | null>();
+    for (const geometry of geometries) {
+      const service = services.get(geometry.pattern.serviceRouteId);
+      if (!service) continue;
+      const name = routeBadgeName(service.publicName);
+      const existing = serviceIdByName.get(name);
+      if (existing === undefined) serviceIdByName.set(name, service.id);
+      else if (existing !== service.id) serviceIdByName.set(name, null);
+    }
 
     vehicles = capped.map((observation) => {
       const context = live.journeyContext.get(observation.vehicleRef);
@@ -193,16 +895,57 @@ router.get("/v1/map", async (_request, { env, url }) => {
 
       // Matching only runs when routes for this viewport are published. Without them a vehicle is
       // still shown — just without a route name — rather than being hidden from the map.
-      if (geometries.length === 0 || summary.routePublicName !== null) return summary;
+      if (geometries.length === 0) return summary;
+
+      if (summary.routePublicName !== null) {
+        const resolved = serviceIdByName.get(summary.routePublicName) ?? null;
+        return resolved ? { ...summary, routeId: resolved } : summary;
+      }
 
       const match = matchObservation(observation, geometries);
       if (!match.best || match.confidence.level === "low") return summary;
 
       const pattern = patternsById.get(match.best.patternId);
       const service = pattern ? services.get(pattern.serviceRouteId) : undefined;
-      return service ? { ...summary, routePublicName: service.publicName } : summary;
+      /*
+       * A matched vehicle is the one case where the identity is known exactly: the match names the
+       * pattern, the pattern names the service. Both travel with it so the marker can open the
+       * route page and draw the line it was matched to.
+       */
+      return service
+        ? {
+            ...summary,
+            routePublicName: routeBadgeName(service.publicName),
+            routeId: service.id,
+            routePatternId: match.best.patternId,
+          }
+        : summary;
     });
   }
+
+  /*
+   * Official notices for this viewport, matched on the stops it contains and the routes drawn in
+   * it. This used to be a literal `incidents: []` with no comment, which meant the map could never
+   * show a closure however loudly an operator announced it.
+   */
+  const snapshot = await disruptions?.snapshot();
+  const viewportRouteNames = [
+    ...new Set(
+      vehicles
+        .map((vehicle) => vehicle.routePublicName)
+        .filter((name): name is string => typeof name === "string" && name.length > 0),
+    ),
+  ];
+  const viewportDisruptions = snapshot
+    ? noticesFor(
+        snapshot.notices,
+        {
+          atcoCodes: stopsResult.stops.map((stop) => stop.atcoCode),
+          routeNames: viewportRouteNames,
+        },
+        MAP_QUERY_LIMITS.maxIncidents,
+      )
+    : [];
 
   const data: MapResponseData = {
     stops: stopsResult.stops.map((stop) => ({
@@ -211,19 +954,45 @@ router.get("/v1/map", async (_request, { env, url }) => {
       name: stop.name,
       ...(stop.indicator === undefined ? {} : { indicator: stop.indicator }),
       coordinate: stop.locationCoordinate,
-      routePublicNames: [],
+      // Sorted so the same stop lists its services in the same order between requests, which a
+      // marker label needs in order not to reshuffle as the map refreshes.
+      routePublicNames: [...(routeNamesByStopId.get(stop.id) ?? [])].sort(),
       hasLiveCoverage: liveAllowed,
     })),
     vehicles,
+    // Derived incidents come from the intelligence pipeline, which has not published yet; when it
+    // does they arrive here alongside the notices rather than instead of them.
     incidents: [],
+    disruptions: viewportDisruptions,
     truncated: {
       stops: stopsResult.truncated,
       vehicles: vehiclesTruncated,
       incidents: false,
     },
+    /*
+     * Degraded is about the labels, so it is about whichever read produced them.
+     *
+     * With the stop-routes index that is `stopRoutes.complete`; the pattern read is now only
+     * about matching live vehicles to routes, and a viewport with no buses in it skips it
+     * entirely — which must not be reported as a degraded map.
+     */
+    degraded: stopRoutes.available
+      ? !stopRoutes.complete || ledger.stopped
+      : !enrichment.complete || ledger.stopped,
+    degradationReason:
+      ledger.reason ??
+      (stopRoutes.available
+        ? stopRoutes.complete
+          ? null
+          : "stop_routes_budget"
+        : enrichment.complete
+          ? null
+          : "pattern_read_budget"),
   };
 
   const coverage = index ? (liveAllowed && failedSources.length === 0 ? 1 : 0.5) : 0;
+
+  endResidency();
 
   return json(
     {
@@ -236,10 +1005,12 @@ router.get("/v1/map", async (_request, { env, url }) => {
         ...(index === null ? {} : { networkPartialCoverage: index.partialCoverage }),
         failedSources,
         safeMode: safeModeActive(state),
+        diagnostics: { ...ledger.toJSON() },
       }),
       data,
     },
     cacheTtlSeconds("bods", state),
+    { "Server-Timing": ledger.serverTiming() },
   );
 });
 
@@ -264,33 +1035,234 @@ router.get("/v1/stops/:id", async (_request, { env, params }) => {
   const stop = await network.stopByKey(params.id ?? "");
   if (!stop) return errorResponse("not_found", "Stop not found", 404);
 
-  const live = liveService
-    ? await liveService.departuresForStop(stop.atcoCode)
-    : { departures: [], health: [], failed: true };
+  /*
+   * From here on the request is instrumented.
+   *
+   * Begun after the two short-circuit answers so that a 503 or a 404 neither trims the cache nor
+   * opens a breadcrumb it would have to remember to close.
+   */
+  const boardLedger = new ReadLedger(STOP_BOARD_BUDGET_MS);
+  const endBoardResidency = beginResidency(boardLedger, "stop-board");
+
+  mark("board:stop:done", { atco: stop.atcoCode });
+  const live = await boardLedger.stage("live", async () =>
+    liveService
+      ? await liveService.departuresForStop(stop.atcoCode)
+      : { departures: [], health: [], failed: true, observedAt: null },
+  );
+  mark("board:live:done", { departures: live.departures.length });
+
+  /*
+   * Outside London the timetable is the board.
+   *
+   * `departuresForStop` returns nothing outside London and its comment said the caller would
+   * compose scheduled departures — which the caller did not do, so every stop in England outside
+   * London had an empty arrival board on a deployment whose checks were all green. This is that
+   * composition: one journey tile, the service dates a board can still show, merged with whatever
+   * live matching can explain.
+   */
+  let departures = live.departures;
+  let scheduledRows = 0;
+  /*
+   * The timetable rows behind the board, kept because each one names its pattern.
+   *
+   * The route list below is built from these rather than from a geographic scan of the pattern
+   * tiles — see the comment on that read. Empty for a London stop, whose board comes from TfL
+   * predictions that carry no pattern id, and for a stop with nothing due.
+   */
+  let departureRows: Array<{ p: string }> = [];
+  /*
+   * Shards the board could not read.
+   *
+   * Carried out of this block because an incomplete board must say so. The previous version read
+   * a whole journey tile inside a `catch` that returned an empty array, so a stop whose timetable
+   * was unreadable and a stop with genuinely nothing due produced the same answer: 200, no rows,
+   * degradation `normal`. That is the single most misleading thing this API did.
+   */
+  let timetableFailures: Array<{ dataset: string; reason: string }> = [];
+  /*
+   * Whether a timetable for today exists at all, which the board needs and never had.
+   *
+   * The reader has always counted missing shards and the response has always thrown the count
+   * away, so "nothing is due" and "we published no timetable for today" arrived at the screen
+   * identical. They are not the same statement and only one of them is about buses.
+   */
+  let timetableCoverage: { read: number; missing: number; serviceDates: string[] } | undefined;
+  if (departures.length === 0 && !isLondonAtcoCode(stop.atcoCode)) {
+    const serviceDates = serviceDatesForBoard(now);
+    const fromSeconds = Math.floor(now.getTime() / 1000) - DEPARTURE_GRACE_MINUTES * 60;
+    const toSeconds = Math.floor(now.getTime() / 1000) + DEPARTURE_WINDOW_MINUTES * 60;
+    const read = departures2
+      ? await departures2.forStop(
+          stop.atcoCode,
+          serviceDates,
+          fromSeconds,
+          toSeconds,
+          index.version,
+        )
+      : { rows: [], shardsRead: 0, shardsMissing: 0, failures: [] };
+
+    timetableFailures = read.failures;
+    timetableCoverage = {
+      read: read.shardsRead,
+      missing: read.shardsMissing,
+      serviceDates: [...serviceDates],
+    };
+    departureRows = read.rows;
+    departures = departuresFromRows({
+      stop,
+      rows: read.rows,
+      now,
+      retrievedAt: index.publishedAt ?? new Date(now).toISOString(),
+    });
+    scheduledRows = departures.length;
+  }
+  mark("board:departures:done", { rows: departureRows.length, shown: departures.length });
+
+  /*
+   * Which routes call here, from the patterns this board's own departures already named.
+   *
+   * The order of this handler is the fix. It used to ask "which patterns call at this stop" of the
+   * tiles around it, geographically, *before* reading any departures — and the densest stops have
+   * the largest tiles while needing that question asked the least, because their departures name
+   * their patterns outright. Stop `1800EB06161` in Manchester answered Cloudflare's error page on
+   * every deployed run from 89 to 94, dying immediately after `board:live:done`, which was that
+   * read. Each departure row carries its pattern id, so the rows turn a scan of whole tiles into
+   * an id test per line with a parse only for the dozen named.
+   *
+   * The geographic read is still here, for the stop whose board is genuinely empty — late at
+   * night, or a stop served only outside the window. That is the case it is affordable in.
+   */
+  const namedPatternIds = new Set(departureRows.map((row) => row.p).filter(Boolean));
+  const patternRead = await boardLedger.stage("patterns", () =>
+    namedPatternIds.size > 0
+      ? network!.patternsByIdsNearStop(stop, namedPatternIds, Date.now(), boardLedger)
+      : network!.patternsCallingAtStop(stop, Date.now(), boardLedger),
+  );
+  const patterns = patternRead.patterns;
+  mark("board:patterns:done", {
+    patterns: patterns.length,
+    wanted: namedPatternIds.size,
+    complete: patternRead.complete,
+    // Which dataset answered, and by which question. Runs 90 to 94 could not tell a board that
+    // read the small index from one that read megabytes of geometry, and that is the difference
+    // that decides whether it survives.
+    source: patternRead.source,
+  });
+  /*
+   * The services these patterns belong to, not all 13,626 of them.
+   *
+   * `services()` reads the national object and parses every record, after hashing the whole thing
+   * — all pure computation, against the ten milliseconds a Workers Free invocation gets. A board
+   * names about ten services, and asking for those is one pass over the text instead.
+   */
+  const services = await boardLedger.stage("services", () =>
+    network!.servicesByIds(
+      new Set(patterns.map((pattern) => pattern.serviceRouteId)),
+      // The board is the path the partitioned family exists for, so it is the one that records
+      // which representation answered and what it cost.
+      boardLedger,
+    ),
+  );
+  mark("board:services:done", { services: services.size });
+
+  /*
+   * `observedAt` is the age of the observation behind the answer. It used to be set to the first
+   * departure's expected time — a moment in the future — so the board reported its own freshness
+   * as a negative age and "Updated..." counted down to the next bus.
+   */
+  const observedAt = live.observedAt ?? null;
+
+  /*
+   * The operators of this stop's routes, not all 631 of them.
+   *
+   * `await network.operators()` sat here, and `readCurrent` hashes the whole national object with
+   * FNV-1a and parses every record before returning one. Run 81's cold board died immediately after
+   * `board:services:done`, which is this line. A board shows a handful of routes, so it asks for a
+   * handful of operators and one pass over the text answers.
+   */
+  const operatorIds = new Set(
+    [...services.values()].map((service) => service.operatorId).filter(Boolean),
+  );
+  const routes = routesServingStop(
+    patterns,
+    stop.id,
+    services,
+    await boardLedger.stage("operators", () => network!.operatorsByIds(operatorIds)),
+  );
+  const snapshot = await boardLedger.stage("disruptions", async () =>
+    disruptions ? ((await disruptions.snapshot()) ?? null) : null,
+  );
+  mark("board:disruptions:done", { notices: snapshot?.notices.length ?? 0 });
+  /*
+   * Read alongside the board rather than ahead of it. A degree square that is missing or slow
+   * must cost the stop page a picture, never a departure, so a failure here resolves to null and
+   * the vignette is simply absent.
+   */
+  mark("board:weather:begin", {
+    lat: stop.locationCoordinate.lat,
+    lon: stop.locationCoordinate.lon,
+  });
+  const stopWeather = await boardLedger.stage(
+    "weather",
+    async () => (await weather?.forCoordinate(stop.locationCoordinate).catch(() => null)) ?? null,
+  );
+  mark("board:weather:done", { found: stopWeather !== null });
+
+  endBoardResidency();
 
   return json(
     {
       meta: buildMeta({
         sources: live.health,
-        observedAt: live.departures[0]?.expectedTime ?? null,
-        coverage: live.failed ? 0 : 1,
+        observedAt,
+        /*
+         * An unreadable timetable is not coverage, whatever the board happens to show.
+         *
+         * Zero when a shard failed, because the honest statement is that we cannot say what calls
+         * here — not that nothing does. This is what turns the old silent empty board into a
+         * response a passenger and a monitoring check can both read correctly.
+         */
+        coverage:
+          timetableFailures.length > 0 ? 0 : departures.length > 0 ? 1 : live.failed ? 0 : 0.5,
         governorState: state,
         now,
-        failedSources: live.failed ? ["live departures"] : [],
+        failedSources: [
+          ...(live.failed ? ["live departures"] : []),
+          // Named, not counted: which shard failed is the first thing worth knowing, and the
+          // dataset name carries the service date, window and bucket that produced it.
+          ...timetableFailures.map((failure) => `timetable ${failure.dataset}`),
+        ],
+        // Stage times, residency, and whatever the last request that did not finish had reached.
+        diagnostics: { ...boardLedger.toJSON() },
         safeMode: safeModeActive(state),
       }),
       data: {
         stop,
-        departures: live.departures,
-        routes: routesServingStop(
-          await network.patternsServingStop(stop),
-          stop.id,
-          await network.services(),
-          await network.operators(),
-        ),
+        departures,
+        routes,
+        /*
+         * Whether that list is all of them, which it was never saying.
+         *
+         * The read behind it is bounded and a busy interchange can reach the bound. A short list
+         * presented as the complete one tells a passenger their route does not stop here — a
+         * statement about the bus service made out of a limit of ours, which is the one thing this
+         * API has decided it will not do.
+         */
+        routesComplete: patternRead.complete,
+        accessibility: stopAccessibility(stop),
+        ...(timetableCoverage === undefined ? {} : { timetableCoverage }),
+        disruptions: snapshot
+          ? noticesFor(snapshot.notices, {
+              atcoCodes: [stop.atcoCode],
+              routeNames: routes.map((route) => route.publicName),
+            })
+          : [],
+        weather: stopWeather,
       },
     },
-    cacheTtlSeconds("tfl", state),
+    // A board built only from the timetable can be cached longer than one carrying live times.
+    cacheTtlSeconds(scheduledRows > 0 && !live.observedAt ? "static" : "tfl", state),
   );
 });
 
@@ -507,18 +1479,217 @@ router.get("/v1/journeys", async (_request, { env, url }) => {
     return errorResponse("bad_request", "departAt must be seconds into the service day", 400);
   }
 
-  // The planner reads only the corridor between the two points, which it caps at a handful of
-  // tiles — so a journey request never assembles the national network.
-  const slice = await network.sliceForBoundingBox(
-    corridorBoundingBox(origin, destination, JOURNEY_LIMITS.maxAccessWalkMetres),
-  );
-  const outcome = await journeyService.planJourney(slice, {
-    origin,
-    destination,
-    departAtSeconds,
-    serviceDate,
+  /*
+   * The planner reads only the corridor between the two points, and every read on the way is on
+   * one clock.
+   *
+   * The corridor slice was the half of this endpoint nobody was counting. It opened the corridor's
+   * stop tiles and its pattern tiles in a single `Promise.all` against the shared twelve-mebibyte
+   * budget, so fifteen mebibytes of text could be decoded before the trip shards — the stage that
+   * was blamed — had been asked for at all. The ledger covers both, and the stop read gets the
+   * same five-mebibyte cap the map uses rather than the shared default.
+   */
+  /*
+   * A journey gets a wider character budget than anything else, because it genuinely needs one.
+   *
+   * Run 87 is the measurement. Cutting the shared budget to three mebibytes fixed `/v1/map` over
+   * central Bristol and central Birmingham — forty dense map requests, no platform error pages —
+   * and broke this: the pattern index read stopped itself at `pattern_index_budget` with 1,287
+   * trips loaded and **none** matched to a pattern, so the planner refused with `incomplete_read`.
+   * A plan needs about 1.76 MiB of pattern index on top of its stops before it can resolve a single
+   * trip, and half a plan is not a plan — the refusal is correct and the budget was wrong.
+   *
+   * Five is affordable here where it would not be elsewhere, because of what else changed first:
+   * the trip reader now scans for its pattern before building a row (five sixths of what it used to
+   * construct was discarded immediately), the caches are a quarter of their old size, and the
+   * isolate is trimmed to a mebibyte before the request starts. Journeys answered at four mebibytes
+   * in runs 82 and 85 with those in place. A viewport asked a hundred times a minute and a journey
+   * asked deliberately are not the same request and should not share one number.
+   */
+  const journeyLedger = new ReadLedger(JOURNEY_BUDGET_MS, undefined, undefined, JOURNEY_TEXT_CHARS);
+  const endJourneyResidency = beginResidency(journeyLedger, "journeys");
+  mark("journey:begin", { serviceDate });
+  const journeyIndexForSlice = await journeyLedger.stage("index", () => network!.networkIndex());
+  mark("journey:index:done", { version: journeyIndexForSlice?.version ?? "none" });
+  /*
+   * Which way to get the patterns, decided from what each one actually costs.
+   *
+   * The reasoning for the index was sound and the measurement contradicted it. The planner reads
+   * `pattern.stopSequence` and never looks at a shape, and the tiles carry shapes — so fetching
+   * patterns by id after the trips have named them should read far less than a tile of geometry.
+   *
+   * Runs 45, 46 and 47 all measured the opposite, and run 47 measured it exactly: **91 index
+   * buckets, 12.23 MiB**, the request's whole byte budget, 112 of 197 patterns resolved, journey
+   * refused. A bucket averages 137 kilobytes because it holds every pattern in England whose id
+   * hashes to it, and a corridor wants a handful from each — so the index is read almost entirely
+   * to be discarded. Run 44, on the tile path, planned the same journey from **one** corridor tile.
+   *
+   * So the tiles win while the corridor is small, which is what a journey usually is, and the
+   * index wins once it is large enough that the tiles would be unbounded. The count is known here,
+   * before either read, and it is recorded so the next run says which path it took.
+   */
+  const corridorBox = corridorBoundingBox(origin, destination, JOURNEY_LIMITS.maxAccessWalkMetres);
+  const corridorPatternTileList = patternTilesForBoundingBox(corridorBox);
+  const corridorPatternTiles = corridorPatternTileList.length;
+  /*
+   * The geographic index, when the artifact carries one.
+   *
+   * The hashed buckets were the right idea aimed at the wrong question: a corridor's patterns are
+   * a strip of the country and a hash scatters them across all 512 buckets, so the planner read a
+   * bucket per pattern and threw away almost all of each. Runs 47, 48, 50 and 52 all measured the
+   * same ceiling — around ninety buckets and twelve mebibytes for roughly half the patterns.
+   * Filed on the pattern-tile grid the corridor reads the tiles it crosses and wants most of what
+   * is in them.
+   */
+  const patternIndexTiles = journeyIndexForSlice?.patternIndexTiles ?? [];
+  const useIndexTiles = patternIndexTiles.length > 0;
+  const usePatternIndex =
+    useIndexTiles ||
+    ((journeyIndexForSlice?.patternIndexBuckets ?? 0) > 0 &&
+      corridorPatternTiles > JOURNEY_PATTERN_TILE_LIMIT);
+  mark("journey:slice:begin", {
+    corridorPatternTiles,
+    patterns: usePatternIndex ? "skip" : "tiles",
   });
+  const slice = await journeyLedger.stage("slice", () =>
+    network!.sliceForBoundingBox(corridorBox, Date.now(), journeyLedger, JOURNEY_STOP_READ_CHARS, {
+      patterns: usePatternIndex ? "skip" : "tiles",
+      patternBudgetChars: JOURNEY_PATTERN_READ_CHARS,
+    }),
+  );
+  mark("journey:slice:done", {
+    stops: slice.stopsById.size,
+    patterns: slice.patternsById.size,
+    complete: slice.complete,
+  });
+  journeyLedger.count({ stops: slice.stopsById.size, patterns: slice.patternsById.size });
 
+  const journeyIndex = journeyIndexForSlice;
+  if (!journeyIndex) {
+    return errorResponse(
+      "upstream_unavailable",
+      "The network dataset is not available yet, so a journey cannot be planned.",
+      503,
+      60,
+    );
+  }
+
+  /*
+   * A corridor read short cannot produce a journey, and this is the earliest place that is known.
+   *
+   * The map may draw what it managed to read. A plan may not: the pattern tile that was skipped
+   * is where the direct bus was, and the itinerary that comes back without it looks exactly like
+   * a correct one. So the refusal happens before the planner is even called, with the reason that
+   * caused it rather than "no journeys found".
+   */
+  if (!slice.complete) {
+    endJourneyResidency();
+    return json(
+      {
+        meta: buildMeta({
+          sources: [],
+          observedAt: null,
+          coverage: 0,
+          governorState: state,
+          now,
+          networkPartialCoverage: index.partialCoverage,
+          safeMode: safeModeActive(state),
+          diagnostics: {
+            ...journeyLedger.toJSON(),
+            patternSource: useIndexTiles
+              ? "index-tiles"
+              : usePatternIndex
+                ? "index-hashed"
+                : "tiles",
+            corridorPatternTiles,
+          },
+        }),
+        data: {
+          serviceDate,
+          options: [],
+          explanation: null,
+          unavailableReason:
+            "We could not read the whole network along this corridor inside one request, so any " +
+            "journey we showed you might be missing the bus you actually want. Try a shorter " +
+            "journey, or try again shortly.",
+          diagnostics: {
+            code: "incomplete_read" as const,
+            layout: (journeyIndex.layout ? "compatible" : "undeclared") as
+              "compatible" | "undeclared" | "mismatch",
+            corridorTiles: 0,
+            windows: [],
+            shardsRead: 0,
+            shardsMissing: 0,
+            tripsLoaded: 0,
+            tripsWithPattern: 0,
+            tripsWithoutPattern: 0,
+            tripsInGraph: 0,
+            stopsInGraph: 0,
+            transferEdges: 0,
+            stageMs: journeyLedger.toJSON().stages,
+            tripChars: 0,
+            originCandidates: 0,
+            destinationCandidates: 0,
+            rounds: 0,
+            roundsWithOption: 0,
+            patternsInSlice: slice.patternsById.size,
+            stopsInSlice: slice.stopsById.size,
+            failures: [],
+          },
+        },
+      },
+      cacheTtlSeconds("static", state),
+      { "Server-Timing": journeyLedger.serverTiming() },
+    );
+  }
+
+  mark("journey:plan:begin", {
+    corridorPatternTiles,
+    patternSource: useIndexTiles ? "index-tiles" : usePatternIndex ? "index-hashed" : "tiles",
+  });
+  const outcome = await journeyLedger.stage("plan", () =>
+    journeyService!.planJourney(slice, {
+      origin,
+      destination,
+      departAtSeconds,
+      serviceDate,
+      version: journeyIndex.version,
+      // What the artifact says about its own storage. Absent on publishes written before layouts
+      // were recorded, which the planner reports as unchecked rather than treating as agreement.
+      layout: journeyIndex.layout ?? null,
+      /*
+       * The services of the resolved patterns, read by id once the planner knows them.
+       *
+       * Passed unconditionally: the slice no longer carries the national list on either pattern
+       * path, so a plan that cannot name its routes would otherwise print a blank where "First
+       * Bristol" belongs.
+       */
+      resolveServices: (serviceIds: readonly string[]) =>
+        network!.servicesByIds(new Set(serviceIds)),
+      ...(usePatternIndex
+        ? {
+            resolvePatterns: useIndexTiles
+              ? (patternIds: readonly string[]) => {
+                  mark("journey:patterns:begin", { wanted: patternIds.length });
+                  return network!.patternsInIndexTiles(
+                    corridorPatternTileList,
+                    Date.now(),
+                    journeyLedger,
+                    JOURNEY_PATTERN_READ_CHARS,
+                    // The ids the trips named. Without them this parsed every row in every
+                    // corridor tile to keep the ones a corridor runs on.
+                    patternIds,
+                  );
+                }
+              : (patternIds: readonly string[]) =>
+                  network!.patternsByIds(patternIds, Date.now(), journeyLedger),
+          }
+        : {}),
+    }),
+  );
+
+  mark("journey:plan:done", { ok: outcome.ok });
+  endJourneyResidency();
   const meta = buildMeta({
     sources: [],
     observedAt: null,
@@ -527,41 +1698,89 @@ router.get("/v1/journeys", async (_request, { env, url }) => {
     now,
     networkPartialCoverage: index.partialCoverage,
     safeMode: safeModeActive(state),
+    diagnostics: {
+      ...journeyLedger.toJSON(),
+      // Which of the two pattern paths this corridor took, and why it was eligible for it.
+      patternSource: useIndexTiles ? "index-tiles" : usePatternIndex ? "index-hashed" : "tiles",
+      corridorPatternTiles,
+    },
   });
 
   if (!outcome.ok) {
     return json(
       {
         meta,
-        data: { serviceDate, options: [], explanation: null, unavailableReason: outcome.reason },
+        data: {
+          serviceDate,
+          options: [],
+          explanation: null,
+          unavailableReason: outcome.reason,
+          diagnostics: outcome.diagnostics,
+        },
       },
       cacheTtlSeconds("static", state),
     );
   }
+
+  /*
+   * An itinerary is checked against what a passenger would do with it before it is offered.
+   *
+   * Run 41 returned a three-leg plan whose first leg could not say where it went. Every field the
+   * schema asked for was present and the option was still not a journey — which is the failure
+   * mode a count of options can never catch. So each leg is required to have the things somebody
+   * standing at a bus stop reads off it: a place and a point on the map at each end, times that
+   * run forwards, and on a bus leg the service it is actually on. The legs are then checked
+   * against each other for the thing the whole plan rests on — that you are never asked to be in
+   * two places at once. An option that fails is dropped whole rather than repaired, because half
+   * a journey presented as a journey is the thing being guarded against.
+   */
+  const dayStartMs = Date.parse(`${serviceDate}T00:00:00.000Z`);
+  const instant = (secondsIntoDay: number): string =>
+    new Date(dayStartMs + secondsIntoDay * 1000).toISOString();
+
+  const mapped = outcome.result.options.map((option) => ({
+    ranking: option.ranking,
+    legs: option.legs.map((leg) => ({
+      ...leg,
+      departAtExpected: instant(leg.departureSeconds),
+      arriveAtExpected: instant(leg.arrivalSeconds),
+    })),
+    departureSeconds: option.departureSeconds,
+    arrivalSeconds: option.arrivalSeconds,
+    arrivalLowSeconds: option.arrivalLowSeconds,
+    arrivalHighSeconds: option.arrivalHighSeconds,
+    totalWalkSeconds: option.totalWalkSeconds,
+    changeCount: option.changeCount,
+    boardingStopId: option.boardingStopId,
+    confidence: option.confidence,
+    ...(option.explanation === undefined ? {} : { explanation: option.explanation }),
+  }));
+
+  const offerable = mapped.filter((option) => isCoherentItinerary(option));
+  const rejectedOptions = mapped.length - offerable.length;
 
   return json(
     {
       meta,
       data: {
         serviceDate,
-        options: outcome.result.options.map((option) => ({
-          ranking: option.ranking,
-          legs: option.legs,
-          departureSeconds: option.departureSeconds,
-          arrivalSeconds: option.arrivalSeconds,
-          arrivalLowSeconds: option.arrivalLowSeconds,
-          arrivalHighSeconds: option.arrivalHighSeconds,
-          totalWalkSeconds: option.totalWalkSeconds,
-          changeCount: option.changeCount,
-          boardingStopId: option.boardingStopId,
-          confidence: option.confidence,
-          ...(option.explanation === undefined ? {} : { explanation: option.explanation }),
-        })),
+        options: offerable,
         explanation: outcome.result.explanation,
         unavailableReason:
-          outcome.result.options.length === 0
-            ? "We could not find a bus journey between these points at this time."
+          offerable.length === 0
+            ? rejectedOptions > 0
+              ? "We could not put together a journey we are confident enough to show you. The " +
+                "timetable we read produced itineraries with gaps in them, which we will not " +
+                "present as a plan."
+              : "We could not find a bus journey between these points at this time."
             : null,
+        /*
+         * Carried on a successful plan too, because "we could not find a journey" is the answer
+         * that most needs explaining: the same sentence covered an unwritten shard, an unreadable
+         * one, a corridor too wide, a join that matched nothing, a graph over its size limit and a
+         * search that genuinely found no path. The counts say which.
+         */
+        diagnostics: outcome.diagnostics,
       },
     },
     // Short cache: a plan is time-sensitive, and a stale one sends someone to a bus that has gone.
@@ -594,7 +1813,9 @@ router.get("/v1/vehicles/:ref", async (_request, { env, params, url }) => {
     return errorResponse("upstream_unavailable", "Live data is not configured.", 503, 60);
   }
 
-  const live = await liveService.vehiclesInBoundingBox(bboxResult.bbox);
+  // Bounded like the map and route detail: three retries of a slow upstream is what takes an
+  // isolate past its limit, and this endpoint reads the same feed as both of them.
+  const live = await liveService.vehiclesInBoundingBox(bboxResult.bbox, LIVE_LOOKUP_BUDGET_MS);
   const observation = live.observations.find(
     (candidate) => candidate.vehicleRef === (params.ref ?? ""),
   );
@@ -615,7 +1836,9 @@ router.get("/v1/vehicles/:ref", async (_request, { env, params, url }) => {
     ? geometries.find((geometry) => geometry.pattern.id === match.best!.patternId)?.pattern
     : undefined;
   const service =
-    pattern && network ? (await network.services()).get(pattern.serviceRouteId) : undefined;
+    pattern && network
+      ? (await network.servicesByIds(new Set([pattern.serviceRouteId]))).get(pattern.serviceRouteId)
+      : undefined;
 
   const vehicle = {
     id: observation.id,
@@ -673,6 +1896,27 @@ router.get("/v1/vehicles/:ref", async (_request, { env, params, url }) => {
           .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
       : [];
 
+  /*
+   * Who runs it, and what has been said about its route.
+   *
+   * Both were literal nulls and an empty array, and "Bus stopped?" was rendering them as though
+   * it had looked: no operator to contact, no notice to read. The operator comes free with the
+   * service the match already resolved; the notices come from the disruption snapshot the map
+   * endpoint already reads, matched on this bus's route name.
+   */
+  const operator =
+    service && network
+      ? ((await network.operatorsByIds(new Set([service.operatorId]))).get(service.operatorId) ??
+        null)
+      : null;
+  const vehicleRouteName = service?.publicName ?? context?.publishedLineName ?? null;
+  const vehicleNotices = vehicleRouteName
+    ? ((await disruptions?.snapshot())?.notices ?? [])
+    : /* Nothing identifies the service, so nothing can be matched to it without guessing. */ [];
+  const vehicleDisruptions = vehicleRouteName
+    ? noticesFor(vehicleNotices, { atcoCodes: [], routeNames: [vehicleRouteName] }, 5)
+    : [];
+
   return json(
     {
       meta: buildMeta({
@@ -686,8 +1930,24 @@ router.get("/v1/vehicles/:ref", async (_request, { env, params, url }) => {
       }),
       data: {
         vehicle,
-        routePublicName: service?.publicName ?? context?.publishedLineName ?? null,
-        destinationName: context?.destinationName ?? null,
+        operator,
+        disruptions: vehicleDisruptions,
+        routePublicName: service
+          ? routeBadgeName(service.publicName)
+          : context?.publishedLineName
+            ? routeBadgeName(context.publishedLineName)
+            : null,
+        /*
+         * Only from a match, never from the name.
+         *
+         * The service is known exactly when the observation matched a pattern: the match names
+         * the pattern and the pattern names the service. Without a match there is a number on the
+         * front and nothing that identifies which operator's route it is, and null is the honest
+         * answer — the page then shows the number without making it a link.
+         */
+        routeId: service?.id ?? null,
+        routePatternId: match?.best?.patternId ?? null,
+        destinationName: context?.destinationName ? passengerName(context.destinationName) : null,
         nextStops,
         recentTrace: [],
         // The shape travels with the pattern in its tile, so drawing the route needs no extra read.
@@ -710,7 +1970,23 @@ router.get("/v1/routes/:id", async (_request, { env, params }) => {
   const state = governorState(env);
   const now = new Date();
 
-  const index = network ? await network.networkIndex() : null;
+  /*
+   * Every stage of this handler is on the clock, because the one that was killing it was not the
+   * one that had been instrumented.
+   *
+   * Run 42 put the targeted route-pattern read in place and measured it, and route detail still
+   * answered Cloudflare's error 1102 inside the repeated verification loop. A stage nobody is
+   * counting cannot be the suspect, so the ledger now wraps the whole handler: the index, the
+   * service and operator lookups, the pattern object, stop resolution, the live feed, incidents
+   * and reliability. What that showed is recorded in BUILD_STATE.md; the fix it pointed at is in
+   * `stopsForGeometries`, not in a larger budget.
+   */
+  const routeLedger = new ReadLedger(ROUTE_DETAIL_BUDGET_MS);
+  const endRouteResidency = beginResidency(routeLedger, "route-detail");
+
+  const index = await routeLedger.stage("index", async () =>
+    network ? await network.networkIndex() : null,
+  );
   if (!network || !index) {
     return errorResponse(
       "upstream_unavailable",
@@ -720,19 +1996,100 @@ router.get("/v1/routes/:id", async (_request, { env, params }) => {
     );
   }
 
-  const route = (await network.services()).get(params.id ?? "");
+  mark("route:index:done", { version: index.version });
+  const route = await routeLedger.stage("services", async () =>
+    (await network!.servicesByIds(new Set([params.id ?? ""]))).get(params.id ?? ""),
+  );
+  mark("route:service:done", { found: route !== undefined });
   if (!route) return errorResponse("not_found", "Route not found", 404);
 
-  const operator = (await network.operators()).get(route.operatorId) ?? null;
+  /*
+   * One operator, by id. `operators()` is `readCurrent`, which hashes the whole national object
+   * with FNV-1a *and* parses every record before one is taken from it — the exact read whose
+   * removal fixed the cold stop board in 8828ff8, still sitting on route detail. Run 91's route
+   * detail died with `reads:begin` as its only crumb, which covers this stage and five others;
+   * this one does not need a measurement to be wrong.
+   */
+  const operator = await routeLedger.stage(
+    "operators",
+    async () =>
+      (await network!.operatorsByIds(new Set([route.operatorId]))).get(route.operatorId) ?? null,
+  );
 
-  // Only the tiles this route is published in, and only the stops its patterns call at.
-  const geometries = await network.patternsForService(route.id);
-  const stopIds = [...new Set(geometries.flatMap((geometry) => geometry.pattern.stopSequence))];
-  const stopsById = await network.stopsByKeys(stopIds);
-  const variants = routeVariants(geometries, stopsById);
+  /*
+   * Only the route's own pattern object, and only the stops its patterns call at.
+   *
+   * `complete` is carried through to the response. A route's stops and geometry are a statement
+   * of fact — this is where the 36 goes — and a byte budget quietly dropping half of them would
+   * publish a shorter route as though it were the route. When a read was capped the page says so
+   * and the coverage drops, rather than the missing half simply not existing.
+   */
+  mark("route:operator:done", { found: operator !== null });
+  const patterns = await routeLedger.stage("route-patterns", () =>
+    network!.patternsForService(route.id, Date.now(), routeLedger),
+  );
+  mark("route:patterns:done", {
+    patterns: patterns.geometries.length,
+    source: patterns.source,
+    complete: patterns.complete,
+  });
 
-  // Live vehicles are only fetched for the area this route actually covers, so a route page
-  // never triggers a national feed request.
+  /*
+   * An unreadable route is refused outright rather than drawn as an empty one.
+   *
+   * "The index says this route has no patterns" and "the object holding this route could not be
+   * read" arrive here as the same empty array, and they mean opposite things. Serving the second
+   * as a route page would draw a service with no stops and no line on the map as though that were
+   * the truth about it. A route nobody can currently read is a 503 with a reason, which is a
+   * different answer from a 404 and from a route that genuinely has no geometry.
+   */
+  if (patterns.source === "unavailable") {
+    return errorResponse(
+      "upstream_unavailable",
+      "This route's patterns could not be read, so its stops and line cannot be shown. This is a " +
+        "fault on our side rather than a route that does not exist.",
+      503,
+    );
+  }
+
+  const geometries = patterns.geometries;
+  const stopsResult = await routeLedger.stage("stops", () =>
+    network!.stopsForGeometries(geometries, Date.now(), routeLedger, ROUTE_STOP_READ_CHARS),
+  );
+  const stopsById = stopsResult.stopsById;
+  mark("route:stops:done", { stops: stopsById.size, truncated: stopsResult.truncated });
+
+  const variants = await routeLedger.stage("variants", async () =>
+    distinguishVariantDescriptions(routeVariants(geometries, stopsById)),
+  );
+  mark("route:variants:done", { variants: variants.length });
+
+  /*
+   * Complete means every part of the answer was read in full, not that the answer looks plausible.
+   *
+   * Two independent reads can run out: the pattern object and the stop tiles. Either one stopping
+   * short leaves a route drawn with stops missing from the middle of it, which is exactly the
+   * shape of a wrong answer that looks right. Stops the tiles were fully read and simply do not
+   * contain are a different thing — a dangling reference in the published data, not a truncation —
+   * and the counts are in the diagnostics either way.
+   */
+  const routeDetailComplete = patterns.complete && !stopsResult.truncated;
+  mark("statics:done", {
+    stops: stopsById.size,
+    patterns: geometries.length,
+    complete: routeDetailComplete,
+  });
+
+  /*
+   * The live lookup is bounded by the route's own extent, snapped and capped.
+   *
+   * It fetches a SIRI-VM feed for a bounding box and parses the XML, and nothing above had ever
+   * bounded the box: a long route produced a large box, a large box produces a large feed, and
+   * every distinct box is its own cache key so no two route pages ever shared one. Snapping the
+   * box outward to a coarse grid makes neighbouring routes share a single coalesced fetch, and
+   * capping its area at the same figure the map uses keeps one route page from asking for more
+   * live data than a whole viewport may. A capped box is a stated degradation, not a silent one.
+   */
   const coordinates = variants.flatMap((variant) =>
     variant.stops
       .map((entry) => stopsById.get(entry.stopId)?.locationCoordinate)
@@ -740,7 +2097,10 @@ router.get("/v1/routes/:id", async (_request, { env, params }) => {
         (coordinate): coordinate is NonNullable<typeof coordinate> => coordinate !== undefined,
       ),
   );
-  const bbox = boundingBoxOf(coordinates);
+  const routeBox = boundingBoxOf(coordinates);
+  const liveBox = routeBox ? snapBoundingBox(routeBox) : null;
+  const cappedBox = liveBox ? capBoundingBoxArea(liveBox) : null;
+  const liveBoxCapped = liveBox !== null && cappedBox !== null && cappedBox !== liveBox;
 
   let activeVehicles: Array<{
     vehicleRef: string;
@@ -751,51 +2111,200 @@ router.get("/v1/routes/:id", async (_request, { env, params }) => {
   }> = [];
   let health: Awaited<ReturnType<LiveService["vehiclesInBoundingBox"]>>["health"] = [];
   let failedSources: string[] = [];
+  let liveSkipped = false;
+  let liveDiagnostics: Awaited<ReturnType<LiveService["vehiclesInBoundingBox"]>>["diagnostics"] =
+    [];
 
-  if (bbox && liveService) {
-    const live = await liveService.vehiclesInBoundingBox(bbox);
-    health = live.health;
-    failedSources = live.failedSources;
-    activeVehicles = live.observations
-      .filter((observation) => {
-        const context = live.journeyContext.get(observation.vehicleRef);
-        return context?.publishedLineName === route.publicName;
-      })
-      .slice(0, 60)
-      .map((observation) => ({
-        vehicleRef: observation.vehicleRef,
-        destinationName: live.journeyContext.get(observation.vehicleRef)?.destinationName ?? null,
-        delaySeconds: null,
-        observedAt: observation.observedAt,
-        coordinate: observation.coordinate,
-      }));
+  if (cappedBox && liveService) {
+    /*
+     * The static half of the page is the half that must not be lost. If the reads above have
+     * already spent the handler's time, the live feed is skipped and said to be skipped, rather
+     * than being the request that takes the isolate past its limit and turns a complete route
+     * page into Cloudflare's error page.
+     */
+    if (!routeLedger.withinBudget) {
+      liveSkipped = true;
+      routeLedger.stop("route_live_budget");
+    } else if (!ROUTE_PAGE_SHOWS_LIVE_BUSES) {
+      /*
+       * The live layer is off on this page, deliberately, and the page says so.
+       *
+       * Run 78 and run 81 both killed route detail at `siri:parse:begin`, holding 499,188 characters
+       * of national SIRI-VM on top of the route's own patterns and stops — inside its wall-clock
+       * budget with a second still to spend, which is why a clock-based check let it through. XML is
+       * far dearer per character to walk than the JSONL everything else reads, and a reserve sized in
+       * characters did not help either: the request had plenty of characters left and no compute.
+       *
+       * So the page gives up the buses and keeps the route. A stop sequence a passenger can read beats
+       * Cloudflare's error page with some vehicle pins on it, and the map is where live buses belong —
+       * it answers for a viewport rather than filtering a national feed down to one line. The flag is
+       * here rather than deleted because the fix is a cheaper feed, not the absence of this feature.
+       */
+      liveSkipped = true;
+      routeLedger.stop("route_live_disabled");
+    } else if (routeLedger.remainingChars < SIRI_PARSE_RESERVE_CHARS) {
+      liveSkipped = true;
+      routeLedger.stop("route_live_char_budget");
+    } else {
+      /*
+       * With whatever time the request has left, not with the map's own limit.
+       *
+       * The check above cannot stop a stage that overruns from inside itself, and this is the
+       * stage that does: run 48 entered it with time to spare and spent 1,167ms in it before the
+       * platform killed the request. Handing the deadline down means the fetch is abandoned when
+       * the budget is gone and the page answers degraded — which is the whole point of having a
+       * budget. A floor of 300ms, because a deadline shorter than a round trip is a guaranteed
+       * failure dressed up as a timeout.
+       */
+      /*
+       * Either side of the live lookup, so the breadcrumb says which half a dead request was in.
+       *
+       * This is the open question about the remaining 1102: a slow upstream fetch correlates with
+       * the failures, but network waiting costs a Worker no CPU, so a 965ms fetch is not by
+       * itself an explanation. What distinguishes the two possibilities is whether the request
+       * died with the socket still open or after the bytes were in hand and the XML was being
+       * turned into objects — and only a breadcrumb left behind can say, because a killed request
+       * reports nothing itself.
+       */
+      mark("live:begin", { remainingMs: routeLedger.remainingMs });
+      const live = await routeLedger.stage("vehicles", () =>
+        liveService!.vehiclesInBoundingBox(cappedBox, Math.max(300, routeLedger.remainingMs)),
+      );
+      mark("live:done", {
+        observations: live.observations.length,
+        failedSources: live.failedSources.length,
+      });
+      health = live.health;
+      failedSources = live.failedSources;
+      liveDiagnostics = live.diagnostics;
+      activeVehicles = live.observations
+        .filter((observation) => {
+          const context = live.journeyContext.get(observation.vehicleRef);
+          return context?.publishedLineName === route.publicName;
+        })
+        .slice(0, 60)
+        .map((observation) => ({
+          vehicleRef: observation.vehicleRef,
+          destinationName: displayDestination(
+            live.journeyContext.get(observation.vehicleRef)?.destinationName,
+          ),
+          delaySeconds: null,
+          observedAt: observation.observedAt,
+          coordinate: observation.coordinate,
+        }));
+    }
   }
+
+  /*
+   * Incidents and reliability are measured even though they currently do no reading.
+   *
+   * They were named as suspects for the 1102 and they are not: both are stubs on this endpoint,
+   * and a stage that reports zero is how that gets shown rather than asserted. When they do start
+   * reading, they are already on the clock.
+   */
+  const incidents = await routeLedger.stage("incidents", async () => []);
+  /*
+   * Published notices for this route, which are a read and are therefore on the clock.
+   *
+   * The snapshot is one small object and the reader caches it, so this is cheap — but it is the
+   * first thing on this handler that touches R2 outside the network artifact, and an unmeasured
+   * read is how the last 1102 hid.
+   */
+  const routeDisruptions = await routeLedger.stage("disruptions", async () => {
+    const snapshot = await disruptions?.snapshot();
+    if (!snapshot) return [];
+    return noticesFor(
+      snapshot.notices,
+      { atcoCodes: [], routeNames: [route.publicName] },
+      MAP_QUERY_LIMITS.maxIncidents,
+    );
+  });
+  const reliability = await routeLedger.stage("reliability", async () => []);
+
+  routeLedger.count({ patterns: geometries.length, stops: stopsResult.resolved });
+  endRouteResidency();
+
+  const degradationReason =
+    routeLedger.reason ??
+    (!patterns.complete
+      ? "route_pattern_read_budget"
+      : stopsResult.truncated
+        ? "route_stop_read_budget"
+        : liveBoxCapped
+          ? "route_live_area_capped"
+          : null);
 
   return json(
     {
       meta: buildMeta({
         sources: health,
         observedAt: oldestObservedAt(activeVehicles),
-        coverage: failedSources.length > 0 ? 0.5 : 1,
+        /*
+         * An incomplete route is not a whole one at reduced confidence — it is a different
+         * answer. Coverage drops and the failure is named, so nothing downstream can read a
+         * truncated variant list as the route's full extent.
+         */
+        coverage: !routeDetailComplete ? 0 : failedSources.length > 0 || liveSkipped ? 0.5 : 1,
         governorState: state,
         now,
-        failedSources,
+        failedSources: [
+          ...failedSources,
+          ...(routeDetailComplete ? [] : ["route pattern geometry"]),
+          ...(liveSkipped ? ["live vehicles (route read budget)"] : []),
+        ],
         networkPartialCoverage: index.partialCoverage,
         safeMode: safeModeActive(state),
+        diagnostics: {
+          ...routeLedger.toJSON(),
+          routePatternSource: patterns.source,
+          stopTilesRequested: stopsResult.tilesRequested,
+          stopsRequested: stopsResult.requested,
+          stopsResolved: stopsResult.resolved,
+          stopReadTruncated: stopsResult.truncated,
+          liveLookupSkipped: liveSkipped,
+          /*
+           * How long the live feed took to fetch and how long to parse, separately.
+           *
+           * This stage is the largest in every trail and every 1102 has followed the largest one
+           * in its own. One number could not say whether that was the network or the isolate's
+           * CPU; two can.
+           */
+          liveSources: liveDiagnostics.map((entry) => ({
+            source: entry.source,
+            outcome: entry.outcome,
+            accepted: entry.accepted,
+            fetchMs: entry.fetchMs ?? null,
+            parseMs: entry.parseMs ?? null,
+            chars: entry.chars ?? null,
+          })),
+          liveBoxCapped,
+          degradationReason,
+        },
       }),
       data: {
         route,
         operator,
         variants,
         activeVehicles,
+        /*
+         * Whether what is above is all of it.
+         *
+         * False means a read hit its budget before the route's patterns or its stops were all
+         * open, so `variants` holds part of the route and must not be presented as its extent.
+         * The endpoint answers rather than failing, because a partial route page with a stated
+         * gap is more use than a 503 — but only because the gap is stated.
+         */
+        complete: routeDetailComplete,
         // Stated only where the published timetable supports it; see network-queries.
         headwaySummary: null,
-        reliability: [],
-        incidents: [],
+        reliability,
+        incidents,
+        disruptions: routeDisruptions,
         ticketUrl: null,
       },
     },
     cacheTtlSeconds("bods", state),
+    { "Server-Timing": routeLedger.serverTiming() },
   );
 });
 
@@ -812,12 +2321,13 @@ router.get("/v1/operators/:id", async (_request, { env, params }) => {
     );
   }
 
-  // Operators and services are the two genuinely national datasets the edge still holds: 22 and
-  // 1,043 records. A test asserts they stay that size rather than trusting that they will.
-  const operator = (await network.operators()).get(params.id ?? "");
+  // By id, like everywhere else. `operators()` hashes and parses the whole national object to
+  // return one record, and a page about one operator is the clearest case against doing that.
+  const operator = (await network.operatorsByIds(new Set([params.id ?? ""]))).get(params.id ?? "");
   if (!operator) return errorResponse("not_found", "Operator not found", 404);
 
-  const routes = routesForOperator(await network.services(), operator.id);
+  // By operator, in one pass, for the same reason the departure board asks by id.
+  const routes = routesForOperator(await network.servicesForOperator(operator.id), operator.id);
 
   return json(
     {
@@ -863,19 +2373,47 @@ router.get("/v1/operators/:id", async (_request, { env, params }) => {
 router.get("/v1/disruptions", async (_request, { env }) => {
   const state = governorState(env);
   const index = network ? await network.networkIndex() : null;
+  const snapshot = (await disruptions?.snapshot()) ?? null;
 
   return json(
     {
       meta: buildMeta({
         sources: [],
-        observedAt: null,
-        coverage: 0,
+        // The freshness of this page is when the publishers were last asked, which is a fact
+        // about the notices rather than about the moment this JSON was assembled.
+        observedAt: snapshot?.collectedAt ?? null,
+        coverage: snapshot === null || snapshot.neverPublished ? 0 : 1,
         governorState: state,
         now: new Date(),
         networkPartialCoverage: index?.partialCoverage ?? true,
         safeMode: safeModeActive(state),
       }),
       data: {
+        /*
+         * The notices, with their route names made fit to read.
+         *
+         * Run 63 asked the official sources for the first time and they answered — and the page
+         * put `Blue_Line`, `Green_Line`, `Navy_Line`, `Pink_Line` and `Purple_Line` in front of a
+         * passenger, which the sweep caught as raw identifiers. `routeBadgeName` exists for
+         * exactly this and its own comment says the Worker applies it again on the way out,
+         * because an artifact is published once and then served for days: a snapshot collected
+         * before any fix would still show a key otherwise. This path was the one place that
+         * never called it.
+         *
+         * Names only. `lineRef` is an identifier and is matched against, so it is left alone.
+         */
+        official: (snapshot?.notices ?? []).map((notice) => ({
+          ...notice,
+          affectedRoutes: notice.affectedRoutes.map((route) => ({
+            ...route,
+            /* Optional in the contract: a notice may name a route it cannot name publicly. */
+            ...(route.publishedLineName === undefined
+              ? {}
+              : { publishedLineName: routeBadgeName(route.publishedLineName) }),
+          })),
+        })),
+        sourcesQueried: snapshot?.sourcesQueried ?? [],
+        officialCollectedAt: snapshot?.collectedAt ?? null,
         byDelayBurden: [],
         byAbnormality: [],
         // Naming what is not covered matters more than listing what is: an empty list must not
@@ -903,11 +2441,25 @@ router.get("/v1/search", async (_request, { env, url }) => {
       ? { lat: Number(latParam), lon: Number(lonParam) }
       : undefined;
 
-  // Only the prefix buckets this query's words fall in are read. The national search index is
-  // 87 MiB; the buckets a query touches are a few hundred kilobytes.
+  /*
+   * Only the prefix buckets this query's words fall in are read, and now with a ledger.
+   *
+   * A published bucket reaches 1.6 MB and "Leeds Station" opened several of them; the ledger is what
+   * stops the read before the platform does, and what makes the cost visible afterwards. The budget
+   * is short because a search has to answer in one invocation's compute, not because the index is
+   * large — the national index is 87 MiB and a query touches a few hundred kilobytes of it.
+   */
+  const searchLedger = new ReadLedger(SEARCH_BUDGET_MS);
+  const endSearchResidency = beginResidency(searchLedger, "search");
   const found = network
-    ? await network.search(query, { limit: 20, ...(near === undefined ? {} : { near }) })
+    ? await network.search(
+        query,
+        { limit: 20, ...(near === undefined ? {} : { near }) },
+        Date.now(),
+        searchLedger,
+      )
     : null;
+  endSearchResidency();
   if (!found) {
     return errorResponse("upstream_unavailable", "The search index is not available yet.", 503, 60);
   }
@@ -953,8 +2505,15 @@ router.get("/v1/nearby", async (_request, { env, url }) => {
     Math.max(100, Number(url.searchParams.get("radius") ?? "800")),
   );
 
-  // Read from the search tiles around the point, not from a national index.
-  const found = network ? await network.nearby({ lat, lon }, { radiusMetres, limit: 25 }) : null;
+  // Read from the search tiles around the point, not from a national index, and on a ledger —
+  // this was the last read on the reader with no budget on it, and run 44 answered 1102 for it.
+  const nearbyLedger = new ReadLedger(NEARBY_BUDGET_MS);
+  const endNearbyResidency = beginResidency(nearbyLedger, "nearby");
+  const found = network
+    ? await nearbyLedger.stage("search-tiles", () =>
+        network!.nearby({ lat, lon }, { radiusMetres, limit: 25 }, Date.now(), nearbyLedger),
+      )
+    : null;
   if (!found) {
     return errorResponse(
       "upstream_unavailable",
@@ -965,6 +2524,7 @@ router.get("/v1/nearby", async (_request, { env, url }) => {
   }
 
   const hits = found.hits;
+  endNearbyResidency();
 
   return json(
     {
@@ -973,6 +2533,7 @@ router.get("/v1/nearby", async (_request, { env, url }) => {
         observedAt: found.builtAt,
         coverage: 1,
         governorState: state,
+        diagnostics: { ...nearbyLedger.toJSON() },
         now: new Date(),
         safeMode: safeModeActive(state),
       }),
@@ -1035,6 +2596,9 @@ export function resetWorkerState(): void {
   liveService = null;
   journeyService = null;
   proService = null;
+  disruptions = null;
+  weather = null;
+  departures2 = null;
 }
 
 export function initialiseWorker(
@@ -1054,17 +2618,47 @@ export function initialiseWorker(
   if (!proService) {
     proService = new ProService(env.ARTIFACTS ? new R2BindingStore(env.ARTIFACTS) : null);
   }
+  if (!disruptions && env.ARTIFACTS) {
+    disruptions = new DisruptionReader(new R2BindingStore(env.ARTIFACTS));
+  }
+  if (!weather && env.ARTIFACTS) {
+    weather = new WeatherReader(new R2BindingStore(env.ARTIFACTS));
+  }
+  if (!departures2 && env.ARTIFACTS) {
+    departures2 = new DepartureReader(new R2BindingStore(env.ARTIFACTS));
+  }
 }
 
 export default {
   async fetch(request: Request, env: WorkerEnv, ctx: RequestContext): Promise<Response> {
     const url = new URL(request.url);
+    const origin = request.headers.get("Origin");
+
+    /*
+     * Every response leaves through here, errors included.
+     *
+     * It used to be only the success path: a 404, a 405, a 429 or a 500 was returned before or
+     * outside the block that added the CORS headers, so the browser refused to read it and the
+     * app saw `net::ERR_FAILED` with no status at all. A stop that failed to load looked exactly
+     * like a stop that could not be reached, which is precisely the distinction the passenger —
+     * and anyone debugging this — needs.
+     */
+    const respond = (response: Response, rateLimitRemaining?: number): Response => {
+      const headers = new Headers(response.headers);
+      if (rateLimitRemaining !== undefined) {
+        headers.set("X-RateLimit-Remaining", String(rateLimitRemaining));
+      }
+      for (const [key, value] of Object.entries(corsHeaders(origin, [env.PUBLIC_BASE_URL ?? ""]))) {
+        headers.set(key, value);
+      }
+      return new Response(response.body, { status: response.status, headers });
+    };
 
     if (request.method === "OPTIONS") {
       return withSecurityHeaders(
         new Response(null, {
           status: 204,
-          headers: corsHeaders(request.headers.get("Origin"), [env.PUBLIC_BASE_URL ?? ""]),
+          headers: corsHeaders(origin, [env.PUBLIC_BASE_URL ?? ""]),
         }),
       );
     }
@@ -1073,41 +2667,79 @@ export default {
     // clients offering their native unsubscribe button will not fall back to GET.
     const isOneClickUnsubscribe = request.method === "POST" && url.pathname === "/v1/unsubscribe";
     if (request.method !== "GET" && !isOneClickUnsubscribe) {
-      return errorResponse("bad_request", "Only GET is supported", 405);
+      return respond(errorResponse("bad_request", "Only GET is supported", 405));
     }
 
     const decision = rateLimiter.check(clientKeyFor(request));
     if (!decision.allowed) {
-      return errorResponse(
-        "rate_limited",
-        "Too many requests. Please slow down.",
-        429,
-        decision.retryAfterSeconds,
+      return respond(
+        errorResponse(
+          "rate_limited",
+          "Too many requests. Please slow down.",
+          429,
+          decision.retryAfterSeconds,
+        ),
+        decision.remaining,
       );
     }
 
     initialiseWorker(env);
 
     const matched = router.match(request.method, url.pathname);
-    if (!matched) return errorResponse("not_found", "Unknown endpoint", 404);
+    if (!matched) {
+      return respond(errorResponse("not_found", "Unknown endpoint", 404), decision.remaining);
+    }
 
     try {
       const response = await matched.handler(request, { env, ctx, params: matched.params, url });
-      const headers = new Headers(response.headers);
-      headers.set("X-RateLimit-Remaining", String(decision.remaining));
-      for (const [key, value] of Object.entries(
-        corsHeaders(request.headers.get("Origin"), [env.PUBLIC_BASE_URL ?? ""]),
-      )) {
-        headers.set(key, value);
-      }
-      return new Response(response.body, { status: response.status, headers });
+      return respond(response, decision.remaining);
     } catch (error) {
       // Never leak internals: the message is fixed and the detail stays in the log.
       console.error("Request failed", {
         path: url.pathname,
         message: error instanceof Error ? error.message : "unknown",
       });
-      return errorResponse("internal", "Something went wrong handling this request.", 500);
+      return respond(
+        errorResponse("internal", "Something went wrong handling this request.", 500),
+        decision.remaining,
+      );
+    } finally {
+      /*
+       * Every request that reaches the end of dispatch clears its own breadcrumb.
+       *
+       * This used to be left to the handler's residency callback, which several handlers never
+       * reach: route detail returns early three times (no network, unknown route, no pattern),
+       * nearby returns early when the search tiles are unreadable, journeys when the request is
+       * malformed. Each of those left a breadcrumb set, and the next request would carry it out
+       * as "a previous request DID NOT FINISH" — a death reported for a request that answered a
+       * 404 perfectly well. A false positive here is worse than no instrument at all, because it
+       * is indistinguishable from the thing being hunted.
+       *
+       * A `finally` on dispatch runs for every return path and every throw. The only request
+       * that can now leave a breadcrumb behind is one that never returns from dispatch at all,
+       * which is exactly the definition of the failure.
+       */
+      endBreadcrumb();
     }
   },
 };
+
+/**
+ * The endpoints whose reads are measured in mebibytes.
+ *
+ * Named explicitly rather than inferred, so adding a cheap endpoint cannot accidentally put it
+ * behind the gate, and so the list is reviewable against what each handler actually reads:
+ *
+ *  - `/v1/map` reads the stop and pattern tiles for a viewport.
+ *  - `/v1/journeys` reads a corridor's trip shards, the largest read in the product.
+ *  - `/v1/nearby` reads the stop tiles around a point.
+ *  - `/v1/routes/:id` reads the pattern index and the pattern's stops.
+ *  - `/v1/stops/:id` resolves the patterns calling at the stop.
+ *  - `/v1/search` scans the prefix shards, which are about 5 MiB each.
+ *  - `/v1/operators/:id` reads the operator's services and their patterns.
+ *  - `/v1/vehicles/:ref` resolves the vehicle's pattern to name its route.
+ *
+ * `/v1/search` was the omission that mattered. The deployed flow walk begins by searching, and it
+ * reported "got no further than the search" on all three viewports — the one endpoint the walk
+ * could not get past was the one heavy endpoint left ungated.
+ */

@@ -13,6 +13,8 @@
  *   node scripts/verify-deployment.mjs <api-url> [site-url]
  */
 
+import { annotateResults } from "./annotate.mjs";
+
 const [, , apiUrlArg, siteUrlArg] = process.argv;
 
 if (!apiUrlArg) {
@@ -29,16 +31,232 @@ let failures = 0;
 /** Facts carried between checks: a stop found by one check is the input to the next. */
 const observed = {};
 
+/** What an isolate was holding either side of one request, when the endpoint reports it. */
+/**
+ * What each artifact family cost, which is the question "where did the bytes go".
+ *
+ * The ledger has tracked this per family all along and nothing printed it, so every diagnosis of
+ * a heavy request has been a guess at which read was heavy. A total of "1.97 MiB, 490 records" is
+ * a fact about the request; "map-stops 1.94 MiB / 476, vehicles 0.03 MiB / 14" is a fact about
+ * what to fix.
+ */
+function describeFamilies(families) {
+  const entries = Object.entries(families ?? {}).filter(([, cost]) => cost && cost.requested > 0);
+  if (entries.length === 0) return "";
+  return `; families ${entries
+    .map(
+      ([name, cost]) =>
+        `${name} ${(cost.chars / 1048576).toFixed(2)}MiB/${cost.records}rec` +
+        `/${cost.read}read${cost.cached ? `+${cost.cached}cached` : ""}` +
+        `${cost.missing ? `/${cost.missing}missing` : ""}${cost.failed ? `/${cost.failed}failed` : ""}`,
+    )
+    .join(", ")}`;
+}
+
+/**
+ * What the isolate was doing when a request died.
+ *
+ * A request the platform kills with 1102 reports nothing — that is the definition of the
+ * failure — so every diagnosis so far has been assembled from the requests that survived. The
+ * Worker leaves a breadcrumb in module scope and the next request carries it out; this is the
+ * half of the picture that has been missing, and it is the only thing that can say whether the
+ * failure happens before or after the parse begins.
+ */
+function describeDeath(artifact) {
+  if (!artifact || artifact.diedPhase === undefined) return "";
+  const extra = Object.entries(artifact)
+    .filter(([key]) => key.startsWith("died_"))
+    .map(([key, value]) => `${key.slice(5)}=${String(value)}`)
+    .join(" ");
+  /*
+   * Worded as a position, not as a cause.
+   *
+   * "Last reached X" is what the breadcrumb knows. Which resource was exhausted it does not know,
+   * and a phase name read as a culprit is how a correlation becomes a conclusion — so the line
+   * carries the reporting request's number too, which is what tells a surviving isolate from a
+   * replaced one.
+   */
+  return (
+    ` !! a previous request DID NOT FINISH: req#${artifact.diedRequest} ${artifact.diedHandler}` +
+    ` last reached "${artifact.diedPhase}" at ${artifact.diedAtMs}ms` +
+    `, reported by req#${artifact.diedReportedBy}${extra ? ` (${extra})` : ""}` +
+    // The path, so several recovered deaths can be compared as sequences rather than endpoints.
+    (artifact.diedTrail ? `; trail: ${artifact.diedTrail}` : "")
+  );
+}
+
+/**
+ * Ask the deployment, immediately, what the request that just died had reached.
+ *
+ * A 1102 answers with Cloudflare's error page and nothing of the Worker's, so the killed request
+ * can never report itself. The Worker leaves a breadcrumb in module scope and the next request on
+ * the same isolate carries it out — but run 68 reported none, because after a route request died
+ * the sweep moved on to other endpoints and other isolates, and by the time an instrumented
+ * handler ran again the breadcrumb was on an isolate nobody asked.
+ *
+ * So the failure is chased deliberately: several cheap instrumented requests, back to back,
+ * starting the moment the error page arrives. `/v1/nearby` is the cheapest handler that carries
+ * residency and the artifact note, which makes it the one least likely to die while asking.
+ *
+ * Two things are reported for every probe, and neither is interpreted here:
+ *  - the isolate's own request number, which is what distinguishes a surviving isolate from a
+ *    replaced one (a fresh isolate starts its counter at 1);
+ *  - the breadcrumb, if one came back.
+ *
+ * No breadcrumb across every probe is inconclusive, not exoneration: it is equally consistent
+ * with the isolate having been destroyed and with the probes having landed elsewhere. That is
+ * why the probe numbers are printed even when nothing was found.
+ */
+async function chaseBreadcrumb(coordinate, probes = 5) {
+  if (!coordinate || !Number.isFinite(coordinate.lat) || !Number.isFinite(coordinate.lon)) {
+    return " — no point was known to chase the breadcrumb with";
+  }
+  const seen = [];
+  for (let probe = 0; probe < probes; probe += 1) {
+    let answer;
+    try {
+      answer = await getJson(`/v1/nearby?lat=${coordinate.lat}&lon=${coordinate.lon}&radius=300`);
+    } catch (error) {
+      seen.push(`probe ${String(probe + 1)} could not be made (${error?.message ?? "unknown"})`);
+      continue;
+    }
+    const d = answer.body?.meta?.diagnostics;
+    if (!d) {
+      seen.push(
+        `probe ${String(probe + 1)}: ${answer.response.status}` +
+          `${describePlatformPage(answer.response, answer.text)} — no diagnostics came back`,
+      );
+      continue;
+    }
+    const death = describeDeath(d.artifact);
+    seen.push(
+      `probe ${String(probe + 1)}: isolate req#${String(d.residency?.requestsServed ?? "?")}` +
+        `, ${((d.residency?.charsAfter ?? 0) / 1048576).toFixed(2)} MiB resident` +
+        (death || ", nothing unfinished to report"),
+    );
+    if (death) break;
+  }
+  return ` — breadcrumb chase: ${seen.join(" | ")}`;
+}
+
+/**
+ * How old the published network is, and why that is the whole of some failures.
+ *
+ * Departure shards are `departures/<serviceDate>/<bucket>` and the planner's trips are
+ * `pattern-trips/<serviceDate>/<window>/<tile>` — both keyed by the day they describe. So an
+ * artifact published a week ago contains shards for a week ago, and every non-London board reads
+ * a key that does not exist. Run 71 reported that as "5 stops carry routes but none has anything
+ * due at 8:00 Sat", which reads as a live-data problem and is not one: the timetable was fine
+ * when it was built and is simply for the wrong day.
+ *
+ * The same cause fails the journey planner with `no_data` and "0 of 2 shard(s) read, 2 missing",
+ * and leaves London passing throughout, because TfL arrivals are live predictions rather than
+ * date-keyed shards.
+ *
+ * This does not soften any assertion. It attaches the artifact's age to the failure so the next
+ * person does not go looking at the live feeds.
+ */
+function describeArtifactAge(now = Date.now()) {
+  const version = observed.networkArtifactVersion;
+  if (!version) return "";
+  const ageHours = (now - Date.parse(version)) / 3_600_000;
+  if (!Number.isFinite(ageHours)) return "";
+  const days = Math.floor(ageHours / 24);
+  return (
+    ` — the published network artifact is ${version} (${days} day(s) old)` +
+    (days >= 1
+      ? `; departure shards and planner trips are keyed by service date, so a ${days}-day-old ` +
+        "artifact holds no shard for today and this is a staleness problem rather than a live " +
+        "one. Re-run the deploy with bootstrap_data, or refresh the date-keyed shards."
+      : "")
+  );
+}
+
+function describeResidency(residency) {
+  if (!residency) return "";
+  return (
+    `, isolate req#${residency.requestsServed}: held ${residency.shardsBefore} shard(s)/` +
+    `${(residency.charsBefore / 1048576).toFixed(2)} MiB/${residency.recordsBefore} record(s), ` +
+    `trimmed ${residency.evicted}, left ${residency.shardsAfter} shard(s)/` +
+    `${(residency.charsAfter / 1048576).toFixed(2)} MiB/${residency.recordsAfter} record(s)` +
+    `, national ${Object.entries(residency.singletons ?? {})
+      .map(([name, count]) => `${name}=${count}`)
+      .join("/")}`
+  );
+}
+
+/**
+ * Whether a passenger standing at a stop right now should expect a bus.
+ *
+ * Several checks below used to accept zero on the grounds that "an empty board is legitimate at
+ * night". That is true at night and false at nine in the morning, and while the timetable was
+ * genuinely missing the excuse covered it permanently: run 28 reported
+ * "Piccadilly: 0 departures, 0 routes" as a pass. Making the tolerance conditional on the clock
+ * keeps the honest case honest without letting it hide the broken one.
+ *
+ * Europe/London rather than UTC, because that is when the buses run.
+ */
+function inServiceHours(now = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Europe/London",
+    hour: "numeric",
+    hour12: false,
+    weekday: "short",
+  }).formatToParts(now);
+  const hour = Number(parts.find((part) => part.type === "hour")?.value ?? "0");
+  const weekday = parts.find((part) => part.type === "weekday")?.value ?? "";
+  // 07:00-19:00 is well inside the span when every English town has a bus due somewhere.
+  const daytime = hour >= 7 && hour < 19;
+  return { daytime, weekday, hour, sunday: weekday === "Sun" };
+}
+
+const SERVICE_HOURS = inServiceHours();
+
+/**
+ * How long this script pauses between checks, so that it reads as somebody browsing.
+ *
+ * Not a concession, and worth being exact about why. The passenger probe — a handful of requests,
+ * one after another, with a page's worth of thinking between them — reported **zero** failures
+ * against the same deployment on which this script reported twelve of twenty-three. The difference
+ * is not the endpoints. It is that this script fired about a hundred and fifty requests at one
+ * isolate inside two minutes, and `/v1/map` passed as its first check and answered Cloudflare's
+ * error 1102 as its ninth, same run, same viewport size.
+ *
+ * A harness that only ever asks that way cannot tell "this endpoint is broken" from "this
+ * deployment does not survive a burst", and for several runs it reported the second as the first.
+ * So the sequence of passenger checks is paced, and the burst question keeps a check of its own —
+ * `the pattern-heavy endpoints survive dense cities, repeatedly` — which deliberately does not
+ * pace itself and is labelled as the stress test it is. Nothing is skipped and nothing is
+ * forgiven: the script still exits non-zero if any check fails, stress included.
+ */
+const CHECK_PACE_MS = Number(process.env.VERIFY_PACE_MS ?? "400");
+
+/** Checks that are deliberately a burst, and must not be paced. */
+const STRESS_CHECKS = new Set(["the pattern-heavy endpoints survive dense cities, repeatedly"]);
+
+let pacedChecks = 0;
+
 async function check(name, run) {
+  /*
+   * Paced before the check rather than after, so the first one is not delayed and the Worker has
+   * a moment between each page a notional passenger opens.
+   */
+  const stress = STRESS_CHECKS.has(name);
+  if (!stress && pacedChecks > 0 && CHECK_PACE_MS > 0) {
+    await new Promise((resolve) => setTimeout(resolve, CHECK_PACE_MS));
+  }
+  if (!stress) pacedChecks += 1;
+
   try {
     const detail = await run();
-    results.push({ name, ok: true, detail: detail ?? "" });
+    results.push({ name, ok: true, detail: detail ?? "", stress });
   } catch (error) {
     failures += 1;
     results.push({
       name,
       ok: false,
       detail: error instanceof Error ? error.message : String(error),
+      stress,
     });
   }
 }
@@ -47,8 +265,36 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-async function getJson(path) {
-  const response = await fetch(`${apiUrl}${path}`, { signal: AbortSignal.timeout(20_000) });
+/**
+ * One request, and one patient retry when the Worker asks us to slow down.
+ *
+ * The Worker allows 120 requests a minute per client and this script is a single client. Run 63
+ * widened the place matrix from five to eight, which put the sweep of stop boards, route attempts
+ * and map reads past that line — and five checks failed with `429 Too many requests` that had
+ * nothing to do with the endpoints they were testing.
+ *
+ * The limit is not the thing to change. It is there to keep a £0 deployment from being trivially
+ * expensive to attack, no passenger makes 120 requests in a minute, and lowering a protective
+ * guard so that a test goes green is how guards stop meaning anything. What is wrong is the
+ * client: it should honour `Retry-After` like anything else that is told to wait. Once only, and
+ * bounded, so a genuinely rate-limited deployment still fails the run rather than hanging it.
+ */
+async function fetchOnce(path) {
+  /*
+   * The abort says which request aborted.
+   *
+   * Run 78's city sweep failed with "The operation was aborted due to timeout" and nothing else —
+   * forty-eight requests across eight cities and no clue which of them took twenty seconds. The
+   * timeout is a real failure worth keeping, but a failure that does not name its request costs a
+   * whole run to localise.
+   */
+  let response;
+  try {
+    response = await fetch(`${apiUrl}${path}`, { signal: AbortSignal.timeout(20_000) });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`${message} — on ${path}`);
+  }
   const text = await response.text();
   let body = null;
   try {
@@ -61,11 +307,76 @@ async function getJson(path) {
   return { response, body, text };
 }
 
-/** A status line that carries what the server actually said, truncated to stay readable. */
+async function getJson(path) {
+  const first = await fetchOnce(path);
+  if (first.response.status !== 429) return first;
+
+  const retryAfter = Number(first.response.headers.get("retry-after"));
+  const waitMs = Math.min(
+    65_000,
+    Math.max(1_000, (Number.isFinite(retryAfter) ? retryAfter : 5) * 1000),
+  );
+  await new Promise((resolve) => setTimeout(resolve, waitMs));
+  return fetchOnce(path);
+}
+
+/**
+ * What the server actually said, reduced to the part that identifies the failure.
+ *
+ * When the platform answers instead of the Worker it sends a Cloudflare error page, and the first
+ * three hundred characters of that page are Internet Explorer conditional comments. Reporting
+ * those was worse than reporting nothing: three separate 503s in run 37 were indistinguishable
+ * from each other, and none of them named the limit that had been hit — which is the only fact
+ * that decides whether the cause is memory, CPU, subrequests or a thrown exception.
+ *
+ * Cloudflare puts the code in a `cf-error-code` element and repeats it as "Error 1102" in the
+ * prose, with a one-line summary in the `<title>`. Those, plus the ray id, are the diagnosis.
+ */
 function describe(response, body, text) {
-  const detail =
-    body?.error?.message ?? body?.error?.code ?? text.replace(/\s+/g, " ").trim().slice(0, 300);
-  return `${response.status}${detail ? `: ${detail}` : ""}`;
+  const fromWorker = body?.error?.message ?? body?.error?.code;
+  if (fromWorker) return `${response.status}: ${fromWorker}`;
+  return `${response.status}${describePlatformPage(response, text)}`;
+}
+
+/** The identifying parts of a Cloudflare error page, or the plain text when it is not one. */
+function describePlatformPage(response, text) {
+  const flat = text.replace(/\s+/g, " ").trim();
+  if (!flat) return "";
+  const ray = response.headers.get("cf-ray");
+  const suffix = ray ? ` [cf-ray ${ray}]` : "";
+
+  if (!/<html/i.test(flat)) return `: ${flat.slice(0, 300)}${suffix}`;
+
+  const parts = [];
+  const title = /<title[^>]*>([^<]+)<\/title>/i.exec(flat)?.[1]?.trim();
+  if (title) parts.push(title);
+
+  // "Error 1102" in the prose, and the same number in Cloudflare's own error-code element.
+  const codes = new Set();
+  for (const match of flat.matchAll(/\berror\s*(?:code[: ]*)?(\d{4})\b/gi)) codes.add(match[1]);
+  for (const match of flat.matchAll(/class="[^"]*cf-error-code[^"]*"[^>]*>\s*(\d{4})/gi)) {
+    codes.add(match[1]);
+  }
+  if (codes.size > 0) parts.push(`Cloudflare error ${[...codes].join("/")}`);
+
+  // The human sentence, e.g. "Worker exceeded resource limits". `cf-error-type` is not it: that
+  // span holds the literal word "Error", which adds nothing to a line that already says 503.
+  const reason = /class="[^"]*cf-subheadline[^"]*"[^>]*>\s*([^<]+)</i.exec(flat)?.[1]?.trim();
+  if (reason) parts.push(reason);
+  for (const phrase of [
+    "Worker exceeded resource limits",
+    "Worker threw exception",
+    "Exceeded CPU",
+    "Exceeded Memory",
+    "too many subrequests",
+    "Script startup exceeded",
+  ]) {
+    if (flat.toLowerCase().includes(phrase.toLowerCase())) parts.push(phrase);
+  }
+
+  const unique = [...new Set(parts)];
+  if (unique.length === 0) return `: an HTML page with no error code in it${suffix}`;
+  return `: ${unique.join(" — ")}${suffix}`;
 }
 
 // A small viewport over central Manchester: inside the map's size cap, densely stopped, and
@@ -94,6 +405,13 @@ await check("the live map returns real stops for a real viewport", async () => {
   assert(inBox.length === stops.length, "some stops fall outside the requested viewport");
   observed.stop = stops[0];
   /*
+   * The published network's version, captured on the first map read.
+   *
+   * It is what every later failure about missing departures or an unplannable journey needs, and
+   * the map is the earliest response that carries it. See `describeArtifactAge`.
+   */
+  observed.networkArtifactVersion = body?.meta?.diagnostics?.artifact?.version ?? null;
+  /*
    * A stop the map says has a service, if there is one. Timetables come from the BODS datasets a
    * build ingested and stops come from all of NaPTAN, so a stop with no routes is a coverage
    * figure rather than a broken endpoint — and picking one arbitrarily would test the wrong
@@ -103,7 +421,12 @@ await check("the live map returns real stops for a real viewport", async () => {
   observed.stopsWithRoutes = stops.filter(
     (stop) => (stop.routePublicNames ?? []).length > 0,
   ).length;
-  return `${stops.length} stops, first: ${stops[0].name}`;
+  observed.mapDegraded = body?.data?.degraded === true;
+  observed.mapDegradationReason = body?.data?.degradationReason ?? null;
+  return (
+    `${stops.length} stops, first: ${stops[0].name}` +
+    (observed.mapDegraded ? ` (degraded: ${observed.mapDegradationReason})` : "")
+  );
 });
 
 await check("a stop can be selected and returns a departure board", async () => {
@@ -130,7 +453,236 @@ await check("a stop can be selected and returns a departure board", async () => 
   assert(body?.meta?.generatedAt, "the stop response does not state its freshness");
   // Carried to the route check: this is the only response that names the services calling here.
   observed.routes = body?.data?.routes ?? [];
-  return `${stop.name}: ${departures.length} departures, ${observed.routes.length} routes, ${body.meta.degradation}`;
+
+  /*
+   * A stop the published timetable knows nothing about is a coverage failure at any hour. This
+   * check deliberately ran against `stopWithRoutes` where one exists, so zero routes here means
+   * no stop in the whole viewport had a service.
+   */
+  assert(
+    observed.routes.length > 0,
+    `the published timetable names no route calling at ${stop.name}`,
+  );
+
+  /*
+   * And a stop with routes, in service hours, must have something due. This is the check that
+   * separates "the timetable is published" from "a passenger can use it".
+   */
+  if (SERVICE_HOURS.daytime) {
+    assert(
+      departures.length > 0,
+      `${stop.name} has ${observed.routes.length} routes but nothing due at ` +
+        `${SERVICE_HOURS.hour}:00 ${SERVICE_HOURS.weekday} London time` +
+        describeArtifactAge(),
+    );
+  }
+
+  return (
+    `${stop.name}: ${departures.length} departures, ${observed.routes.length} routes, ` +
+    `${body.meta.degradation}` +
+    (SERVICE_HOURS.daytime ? "" : " (outside service hours: departures not required)")
+  );
+});
+
+/*
+ * Five real cities, not one.
+ *
+ * A single viewport proves a shard published. It does not prove the country did, and the failure
+ * this guards against is precisely regional: the departure index is bucketed by a hash of the
+ * stop, so a bucket that failed to write takes an arbitrary scatter of stops across England with
+ * it and leaves every other bucket looking perfect. Five cities in five different parts of the
+ * country, each with its own bucket spread, is what turns "a board works" into "boards work".
+ *
+ * All five are outside London, so these are BODS and NaPTAN rather than TfL.
+ */
+/** How many stops per city are asked for a board before concluding the city has none. */
+const SAMPLED_STOPS_PER_CITY = 5;
+
+/*
+ * England, not a Leeds demo with four witnesses.
+ *
+ * Leeds and Manchester are the technical stress cases — the densest viewports, the ones that
+ * find the CPU ceiling first — and proving a passenger feature there proves it for the hard
+ * case and nowhere else. The three at the bottom are chosen for the ways they differ rather
+ * than for being more of the same: a North East city on a different operator mix, a South Coast
+ * one, and a market town whose network is small enough that "no data" and "broken" are easy to
+ * confuse. Different places will hold different amounts of data and that is expected; what has
+ * to be the same everywhere is that the product says which of the two it is.
+ */
+const CITIES = [
+  { name: "Leeds", bbox: "-1.57,53.78,-1.52,53.81" },
+  { name: "Manchester", bbox: "-2.26,53.46,-2.21,53.50" },
+  { name: "Birmingham", bbox: "-1.92,52.46,-1.87,52.49" },
+  { name: "Bristol", bbox: "-2.61,51.44,-2.56,51.47" },
+  { name: "York", bbox: "-1.10,53.95,-1.05,53.97" },
+  /*
+   * The three below carry `sparseOk`, which does not lower the bar — it moves it to the right
+   * question. A city centre that returns stops and names no route calling at any of them is a
+   * broken timetable. A market town on a Sunday that does the same may simply be a market town
+   * on a Sunday, and failing it would teach me to distrust the check rather than the data. So
+   * for these, an error is still an error — a bad status, no stops at all, a name the board and
+   * the map disagree about — and sparseness is reported instead of failed.
+   */
+  /* North East. */
+  { name: "Newcastle", bbox: "-1.63,54.96,-1.58,54.99", sparseOk: true },
+  /* South Coast. */
+  { name: "Brighton", bbox: "-0.16,50.81,-0.11,50.84", sparseOk: true },
+  /* A smaller, lower-density town: the case where an empty answer must still read as an answer. */
+  { name: "Shrewsbury", bbox: "-2.77,52.70,-2.72,52.73", sparseOk: true },
+];
+
+/** What a board has to say for a row to be worth rendering, beyond merely existing. */
+function assertDepartureIsPlausible(departure, stopName, city) {
+  const route = departure.serviceRoutePublicName ?? "";
+  /*
+   * What may appear in the route badge.
+   *
+   * The first version of this demanded a designation like 36, X84 or 1A. That is what most rows
+   * are, and it caught a real bug on the first run — York Rail Station offering a bus called
+   * `Golden_Tours_Hop_On_Hop_Off`, which is a GTFS route_id rendered as a service number. But it
+   * is the wrong rule: England genuinely runs services whose only published name is a phrase, and
+   * failing those would be the check disagreeing with the country.
+   *
+   * The invariant that is actually true is narrower and more useful. A passenger may be shown a
+   * number or a name; they may never be shown an internal key. Underscores and colons are what
+   * separates the two, and a length bound keeps a description out of a badge sized for three
+   * characters.
+   */
+  assert(route.length > 0, `${city}: a departure at ${stopName} has no route name at all`);
+  assert(
+    !/[_:]/.test(route),
+    `${city}: "${route}" at ${stopName} is an internal identifier, not a route a bus displays`,
+  );
+  assert(
+    route.length <= 24,
+    `${city}: "${route}" at ${stopName} is ${String(route.length)} characters — a description ` +
+      `in the badge, not a route name`,
+  );
+
+  const destination = departure.destinationName ?? "";
+  assert(
+    destination.length >= 3,
+    `${city}: a departure at ${stopName} has destination "${destination}"`,
+  );
+  assert(
+    destination !== stopName,
+    `${city}: a bus at ${stopName} is signed for ${destination}, where it already is`,
+  );
+
+  const scheduled = Date.parse(departure.scheduledTime ?? "");
+  assert(
+    Number.isFinite(scheduled),
+    `${city}: a departure at ${stopName} has no readable scheduled time`,
+  );
+  /*
+   * Inside the window the board asked for. A time far outside it means the epoch or the offset
+   * arithmetic is wrong — which is exactly the failure a service-date offset could introduce, and
+   * it would otherwise show up as a board full of confident, plausible, wrong times.
+   */
+  const minutesAway = (scheduled - Date.now()) / 60_000;
+  assert(
+    minutesAway > -30 && minutesAway < 24 * 60,
+    `${city}: ${route} to ${destination} at ${stopName} is due ${Math.round(minutesAway)} ` +
+      `minutes from now, which is outside the board's window`,
+  );
+}
+
+await check("places across England return their real routes and departures", async () => {
+  const lines = [];
+  for (const city of CITIES) {
+    const map = await getJson(`/v1/map?bbox=${city.bbox}&zoom=15`);
+    assert(
+      map.response.ok,
+      `${city.name}: /v1/map gave ${describe(map.response, map.body, map.text)}`,
+    );
+    const stops = map.body?.data?.stops ?? [];
+    assert(stops.length > 0, `${city.name}: the map returned no stops at all`);
+
+    /*
+     * Which stops to try, and why not the ones the map says carry a service.
+     *
+     * `routePublicNames` on a map stop is a hard-coded empty array in the Worker — the field is
+     * declared in the contract and never filled. Selecting by it, or asserting on it, tests
+     * nothing but the stub: the first version of this check did exactly that, and would have
+     * failed in all five cities whether or not a single board worked.
+     *
+     * So the map is used only to find real stops, and the board endpoint is asked directly. A few
+     * are tried rather than one, because an individual stop can legitimately be out of use, on a
+     * diversion, or served in one direction only. What cannot be true is that none of several
+     * stops in a city centre has a service.
+     */
+    const candidates = stops.slice(0, SAMPLED_STOPS_PER_CITY);
+    const boards = [];
+    for (const candidate of candidates) {
+      const board = await getJson(`/v1/stops/${encodeURIComponent(candidate.id)}`);
+      assert(
+        board.response.ok,
+        `${city.name}: ${candidate.name} gave ${describe(board.response, board.body, board.text)}`,
+      );
+      boards.push({
+        // The board's own name for the stop, not the map's. They are the same stop and must
+        // agree, and the "signed for where it already is" check below compares against this one.
+        name: board.body?.data?.stop?.name ?? candidate.name,
+        mapName: candidate.name,
+        routes: board.body?.data?.routes ?? [],
+        departures: board.body?.data?.departures ?? [],
+        degradation: board.body?.meta?.degradation ?? "unknown",
+      });
+    }
+
+    for (const board of boards) {
+      assert(
+        board.name === board.mapName,
+        `${city.name}: the map calls it ${board.mapName}, the board calls it ${board.name}`,
+      );
+    }
+
+    const served = boards.filter((board) => board.routes.length > 0);
+    if (city.sparseOk && served.length === 0) {
+      // Checked, answered, and genuinely quiet. Reported as what it is rather than failed.
+      lines.push(
+        `${city.name}: ${stops.length} stop(s), no route published at the ${boards.length} sampled`,
+      );
+      continue;
+    }
+    assert(
+      served.length > 0,
+      `${city.name}: the published timetable names no route calling at any of ` +
+        `${boards.length} city-centre stops (${boards.map((b) => b.name).join(", ")})`,
+    );
+
+    /*
+     * A board that could not read its shard must not look like a quiet one. The reader reports a
+     * failed shard and the Worker degrades on it, so "normal" with nothing due is a claim that
+     * there is genuinely nothing due — and in service hours, at none of several stops in a city
+     * centre, that claim is false.
+     */
+    const due = served.filter((board) => board.departures.length > 0);
+    if (SERVICE_HOURS.daytime) {
+      assert(
+        due.length > 0,
+        `${city.name}: ${served.length} stop(s) carry routes but none has anything due at ` +
+          `${SERVICE_HOURS.hour}:00 ${SERVICE_HOURS.weekday} London time ` +
+          `(${served.map((b) => `${b.name}: ${b.routes.length} routes, ${b.degradation}`).join("; ")})`,
+      );
+    }
+
+    for (const board of boards) {
+      for (const departure of board.departures) {
+        assertDepartureIsPlausible(departure, board.name, city.name);
+      }
+    }
+
+    const best = due[0] ?? served[0];
+    lines.push(
+      `${city.name}: ${best.name} — ${best.routes.length} routes, ${best.departures.length} due` +
+        (best.departures[0]
+          ? `, next ${best.departures[0].serviceRoutePublicName} to ${best.departures[0].destinationName}`
+          : "") +
+        ` (${served.length}/${boards.length} stops served)`,
+    );
+  }
+  return lines.join("; ");
 });
 
 await check("search finds a real stop by name", async () => {
@@ -144,6 +696,164 @@ await check("search finds a real stop by name", async () => {
   const matches = body?.data?.results ?? [];
   assert(matches.length > 0, `search for "${term}" found nothing, so the search index is empty`);
   return `"${term}" → ${matches.length} results`;
+});
+
+/*
+ * Places, which is the search that could never work.
+ *
+ * "York Minster" matched nothing, because search knew about stops, routes and operators and a
+ * minster is none of those. The gazetteer is what fixes that — and the check has to be for a real
+ * landmark by its real name, because a special case for York Minster would pass a test written
+ * against York Minster.
+ *
+ * Reported rather than asserted while the gazetteer may not have been extracted into this bucket
+ * yet: an empty result says "no gazetteer here", which is a different fact from "place search is
+ * broken", and the line says which.
+ */
+/**
+ * The first thing a first-time visitor types: a town name, on its own.
+ *
+ * Every other search check here asks something the index is known to hold — a landmark from a
+ * curated list, or a word lifted from a stop the API had just returned. None of them asks the
+ * obvious question, and the deployed sweep found out why that matters: "Leeds" returned nothing at
+ * all, on a deployment where "Leeds Station" returns a place called Leeds. The flow walk starts
+ * with exactly this query and could get no further.
+ *
+ * Five cities, and a failure names the ones that answered so a total outage reads differently from
+ * one city missing from the gazetteer.
+ */
+await check(
+  "a plain town name returns something, which is what a visitor types first",
+  async () => {
+    const towns = ["Leeds", "Manchester", "Birmingham", "Bristol", "York"];
+    const lines = [];
+    const empty = [];
+
+    for (const town of towns) {
+      const { response, body, text } = await getJson(`/v1/search?q=${encodeURIComponent(town)}`);
+      if (!response.ok) {
+        empty.push(`${town}: ${describe(response, body, text)}`);
+        lines.push(`${town}: failed`);
+        continue;
+      }
+      const results = body?.data?.results ?? [];
+      if (results.length === 0) {
+        empty.push(`${town}: 200 with an empty result list`);
+        lines.push(`${town}: nothing`);
+        continue;
+      }
+      const kinds = [...new Set(results.map((result) => result.kind))];
+      lines.push(
+        `${town}: ${results.length} result(s) [${kinds.join(", ")}], first "${results[0].title}"`,
+      );
+    }
+
+    assert(
+      empty.length === 0,
+      `${empty.length} of ${towns.length} town name(s) returned nothing, and a town name is the ` +
+        `first thing a visitor types — ${empty.join("; ")}. The ones that answered: ` +
+        `${lines.filter((line) => !/nothing|failed/.test(line)).join("; ") || "none"}`,
+    );
+
+    return lines.join(" | ");
+  },
+);
+
+await check("search finds real places, not only bus stops", async () => {
+  const wanted = [
+    "York Minster",
+    "Leeds Station",
+    "Manchester Arndale",
+    "Bullring",
+    "Bristol Temple Meads",
+  ];
+  const found = [];
+  const missed = [];
+
+  for (const term of wanted) {
+    const { response, body, text } = await getJson(`/v1/search?q=${encodeURIComponent(term)}`);
+    assert(response.ok, `search for "${term}" gave ${describe(response, body, text)}`);
+    const results = body?.data?.results ?? [];
+    const place = results.find((result) => result.kind === "place");
+    if (place) {
+      /*
+       * A place must be a place. Presenting one as a stop would send somebody to a departure
+       * board for a cathedral, and claiming live coverage would put a live lozenge on a park.
+       */
+      assert(
+        Number.isFinite(place.coordinate?.lat) && Number.isFinite(place.coordinate?.lon),
+        `"${term}" returned a place with nowhere to go to`,
+      );
+      assert(
+        place.hasLiveCoverage !== true,
+        `"${term}" returned a place claiming live bus coverage of its own`,
+      );
+      found.push(`${term} → ${place.title}`);
+      // Carried to the journey check below: a place found by search is where a passenger says
+      // they want to go, and getting them there is the point of having found it.
+      if (term === "York Minster") observed.yorkMinster = place;
+    } else {
+      missed.push(term);
+    }
+  }
+
+  /*
+   * What the gazetteer does hold where a landmark is missing.
+   *
+   * "Bullring: still missing" has been true for several runs and says nothing about why — a
+   * missing landmark could be a gap in the Overpass query, an area that failed extraction, or a
+   * name this product spells differently from OpenStreetMap. Overpass cannot be reached from the
+   * machine that writes this script, so the deployment is asked instead: searching the city name
+   * and listing the places it returns distinguishes "this city was never extracted" from "it was,
+   * and the landmark is filed under another name" in one line.
+   */
+  const cityFor = {
+    "Manchester Arndale": "Manchester",
+    Bullring: "Birmingham",
+    "Bristol Temple Meads": "Bristol",
+    "Leeds Station": "Leeds",
+    "York Minster": "York",
+  };
+  /*
+   * Each word on its own, not the city.
+   *
+   * Searching the city listed eight places all beginning "Birmingham" — because a name search
+   * finds names, and the Bullring is not called Birmingham-anything. The listing said nothing
+   * about whether the landmark was there, which is the question. Run 54's places report answered
+   * it instead: Birmingham extracted 290 places including `Bull Ring (shopping)`. OSM writes the
+   * name open and the query writes it closed, so they shared no token and it scored zero.
+   *
+   * So the probe is the landmark's own words, each alone: "bull" and "ring" reach a place called
+   * "Bull Ring" however the query is spaced, and a landmark that is genuinely absent comes back
+   * empty for all of them.
+   */
+  const around = [];
+  for (const term of missed) {
+    const words = term.split(/\s+/).filter((word) => word.length > 3);
+    const seen = [];
+    for (const word of words) {
+      const { body } = await getJson(`/v1/search?q=${encodeURIComponent(word)}`);
+      for (const result of body?.data?.results ?? []) {
+        if (result.kind === "place" && !seen.includes(result.title)) seen.push(result.title);
+      }
+    }
+    const city = cityFor[term];
+    around.push(
+      seen.length === 0
+        ? `nothing in the gazetteer matches any word of "${term}"` +
+            (city ? ` (${city} was extracted; the name may be spelled differently)` : "")
+        : `"${term}" word-by-word finds: ${seen.slice(0, 8).join(", ")}`,
+    );
+  }
+
+  observed.placesFound = found.length;
+  observed.placesMissed = missed;
+  return found.length === 0
+    ? `no gazetteer in this bucket yet: none of ${wanted.length} landmarks matched ` +
+        "(run the preview with run_places to extract one)"
+    : `${found.length} of ${wanted.length} landmarks found — ${found.join("; ")}` +
+        (missed.length > 0 ? `; still missing: ${missed.join(", ")}` : "") +
+        (around.length > 0 ? ` | what those cities do have: ${around.join(" | ")}` : "");
 });
 
 await check("live vehicles are reported for a covered area", async () => {
@@ -163,8 +873,172 @@ await check("live vehicles are reported for a covered area", async () => {
     assert(Number.isFinite(vehicle.freshnessSeconds), "a vehicle does not state its age");
     assert(vehicle.motionState !== undefined, "a vehicle does not say whether it is moving");
   }
-  const sources = (body?.meta?.sources ?? []).map((source) => source.source ?? source).join(", ");
-  return `${vehicles.length} vehicles from [${sources}] at ${new Date().toISOString()}`;
+  /*
+   * An empty viewport and a failed feed are different facts and must read differently.
+   *
+   * "0 vehicles" is the honest answer at four in the morning and a lie when BODS timed out —
+   * which, with the retry chain bounded and the breaker sized for an isolate, is now a thing that
+   * happens and is *supposed* to happen: the request gives up cheaply and says so rather than
+   * taking the isolate with it. So the line names the state of every source it consulted, and a
+   * zero with a failed source reads as an outage rather than as a quiet street.
+   */
+  const health = body?.meta?.sources ?? [];
+  const described = health
+    .map(
+      (source) =>
+        `${source.source ?? source}: ${source.status ?? "?"}` +
+        (source.consecutiveFailures ? ` after ${source.consecutiveFailures} failure(s)` : "") +
+        (source.message ? ` (${String(source.message).slice(0, 80)})` : ""),
+    )
+    .join("; ");
+  const failed = body?.meta?.failedSources ?? [];
+  assert(
+    vehicles.length > 0 || failed.length > 0 || !SERVICE_HOURS.daytime,
+    `no buses and no failed source at ${SERVICE_HOURS.hour}:00 ${SERVICE_HOURS.weekday} London ` +
+      `time — a viewport over a city centre in service hours is either moving or broken, and ` +
+      `this says neither. Sources: ${described}`,
+  );
+  return (
+    `${vehicles.length} vehicles at ${new Date().toISOString()}; ${described}` +
+    (failed.length > 0 ? `; failed: ${failed.join(", ")}` : "") +
+    (body?.meta?.degradation ? `; ${body.meta.degradation}` : "")
+  );
+});
+
+/*
+ * What a map request that *survives* cost.
+ *
+ * Every 1102 is a request that could not report anything, so the evidence has to come from the
+ * ones that finish. This prints it rather than asserting a threshold: nobody outside Cloudflare
+ * knows where the line is, and a made-up limit here would fail runs for no reason.
+ */
+/*
+ * London, which is a different product behind the same map.
+ *
+ * Outside London a bus is an observation: BODS publishes where the vehicle is, and the board is
+ * composed from the timetable. Inside London it is the other way round — TfL publishes arrival
+ * predictions per stop and does not publish vehicle positions at all — so the live vehicle layer
+ * over London is empty by design, and the thing that has to work is the board.
+ *
+ * The home page has been claiming London coverage, and nothing here has ever checked it. These
+ * two checks are what that claim has to rest on: a real 490 stop returning real TfL predictions,
+ * and the map over London being honestly empty of vehicles rather than accidentally so.
+ */
+const LONDON_BBOX = "-0.14,51.49,-0.09,51.52";
+
+await check("London stops come back from a London viewport", async () => {
+  const { response, body, text } = await getJson(`/v1/map?bbox=${LONDON_BBOX}&zoom=15`);
+  assert(response.ok, `expected 2xx, got ${describe(response, body, text)}`);
+  const stops = body?.data?.stops ?? [];
+  assert(
+    stops.length > 0,
+    "the map returned zero stops over central London, which means NaPTAN's London stops are " +
+      "missing from the published artifact — not that Westminster has no bus stops",
+  );
+  /*
+   * The ATCO code, not the id.
+   *
+   * A map stop carries both, and `id` is the internal UUID — so this matched nothing over
+   * Westminster and reported that the viewport was "not reaching TfL's stops", which was a
+   * statement about this line rather than about the deployment.
+   */
+  const londonStops = stops.filter((stop) => /^(490|940)/.test(stop.atcoCode ?? ""));
+  assert(
+    londonStops.length > 0,
+    `${stops.length} stops came back over central London and none of them carries a London ` +
+      `ATCO prefix — the first is ${stops[0]?.atcoCode ?? "(none)"} — so the viewport is not ` +
+      "reaching TfL's stops",
+  );
+  observed.londonStop =
+    londonStops.find((stop) => (stop.routePublicNames ?? []).length > 0) ?? londonStops[0];
+
+  /*
+   * And the vehicle layer, which must be empty for the stated reason rather than by accident.
+   *
+   * A London-only viewport asks TfL and nothing else, so a vehicle here would mean the map had
+   * invented one. What is required is that TfL is named as a source: an empty layer with no
+   * source named would be indistinguishable from London simply not being wired up.
+   */
+  const vehicles = body?.data?.vehicles ?? [];
+  const sources = (body?.meta?.sources ?? []).map((source) => source.source ?? source);
+  assert(
+    sources.includes("tfl"),
+    `a London viewport reported sources [${sources.join(", ")}] and did not consult TfL`,
+  );
+  assert(
+    vehicles.length === 0,
+    `${vehicles.length} vehicle(s) came back over London, where TfL publishes no vehicle ` +
+      "positions — so these were invented somewhere",
+  );
+  observed.londonVehicleLayerEmpty = true;
+  return (
+    `${stops.length} stop(s), ${londonStops.length} with a London ATCO; ` +
+    `sources [${sources.join(", ")}]; vehicle layer empty, as TfL publishes no positions`
+  );
+});
+
+await check("a London stop returns real TfL arrival predictions", async () => {
+  assert(observed.londonStop, "no London stop was found by the previous check");
+  const target = observed.londonStop;
+  const { response, body, text } = await getJson(`/v1/stops/${encodeURIComponent(target.id)}`);
+  assert(response.ok, `expected 2xx, got ${describe(response, body, text)}`);
+  const stop = body?.data?.stop;
+  assert(stop, "the London stop response has no stop");
+  const departures = body?.data?.departures ?? [];
+  for (const departure of departures) {
+    assert(departure.serviceRoutePublicName, "a London departure has no route name to display");
+    assert(departure.destinationName, "a London departure has no destination to display");
+  }
+  /*
+   * TfL's predictions are live, so in service hours a central London stop with a service has
+   * something due. Out of hours the honest answer is an empty board, and asserting on it would
+   * fail the run for the time of day rather than for the deployment.
+   */
+  const live = departures.filter((departure) => departure.liveState === "live").length;
+  if (SERVICE_HOURS.daytime) {
+    assert(
+      departures.length > 0,
+      `${stop.name} is a London stop with nothing due at ${SERVICE_HOURS.hour}:00 ` +
+        `${SERVICE_HOURS.weekday} London time, so the TfL arrivals path is not working`,
+    );
+    assert(
+      live > 0,
+      `${stop.name} returned ${departures.length} departure(s) and none of them is live, ` +
+        "so these are timetable rows rather than TfL predictions",
+    );
+  }
+  observed.londonDepartures = departures.length;
+  observed.londonLiveDepartures = live;
+  return (
+    `${stop.name} (${stop.id}): ${departures.length} departure(s), ${live} live from TfL` +
+    (SERVICE_HOURS.daytime ? "" : " (outside service hours: departures not required)")
+  );
+});
+
+await check("the map says what it cost", async () => {
+  const { response, body, text } = await getJson(`/v1/map?bbox=${BBOX}&zoom=15`);
+  assert(response.ok, `expected 2xx, got ${describe(response, body, text)}`);
+  const d = body?.meta?.diagnostics;
+  assert(d, "the map response carries no diagnostics");
+  assert(typeof body?.data?.degraded === "boolean", "the map does not say whether it is degraded");
+  const stages = Object.entries(d.stages ?? {})
+    .map(([stage, ms]) => `${stage}=${ms}ms`)
+    .join(" ");
+  return (
+    `${d.elapsedMs}ms of a ${d.budgetMs}ms budget; ` +
+    `${d.objectsRead} object(s) read, ${d.objectsCached} cached, ${d.objectsMissing} missing, ` +
+    `${d.objectsFailed} failed; ${(d.chars / 1048576).toFixed(2)} MiB decoded; ` +
+    `${d.records} record(s); ${stages}; ` +
+    `degraded ${String(body.data.degraded)}${body.data.degradationReason ? ` (${body.data.degradationReason})` : ""}` +
+    (d.artifact
+      ? `; artifact ${Object.entries(d.artifact)
+          .map(([key, value]) => `${key}=${String(value)}`)
+          .join(" ")}`
+      : "; the map named no artifact") +
+    describeFamilies(d.families) +
+    describeResidency(d.residency) +
+    describeDeath(d.artifact)
+  );
 });
 
 await check("nearby stops come back for a real point", async () => {
@@ -183,13 +1057,34 @@ await check("nearby stops come back for a real point", async () => {
 
 await check("the viewport's stops carry the services that call at them", async () => {
   /*
-   * Reported rather than asserted at a threshold, because it is a property of how many timetable
-   * datasets the build took, not of the deployment. A zero here is the honest signal that this
-   * area has stops and no timetable — which is what a passenger would see as an empty board.
+   * This used to be reported rather than asserted, on the grounds that it measured how much
+   * timetable the build took rather than whether the deployment worked. That distinction stopped
+   * being true once the whole national archive was ingested: a viewport in a English city with
+   * no stop carrying a service now means the timetable did not reach the edge, and reporting it
+   * as a pass is how run 28 called an empty product verified.
    */
   assert(observed.stopsWithRoutes !== undefined, "the map check did not run");
-  const total = observed.stop ? "the viewport" : "no viewport";
-  return `${observed.stopsWithRoutes} of the returned stops have a service, in ${total}`;
+
+  /*
+   * A degraded map is allowed unlabelled stops; a confident one is not.
+   *
+   * Route names come from pattern tiles, the most expensive thing this endpoint reads, so they
+   * are the half dropped when a request runs out of budget. That is a legitimate answer as long
+   * as it is declared. What must never happen is a response claiming to be complete while
+   * quietly reporting that every stop has no services — which is a claim about the timetable
+   * rather than about this request.
+   */
+  if (observed.mapDegraded) {
+    return (
+      `enrichment was skipped (${observed.mapDegradationReason}), so ` +
+      `${observed.stopsWithRoutes} of the returned stops carry a service`
+    );
+  }
+  assert(
+    observed.stopsWithRoutes > 0,
+    "not one stop in the viewport carries a service, and the map did not say it was degraded",
+  );
+  return `${observed.stopsWithRoutes} of the returned stops have a service`;
 });
 
 await check("route detail answers without the Worker falling over", async () => {
@@ -224,26 +1119,838 @@ await check("route detail answers without the Worker falling over", async () => 
   return `${first.publicName ?? first.id} answered ${response.status}`;
 });
 
+/*
+ * What a passenger opening a route page is actually told.
+ *
+ * The check above asks only whether the endpoint answers, which is the wrong question now. The most
+ * important thing on a route page is not that it loaded: it is the ordered sequence of stops the
+ * service follows — where it starts, where it goes, what it calls at, in travel order. So this walks
+ * several materially different real services in different cities and reports each as a reader sees
+ * it.
+ *
+ * The ordering is the claim worth proving rather than asserting. A list sorted by name, or by
+ * latitude, would look plausible in a screenshot and be useless on a bus. The sequence numbers must
+ * run strictly from zero — that is the timetable's own order, taken from the pattern's stopSequence —
+ * and if the names happen to come out alphabetical the line says so, because that is the one case
+ * where "ordered" and "sorted" are indistinguishable from the outside.
+ *
+ * And the sequence has to lead somewhere: a stop from the middle of the list is opened as a board,
+ * because a list of names nobody can click is a picture of a route rather than a way to catch a bus.
+ */
+/*
+ * The navigation in the other direction, which had no deployed check at all.
+ *
+ * "Stop to route" is on the P0 list and, until `5379058`, the stop page simply had no route links
+ * on it — the board carried `routes[]` and the page threw it away. Worse, the board's route list
+ * is produced by the one read most likely to be cut short: the patterns around the stop. Before
+ * `f625a38` that read opened the surrounding pattern tiles whole, on no budget, and run 89 watched
+ * a Manchester board die inside it. A read that silently stops early does not error — it returns
+ * fewer routes — so a board that lists none, or lists one where ten call, looks exactly like a
+ * quiet stop. This asks whether the names and the links are actually there.
+ */
+await check("a stop board names the routes calling there, and each one opens", async () => {
+  const seen = [];
+  const problems = [];
+
+  for (const city of CITIES.slice(0, 5)) {
+    const map = await getJson(`/v1/map?bbox=${encodeURIComponent(city.bbox)}&zoom=15`);
+    if (!map.response.ok) {
+      problems.push(`${city.name}: /v1/map ${map.response.status}`);
+      continue;
+    }
+    const stops = map.body?.data?.stops ?? [];
+    // The busiest stop in the viewport, because a stop that names many routes is the one a short
+    // read would visibly truncate.
+    const busiest = stops.reduce(
+      (best, stop) =>
+        (stop.routePublicNames?.length ?? 0) > (best?.routePublicNames?.length ?? 0) ? stop : best,
+      null,
+    );
+    if (!busiest) {
+      seen.push(`${city.name}: no stop in the viewport names a route`);
+      continue;
+    }
+
+    const board = await getJson(`/v1/stops/${encodeURIComponent(busiest.atcoCode)}`);
+    if (!board.response.ok) {
+      problems.push(
+        `${city.name}: ${busiest.name} board ${describe(board.response, board.body, board.text)}`,
+      );
+      continue;
+    }
+    const routes = board.body?.data?.routes ?? [];
+    if (routes.length === 0) {
+      problems.push(
+        `${city.name}: ${busiest.name} lists no route, though the map says it serves ` +
+          `${(busiest.routePublicNames ?? []).join(", ")}`,
+      );
+      continue;
+    }
+
+    // A route the reader could click is one with a name, an operator and an id that resolves.
+    const unnamed = routes.filter((route) => !route.publicName);
+    if (unnamed.length > 0) {
+      problems.push(`${city.name}: ${busiest.name} has ${unnamed.length} route(s) with no name`);
+      continue;
+    }
+    const noOperator = routes.filter(
+      (route) => !route.operatorName || route.operatorName === "Unknown operator",
+    );
+
+    const target = routes[routes.length - 1];
+    const opened = await getJson(`/v1/routes/${encodeURIComponent(target.id)}`);
+    if (!opened.response.ok) {
+      problems.push(
+        `${city.name}: ${busiest.name} → ${target.publicName} would not open: ` +
+          describe(opened.response, opened.body, opened.text),
+      );
+      continue;
+    }
+    // The route the stop pointed at must be that route, not whatever the id happened to resolve to.
+    const openedName = opened.body?.data?.route?.publicName ?? null;
+    if (openedName !== target.publicName) {
+      problems.push(
+        `${city.name}: ${busiest.name} → ${target.publicName} opened "${openedName}" instead`,
+      );
+      continue;
+    }
+
+    seen.push(
+      `${city.name}: ${busiest.name} lists ${routes.length} route(s) — ` +
+        routes
+          .slice(0, 6)
+          .map((route) => route.publicName)
+          .join(", ") +
+        (routes.length > 6 ? ", …" : "") +
+        `; last one (${target.publicName}, ${target.operatorName}) opens` +
+        (noOperator.length > 0
+          ? ` [${noOperator.length} route(s) could not be attributed to an operator]`
+          : ""),
+    );
+  }
+
+  assert(problems.length === 0, problems.join("; "));
+  const withRoutes = seen.filter((line) => line.includes(" route(s) — "));
+  assert(
+    withRoutes.length >= 3,
+    `only ${withRoutes.length} of ${CITIES.slice(0, 5).length} cities produced a board with ` +
+      `routes on it — ${seen.join("; ")}`,
+  );
+  return seen.join("; ");
+});
+
+await check("a route page gives its stops in travel order", async () => {
+  const seen = [];
+  const problems = [];
+
+  for (const city of CITIES.slice(0, 5)) {
+    const map = await getJson(`/v1/map?bbox=${encodeURIComponent(city.bbox)}&zoom=15`);
+    if (!map.response.ok) {
+      problems.push(`${city.name}: /v1/map ${map.response.status}`);
+      continue;
+    }
+    // A stop's own routes are the only honest way to find a real service in this city.
+    const stops = map.body?.data?.stops ?? [];
+    const withRoutes = stops.find((stop) => (stop.routePublicNames?.length ?? 0) > 0);
+    if (!withRoutes) {
+      seen.push(`${city.name}: no stop in the viewport names a route`);
+      continue;
+    }
+    const board = await getJson(`/v1/stops/${encodeURIComponent(withRoutes.atcoCode)}`);
+    const routeId = board.body?.data?.routes?.[0]?.id;
+    if (!routeId) {
+      seen.push(`${city.name}: ${withRoutes.name} carries no route id`);
+      continue;
+    }
+
+    const { response, body, text } = await getJson(`/v1/routes/${encodeURIComponent(routeId)}`);
+    if (!response.ok) {
+      problems.push(`${city.name}: /v1/routes/${routeId} ${describe(response, body, text)}`);
+      continue;
+    }
+    const data = body?.data ?? {};
+    const variants = data.variants ?? [];
+    const name = data.route?.publicName ?? routeId;
+    if (variants.length === 0) {
+      problems.push(`${city.name}: ${name} published no variant`);
+      continue;
+    }
+
+    // The variant with the most stops: the dominant pattern is what a reader means by "the route",
+    // and it is the one the page now opens on.
+    const variant = variants.reduce((a, b) => (b.stops.length > a.stops.length ? b : a));
+    const ordered = variant.stops ?? [];
+    if (ordered.length < 2) {
+      problems.push(`${city.name}: ${name} has ${ordered.length} stop(s)`);
+      continue;
+    }
+
+    const sequences = ordered.map((stop) => stop.sequence);
+    const strictlyIncreasing = sequences.every((value, index) =>
+      index === 0 ? value === 0 : value > sequences[index - 1],
+    );
+    if (!strictlyIncreasing) {
+      problems.push(
+        `${city.name}: ${name} sequence is not strictly increasing from zero: ` +
+          sequences.slice(0, 8).join(","),
+      );
+      continue;
+    }
+
+    const names = ordered.map((stop) => stop.name);
+    const alphabetical = names.every(
+      (entry, index) => index === 0 || names[index - 1].localeCompare(entry) <= 0,
+    );
+
+    // A stop from the middle, opened, because the list has to lead somewhere.
+    const middle = ordered[Math.floor(ordered.length / 2)];
+    const middleBoard = await getJson(`/v1/stops/${encodeURIComponent(middle.atcoCode)}`);
+    if (!middleBoard.response.ok) {
+      problems.push(
+        `${city.name}: stop ${middle.sequence + 1} (${middle.name}) would not open: ` +
+          `${middleBoard.response.status}`,
+      );
+      continue;
+    }
+    const due = middleBoard.body?.data?.departures?.length ?? 0;
+    const directions = [...new Set(variants.map((entry) => entry.direction))];
+
+    seen.push(
+      `${city.name}: ${name}` +
+        (data.operator?.name ? ` (${data.operator.name})` : "") +
+        ` — ${variants.length} variant(s) [${directions.join("/")}], ` +
+        `${ordered.length} stops: ${names[0]} → ${names[names.length - 1]}` +
+        `; #${middle.sequence + 1} ${middle.name} opens with ${due} due` +
+        (alphabetical ? " [WARNING: these names are in alphabetical order]" : "") +
+        (data.complete === false ? " [the read was truncated]" : ""),
+    );
+  }
+
+  assert(problems.length === 0, problems.join("; "));
+  const withSequence = seen.filter((line) => line.includes(" stops: "));
+  assert(
+    withSequence.length >= 3,
+    `only ${withSequence.length} of ${CITIES.slice(0, 5).length} cities produced a stop ` +
+      `sequence — ${seen.join("; ")}`,
+  );
+  return seen.join("; ");
+});
+
+/*
+ * The two endpoints that fell over, asked repeatedly in the densest places.
+ *
+ * `/v1/map` and `/v1/routes/:id` are the only two that read pattern tiles in bulk, and both
+ * answered Cloudflare's own HTML 503 on two consecutive deployments — desktop one time, tablet the
+ * next. A single sample per run is how that hid: it appeared in the visual pass and not in the
+ * verification, or the other way round. So each city is asked several times, because the failure
+ * is intermittent and one success proves very little about it.
+ *
+ * A Worker past its resource limit is answered by the platform, whose page is HTML and carries no
+ * CORS header — which is why a browser reported it as a CORS failure rather than a server error.
+ * That is what the HTML check below is looking for.
+ */
+/**
+ * What one page load actually does, which is not what the burst check does.
+ *
+ * The burst check is one client issuing 150 requests at an isolate, and the directive is right
+ * that a passenger is not that. But the visual sweep — one browser, opening one page at a time
+ * against the real deployment — still lost `/v1/map` and `/v1/routes/:id` to Cloudflare's error
+ * page, reported as a CORS failure because that page carries no `Access-Control-Allow-Origin`.
+ * The reason is that **a single page load is not a single request**: opening a stop fires the
+ * board, the nearby stops and the weather together; opening the map fires stops and vehicles.
+ * Three or four at once is exactly the `startedNotFinished` the dying requests recorded.
+ *
+ * So this asks the question a page asks: four heavy requests in parallel, from one client, the
+ * way a browser would. It is a passenger check, not a stress check, because a page that cannot
+ * load its own pieces together is broken for a person, whatever a paced client sees.
+ */
+await check("a page's worth of requests at once, the way a browser opens one", async () => {
+  const PAGE_LOADS = 4;
+  const lines = [];
+  let platformErrors = 0;
+  let requests = 0;
+
+  for (let round = 1; round <= PAGE_LOADS; round += 1) {
+    /*
+     * Deliberately the heavy four, fired together with no pacing between them — this is the one
+     * place in the harness where concurrency is the thing under test rather than an accident.
+     */
+    const together = [
+      [`/v1/map?bbox=${BBOX}&zoom=15`, "map"],
+      [`/v1/nearby?lat=53.4794&lon=-2.2453&radius=500`, "nearby"],
+      [`/v1/map?bbox=-1.6000,53.7700,-1.5200,53.8200&zoom=15`, "map (Leeds)"],
+      // The deployed flow walk begins here, and it is the heaviest read a passenger makes first.
+      [`/v1/search?q=${encodeURIComponent("Leeds")}`, "search"],
+    ];
+
+    const settled = await Promise.all(
+      together.map(async ([path, label]) => {
+        requests += 1;
+        try {
+          const { response, body, text } = await getJson(path);
+          /*
+           * The platform's own error page, not ours. It is HTML, and it is the signature of a
+           * Worker killed past its resource limit — a browser never sees a status for it.
+           */
+          const platform =
+            !response.ok &&
+            typeof text === "string" &&
+            /<html|error 1102|exceeded resource limits/i.test(text);
+          if (platform) platformErrors += 1;
+          return {
+            label,
+            ok: response.ok,
+            platform,
+            status: response.status,
+            detail: response.ok
+              ? `${(body?.data?.stops ?? body?.data?.sources ?? body?.data ?? []).length ?? "ok"}`
+              : platform
+                ? "the platform's error page"
+                : `HTTP ${response.status}`,
+          };
+        } catch (error) {
+          // A bare TypeError from fetch is what a killed isolate looks like to a client too.
+          platformErrors += 1;
+          return {
+            label,
+            ok: false,
+            platform: true,
+            status: 0,
+            detail: String(error?.message ?? error),
+          };
+        }
+      }),
+    );
+
+    const failed = settled.filter((one) => !one.ok);
+    lines.push(
+      `load ${round}: ${settled.length - failed.length}/${settled.length} ok` +
+        (failed.length > 0 ? ` — ${failed.map((f) => `${f.label}: ${f.detail}`).join(", ")}` : ""),
+    );
+  }
+
+  assert(
+    platformErrors === 0,
+    `${platformErrors} of ${requests} request(s) across ${PAGE_LOADS} page loads were answered by ` +
+      `the platform rather than by the Worker, which is what a browser reports as a CORS failure. ` +
+      lines.join(" | "),
+  );
+
+  return `${requests} requests across ${PAGE_LOADS} simultaneous-four page loads, no platform errors — ${lines.join(" | ")}`;
+});
+
+/**
+ * The four real pages, each fired the way a browser fires it, and then the gate asked what it did.
+ *
+ * The check above proves four heavy requests at once do not produce 1102. This one asks the
+ * question behind it: does the gate protect the product *without turning ordinary browsing into
+ * noticeable waiting*. Those are different failures and only one of them shows up in a status code.
+ *
+ * Each page's real request set is issued together — taken from `apps/web/src/lib/api.ts` rather
+ * than guessed at, so weather is not a request (it arrives inside the stop board) and live
+ * vehicles are not either (they arrive inside the map).
+ *
+ * It outlived the read gate it was written alongside, and deserves to: what it measures is what a
+ * page costs, which is the question whatever the Worker does about concurrency. It fails on a
+ * platform error, on a request the frontend's own deadline would have abandoned, and on a slowest
+ * request close enough to that deadline to be heading there — the last of which never shows up as
+ * a bad status code.
+ */
+await check("real page loads neither fail nor wait noticeably", async () => {
+  const pages = [
+    { name: "search", paths: [`/v1/search?q=${encodeURIComponent("Leeds")}`] },
+    {
+      name: "stop page (board + nearby; weather is inside the board)",
+      paths: [
+        // The stop an earlier check actually found, so this is a page a passenger could have opened.
+        observed.stop ? `/v1/stops/${encodeURIComponent(observed.stop.id)}` : "/",
+        `/v1/nearby?lat=53.79648&lon=-1.54785&radius=500`,
+      ],
+    },
+    {
+      name: "route page",
+      paths: [
+        observed.routes?.[0]?.id ? `/v1/routes/${encodeURIComponent(observed.routes[0].id)}` : "/",
+      ],
+    },
+    { name: "map (stops and vehicles together)", paths: [`/v1/map?bbox=${BBOX}&zoom=15`] },
+    {
+      name: "journey",
+      paths: [
+        `/v1/journeys?fromLat=53.7965&fromLon=-1.5479&toLat=53.8659&toLon=-1.6606`,
+        `/v1/disruptions`,
+      ],
+    },
+  ];
+
+  const lines = [];
+  let platformErrors = 0;
+  let clientTimeouts = 0;
+  let slowest = 0;
+  let requests = 0;
+
+  for (const page of pages) {
+    // A path of "/" marks "an earlier check did not find the id this page needs".
+    const usable = page.paths.filter((path) => path !== "/");
+    if (usable.length === 0) {
+      lines.push(`${page.name}: skipped, an earlier check did not find the id this page needs`);
+      continue;
+    }
+    const startedAt = Date.now();
+    const settled = await Promise.all(
+      usable.map(async (path) => {
+        requests += 1;
+        const began = Date.now();
+        try {
+          const { response, text } = await getJson(path);
+          const ms = Date.now() - began;
+          if (ms > slowest) slowest = ms;
+          const platform =
+            !response.ok &&
+            typeof text === "string" &&
+            /<html|error 1102|exceeded resource limits/i.test(text);
+          if (platform) platformErrors += 1;
+          return { path, ok: response.ok, ms, status: response.status };
+        } catch (error) {
+          const ms = Date.now() - began;
+          if (ms > slowest) slowest = ms;
+          // A request the frontend has abandoned is a failure a passenger sees, whatever the
+          // Worker eventually did with it.
+          if (/abort|timeout/i.test(String(error?.message ?? error))) clientTimeouts += 1;
+          else platformErrors += 1;
+          return { path, ok: false, ms, status: 0 };
+        }
+      }),
+    );
+    const wall = Date.now() - startedAt;
+    const failed = settled.filter((one) => !one.ok);
+    lines.push(
+      `${page.name}: ${usable.length} request(s) in ${wall}ms, ${settled.length - failed.length} ok` +
+        (failed.length > 0
+          ? ` — ${failed.map((f) => `${f.path.split("?")[0]} HTTP ${f.status}`).join(", ")}`
+          : ""),
+    );
+  }
+
+  assert(
+    platformErrors === 0,
+    `${platformErrors} of ${requests} request(s) were answered by the platform rather than the ` +
+      `Worker, which a browser reports as a CORS failure. ${lines.join(" | ")}`,
+  );
+  assert(
+    clientTimeouts === 0,
+    `${clientTimeouts} request(s) exceeded the frontend's own deadline, so a passenger saw a ` +
+      `failure even if the Worker answered. ${lines.join(" | ")}`,
+  );
+  /*
+   * The second half of the claim, and the one a status code cannot make. The gate's wait ceiling
+   * is 2.5s and the map's client deadline is 8s, so a page whose slowest request passes 6s is
+   * heading for a visible failure although nothing has failed yet.
+   */
+  assert(
+    slowest < 6_000,
+    `the slowest single request took ${slowest}ms, close enough to the frontend's deadline that ` +
+      `ordinary browsing is becoming noticeable waiting. ${lines.join(" | ")}`,
+  );
+
+  return `${requests} requests across ${pages.length} real page loads; slowest ${slowest}ms; no platform error, no client timeout — ${lines.join(" | ")}`;
+});
+
 await check("a journey can be planned across real timetable data", async () => {
   /*
-   * Two points a kilometre apart in the same city, taken from stops the API returned, so the
-   * corridor is inside the planner's tile cap. "No route today" is a legitimate answer at 3am;
-   * a 500, or a refusal to accept the request at all, is not.
+   * A journey a person would actually make, not two points a diagonal kilometre apart.
+   *
+   * The old version took whichever stop the viewport happened to return and added 0.012 degrees
+   * to both coordinates, which lands in a field as often as not — so "0 options" told you
+   * nothing and was accepted as a pass. Leeds city centre to Leeds Bradford Airport is a route
+   * the network genuinely serves, all day, every day, by several operators. If that cannot be
+   * planned, the planner does not work.
    */
-  assert(observed.stop, "no stop was found by the earlier check");
-  const from = observed.stop.coordinate;
-  const to = { lat: from.lat + 0.012, lon: from.lon + 0.012 };
+  const from = { lat: 53.7965, lon: -1.5479 };
+  const to = { lat: 53.8659, lon: -1.6606 };
   const { response, body, text } = await getJson(
     `/v1/journeys?fromLat=${from.lat}&fromLon=${from.lon}&toLat=${to.lat}&toLon=${to.lon}`,
   );
-  assert(response.status !== 500, `the Worker failed: ${describe(response, body, text)}`);
+  /*
+   * The platform's error page first, by name.
+   *
+   * A journey that ends in error 1102 is the Worker being killed, and it arrives as HTML with no
+   * CORS header on it — which a browser reports as a CORS failure and a check that only looked at
+   * the status reported as "expected an answer, got 503". Saying which is which is the difference
+   * between a lead and a shrug.
+   */
+  const isHtml = text.trimStart().toLowerCase().startsWith("<!doctype") || /<html/i.test(text);
+  /*
+   * Chased before the assertion, exactly as route detail is.
+   *
+   * Run 69's chase produced the first positive evidence this investigation has had — a killed
+   * route-detail request reported by the next request on the same isolate — and the journey
+   * planner died twice in the same run with nothing asked of it. `journeys` sets a breadcrumb
+   * like every other instrumented handler, so the only reason it said nothing is that nobody
+   * went back and looked.
+   */
+  const chased = isHtml ? await chaseBreadcrumb(from) : "";
   assert(
-    response.ok || response.status === 422 || response.status === 404,
-    `expected an answer or a stated reason, got ${describe(response, body, text)}`,
+    !isHtml,
+    `the platform answered instead of the Worker: ${response.status}` +
+      describePlatformPage(response, text) +
+      chased,
   );
+  assert(response.status !== 500, `the Worker failed: ${describe(response, body, text)}`);
+  assert(response.ok, `expected an answer, got ${describe(response, body, text)}`);
   const options = body?.data?.options ?? [];
-  const reason = body?.data?.reason ?? body?.error?.code ?? "none";
-  return response.ok ? `${options.length} option(s), reason ${reason}` : `stated: ${reason}`;
+  /*
+   * `unavailableReason` is what the endpoint actually sends. This read `data.reason`, which does
+   * not exist, so a failing run reported "reason: none" and threw away the one sentence the API
+   * had written to explain itself — a check unable to see the thing it was checking.
+   *
+   * `diagnostics` is the useful half: counts that separate an unwritten shard from a broken
+   * pattern join from a search that genuinely found no path.
+   */
+  const unavailable = body?.data?.unavailableReason ?? body?.error?.code ?? "none";
+  const diagnostics = body?.data?.diagnostics ?? null;
+  // The planner's own counts live under data; the read ledger's live under meta, and the two
+  // together are what distinguish a missing row from an exhausted budget.
+  const meta = body?.meta ?? null;
+  const explained = diagnostics
+    ? `${diagnostics.code}: ${diagnostics.corridorTiles} corridor tile(s), ` +
+      `windows [${diagnostics.windows.join(",")}], ` +
+      `${diagnostics.shardsRead} of ${diagnostics.shardsRequested ?? "?"} shard(s) read, ` +
+      `${diagnostics.shardsMissing} missing, ${diagnostics.shardsSkipped ?? 0} left unopened, ` +
+      `${diagnostics.tripsFiltered ?? 0} row(s) dropped while parsing, ` +
+      `${diagnostics.tripsLoaded} trip(s) loaded ` +
+      `(${diagnostics.tripsWithPattern} matched a pattern, ${diagnostics.tripsWithoutPattern} did not), ` +
+      `${diagnostics.tripsInGraph} in the graph over ${diagnostics.stopsInGraph} stop(s) ` +
+      `and ${diagnostics.transferEdges} transfer edge(s); ` +
+      `${diagnostics.originCandidates} origin and ${diagnostics.destinationCandidates} destination ` +
+      `candidate stop(s); ${diagnostics.roundsWithOption} of ${diagnostics.rounds} round(s) found ` +
+      `an itinerary; slice held ${diagnostics.patternsInSlice} pattern(s) and ` +
+      `${diagnostics.stopsInSlice} stop(s)` +
+      /*
+       * How many patterns the trips named, against how many were resolved.
+       *
+       * Run 45 refused this journey with `incomplete_read` after resolving 108 patterns in
+       * 4,184ms, and the line printed neither how many it had been asked for nor the ledger's own
+       * reason for stopping — so "the index is missing rows" and "the budget ran out part way
+       * through three hundred round trips" read identically. They are different defects with
+       * different fixes.
+       */
+      (typeof diagnostics.patternsRequested === "number"
+        ? `; ${diagnostics.patternsInSlice} of ${diagnostics.patternsRequested} pattern(s) resolved`
+        : "") +
+      (meta?.diagnostics?.patternSource
+        ? `; patterns from the ${meta.diagnostics.patternSource} ` +
+          `(${meta.diagnostics.corridorPatternTiles} corridor pattern tile(s))`
+        : "") +
+      (meta?.diagnostics?.degradationReason
+        ? `; the read stopped itself: ${meta.diagnostics.degradationReason}`
+        : "") +
+      (meta?.diagnostics?.families?.patterns
+        ? `; pattern index ${meta.diagnostics.families.patterns.read} read/` +
+          `${meta.diagnostics.families.patterns.missing} missing, ` +
+          // The bytes, which is what actually ended run 46's read: 92 buckets spent the whole
+          // twelve-mebibyte request budget, and the summed milliseconds hid that behind latency.
+          `${(meta.diagnostics.families.patterns.chars / 1048576).toFixed(2)} MiB, in ` +
+          `${meta.diagnostics.families.patterns.ms}ms of summed read time`
+        : "") +
+      // Where the time actually went, which is the whole point of asking after a 1102.
+      (diagnostics.stageMs
+        ? `; stages ${Object.entries(diagnostics.stageMs)
+            .map(([stage, ms]) => `${stage}=${ms}ms`)
+            .join(" ")}` +
+          (typeof diagnostics.tripChars === "number"
+            ? `; ${(diagnostics.tripChars / 1048576).toFixed(2)} MiB of trip text decoded` +
+              (typeof diagnostics.tripCharBudget === "number"
+                ? ` of a ${(diagnostics.tripCharBudget / 1048576).toFixed(0)} MiB budget`
+                : "")
+            : "")
+        : "") +
+      (diagnostics.failures.length > 0
+        ? `; failures: ${diagnostics.failures.map((f) => `${f.dataset} (${f.reason})`).join(", ")}`
+        : "")
+    : "no diagnostics in the response";
+
+  /*
+   * A corridor read short is a distinct failure with a distinct fix, and it is named.
+   *
+   * The planner refuses rather than offering a plan built on part of the timetable, which is the
+   * right behaviour — but it is not a passing run. Reporting it as "gave no option" would send
+   * the next person looking at the search when the answer is in the read budget.
+   */
+  assert(
+    !diagnostics || diagnostics.code !== "incomplete_read",
+    `the corridor was not read in full, so the planner refused: ${explained}`,
+  );
+
+  if (SERVICE_HOURS.daytime) {
+    assert(
+      options.length > 0,
+      `Leeds to Leeds Bradford Airport gave no option at ${SERVICE_HOURS.hour}:00 ` +
+        `${SERVICE_HOURS.weekday} London time — ${unavailable} — ${explained}` +
+        describeArtifactAge(),
+    );
+  }
+
+  /*
+   * A plan must never be built on part of its corridor and presented as whole. A shard that could
+   * not be read is a fault on our side, and saying "no journey found" for it is the same lie the
+   * departure board used to tell.
+   */
+  assert(
+    !diagnostics || diagnostics.failures.length === 0,
+    `the corridor could not be fully read: ${explained}`,
+  );
+  /*
+   * And the option has to be a journey rather than a shape that satisfies the schema.
+   *
+   * "At least one option" was the bar while there were none at all. It is the wrong bar now: a
+   * planner reading a corrupt timetable can return a confident itinerary made of legs that do not
+   * join up, and a count of one would pass it. So every leg is checked for the things a passenger
+   * reads off it — where it starts, where it ends, when, on what — and the legs are checked
+   * against each other for the thing a passenger relies on: that you are never asked to be in two
+   * places at once.
+   */
+  for (const option of options) {
+    const legs = option.legs ?? [];
+    assert(legs.length > 0, "an option has no legs");
+
+    let previousArrival = null;
+    for (const [index, leg] of legs.entries()) {
+      const at = `leg ${index + 1} of ${legs.length}`;
+      assert(["walk", "bus", "coach", "tram"].includes(leg.mode), `${at} has mode "${leg.mode}"`);
+      assert(
+        Number.isFinite(leg.fromCoordinate?.lat) && Number.isFinite(leg.toCoordinate?.lat),
+        `${at} does not say where it goes`,
+      );
+
+      const departs = Date.parse(leg.departAtExpected ?? "");
+      const arrives = Date.parse(leg.arriveAtExpected ?? "");
+      assert(Number.isFinite(departs) && Number.isFinite(arrives), `${at} has unreadable times`);
+      assert(arrives >= departs, `${at} arrives before it departs`);
+
+      const minutes = (arrives - departs) / 60_000;
+      if (leg.mode === "walk") {
+        // A walking leg the planner would actually offer: it caps access walks at 1200m, which is
+        // a good deal less than an hour at any pace.
+        assert(minutes <= 60, `${at} is a ${Math.round(minutes)}-minute walk`);
+      } else {
+        // A bus leg is a real vehicle on a real pattern, not an abstract hop between points.
+        assert(leg.routeId, `${at} is a ${leg.mode} leg with no service identity`);
+        assert(leg.routeName, `${at} is a ${leg.mode} leg with no route number on it`);
+        assert(leg.fromStopId && leg.toStopId, `${at} is a ${leg.mode} leg not between two stops`);
+        assert(minutes <= 240, `${at} is a ${Math.round(minutes)}-minute bus ride`);
+      }
+
+      // The transfer: you cannot board a bus before the one before it has put you down.
+      assert(
+        previousArrival === null || departs >= previousArrival,
+        `${at} departs before the previous leg arrives — the legs do not join up`,
+      );
+      // And you cannot board it somewhere you were never taken to.
+      const previousTo = index > 0 ? legs[index - 1].toStopId : null;
+      assert(
+        !previousTo || !leg.fromStopId || previousTo === leg.fromStopId,
+        `${at} does not start where the previous leg ended`,
+      );
+      previousArrival = arrives;
+    }
+
+    const rides = legs.filter((leg) => leg.mode !== "walk").length;
+    assert(rides > 0, "an option is entirely walking, which is not a bus journey");
+    assert(
+      option.changeCount === Math.max(0, rides - 1),
+      `an option claims ${option.changeCount} changes across ${rides} ride(s)`,
+    );
+  }
+
+  const best = options[0];
+  const summary = best
+    ? `: ${best.legs.length} legs (${best.legs.map((leg) => leg.mode).join(" → ")}), ` +
+      `${best.changeCount} change(s), ${Math.round((best.totalWalkSeconds ?? 0) / 60)} min walking`
+    : "";
+
+  return (
+    `Leeds → Leeds Bradford Airport: ${options.length} option(s)${summary} [${explained}]` +
+    (SERVICE_HOURS.daytime ? "" : " (outside service hours: options not required)")
+  );
+});
+
+/*
+ * Real weather for a real stop, which is a promise the home page makes and nothing has checked.
+ *
+ * "See real weather artwork for the selected stop" is in the definition of done, and the only
+ * thing standing behind it so far is a component test against a fixture. The weather job
+ * publishes one answer per degree square, so a null here is a legitimate and common state — a
+ * square the job has not reached — and that is exactly why it has to be reported rather than
+ * asserted into existence. What is asserted is that a published answer is a usable one: the
+ * vignette needs a temperature, a condition and an attribution to draw anything at all.
+ */
+await check("a real stop carries real weather", async () => {
+  assert(observed.stop, "no stop was found by the earlier checks");
+  const { response, body, text } = await getJson(
+    `/v1/stops/${encodeURIComponent(observed.stop.id)}`,
+  );
+  /*
+   * The board is instrumented now, so a death here has somewhere to be reported from. Run 68's
+   * 1102 on this endpoint was invisible from both sides: the killed request said nothing, and
+   * the handler set no breadcrumb for the next one to carry.
+   */
+  const chased = response.ok ? "" : await chaseBreadcrumb(observed.stop.coordinate);
+  assert(response.ok, `expected 2xx, got ${describe(response, body, text)}${chased}`);
+  const boardDiagnostics = body?.meta?.diagnostics;
+  const weather = body?.data?.weather ?? null;
+  if (weather === null) {
+    return (
+      `${observed.stop.name} has no weather published — the collector has not reached this ` +
+      "degree square, which is a coverage gap rather than a broken endpoint"
+    );
+  }
+
+  const now = weather.current;
+  assert(now, "the weather answer carries no current hour, so the vignette has nothing to draw");
+  for (const [field, value] of [
+    ["temperatureCelsius", now.temperatureCelsius],
+    ["apparentTemperatureCelsius", now.apparentTemperatureCelsius],
+    ["precipitationMm", now.precipitationMm],
+    ["windSpeedKph", now.windSpeedKph],
+  ]) {
+    assert(Number.isFinite(value), `the current hour has no ${field} to show`);
+  }
+  assert(typeof now.isDay === "boolean", "the weather does not say whether it is daylight");
+  assert(Number.isInteger(now.weatherCode), "the weather carries no condition code");
+  assert(
+    typeof weather.attribution === "string" && weather.attribution.length > 0,
+    "the weather is unattributed, which Open-Meteo's licence requires it not to be",
+  );
+  // The answer's own age, so a month-old reading cannot be shown as the weather now.
+  const ageMinutes = (Date.now() - Date.parse(weather.retrievedAt)) / 60_000;
+  assert(Number.isFinite(ageMinutes), "the weather does not say when it was retrieved");
+
+  return (
+    `${observed.stop.name}: ${now.temperatureCelsius}°C (feels ${now.apparentTemperatureCelsius}°C), ` +
+    `${now.precipitationMm}mm, wind ${now.windSpeedKph}kph, code ${now.weatherCode}, ` +
+    `${now.isDay ? "day" : "night"}; cell ${weather.cell} at ${weather.cellSizeDegrees}°, ` +
+    `retrieved ${Math.round(ageMinutes)} min ago, ${weather.next.length} hour(s) ahead` +
+    // What the board itself cost, so the endpoint that 1102'd in run 68 is measured when it works
+    // as well as when it does not — a stage breakdown from a healthy run is the baseline a failing
+    // one is read against.
+    (boardDiagnostics
+      ? `; board ${String(boardDiagnostics.elapsedMs ?? 0)}ms ` +
+        Object.entries(boardDiagnostics.stages ?? {})
+          .map(([stage, ms]) => `${stage}=${ms}ms`)
+          .join(" ") +
+        describeResidency(boardDiagnostics.residency) +
+        describeDeath(boardDiagnostics.artifact)
+      : "")
+  );
+});
+
+/*
+ * The journey the product exists to plan, from the place a passenger named.
+ *
+ * "Search for a real place such as York Minster" and "plan a plausible real journey to it" are two
+ * lines of the definition of done and they are one act. The corridor check above plans between two
+ * coordinates chosen here; this one plans to a destination the *gazetteer* returned, which is the
+ * whole path — type a landmark, get taken there — and it has never been exercised end to end.
+ *
+ * York Station to the Minster is a real, short, frequently served trip. Walking it is also real,
+ * so a walk-only itinerary is a pass: what would not be is a refusal, or an itinerary that does
+ * not end where the passenger asked to go.
+ */
+await check("a journey can be planned to a place found by searching for it", async () => {
+  const place = observed.yorkMinster;
+  if (!place) {
+    return "York Minster was not in the gazetteer for this bucket, so there was nowhere to plan to";
+  }
+
+  // York rail station, where somebody arriving in the city actually starts.
+  const from = { lat: 53.9579, lon: -1.0934 };
+  const to = place.coordinate;
+  const { response, body, text } = await getJson(
+    `/v1/journeys?fromLat=${from.lat}&fromLon=${from.lon}&toLat=${to.lat}&toLon=${to.lon}`,
+  );
+  const isHtml = text.trimStart().toLowerCase().startsWith("<!doctype") || /<html/i.test(text);
+  const chased = isHtml ? await chaseBreadcrumb(from) : "";
+  assert(
+    !isHtml,
+    `the platform answered instead of the Worker (${response.status}${describePlatformPage(response, text)})${chased}`,
+  );
+  assert(response.ok, `expected 2xx, got ${describe(response, body, text)}`);
+
+  const options = body?.data?.options ?? [];
+  const unavailable = body?.data?.unavailableReason ?? null;
+  assert(
+    options.length > 0,
+    `no way to get from York Station to ${place.title}: ${unavailable ?? "no reason given"}`,
+  );
+
+  const best = options[0];
+  const legs = best?.legs ?? [];
+  assert(legs.length > 0, "an itinerary with no legs in it");
+  // It has to end where the passenger asked to go, not near where they started.
+  const last = legs[legs.length - 1];
+  assert(last?.toName, "the last leg does not say where it ends");
+
+  const modes = legs.map((leg) => leg.mode).join(" → ");
+  return (
+    `York Station → ${place.title}: ${options.length} option(s), ` +
+    `${legs.length} leg(s) (${modes}), ending at ${last.toName}`
+  );
+});
+
+/**
+ * What the published operators are keyed by — the measurement that decides where Pro's route join
+ * has to be fixed.
+ *
+ * The analytics batch reports 20,033 observed vehicles, 20,033 carrying an operator reference, and
+ * `vehiclesMappedToRouteId: 0` against 631 published operators. A *total* miss is the signature of
+ * two identifier spaces rather than of patchy data, and from a container with no route to the
+ * deployment there was no way to tell which side was wrong: the feed's codes (FCYM, NATX, TFCN,
+ * ABUS, ATWE) look like National Operator Codes, and the GTFS build records `agency_id` as a
+ * registry id, which in our hand-written fixture is also a NOC. The SIRI fixture is constructed
+ * from the published schema rather than captured, so it cannot settle it either.
+ *
+ * The search index can. It indexes every operator by `licenceRegistryIds` lowercased, and an exact
+ * code match scores higher than anything else — so asking the deployment for a NOC answers
+ * "are the published operators keyed by NOC at all" in one request per code.
+ *
+ * A failure here is not a passenger-facing fault, and it is reported as what it is: the reason Pro
+ * can publish no route or operator figure.
+ */
+await check("published operators can be found by their National Operator Code", async () => {
+  // Codes the batch reported as unmapped, so these are the exact ones that failed to join.
+  const codes = ["FCYM", "NATX", "ABUS", "FLDS", "ATWE"];
+  const lines = [];
+  let resolved = 0;
+
+  for (const code of codes) {
+    const { response, body, text } = await getJson(`/v1/search?q=${encodeURIComponent(code)}`);
+    if (!response.ok) {
+      lines.push(`${code}: ${describe(response, body, text).slice(0, 80)}`);
+      continue;
+    }
+    const results = body?.data?.results ?? [];
+    const operator = results.find((result) => result.kind === "operator");
+    if (operator) {
+      resolved += 1;
+      lines.push(`${code} → ${operator.title}`);
+    } else {
+      const kinds = [...new Set(results.map((result) => result.kind))];
+      lines.push(
+        `${code}: ${results.length} result(s)${kinds.length > 0 ? ` [${kinds.join(", ")}]` : ""}, no operator`,
+      );
+    }
+  }
+
+  assert(
+    resolved > 0,
+    `not one of ${codes.length} National Operator Codes resolves to a published operator, so the ` +
+      `network build is keying operators by something the live feed never sends — which is exactly ` +
+      `why the analytics batch maps 0 of 20,033 vehicles to a route. The fix belongs in the ` +
+      `operator build, not in the join. ${lines.join("; ")}`,
+  );
+
+  return `${resolved} of ${codes.length} NOC(s) resolve — ${lines.join("; ")}`;
 });
 
 await check("the source health endpoint reports on real sources", async () => {
@@ -264,7 +1971,87 @@ await check("Pro is reachable with no credential and states its data mode", asyn
     "Pro did not state its data mode",
   );
   observed.proDataMode = mode;
-  return `data mode ${mode}`;
+
+  /*
+   * What the mode actually means, in the response's own numbers.
+   *
+   * "data mode live" on its own is not evidence of anything: a run with four observations
+   * publishes a manifest and suppresses every figure for want of a denominator, which is the
+   * designed and honest behaviour — and reads identically to a healthy one in a one-word summary.
+   * So the line says how many headline metrics carry a value, out of how many, and over what
+   * total denominator.
+   */
+  const headline = body?.data?.headline ?? [];
+  const withValue = headline.filter((metric) => metric?.value !== null && !metric?.suppressed);
+  const denominator = headline.reduce((total, metric) => total + (metric?.denominator ?? 0), 0);
+
+  /*
+   * A demonstration snapshot has to be dated. It is the one mode that is not a claim about now,
+   * and an undated one presented beside live figures is the confusion the mode exists to prevent.
+   */
+  if (mode === "demo_snapshot") {
+    assert(
+      typeof body?.data?.provenance?.snapshotDate === "string",
+      "Pro is serving a demonstration snapshot and will not say which one",
+    );
+  }
+
+  observed.proHeadlineWithValue = withValue.length;
+
+  /*
+   * What each figure was measured over, and when that measurement ended.
+   *
+   * A segment metric comes from a five-minute bucket that closes ten minutes after it ends, so
+   * the newest figure Pro can honestly publish is always a quarter of an hour old. The endpoint
+   * used to label every live figure with the reader's scope — "last 60 minutes" — which claimed a
+   * currency the pipeline does not have. This prints the window each populated metric names, so a
+   * regression to the old wording is visible in the run log rather than only in a test.
+   */
+  const windows = [...new Set(withValue.map((metric) => metric?.window).filter(Boolean))];
+  const oldestFreshness = withValue.reduce(
+    (worst, metric) => Math.max(worst, metric?.freshnessSeconds ?? 0),
+    0,
+  );
+  for (const metric of withValue) {
+    assert(
+      mode !== "live" || !/^last \d+ minutes$/.test(metric.window ?? ""),
+      `Pro published "${metric.key}" over "${metric.window}", which is the scope the reader asked ` +
+        "for rather than the period the figure was measured over",
+    );
+  }
+
+  return (
+    `data mode ${mode}` +
+    (mode === "demo_snapshot" ? ` (${body.data.provenance.snapshotDate})` : "") +
+    `; ${withValue.length} of ${headline.length} headline metric(s) carry a figure ` +
+    `over ${denominator} observation(s)` +
+    (windows.length > 0 ? `; measured over ${windows.join(" / ")}` : "") +
+    // Named for what it is. `freshnessSeconds` is the age of the *measurement* — now minus the
+    // window's end — and calling it "closed" was the run-69 wording bug: a window ending 14:25
+    // with a 600s grace closed at 14:35, ten minutes after the moment this number measures from.
+    (oldestFreshness > 0
+      ? `; oldest figure measured ${Math.round(oldestFreshness / 60)} minute(s) ago`
+      : "") +
+    // Named rather than counted: which figures are populated is the question, and "3 of 8" hides
+    // whether the three are real measurements or the incident count three times over.
+    (withValue.length > 0 ? `; populated: ${withValue.map((m) => m.key).join(", ")}` : "") +
+    /*
+     * And the pipeline's own age, which the summary now states separately.
+     *
+     * A measurement two hours old with a batch that ran three minutes ago is a collection gap; a
+     * measurement twenty minutes old with a batch that ran two hours ago is a stopped batch. One
+     * number cannot tell those apart, and run 69 reported one number.
+     */
+    (() => {
+      const line = (body?.data?.intelligenceSummary ?? []).find((entry) =>
+        /the batch that published it ran/.test(entry ?? ""),
+      );
+      return line ? `; ${line}` : "";
+    })() +
+    (mode === "live" && withValue.length === 0
+      ? " — live, and not yet enough observations to publish a single figure"
+      : "")
+  );
 });
 
 if (siteUrl) {
@@ -310,12 +2097,389 @@ if (siteUrl) {
   });
 }
 
+/*
+ * Last, deliberately, and this is not a cosmetic ordering.
+ *
+ * This check is a burst: twenty-five dense map requests from one client as fast as they go. It
+ * used to run in the middle of the file, and run 38214849377 showed what that costs — the stop
+ * board that failed after it died with `startedNotFinished=14`, a figure no passenger check
+ * produces on its own, because the burst had already saturated the isolate the later checks then
+ * landed on. Three passenger checks were failing on the burst's residue and being counted as
+ * passenger failures.
+ *
+ * Separating the *reporting* of burst and passenger results was therefore only half the fix. The
+ * burst has to not poison the measurements it is being kept apart from, which means running it
+ * when there is nothing left to poison.
+ */
+await check("the pattern-heavy endpoints survive dense cities, repeatedly", async () => {
+  /*
+   * Five cities, five times each: twenty-five dense map requests in one run.
+   *
+   * One request proves nothing here. The failure was never deterministic — the same URL returned
+   * 400 stops at one check and Cloudflare's error page at the next, because what killed the
+   * isolate was what the *previous* requests had left in it. A count this size is what makes
+   * "survives" a claim rather than a hope.
+   */
+  const ATTEMPTS_PER_CITY = 5;
+  const lines = [];
+  let platformErrors = 0;
+  let mapRequests = 0;
+  let degradedResponses = 0;
+  let peakChars = 0;
+  let peakObjects = 0;
+  let peakMs = 0;
+  let routeRequests = 0;
+  let routePeakChars = 0;
+  let routePeakObjects = 0;
+  let routePeakMs = 0;
+  let routeWorstMs = -1;
+  let routeWorst = "no route detail was sampled";
+  /*
+   * What every route request cost, kept as it happens.
+   *
+   * Run 43 died on attempt five. The four before it answered, and each carried a full stage
+   * breakdown — and every one of them was thrown away, because `assert` throws and the check's
+   * summary is only built if it returns. The request that gets killed can never report anything,
+   * so the ones that live are the only evidence there is, and they have to survive the failure.
+   */
+  const routeTrail = [];
+  const trail = () =>
+    routeTrail.length === 0
+      ? ""
+      : ` — what the requests before it cost: ${routeTrail.slice(-6).join(" | ")}`;
+
+  /*
+   * And it has to survive a throw that is not an assertion, too.
+   *
+   * Run 47 failed here with "The operation was aborted due to timeout" and nothing else: the
+   * fetch's own abort escaped the loop before any assertion ran, taking the whole trail with it.
+   * A request that is slow enough to abort is exactly the case the trail exists to describe, so
+   * the loop is wrapped and any escape is re-thrown carrying what the requests before it cost.
+   */
+  try {
+    await sweepCities();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      message.includes("what the requests before it cost") ? message : message + trail(),
+    );
+  }
+
+  async function sweepCities() {
+    for (const city of CITIES) {
+      let mapOk = 0;
+      let routeOk = 0;
+      let routeComplete = 0;
+      let routeIncomplete = 0;
+      let sampledRoute = null;
+
+      for (let attempt = 0; attempt < ATTEMPTS_PER_CITY; attempt += 1) {
+        const map = await getJson(`/v1/map?bbox=${city.bbox}&zoom=15`);
+        // An HTML body from an API is the platform speaking, not the Worker.
+        const html = map.text.trimStart().toLowerCase().startsWith("<!doctype");
+        if (html || map.response.status === 503) platformErrors += 1;
+        assert(
+          !html,
+          `${city.name}: /v1/map answered the platform's error page, not the Worker ` +
+            `(${map.response.status}${describePlatformPage(map.response, map.text)}) on attempt ` +
+            `${String(attempt + 1)}${trail()}`,
+        );
+        assert(map.response.ok, `${city.name}: /v1/map gave ${map.response.status}`);
+        mapOk += 1;
+        mapRequests += 1;
+
+        /*
+         * The core of the map is not optional, whatever happened to the enrichment.
+         *
+         * Stops and live vehicles are read first and are never skipped; route names run on what
+         * time is left. So a degraded answer must still be a real map — and it must say it is
+         * degraded rather than implying those stops have no services.
+         */
+        const data = map.body?.data;
+        assert(
+          Array.isArray(data?.stops) && data.stops.length > 0,
+          `${city.name}: /v1/map returned no stops on attempt ${String(attempt + 1)}`,
+        );
+        assert(
+          Array.isArray(data?.vehicles),
+          `${city.name}: /v1/map returned no vehicles array on attempt ${String(attempt + 1)}`,
+        );
+        assert(
+          typeof data?.degraded === "boolean",
+          `${city.name}: /v1/map does not say whether it is degraded`,
+        );
+        if (data.degraded) {
+          degradedResponses += 1;
+          assert(
+            typeof data.degradationReason === "string" && data.degradationReason.length > 0,
+            `${city.name}: /v1/map says it is degraded and will not say why`,
+          );
+        } else {
+          // Not degraded means the enrichment finished, so the stops must actually carry it.
+          const named = data.stops.filter((stop) => (stop.routePublicNames ?? []).length > 0);
+          assert(
+            named.length > 0,
+            `${city.name}: /v1/map claims it is not degraded and yet no stop carries a service`,
+          );
+        }
+
+        const diagnostics = map.body?.meta?.diagnostics;
+        assert(diagnostics, `${city.name}: /v1/map carries no diagnostics`);
+        assert(
+          diagnostics.objectsRequested > 0,
+          `${city.name}: /v1/map says it requested no objects, which cannot be true`,
+        );
+        peakChars = Math.max(peakChars, diagnostics.chars ?? 0);
+        peakObjects = Math.max(peakObjects, diagnostics.objectsRequested ?? 0);
+        peakMs = Math.max(peakMs, diagnostics.elapsedMs ?? 0);
+
+        // Routes that genuinely call in this city, taken from a stop the map just returned.
+        const stop = (map.body?.data?.stops ?? [])[0];
+        if (!stop) continue;
+        const board = await getJson(`/v1/stops/${encodeURIComponent(stop.id)}`);
+        /*
+         * More than one route per attempt, and different ones.
+         *
+         * The loop used to take the first route of the first stop every time, so five attempts in
+         * Leeds were five requests for the same route and the fifth was answered from a warm cache.
+         * The failure being hunted is what a *sequence of different* route pages leaves in an
+         * isolate, so the sample has to move.
+         */
+        const routes = (board.body?.data?.routes ?? []).filter((candidate) => candidate?.id);
+        if (routes.length === 0) continue;
+        const chosen = [routes[attempt % routes.length], routes[(attempt + 1) % routes.length]]
+          .filter(Boolean)
+          .filter((candidate, at, all) => all.findIndex((r) => r.id === candidate.id) === at);
+
+        for (const route of chosen) {
+          sampledRoute = route.publicName ?? route.id;
+
+          const detail = await getJson(`/v1/routes/${encodeURIComponent(route.id)}`);
+          routeRequests += 1;
+          const detailHtml = detail.text.trimStart().toLowerCase().startsWith("<!doctype");
+          if (detailHtml || detail.response.status === 503) platformErrors += 1;
+          /*
+           * Chase it before asserting, not after.
+           *
+           * `assert` throws, so anything written after it never runs — and the breadcrumb is only
+           * readable in the seconds immediately following the death, while the isolate that holds
+           * it is still the one taking requests. The chase therefore happens first and its result
+           * is carried into the failure message.
+           */
+          const chased = detailHtml
+            ? await chaseBreadcrumb(stop.coordinate ?? observed.stop?.coordinate)
+            : "";
+          assert(
+            !detailHtml,
+            `${city.name}: /v1/routes/${route.id} answered the platform's error page, not the ` +
+              `Worker (${detail.response.status}${describePlatformPage(detail.response, detail.text)}) ` +
+              `on attempt ${String(attempt + 1)}${chased}${trail()}`,
+          );
+          assert(
+            detail.response.ok,
+            `${city.name}: route detail gave ${describe(detail.response, detail.body, detail.text)}`,
+          );
+          routeOk += 1;
+
+          /*
+           * What the route page actually cost, by stage.
+           *
+           * Run 42 had the pattern read measured and route detail still died, so the rest of the
+           * handler is on the ledger now: the index, services, operators, stop resolution, the live
+           * feed. This is the line that says which of them is expensive, rather than leaving it to
+           * be guessed at from the outside.
+           */
+          const routeDiagnostics = detail.body?.meta?.diagnostics;
+          assert(routeDiagnostics, `${city.name}: route detail carries no diagnostics${trail()}`);
+          routeTrail.push(
+            `${city.name}#${String(attempt + 1)} ${sampledRoute}: ` +
+              `${String(routeDiagnostics.elapsedMs ?? 0)}ms, ` +
+              `${String(routeDiagnostics.objectsRequested ?? 0)} req/${String(routeDiagnostics.objectsRead ?? 0)} read/` +
+              `${String(routeDiagnostics.objectsCached ?? 0)} cached, ` +
+              `${((routeDiagnostics.chars ?? 0) / 1048576).toFixed(2)} MiB, ` +
+              `${String(routeDiagnostics.stopTilesRequested ?? 0)} tile(s), ` +
+              `${String(routeDiagnostics.stopsResolved ?? 0)}/${String(routeDiagnostics.stopsRequested ?? 0)} stop(s), ` +
+              Object.entries(routeDiagnostics.stages ?? {})
+                .map(([stage, ms]) => `${stage}=${ms}ms`)
+                .join(" ") +
+              // Stages say where the *time* went; families say where the *bytes* did, and on a
+              // CPU ceiling the bytes are the thing that has to come down.
+              describeFamilies(routeDiagnostics.families) +
+              /*
+               * What the isolate was already holding, which is the half of the question that four
+               * runs of diagnostics could not answer.
+               *
+               * Run 45 answered six of these requests in 300–900ms, reading two or three mebibytes
+               * apiece, and the platform killed the seventh. On the per-request numbers alone
+               * "these requests are cheap" and "this isolate is full" are the same reading. This is
+               * the line that separates them: if the trail shows residency climbing request by
+               * request and the kill arrives at the top of it, that is a memory ceiling; if it
+               * shows the same figures throughout, it is not.
+               */
+              /*
+               * And where the live stage's own time went. It is the largest stage in every trail
+               * and every 1102 has followed the largest one in its own; fetch and parse apart is
+               * what says whether that is the network or the isolate's CPU.
+               */
+              (routeDiagnostics.liveLookupSkipped ? ", live skipped (no budget left)" : "") +
+              (routeDiagnostics.liveSources ?? [])
+                .map(
+                  (entry) =>
+                    `, ${entry.source} fetch=${entry.fetchMs ?? "?"}ms ` +
+                    `parse=${entry.parseMs ?? "?"}ms ` +
+                    `${((entry.chars ?? 0) / 1048576).toFixed(2)} MiB → ` +
+                    `${entry.outcome === "request_failed" ? "FAILED" : `${entry.accepted} accepted`}`,
+                )
+                .join("") +
+              describeResidency(routeDiagnostics.residency) +
+              describeDeath(routeDiagnostics.artifact),
+          );
+          routePeakMs = Math.max(routePeakMs, routeDiagnostics.elapsedMs ?? 0);
+          routePeakChars = Math.max(routePeakChars, routeDiagnostics.chars ?? 0);
+          routePeakObjects = Math.max(routePeakObjects, routeDiagnostics.objectsRequested ?? 0);
+          if ((routeDiagnostics.elapsedMs ?? 0) >= routeWorstMs) {
+            routeWorstMs = routeDiagnostics.elapsedMs ?? 0;
+            routeWorst =
+              `${city.name} ${sampledRoute}: ` +
+              Object.entries(routeDiagnostics.stages ?? {})
+                .map(([stage, ms]) => `${stage}=${ms}ms`)
+                .join(" ") +
+              `; ${String(routeDiagnostics.objectsRequested ?? 0)} object(s), ` +
+              `${((routeDiagnostics.chars ?? 0) / 1048576).toFixed(2)} MiB, ` +
+              `${String(routeDiagnostics.stopTilesRequested ?? 0)} stop tile(s), ` +
+              `${String(routeDiagnostics.stopsResolved ?? 0)}/${String(routeDiagnostics.stopsRequested ?? 0)} stop(s)` +
+              (routeDiagnostics.liveLookupSkipped ? ", live skipped" : "") +
+              (routeDiagnostics.liveBoxCapped ? ", live area capped" : "");
+          }
+
+          /*
+           * Completeness is a fact about the answer, not a confidence score. A capped read must say
+           * so; what must never happen is a truncated variant list presented as the route's extent.
+           */
+          const complete = detail.body?.data?.complete;
+          const coverage = detail.body?.meta?.coverage;
+          if (complete === false) {
+            routeIncomplete += 1;
+            assert(
+              coverage === 0,
+              `${city.name}: route detail says it is incomplete but reports coverage ${String(coverage)}`,
+            );
+          } else if (complete === true) {
+            routeComplete += 1;
+            /*
+             * And a complete route has to be a route. `complete: true` with no stops on it would be
+             * the same wrong answer the flag exists to prevent, arrived at from the other side.
+             */
+            const variants = detail.body?.data?.variants ?? [];
+            const stops = variants.reduce(
+              (total, variant) => total + (variant.stops?.length ?? 0),
+              0,
+            );
+            assert(
+              stops > 0,
+              `${city.name}: route ${sampledRoute} calls itself complete and lists no stops`,
+            );
+          }
+        }
+      }
+
+      lines.push(
+        `${city.name}: map ${mapOk}/${ATTEMPTS_PER_CITY}, route ${routeOk}` +
+          (sampledRoute ? ` (${sampledRoute})` : "") +
+          `, complete ${routeComplete}, incomplete ${routeIncomplete}`,
+      );
+    }
+  }
+
+  assert(platformErrors === 0, `${String(platformErrors)} platform error page(s) were returned`);
+  assert(
+    mapRequests >= 20,
+    `only ${String(mapRequests)} dense map requests were made; twenty is the bar`,
+  );
+  assert(
+    routeRequests >= 20,
+    `only ${String(routeRequests)} route-detail requests were made; twenty is the bar`,
+  );
+  return (
+    `${String(mapRequests)} dense map requests and ${String(routeRequests)} route-detail ` +
+    `requests, no platform error pages; ${String(degradedResponses)} maps answered degraded; ` +
+    `map peak ${String(peakObjects)} object(s), ${(peakChars / 1048576).toFixed(2)} MiB decoded, ` +
+    `${String(peakMs)}ms; route peak ${String(routePeakObjects)} object(s), ` +
+    `${(routePeakChars / 1048576).toFixed(2)} MiB decoded, ${String(routePeakMs)}ms. ` +
+    `Slowest route page — ${routeWorst}. ` +
+    lines.join("; ")
+  );
+});
+
 for (const result of results) {
   console.log(
     `${result.ok ? "  pass" : "  FAIL"}  ${result.name}${result.detail ? ` — ${result.detail}` : ""}`,
   );
 }
 
+/*
+ * Reported in two parts, because they are two questions.
+ *
+ * "Does a passenger get real data" and "does this deployment survive a burst from one client" have
+ * different answers today, and a single ratio hid that for six runs: the passenger-facing flows
+ * were called broken on the strength of a stress result. Both still count towards the exit code.
+ */
+/*
+ * The label has to still be attached to something.
+ *
+ * `STRESS_CHECKS` matches on a check's name, so renaming that check would quietly move it into the
+ * passenger set and the burst question would stop being asked separately — with nothing failing to
+ * say so. Named here rather than hoped for.
+ */
+for (const name of STRESS_CHECKS) {
+  if (!results.some((result) => result.name === name)) {
+    console.error(
+      `::error title=stress label::"${name}" is listed as a burst check and no check by that ` +
+        `name ran. Either it was renamed, in which case STRESS_CHECKS needs the new name, or it ` +
+        `was removed, in which case nothing is testing burst behaviour.`,
+    );
+    failures += 1;
+    results.push({
+      name: `the burst check named "${name}" exists`,
+      ok: false,
+      detail: "no check ran under that name, so burst behaviour is no longer being tested",
+      stress: true,
+    });
+  }
+}
+
+const passenger = results.filter((result) => !result.stress);
+const stress = results.filter((result) => result.stress);
+const passengerFailures = passenger.filter((result) => !result.ok).length;
+const stressFailures = stress.filter((result) => !result.ok).length;
+
+/*
+ * The same lines as annotations, which is the only form of this a reader outside the runner can
+ * get at: a job's log and its uploaded artifacts are both served from a storage host this
+ * project's container cannot reach, and so is the preview itself. See scripts/annotate.mjs.
+ *
+ * Below the declarations, deliberately. These two calls used to sit thirty lines above them and
+ * threw `ReferenceError: Cannot access 'passenger' before initialization` — after every check had
+ * run. The whole run's evidence was computed, printed to a log nothing can reach, and then thrown
+ * away at the last line. A verification that cannot report is a verification that has to be run
+ * again, which cost a full deploy. They also go after the stress-label guard, so a failure it
+ * adds is annotated with the rest rather than only counted.
+ */
+annotateResults("deployment", passenger);
+if (stress.length > 0) annotateResults("stress (burst, one client)", stress);
+
+console.log(
+  `\nPassenger-representative checks: ${passenger.length - passengerFailures} of ${passenger.length} passed, ` +
+    `paced ${CHECK_PACE_MS}ms apart, against real data at ${apiUrl}.`,
+);
+if (stress.length > 0) {
+  console.log(
+    `Deliberate burst (stress) checks: ${stress.length - stressFailures} of ${stress.length} passed. ` +
+      (stressFailures > 0
+        ? `A burst failure is RESILIENCE / LOAD, not a passenger blocker — see BUILD_STATE.md.`
+        : ``),
+  );
+}
 console.log(
   failures === 0
     ? `\nDeployment verified: ${results.length} checks against real data at ${apiUrl}.`

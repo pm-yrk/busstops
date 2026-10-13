@@ -150,6 +150,13 @@ export interface SiriNormalizeResult {
     }
   >;
   rejected: Array<{ reason: string; vehicleRef?: string }>;
+  /**
+   * Age in seconds of every record the feed offered, accepted or not.
+   *
+   * A viewport with no buses because the feed was empty and one with no buses because every
+   * record was twenty minutes old are different faults, and only the ages tell them apart.
+   */
+  recordAgeSeconds: number[];
 }
 
 export function normalizeSiriVm(xml: string, options: SiriNormalizeOptions): SiriNormalizeResult {
@@ -162,6 +169,7 @@ export function normalizeSiriVm(xml: string, options: SiriNormalizeOptions): Sir
   const rejected: SiriNormalizeResult["rejected"] = parseRejected.map((r) => ({
     reason: r.reason,
   }));
+  const recordAgeSeconds: number[] = [];
 
   for (const activity of activities) {
     const journey = activity.MonitoredVehicleJourney;
@@ -186,6 +194,7 @@ export function normalizeSiriVm(xml: string, options: SiriNormalizeOptions): Sir
     }
 
     const ageSeconds = (now.getTime() - observedAt.getTime()) / 1000;
+    recordAgeSeconds.push(Math.round(ageSeconds));
     if (ageSeconds > maxAgeSeconds) {
       rejected.push({
         reason: `observation ${Math.round(ageSeconds)}s old`,
@@ -213,6 +222,15 @@ export function normalizeSiriVm(xml: string, options: SiriNormalizeOptions): Sir
       journey.FramedVehicleJourneyRef?.DatedVehicleJourneyRef,
     );
 
+    /*
+     * Read once and used twice: on the observation that gets published, and in the journey
+     * context the edge uses in-process. `PublishedLineName` falls back to `LineRef` because many
+     * publishers give only the latter and a passenger-facing name is better than nothing.
+     */
+    const lineRef = asString(journey.LineRef);
+    const publishedLineName = asString(journey.PublishedLineName) ?? lineRef;
+    const operatorRef = asString(journey.OperatorRef);
+
     observations.push({
       id: deterministicUuid("vehicle", `${vehicleRef}:${observedAt.getTime()}`),
       provenance: {
@@ -230,13 +248,26 @@ export function normalizeSiriVm(xml: string, options: SiriNormalizeOptions): Sir
       coordinate,
       ...(bearing === undefined ? {} : { bearingDegrees: bearing }),
       observedAt: observedAt.toISOString(),
+      /*
+       * The route the publisher said this vehicle was working.
+       *
+       * These went only into `journeyContext` below, which the live collector discarded — it
+       * returned `normalized.observations` and nothing else — so the identity was extracted here
+       * and lost one call later. Everything downstream saw a position with no line on it.
+       *
+       * `journeyContext` is kept as well, because the edge uses it for the live map where the
+       * whole parse is in hand. This is the copy that survives being published.
+       */
+      ...(lineRef === undefined ? {} : { lineRef }),
+      ...(publishedLineName === undefined ? {} : { publishedLineName }),
+      ...(operatorRef === undefined ? {} : { operatorRef }),
     });
 
     journeyContext.set(vehicleRef, {
-      lineRef: asString(journey.LineRef),
-      publishedLineName: asString(journey.PublishedLineName) ?? asString(journey.LineRef),
+      lineRef,
+      publishedLineName,
       directionRef: asString(journey.DirectionRef),
-      operatorRef: asString(journey.OperatorRef),
+      operatorRef,
       destinationName: asString(journey.DestinationName),
       originName: asString(journey.OriginName),
       datedVehicleJourneyRef,
@@ -244,7 +275,7 @@ export function normalizeSiriVm(xml: string, options: SiriNormalizeOptions): Sir
     });
   }
 
-  return { observations, journeyContext, rejected };
+  return { observations, journeyContext, rejected, recordAgeSeconds };
 }
 
 /**

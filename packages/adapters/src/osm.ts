@@ -13,6 +13,24 @@ import { deterministicUuid } from "./identity.js";
 export const OSM_ATTRIBUTION = "© OpenStreetMap contributors, ODbL";
 export const OVERPASS_URL = "https://overpass-api.de/api/interpreter";
 
+/**
+ * Who is asking, which Overpass requires rather than prefers.
+ *
+ * Both extractions failed identically and instantly with `406` across all six areas — not a
+ * malformed query, which would fail one at a time, but the request being refused before it was
+ * read. Overpass's usage policy asks every consumer to identify itself, and its operators enforce
+ * that on generic or absent user agents; Node sends `undici` by default. A contact URL is part of
+ * what the policy asks for, so an operator with a problem can find the project rather than block
+ * the traffic.
+ */
+export const OVERPASS_USER_AGENT =
+  "BusStops/0.1 (England bus intelligence; +https://github.com/pm-yrk/busstops)";
+
+export const OVERPASS_HEADERS: Record<string, string> = {
+  "user-agent": OVERPASS_USER_AGENT,
+  accept: "application/json",
+};
+
 export const OverpassElementSchema = z.union([
   z.object({
     type: z.literal("node"),

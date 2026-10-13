@@ -20,6 +20,10 @@ export interface R2StoreConfig {
   sleep?: (ms: number) => Promise<void>;
 }
 
+/** What one listing page asks for, and how many pages a single listing may take. */
+const LIST_PAGE_SIZE = 1000;
+const MAX_LIST_PAGES = 100;
+
 export class R2ObjectStore implements ObjectStore {
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
@@ -134,32 +138,70 @@ export class R2ObjectStore implements ObjectStore {
     return (await this.listDetailed(prefix)).map((object) => object.key);
   }
 
+  /**
+   * Every object under a prefix, following the cursor to the end.
+   *
+   * It used to ask for one page of a thousand and return it as though it were the answer. A
+   * national publish writes several thousand objects, so the retention job — the one whose entire
+   * purpose is to see the whole bucket and keep it inside the free tier — was pruning and
+   * reporting a storage inventory from the first thousand keys and calling it the inventory. That
+   * is the failure this codebase keeps finding in different clothes: a truncated answer that is
+   * indistinguishable from a complete one.
+   *
+   * The page count is bounded so a cursor the API never stops issuing cannot spin forever, and
+   * hitting that bound throws rather than returning a short list, because a caller that asked for
+   * everything must not be handed some of it quietly.
+   */
   async listDetailed(prefix: string): Promise<StoredObject[]> {
-    const url = new URL(
-      `https://api.cloudflare.com/client/v4/accounts/${this.config.accountId}` +
-        `/r2/buckets/${encodeURIComponent(this.config.bucket)}/objects`,
-    );
-    url.searchParams.set("prefix", prefix);
-    url.searchParams.set("per_page", "1000");
+    const objects: StoredObject[] = [];
+    let cursor: string | undefined;
 
-    const response = await this.request(url.toString(), { method: "GET" });
-    if (!response.ok) {
-      throw new Error(`R2 list failed for ${prefix}: ${response.status}`);
+    for (let page = 1; ; page += 1) {
+      if (page > MAX_LIST_PAGES) {
+        throw new Error(
+          `R2 list for ${prefix} did not end after ${String(MAX_LIST_PAGES)} pages ` +
+            `(${String(objects.length)} objects so far)`,
+        );
+      }
+
+      const url = new URL(
+        `https://api.cloudflare.com/client/v4/accounts/${this.config.accountId}` +
+          `/r2/buckets/${encodeURIComponent(this.config.bucket)}/objects`,
+      );
+      url.searchParams.set("prefix", prefix);
+      url.searchParams.set("per_page", String(LIST_PAGE_SIZE));
+      if (cursor !== undefined) url.searchParams.set("cursor", cursor);
+
+      const response = await this.request(url.toString(), { method: "GET" });
+      if (!response.ok) {
+        throw new Error(`R2 list failed for ${prefix}: ${response.status}`);
+      }
+      const body = (await response.json()) as {
+        result?: Array<{ key?: string; size?: number; uploaded?: string }>;
+        result_info?: { cursor?: string; is_truncated?: boolean };
+      };
+
+      for (const object of body.result ?? []) {
+        if (typeof object.key !== "string") continue;
+        objects.push({
+          key: object.key,
+          sizeBytes: typeof object.size === "number" ? object.size : 0,
+          uploadedAt: object.uploaded ?? new Date(0).toISOString(),
+        });
+      }
+
+      /*
+       * Cloudflare signals more by returning a cursor. `is_truncated` is honoured where it is
+       * given, but a non-empty cursor is treated as authoritative on its own: an empty cursor is
+       * the end, and continuing on one would repeat the last page forever.
+       */
+      const next = body.result_info?.cursor;
+      if (body.result_info?.is_truncated === false) break;
+      if (next === undefined || next.length === 0) break;
+      cursor = next;
     }
-    const body = (await response.json()) as {
-      result?: Array<{ key?: string; size?: number; uploaded?: string }>;
-    };
-    return (body.result ?? [])
-      .filter(
-        (object): object is { key: string; size?: number; uploaded?: string } =>
-          typeof object.key === "string",
-      )
-      .map((object) => ({
-        key: object.key,
-        sizeBytes: typeof object.size === "number" ? object.size : 0,
-        uploadedAt: object.uploaded ?? new Date(0).toISOString(),
-      }))
-      .sort((a, b) => a.key.localeCompare(b.key));
+
+    return objects.sort((a, b) => a.key.localeCompare(b.key));
   }
 }
 

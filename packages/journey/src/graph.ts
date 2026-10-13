@@ -24,7 +24,16 @@ export interface TripStopTime {
 
 export interface Trip {
   id: string;
+  /**
+   * The service this trip belongs to, as the published network identifies it.
+   *
+   * Not the public name. "36" is what a passenger reads and several operators have one; the
+   * itinerary has to carry the identity a link can be built from, so a leg can open the route it
+   * is actually on rather than the first route in the country with the same number on the front.
+   */
   routeId: string;
+  /** The pattern the times belong to, so a leg can be drawn on the map it was planned from. */
+  patternId: string;
   routeName: string;
   headsign: string;
   stopTimes: TripStopTime[];

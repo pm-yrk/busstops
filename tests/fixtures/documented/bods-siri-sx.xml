@@ -1,0 +1,181 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Constructed from the SIRI-SX 2.0 profile the Bus Open Data Service publishes at
+     https://data.bus-data.dft.gov.uk/api/v1/siri-sx/ — verified live from a GitHub runner on
+     2026-09-04, which answered 200 text/xml, 6,016,038 bytes, ProducerRef DepartmentForTransport.
+     The situations below exercise the cases the adapter has to get right rather than reproducing
+     any operator's real notice: a stated reason and an unstated one, a severity that has to be
+     taken from the worst consequence, an expired validity period, a closed situation, one with no
+     summary, and affected lines, stops and places.
+     origin: constructed_from_published_schema -->
+<Siri xmlns="http://www.siri.org.uk/siri" version="2.0">
+  <ServiceDelivery>
+    <ResponseTimestamp>2026-09-04T09:00:00+01:00</ResponseTimestamp>
+    <ProducerRef>DepartmentForTransport</ProducerRef>
+    <SituationExchangeDelivery version="2.0">
+      <ResponseTimestamp>2026-09-04T09:00:00+01:00</ResponseTimestamp>
+      <Situations>
+
+        <!-- Roadworks: a stated reason, two affected lines, two affected stops, advice. -->
+        <PtSituationElement>
+          <CreationTime>2026-09-03T14:02:00+01:00</CreationTime>
+          <ParticipantRef>FirstLeeds</ParticipantRef>
+          <SituationNumber>FL-2026-0912</SituationNumber>
+          <Version>3</Version>
+          <VersionedAtTime>2026-09-04T07:41:00+01:00</VersionedAtTime>
+          <Source>
+            <SourceType>web</SourceType>
+          </Source>
+          <Progress>open</Progress>
+          <ValidityPeriod>
+            <StartTime>2026-09-03T20:00:00+01:00</StartTime>
+            <EndTime>2026-09-11T05:00:00+01:00</EndTime>
+          </ValidityPeriod>
+          <MiscellaneousReason>roadworks</MiscellaneousReason>
+          <Planned>true</Planned>
+          <Summary>Wellington Street closed — services 16 and 508 diverted</Summary>
+          <Description>Wellington Street is closed westbound for utility works. Services 16 and
+            508 are running via Whitehall Road in both directions and are not serving Wellington
+            Street or Bishopgate Street.</Description>
+          <InfoLinks>
+            <InfoLink>
+              <Uri>https://www.example-operator.co.uk/service-updates/wellington-street</Uri>
+              <Label>Operator service update</Label>
+            </InfoLink>
+          </InfoLinks>
+          <Consequences>
+            <Consequence>
+              <Condition>diverted</Condition>
+              <Severity>slight</Severity>
+              <Affects>
+                <Networks>
+                  <AffectedNetwork>
+                    <AffectedLine>
+                      <AffectedOperator>
+                        <OperatorRef>FLDS</OperatorRef>
+                        <OperatorName>First Leeds</OperatorName>
+                      </AffectedOperator>
+                      <LineRef>16</LineRef>
+                      <PublishedLineName>16</PublishedLineName>
+                    </AffectedLine>
+                    <AffectedLine>
+                      <AffectedOperator>
+                        <OperatorRef>FLDS</OperatorRef>
+                        <OperatorName>First Leeds</OperatorName>
+                      </AffectedOperator>
+                      <LineRef>508</LineRef>
+                      <PublishedLineName>508</PublishedLineName>
+                    </AffectedLine>
+                  </AffectedNetwork>
+                </Networks>
+                <StopPoints>
+                  <AffectedStopPoint>
+                    <StopPointRef>45009980001</StopPointRef>
+                    <StopPointName>Wellington Street</StopPointName>
+                  </AffectedStopPoint>
+                  <AffectedStopPoint>
+                    <StopPointRef>45009980002</StopPointRef>
+                    <StopPointName>Bishopgate Street</StopPointName>
+                  </AffectedStopPoint>
+                </StopPoints>
+                <Places>
+                  <AffectedPlace>
+                    <PlaceName>Leeds city centre</PlaceName>
+                  </AffectedPlace>
+                </Places>
+              </Affects>
+              <Advice>
+                <Details>Please use the Whitehall Road stops while the closure is in place.</Details>
+              </Advice>
+            </Consequence>
+            <!-- A second, worse consequence: the notice's severity must come from this one. -->
+            <Consequence>
+              <Condition>cancelled</Condition>
+              <Severity>severe</Severity>
+              <Affects>
+                <Networks>
+                  <AffectedNetwork>
+                    <AffectedLine>
+                      <AffectedOperator>
+                        <OperatorRef>FLDS</OperatorRef>
+                      </AffectedOperator>
+                      <LineRef>16</LineRef>
+                    </AffectedLine>
+                  </AffectedNetwork>
+                </Networks>
+              </Affects>
+            </Consequence>
+          </Consequences>
+        </PtSituationElement>
+
+        <!-- No stated reason. The adapter must not invent one. -->
+        <PtSituationElement>
+          <CreationTime>2026-09-04T06:15:00+01:00</CreationTime>
+          <ParticipantRef>StagecoachManchester</ParticipantRef>
+          <SituationNumber>SM-2026-4471</SituationNumber>
+          <VersionedAtTime>2026-09-04T06:15:00+01:00</VersionedAtTime>
+          <Progress>published</Progress>
+          <ValidityPeriod>
+            <StartTime>2026-09-04T06:00:00+01:00</StartTime>
+          </ValidityPeriod>
+          <MiscellaneousReason>unknown</MiscellaneousReason>
+          <Planned>false</Planned>
+          <Summary>Service 192 running with delays this morning</Summary>
+          <Consequences>
+            <Consequence>
+              <Condition>delayed</Condition>
+              <Severity>normal</Severity>
+              <Affects>
+                <Networks>
+                  <AffectedNetwork>
+                    <AffectedLine>
+                      <AffectedOperator>
+                        <OperatorRef>SCMN</OperatorRef>
+                      </AffectedOperator>
+                      <LineRef>192</LineRef>
+                      <PublishedLineName>192</PublishedLineName>
+                    </AffectedLine>
+                  </AffectedNetwork>
+                </Networks>
+              </Affects>
+            </Consequence>
+          </Consequences>
+        </PtSituationElement>
+
+        <!-- Already over: must not be shown. -->
+        <PtSituationElement>
+          <CreationTime>2026-08-20T09:00:00+01:00</CreationTime>
+          <SituationNumber>EXPIRED-1</SituationNumber>
+          <Progress>open</Progress>
+          <ValidityPeriod>
+            <StartTime>2026-08-20T09:00:00+01:00</StartTime>
+            <EndTime>2026-08-30T23:00:00+01:00</EndTime>
+          </ValidityPeriod>
+          <Summary>August bank holiday timetable</Summary>
+        </PtSituationElement>
+
+        <!-- Withdrawn by the publisher: must not be shown. -->
+        <PtSituationElement>
+          <CreationTime>2026-09-02T09:00:00+01:00</CreationTime>
+          <SituationNumber>CLOSED-1</SituationNumber>
+          <Progress>closed</Progress>
+          <ValidityPeriod>
+            <StartTime>2026-09-02T09:00:00+01:00</StartTime>
+          </ValidityPeriod>
+          <Summary>Bridge inspection — now complete</Summary>
+        </PtSituationElement>
+
+        <!-- Nothing to show a passenger: counted as rejected, never guessed at. -->
+        <PtSituationElement>
+          <CreationTime>2026-09-04T05:00:00+01:00</CreationTime>
+          <SituationNumber>NOSUMMARY-1</SituationNumber>
+          <Progress>open</Progress>
+          <ValidityPeriod>
+            <StartTime>2026-09-04T05:00:00+01:00</StartTime>
+          </ValidityPeriod>
+          <EnvironmentReason>fog</EnvironmentReason>
+        </PtSituationElement>
+
+      </Situations>
+    </SituationExchangeDelivery>
+  </ServiceDelivery>
+</Siri>

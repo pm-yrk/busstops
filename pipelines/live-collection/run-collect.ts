@@ -10,7 +10,7 @@
 
 import { writeFileSync } from "node:fs";
 import { BODS_MINIMUM_REQUEST_INTERVAL_MS } from "@busstops/contracts";
-import { ArtifactStore, r2StoreFromEnv } from "@busstops/pipeline-core";
+import { ArtifactStore, annotateReport, r2StoreFromEnv } from "@busstops/pipeline-core";
 import { classify } from "@busstops/governor";
 import {
   RollingObservationWindow,
@@ -139,6 +139,13 @@ async function main(): Promise<number> {
 function writeReport(report: Record<string, unknown>): void {
   report.finishedAt = new Date().toISOString();
   writeFileSync("collection-report.json", JSON.stringify(report, null, 2));
+  /*
+   * And through the one channel that can be read from outside the runner. Without this a failed
+   * collection is silent: the step is marked "success" by `continue-on-error`, the report goes to
+   * an unreachable artifact host, and the first visible symptom is the analytics batch reporting
+   * `no_input` two steps later — which says nothing about why.
+   */
+  annotateReport("live collection", report);
 }
 
 main()
@@ -147,5 +154,26 @@ main()
   })
   .catch((error: unknown) => {
     console.error("Intelligence collection job failed:", error);
+    /*
+     * A job that throws still has to say so in its report.
+     *
+     * Every ordinary exit writes one; an exception wrote nothing at all, and the workflow step runs
+     * with `continue-on-error`, which marks a failed step "success" in the job's own step list. So a
+     * collection that threw looked from the outside like a collection that had worked and simply
+     * chosen not to report — which is how run 47's "no collection-report.json was written" read for
+     * three runs. The report is the only thing that distinguishes them.
+     */
+    try {
+      const thrown = {
+        outcome: "threw",
+        error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+        stack: error instanceof Error ? (error.stack ?? "").slice(0, 1200) : undefined,
+        finishedAt: new Date().toISOString(),
+      };
+      writeFileSync("collection-report.json", JSON.stringify(thrown, null, 2));
+      annotateReport("live collection", thrown);
+    } catch {
+      // A report we cannot write is not worth failing twice over; the console still carries it.
+    }
     process.exitCode = 1;
   });

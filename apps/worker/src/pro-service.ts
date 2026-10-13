@@ -38,6 +38,127 @@ import {
 
 export const INTELLIGENCE_INCIDENTS_DATASET = "intelligence/incidents";
 export const INTELLIGENCE_SEGMENTS_DATASET = "intelligence/segment-metrics";
+/** One record describing the newest closed measurement window. See the pipeline's `summary.ts`. */
+export const INTELLIGENCE_SUMMARY_DATASET = "intelligence/network-summary";
+
+/**
+ * The national summary as the edge reads it.
+ *
+ * Declared here rather than imported from the pipeline package: the Worker bundle must not pull
+ * the analytics batch in, and this is a wire format between two deployables, so it is written out
+ * on both sides and asserted by a contract test.
+ */
+export interface NetworkSummary {
+  /** When the batch wrote this record. Not when anything in it was measured. */
+  generatedAt: string;
+  windowStart: string;
+  /** The last instant the figures describe. */
+  windowEnd: string;
+  /** When the newest bucket became immutable: `windowEnd` plus the lateness grace. */
+  closedAt: string;
+  bucketSeconds: number;
+  latenessGraceSeconds: number;
+  segmentsMeasured: number;
+  closedBuckets: number;
+  suppressedBuckets: number;
+  sampleCount: number;
+  distinctVehicles: number;
+  distinctRoutes: number;
+  /** Line names seen, resolved or not. Optional: added after records were already published. */
+  distinctRouteNames?: number;
+  vehiclesMappedToRoute?: number;
+  medianTraversalSeconds: number | null;
+  p90TraversalSeconds: number | null;
+  medianSpeedMetresPerSecond: number | null;
+  meanMatchConfidence: number | null;
+  coverage: number;
+}
+
+/**
+ * Three clocks, three names, and never one label for all of them.
+ *
+ * A figure from this pipeline has three distinct ages and the first version of this file printed
+ * one number under the word for another. Run 69 published a five-minute window ending 14:25 with
+ * a 600-second grace, written by a batch at 16:33, and the verifier reported "closed 129 minutes
+ * ago" — which is the age of the window's *end*, described with the word for its *closure*, on a
+ * record whose own age was different again. All three are useful and none substitutes for
+ * another:
+ *
+ *  - **measurement age** — how old the thing being described is (`now − windowEnd`). This is what
+ *    a reader looking at a number wants: the buses were doing this two hours ago.
+ *  - **closure age** — how long the figure has been immutable (`now − closedAt`). This is what
+ *    says whether it can still be revised, and it is always the measurement age minus the grace.
+ *  - **publication age** — how long ago the batch wrote the record (`now − generatedAt`). This is
+ *    the pipeline's own health: a small measurement age with a large publication age is
+ *    impossible, and a large one of each means collection has stopped.
+ *
+ * `windowEnd` is the last instant covered. `closedAt` is `windowEnd` plus the grace. They are ten
+ * minutes apart at the current settings and were being reported as the same moment.
+ */
+/**
+ * A summary record as the edge can safely use it, whatever version of the batch wrote it.
+ *
+ * The two sides deploy independently. `closedAt` was added to the record after artifacts had
+ * already been published without it, and the edge read it straight into `new Date(...)` — so the
+ * first Pro request after this deploy would have thrown "Invalid time value" and answered 500 on
+ * every control-tower call until the next batch ran. A field added to a wire format is a field
+ * that will be missing from something already in the bucket.
+ *
+ * `closedAt` is derivable, so it is derived rather than demanded: window end plus the grace is
+ * exactly what the batch computes. A record missing something that cannot be derived is rejected
+ * instead, because a figure with no window is not a figure.
+ */
+export function normaliseSummary(record: Partial<NetworkSummary> | null): NetworkSummary | null {
+  if (!record) return null;
+  const windowEnd = record.windowEnd;
+  const grace = record.latenessGraceSeconds;
+  if (
+    typeof windowEnd !== "string" ||
+    !Number.isFinite(Date.parse(windowEnd)) ||
+    typeof record.windowStart !== "string" ||
+    typeof record.generatedAt !== "string" ||
+    typeof grace !== "number"
+  ) {
+    return null;
+  }
+  const closedAt =
+    typeof record.closedAt === "string" && Number.isFinite(Date.parse(record.closedAt))
+      ? record.closedAt
+      : new Date(Date.parse(windowEnd) + grace * 1000).toISOString();
+  return { ...(record as NetworkSummary), closedAt };
+}
+
+export function measurementAgeSeconds(summary: NetworkSummary, now: Date): number {
+  return Math.max(0, (now.getTime() - Date.parse(summary.windowEnd)) / 1000);
+}
+
+/** How long the newest bucket has been immutable. Measurement age minus the lateness grace. */
+export function closureAgeSeconds(summary: NetworkSummary, now: Date): number {
+  return Math.max(0, (now.getTime() - Date.parse(summary.closedAt)) / 1000);
+}
+
+/** How long ago the batch wrote this record. The pipeline's age, not the measurement's. */
+export function publicationAgeSeconds(summary: NetworkSummary, now: Date): number {
+  return Math.max(0, (now.getTime() - Date.parse(summary.generatedAt)) / 1000);
+}
+
+/**
+ * How the window is described on a metric, in the window's own terms.
+ *
+ * Pro used to label every live figure "last 60 minutes", which was the scope the reader had asked
+ * for and not the period the number was measured over. This names the period, both of its
+ * boundaries, and — separately — how old it is, so no single phrase has to carry two clocks.
+ */
+export function describeMeasuredWindow(summary: NetworkSummary, now: Date): string {
+  const minutes = Math.round(summary.bucketSeconds / 60);
+  const ended = new Date(summary.windowEnd).toISOString().slice(11, 16);
+  const settled = new Date(summary.closedAt).toISOString().slice(11, 16);
+  const ageMinutes = Math.round(measurementAgeSeconds(summary, now) / 60);
+  return (
+    `${minutes}-minute window ending ${ended} UTC, settled ${settled}` +
+    `; measured ${ageMinutes === 0 ? "just now" : `${ageMinutes} minutes ago`}`
+  );
+}
 
 /** Below this, a metric is published as suppressed with its reason rather than as a figure. */
 export const PRO_MINIMUM_DENOMINATOR = 20;
@@ -61,8 +182,19 @@ export function resolveScope(input: ProScopeInput = {}): ProScope {
   };
 }
 
-export function liveProvenance(): ProProvenance {
-  return { dataMode: "live", snapshotDate: null, notice: null };
+/**
+ * Live provenance, carrying when the newest settled measurement actually ended.
+ *
+ * `dataMode: "live"` was doing two jobs and only admitting to one: it says the figures come from
+ * real observations rather than the demonstration snapshot, and says nothing about when those
+ * observations were. The deployed Pro has reported `live` with its newest settled window a
+ * fortnight old, and the only place that age appeared was a sentence in the coverage caveats. A
+ * dashboard that looks current and is not is worse than one that says how old it is.
+ *
+ * `null` when nothing has been measured at all, which is a different fact again from old.
+ */
+export function liveProvenance(measuredAt: string | null = null): ProProvenance {
+  return { dataMode: "live", snapshotDate: null, notice: null, measuredAt };
 }
 
 export function demoProvenance(): ProProvenance {
@@ -70,6 +202,8 @@ export function demoProvenance(): ProProvenance {
     dataMode: "demo_snapshot",
     snapshotDate: DEMO_SNAPSHOT_DATE,
     notice: DEMO_SNAPSHOT_NOTICE,
+    // The snapshot's date says when it describes; there is no live measurement behind it.
+    measuredAt: null,
   };
 }
 
@@ -89,6 +223,16 @@ export interface MetricInput {
   minimumDenominator?: number;
   /** Overrides the default suppression message where a more specific one helps. */
   suppressionReason?: string;
+  /** True when the value is an example rather than a measurement. Drives a badge on the card. */
+  illustrative?: boolean;
+  /**
+   * Whether the figure was counted or computed. See `ProMetricSchema.basis`.
+   *
+   * Defaults to `calculated`, which is the cautious answer: a figure is assumed to be derived
+   * unless its author says it is a direct count. An illustrative figure overrides it outright,
+   * so the two can never disagree.
+   */
+  basis?: "observed" | "calculated";
 }
 
 /**
@@ -122,6 +266,9 @@ export function metric(input: MetricInput): ProMetric {
       : null,
     baselineValue: input.baselineValue ?? null,
     evidence: input.evidence ?? [],
+    illustrative: input.illustrative ?? false,
+    // One flag cannot say "example" while the other says "observed"; illustrative wins.
+    basis: input.illustrative ? "illustrative" : (input.basis ?? "calculated"),
   };
 }
 
@@ -160,17 +307,41 @@ export class ProService {
   /** Live intelligence artifacts, or null when none has been published. */
   private async liveIntelligence(): Promise<{
     incidents: Incident[];
-    segments: unknown[];
+    summary: NetworkSummary | null;
   } | null> {
     if (!this.store) return null;
     const artifacts = new ArtifactStore(this.store);
     try {
       const incidents = await artifacts.readCurrent<Incident>(INTELLIGENCE_INCIDENTS_DATASET);
-      const segments = await artifacts.readCurrent<unknown>(INTELLIGENCE_SEGMENTS_DATASET);
+      /*
+       * The segment metrics are asked whether they exist, not what they say.
+       *
+       * Nothing here has ever read a field off them — the records were fetched so that a manifest
+       * could be tested for null — and `readCurrent` pulls the whole national dataset into the
+       * isolate to do it. That was harmless while the analytics batch was failing on
+       * `no_segments` and the artifact did not exist; it stops being harmless the moment the batch
+       * starts working, because this dataset grows with coverage and there is no publish-time
+       * ceiling on it. `readManifest` answers the same question for the cost of one small object.
+       */
+      const segmentsManifest = await artifacts.readManifest(INTELLIGENCE_SEGMENTS_DATASET);
+      /*
+       * And the national summary, which is one record and therefore safe to read whole.
+       *
+       * This is where Pro's headline figures come from. Reading it costs one object; reading the
+       * segment metrics it was derived from would cost the whole national dataset, which is the
+       * reason the summary exists at all.
+       */
+      const summary = await artifacts
+        .readCurrent<Partial<NetworkSummary>>(INTELLIGENCE_SUMMARY_DATASET)
+        .catch(() => null);
       // A manifest is the signal that a run happened. Zero incidents with a manifest is a real
       // "nothing to report"; no manifest at all means nothing has ever run.
-      if (incidents.manifest === null && segments.manifest === null) return null;
-      return { incidents: incidents.records, segments: segments.records };
+      if (incidents.manifest === null && segmentsManifest === null) return null;
+      // Normalised at the boundary, so nothing downstream has to know which batch wrote it.
+      return {
+        incidents: incidents.records,
+        summary: normaliseSummary(summary?.records[0] ?? null),
+      };
     } catch {
       return null;
     }
@@ -193,8 +364,19 @@ export class ProService {
         }));
 
     const healthSummary = summariseSourceHealth(health);
-    const coverage = usingDemo ? 1 : coverageFrom(healthSummary);
-    const window = `last ${scope.windowMinutes} minutes`;
+    const summary = usingDemo ? null : live.summary;
+    const coverage = usingDemo ? 1 : (summary?.coverage ?? coverageFrom(healthSummary));
+    /*
+     * The window a figure was measured over, not the window the reader asked for.
+     *
+     * Those are different things and Pro used to print the second over the first. A scope of
+     * "last 60 minutes" is a filter; a segment metric is computed from a five-minute bucket that
+     * closed a quarter of an hour ago, and labelling it "last 60 minutes" claims a currency the
+     * pipeline does not have.
+     */
+    const window = summary
+      ? describeMeasuredWindow(summary, now)
+      : `last ${scope.windowMinutes} minutes`;
 
     const exceptions = incidents.map((incident) => toException(incident, usingDemo, "abnormality"));
     const burden = [...exceptions]
@@ -211,11 +393,12 @@ export class ProService {
       window,
       coverage,
       incidents,
+      summary,
       now,
     });
 
     return {
-      provenance: usingDemo ? demoProvenance() : liveProvenance(),
+      provenance: usingDemo ? demoProvenance() : liveProvenance(live.summary?.windowEnd ?? null),
       scope,
       generatedAt: now.toISOString(),
       headline,
@@ -223,26 +406,41 @@ export class ProService {
       priorityExceptions: exceptions.slice(0, 8),
       biggestDelayBurden: burden,
       mostAbnormal: abnormal,
-      routesRequiringAttention: usingDemo
-        ? DEMO_ROUTES.filter((route) => route.punctualityPercent < 0.75).map((route) => ({
-            routeId: route.routeId,
-            routeName: route.routeName,
-            operatorName: route.operatorName,
-            reason: `Punctuality is ${(route.punctualityPercent * 100).toFixed(0)}%, worst on ${route.worstCorridor}.`,
-            metric: metric({
-              key: `route-${route.routeId}-punctuality`,
-              label: "Punctuality",
-              definition: PUNCTUALITY_DEFINITION,
-              value: route.punctualityPercent,
-              unit: "percent",
-              denominator: route.punctualityDenominator,
-              window,
-              coverage,
-            }),
-          }))
-        : [],
+      /*
+       * Illustrative on the live path, because the route join produces nothing yet.
+       *
+       * An empty list here reads as "no route needs attention", which is the opposite of what is
+       * true: no route can be assessed. Each row carries an illustrative metric, so the badge on
+       * the figure makes the status of the row unmistakable.
+       */
+      routesRequiringAttention: DEMO_ROUTES.filter((route) => route.punctualityPercent < 0.75).map(
+        (route) => ({
+          routeId: route.routeId,
+          routeName: route.routeName,
+          operatorName: route.operatorName,
+          reason: `Punctuality is ${(route.punctualityPercent * 100).toFixed(0)}%, worst on ${route.worstCorridor}.`,
+          metric: (usingDemo ? metric : illustrative)({
+            key: `route-${route.routeId}-punctuality`,
+            label: "Punctuality",
+            definition: usingDemo
+              ? PUNCTUALITY_DEFINITION
+              : `${PUNCTUALITY_DEFINITION} ${NOT_YET_MEASURED}`,
+            value: route.punctualityPercent,
+            unit: "percent",
+            denominator: route.punctualityDenominator,
+            window,
+            coverage,
+          }),
+        }),
+      ),
       outlook: buildOutlook(incidents, healthSummary, usingDemo),
-      intelligenceSummary: buildIntelligenceSummary(incidents, healthSummary, coverage),
+      intelligenceSummary: buildIntelligenceSummary(
+        incidents,
+        healthSummary,
+        coverage,
+        summary,
+        now,
+      ),
       coverageWarning:
         coverage < 0.7
           ? `Only ${(coverage * 100).toFixed(0)}% of live sources are reporting normally. Read every figure below with that in mind: they describe the part of the network we can see, not the whole of it.`
@@ -267,7 +465,7 @@ export class ProService {
         }));
 
     return {
-      provenance: usingDemo ? demoProvenance() : liveProvenance(),
+      provenance: usingDemo ? demoProvenance() : liveProvenance(live.summary?.windowEnd ?? null),
       scope,
       generatedAt: now.toISOString(),
       items: incidents.map((incident) => ({
@@ -295,68 +493,85 @@ export class ProService {
     };
   }
 
+  /**
+   * A metric inside a demo-derived row, marked according to the page's mode.
+   *
+   * Routes, operators and analytics have no live implementation — their live branches were empty
+   * arrays, permanently — so the rows are examples whenever the page is live. Wrapping the metric
+   * here rather than at each call site keeps the decision in one place and makes it impossible to
+   * add a row that forgets the badge.
+   */
+  private rowMetricFor(usingDemo: boolean) {
+    return (input: MetricInput): ProMetric => (usingDemo ? metric(input) : illustrative(input));
+  }
+
   async routes(scope: ProScope, now: Date): Promise<RoutesResponse> {
     const live = await this.liveIntelligence();
     const usingDemo = live === null;
+    const rowMetric = this.rowMetricFor(usingDemo);
     const window = `last ${scope.windowMinutes} minutes`;
 
     return {
-      provenance: usingDemo ? demoProvenance() : liveProvenance(),
+      provenance: usingDemo ? demoProvenance() : liveProvenance(live.summary?.windowEnd ?? null),
       scope,
       generatedAt: now.toISOString(),
-      rows: usingDemo
-        ? DEMO_ROUTES.map((route) => ({
-            routeId: route.routeId,
-            routeName: route.routeName,
-            operatorName: route.operatorName,
-            metrics: [
-              metric({
-                key: "punctuality",
-                label: "Punctuality",
-                definition: PUNCTUALITY_DEFINITION,
-                value: route.punctualityPercent,
-                unit: "percent",
-                denominator: route.punctualityDenominator,
-                window,
-                coverage: 1,
-              }),
-              metric({
-                key: "reliability",
-                label: "Reliability",
-                definition: RELIABILITY_DEFINITION,
-                value: route.reliabilityPercent,
-                unit: "percent",
-                denominator: route.reliabilityDenominator,
-                window,
-                coverage: 1,
-              }),
-              metric({
-                key: "median_delay",
-                label: "Median delay",
-                definition:
-                  "The middle value of actual minus scheduled time across observed journeys. The median rather than the mean, so one broken-down bus does not move the figure.",
-                value: route.medianDelaySeconds,
-                unit: "seconds",
-                denominator: route.punctualityDenominator,
-                window,
-                coverage: 1,
-              }),
-              metric({
-                key: "headway_adherence",
-                label: "Headway adherence",
-                definition: HEADWAY_DEFINITION,
-                value: route.headwayAdherencePercent,
-                unit: "percent",
-                denominator: route.headwayDenominator,
-                window,
-                coverage: 1,
-              }),
-            ],
-            worstCorridor: route.worstCorridor,
-            worstTimeWindow: route.worstTimeWindow,
-            weatherSensitivity: route.weatherSensitivity,
-          }))
-        : [],
+      /*
+       * The live branch here was `[]`, and not as a temporary state: there is no live
+       * implementation of route scorecards at all, so the tab was permanently blank the moment
+       * any intelligence artifact existed. A blank tab teaches a reader nothing; the examples do,
+       * and `illustrative` on every figure is what stops them being mistaken for measurements.
+       */
+      rows: DEMO_ROUTES.map((route) => ({
+        routeId: route.routeId,
+        routeName: route.routeName,
+        operatorName: route.operatorName,
+        metrics: [
+          rowMetric({
+            key: "punctuality",
+            label: "Punctuality",
+            definition: PUNCTUALITY_DEFINITION,
+            value: route.punctualityPercent,
+            unit: "percent",
+            denominator: route.punctualityDenominator,
+            window,
+            coverage: 1,
+          }),
+          rowMetric({
+            key: "reliability",
+            label: "Reliability",
+            definition: RELIABILITY_DEFINITION,
+            value: route.reliabilityPercent,
+            unit: "percent",
+            denominator: route.reliabilityDenominator,
+            window,
+            coverage: 1,
+          }),
+          rowMetric({
+            key: "median_delay",
+            label: "Median delay",
+            definition:
+              "The middle value of actual minus scheduled time across observed journeys. The median rather than the mean, so one broken-down bus does not move the figure.",
+            value: route.medianDelaySeconds,
+            unit: "seconds",
+            denominator: route.punctualityDenominator,
+            window,
+            coverage: 1,
+          }),
+          rowMetric({
+            key: "headway_adherence",
+            label: "Headway adherence",
+            definition: HEADWAY_DEFINITION,
+            value: route.headwayAdherencePercent,
+            unit: "percent",
+            denominator: route.headwayDenominator,
+            window,
+            coverage: 1,
+          }),
+        ],
+        worstCorridor: route.worstCorridor,
+        worstTimeWindow: route.worstTimeWindow,
+        weatherSensitivity: route.weatherSensitivity,
+      })),
       comparabilityWarning: usingDemo
         ? "These routes differ in length, frequency and how much of their run is in the city centre. Compare them as descriptions of each route, not as a ranking of the people running them."
         : null,
@@ -366,50 +581,49 @@ export class ProService {
   async operators(scope: ProScope, now: Date): Promise<OperatorsResponse> {
     const live = await this.liveIntelligence();
     const usingDemo = live === null;
+    const rowMetric = this.rowMetricFor(usingDemo);
     const window = `last ${scope.windowMinutes} minutes`;
 
     return {
-      provenance: usingDemo ? demoProvenance() : liveProvenance(),
+      provenance: usingDemo ? demoProvenance() : liveProvenance(live.summary?.windowEnd ?? null),
       scope,
       generatedAt: now.toISOString(),
-      scorecards: usingDemo
-        ? DEMO_OPERATORS.map((operator) => ({
-            operatorId: operator.operatorId,
-            operatorName: operator.operatorName,
-            raw: [
-              metric({
-                key: "punctuality_raw",
-                label: "Punctuality (as measured)",
-                definition: PUNCTUALITY_DEFINITION,
-                value: operator.punctualityPercent,
-                unit: "percent",
-                denominator: operator.denominator,
-                window,
-                coverage: 1,
-              }),
-            ],
-            contextAdjusted: [
-              metric({
-                key: "punctuality_adjusted",
-                label: "Punctuality (adjusted for where and when they run)",
-                definition:
-                  "The same measurement, reweighted so operators are compared across a like-for-like mix of corridors and time windows. Adjustment reduces an unfair comparison; it does not make an unfair comparison fair.",
-                value: operator.contextAdjustedPercent,
-                unit: "percent",
-                denominator: operator.denominator,
-                window,
-                coverage: 1,
-              }),
-            ],
-            contextFactors: operator.contextFactors,
-            rankingEligible: operator.rankingEligible,
-            rankingIneligibleReason: operator.rankingIneligibleReason,
-            coverageCaveats: operator.coverageCaveats,
-          }))
-        : [],
-      comparabilityWarning: usingDemo
-        ? "Raw and adjusted figures are shown together on purpose. Either one alone would mislead: the raw figure ignores where an operator runs, and the adjusted figure hides what passengers actually experienced."
-        : null,
+      // Same as routes: the live branch was a permanent empty list, not a passing state.
+      scorecards: DEMO_OPERATORS.map((operator) => ({
+        operatorId: operator.operatorId,
+        operatorName: operator.operatorName,
+        raw: [
+          rowMetric({
+            key: "punctuality_raw",
+            label: "Punctuality (as measured)",
+            definition: PUNCTUALITY_DEFINITION,
+            value: operator.punctualityPercent,
+            unit: "percent",
+            denominator: operator.denominator,
+            window,
+            coverage: 1,
+          }),
+        ],
+        contextAdjusted: [
+          rowMetric({
+            key: "punctuality_adjusted",
+            label: "Punctuality (adjusted for where and when they run)",
+            definition:
+              "The same measurement, reweighted so operators are compared across a like-for-like mix of corridors and time windows. Adjustment reduces an unfair comparison; it does not make an unfair comparison fair.",
+            value: operator.contextAdjustedPercent,
+            unit: "percent",
+            denominator: operator.denominator,
+            window,
+            coverage: 1,
+          }),
+        ],
+        contextFactors: operator.contextFactors,
+        rankingEligible: operator.rankingEligible,
+        rankingIneligibleReason: operator.rankingIneligibleReason,
+        coverageCaveats: operator.coverageCaveats,
+      })),
+      comparabilityWarning:
+        "Raw and adjusted figures are shown together on purpose. Either one alone would mislead: the raw figure ignores where an operator runs, and the adjusted figure hides what passengers actually experienced.",
     };
   }
 
@@ -443,7 +657,7 @@ export class ProService {
       : [];
 
     return {
-      provenance: usingDemo ? demoProvenance() : liveProvenance(),
+      provenance: usingDemo ? demoProvenance() : liveProvenance(live.summary?.windowEnd ?? null),
       scope,
       generatedAt: now.toISOString(),
       biggestDelays: [...hotspots]
@@ -465,10 +679,11 @@ export class ProService {
     const window = `last ${scope.windowMinutes} minutes`;
 
     return {
-      provenance: usingDemo ? demoProvenance() : liveProvenance(),
+      provenance: usingDemo ? demoProvenance() : liveProvenance(live.summary?.windowEnd ?? null),
       scope,
       generatedAt: now.toISOString(),
-      sections: usingDemo ? demoAnalyticsSections(window) : [],
+      // The live branch was a permanent empty list; the page had nothing on it at all.
+      sections: demoAnalyticsSections(window),
       exportNotice:
         "Exports contain derived aggregates only. Raw vehicle positions are never exported: they are held in a bounded window, expire automatically, and are not ours to redistribute.",
     };
@@ -486,7 +701,7 @@ export class ProService {
       period === "daily" ? "yesterday" : period === "weekly" ? "last 7 days" : "last 30 days";
 
     return {
-      provenance: usingDemo ? demoProvenance() : liveProvenance(),
+      provenance: usingDemo ? demoProvenance() : liveProvenance(live.summary?.windowEnd ?? null),
       scope,
       period,
       periodStart: periodStart.toISOString(),
@@ -643,6 +858,9 @@ function buildIntelligenceSummary(
   incidents: readonly Incident[],
   health: SourceHealthSummary,
   coverage: number,
+  /** The newest closed window, when one has been published. */
+  measured: NetworkSummary | null,
+  now: Date,
 ): string[] {
   const summary: string[] = [];
   const byType = new Map<string, number>();
@@ -658,85 +876,287 @@ function buildIntelligenceSummary(
   for (const problem of health.problems.slice(0, 3)) {
     summary.push(`${problem.source} is ${problem.status}: ${problem.detail}.`);
   }
+
+  /*
+   * The pipeline's own age, said separately from the measurement's.
+   *
+   * These two answer different questions and a reader needs both. A measurement two hours old
+   * with a batch that ran three minutes ago means collection has a gap; a measurement twenty
+   * minutes old with a batch that ran two hours ago means the batch has stopped. Reporting one
+   * number for both makes those indistinguishable, which is exactly what happened in run 69.
+   */
+  /*
+   * Why there is no route intelligence, when there is none.
+   *
+   * Run 69 mapped no vehicle to a published route, so Pro's route list was empty — and an empty
+   * list reads as "no route needs attention", which is the opposite of what was true. A count of
+   * zero mapped routes beside a positive count of named ones is a broken join, and saying so is
+   * the difference between an honest gap and a false all-clear.
+   */
+  if (measured && (measured.distinctRouteNames ?? 0) > 0 && measured.distinctRoutes === 0) {
+    summary.push(
+      `No route-level intelligence: ${measured.distinctRouteNames} line name(s) were observed ` +
+        "but none resolved to a published route, so route and operator figures are withheld " +
+        "rather than shown as empty.",
+    );
+  }
+
+  if (measured) {
+    const measuredMin = Math.round(measurementAgeSeconds(measured, now) / 60);
+    const publishedMin = Math.round(publicationAgeSeconds(measured, now) / 60);
+    summary.push(
+      `The newest settled measurement covers up to ${new Date(measured.windowEnd)
+        .toISOString()
+        .slice(11, 16)} UTC, ${measuredMin} minute(s) ago; the batch that published it ran ` +
+        `${publishedMin} minute(s) ago.`,
+    );
+    if (measuredMin - publishedMin > 30) {
+      summary.push(
+        "The gap between those two is collection, not analysis: the batch ran recently and " +
+          "found nothing newer that had settled.",
+      );
+    }
+  }
   return summary;
 }
 
-function buildHeadlineMetrics(input: {
+/**
+ * What this pipeline measures and what it does not.
+ *
+ * Punctuality, reliability and delay are all comparisons against a schedule. The intelligence
+ * batch matches vehicle traces to road segments and times the traversals; it never reads a
+ * timetable, so it cannot produce any of the three. They stayed on this page as permanently null
+ * tiles whose suppression text read "No observations have been published for this scope and
+ * window" — which is false, and worse than false: it tells the reader that more data would fill
+ * the tile, when what is missing is a stage of the pipeline.
+ *
+ * They keep their place, because a control tower that quietly drops the figures it cannot produce
+ * is how a reader comes to believe the ones it shows are the whole picture. But they say what is
+ * actually true about them.
+ */
+/**
+ * The state the pipeline is actually in, said in a way a reader can act on.
+ *
+ * It is not "no data" and it is not "broken". The batch read 38,840 observations, matched them to
+ * road segments and closed 226 measurement windows — and suppressed every one, because 385
+ * accepted samples spread over 226 five-minute buckets is about 1.7 crossings each and a figure
+ * from that would be noise presented as measurement. Suppressing is right. What a reader needs to
+ * know is that the suppression is about *volume over time*, which accumulates as the collector
+ * keeps running, rather than about anything missing from the network.
+ *
+ * Without this, the two tiles read "Road segments measured: 0" over a denominator of 385, which
+ * invites exactly the wrong conclusion.
+ */
+function awaitingVolume(summary: NetworkSummary): string {
+  return (
+    `${summary.closedBuckets} measurement window(s) have closed and all of them were suppressed: ` +
+    `${summary.sampleCount} matched crossing(s) across those windows is too few per segment for a ` +
+    `figure that would mean anything. This accumulates as collection continues; nothing is missing ` +
+    `from the road network or the feed.`
+  );
+}
+
+const NOT_YET_MEASURED =
+  "Not measured yet. This figure compares actual against scheduled time, and the intelligence " +
+  "pipeline currently measures road-segment traversals only — it does not read the timetable. " +
+  "No amount of further observation will populate it until that stage exists.";
+
+/**
+ * An example figure, for a card the pipeline cannot fill yet.
+ *
+ * Pro's live path produces four of its eight headline figures; the other four wait on a stage
+ * that compares against a timetable, which does not exist. An empty card teaches a reader
+ * nothing about what the product is for — and a recruiter clicking through learns only that the
+ * page is broken.
+ *
+ * So the card carries an example, and the example is marked. `illustrative` drives a badge on
+ * the tile, the value never sits under the word "live", and the flag is per figure rather than
+ * per page: a real measurement beside an illustration stays unambiguously real. The definition
+ * text says outright that it is an example and what would replace it.
+ */
+function illustrative(input: MetricInput): ProMetric {
+  return metric({
+    ...input,
+    illustrative: true,
+    // A minimum would suppress the example and defeat the point; the badge carries the caveat.
+    minimumDenominator: 0,
+  });
+}
+
+export function buildHeadlineMetrics(input: {
   usingDemo: boolean;
   window: string;
   coverage: number;
   incidents: readonly Incident[];
+  summary?: NetworkSummary | null;
   now: Date;
 }): ProMetric[] {
-  const { usingDemo, window, coverage, incidents } = input;
+  const { usingDemo, window, coverage, incidents, now } = input;
+  const summary = input.summary ?? null;
+  // The age of the measurement, not of the record that carries it. See the three clocks above.
+  const freshness = summary ? measurementAgeSeconds(summary, now) : null;
 
   const abnormalCount = incidents.filter(
     (incident) => incident.severity === "abnormal" || incident.severity === "highly_abnormal",
   ).length;
 
+  /*
+   * Two figures the pipeline genuinely produces, published only on the live path.
+   *
+   * Both come from the closed-window summary, so both describe a settled measurement rather than
+   * a bucket still open to revision, and both carry the age of that window rather than the age of
+   * the batch that wrote it.
+   */
+  const measured: ProMetric[] = summary
+    ? [
+        metric({
+          key: "segments_measured",
+          label: "Road segments measured",
+          definition:
+            "Distinct road segments with at least one closed, unsuppressed measurement window. " +
+            "A segment appears once it has carried enough matched traversals to publish a figure." +
+            (summary.segmentsMeasured === 0 && summary.suppressedBuckets > 0
+              ? ` ${awaitingVolume(summary)}`
+              : ""),
+          value: summary.segmentsMeasured,
+          unit: "count",
+          denominator: summary.sampleCount,
+          window,
+          coverage,
+          freshnessSeconds: freshness,
+          minimumDenominator: 1,
+          evidence: ["segment_metrics"],
+        }),
+        metric({
+          key: "median_segment_traversal",
+          label: "Median segment time",
+          definition:
+            "The middle traversal time across every matched segment crossing in the window. It " +
+            "describes how long a segment takes to drive, not whether a bus was on time." +
+            (summary.medianTraversalSeconds === null && summary.suppressedBuckets > 0
+              ? ` ${awaitingVolume(summary)}`
+              : ""),
+          value: summary.medianTraversalSeconds,
+          unit: "seconds",
+          denominator: summary.sampleCount,
+          window,
+          coverage,
+          freshnessSeconds: freshness,
+          minimumDenominator: 1,
+          evidence: ["segment_metrics"],
+        }),
+      ]
+    : usingDemo
+      ? []
+      : [
+          /*
+           * The same two cards, as examples, until a window has closed.
+           *
+           * Without them the live control tower is four cards where the demo snapshot is eight,
+           * so the product looks least finished exactly where it has started working. They carry
+           * the badge like every other illustration.
+           */
+          illustrative({
+            key: "segments_measured",
+            label: "Road segments measured",
+            definition:
+              "Distinct road segments with at least one closed, unsuppressed measurement window. " +
+              "No window has closed yet on this deployment, so this is an example.",
+            value: 214,
+            unit: "count",
+            denominator: 1840,
+            window,
+            coverage,
+          }),
+          illustrative({
+            key: "median_segment_traversal",
+            label: "Median segment time",
+            definition:
+              "The middle traversal time across every matched segment crossing in the window. " +
+              "No window has closed yet on this deployment, so this is an example.",
+            value: 44,
+            unit: "seconds",
+            denominator: 1840,
+            window,
+            coverage,
+          }),
+        ];
+
   return [
-    metric({
+    (usingDemo ? metric : illustrative)({
       key: "network_health",
       label: "Network health",
       definition:
-        "A weighted composite of punctuality, reliability, excess delay, headway adherence, incidents and coverage, scored out of 100. Its confidence can never exceed the coverage it was computed from.",
-      value: usingDemo ? 71 : null,
+        "A weighted composite of punctuality, reliability, excess delay, headway adherence, incidents and coverage, scored out of 100. Its confidence can never exceed the coverage it was computed from." +
+        (usingDemo ? "" : ` ${NOT_YET_MEASURED}`),
+      value: 71,
       unit: "points",
-      denominator: usingDemo ? 1103 : 0,
+      denominator: 1103,
       window,
       coverage,
-      confidence: usingDemo
-        ? { level: "medium", score: 0.66, reasons: ["capped by 86% source coverage"] }
-        : null,
-      baselineValue: usingDemo ? 76 : null,
+      confidence: { level: "medium", score: 0.66, reasons: ["capped by 86% source coverage"] },
+      baselineValue: 76,
       evidence: ["punctuality", "reliability", "excess_delay", "coverage"],
     }),
-    metric({
+    (usingDemo || summary ? metric : illustrative)({
       key: "active_vehicles",
       label: "Buses observed",
       definition:
         "Distinct vehicles that reported a usable position in the window. Not the number running: buses whose operator does not publish positions are invisible here.",
-      value: usingDemo ? 1642 : null,
+      // Counted across samples rather than summed across buckets, so a bus crossing four
+      // segments is one bus. See the pipeline's `summary.ts`.
+      // Real the moment a closed window exists; an example until then, so the card is never blank.
+      value: usingDemo || !summary ? 1642 : summary.distinctVehicles,
       unit: "count",
-      denominator: usingDemo ? 1642 : 0,
+      denominator: usingDemo || !summary ? 1642 : summary.sampleCount,
       window,
       coverage,
+      freshnessSeconds: usingDemo || !summary ? null : freshness,
       minimumDenominator: 1,
+      evidence: usingDemo || !summary ? [] : ["segment_metrics"],
+      // A count of what the feed reported, not a statistic over it.
+      basis: "observed",
     }),
-    metric({
+    (usingDemo ? metric : illustrative)({
       key: "punctuality",
       label: "Punctuality",
-      definition: PUNCTUALITY_DEFINITION,
-      value: usingDemo ? 0.72 : null,
+      definition: usingDemo
+        ? PUNCTUALITY_DEFINITION
+        : `${PUNCTUALITY_DEFINITION} ${NOT_YET_MEASURED}`,
+      value: 0.72,
       unit: "percent",
-      denominator: usingDemo ? 1103 : 0,
+      denominator: 1103,
       window,
       coverage,
-      baselineValue: usingDemo ? 0.75 : null,
+      baselineValue: 0.75,
     }),
-    metric({
+    (usingDemo ? metric : illustrative)({
       key: "reliability",
       label: "Reliability",
-      definition: RELIABILITY_DEFINITION,
-      value: usingDemo ? 0.93 : null,
+      definition: usingDemo
+        ? RELIABILITY_DEFINITION
+        : `${RELIABILITY_DEFINITION} ${NOT_YET_MEASURED}`,
+      value: 0.93,
       unit: "percent",
-      denominator: usingDemo ? 1189 : 0,
+      denominator: 1189,
       window,
       coverage,
-      baselineValue: usingDemo ? 0.95 : null,
+      baselineValue: 0.95,
     }),
-    metric({
+    (usingDemo ? metric : illustrative)({
       key: "median_delay",
       label: "Median delay",
       definition:
-        "The middle value of actual minus scheduled time across observed departures. The median rather than the mean, so one very late bus does not move the figure.",
-      value: usingDemo ? 168 : null,
+        "The middle value of actual minus scheduled time across observed departures. The median rather than the mean, so one very late bus does not move the figure." +
+        (usingDemo ? "" : ` ${NOT_YET_MEASURED}`),
+      value: 168,
       unit: "seconds",
-      denominator: usingDemo ? 1103 : 0,
+      denominator: 1103,
       window,
       coverage,
-      baselineValue: usingDemo ? 132 : null,
+      baselineValue: 132,
     }),
+    ...measured,
     metric({
       key: "abnormal_disruptions",
       label: "Abnormal disruptions",
@@ -748,6 +1168,8 @@ function buildHeadlineMetrics(input: {
       window,
       coverage,
       minimumDenominator: 0,
+      // Counted from what publishers actually published, after the gates. Not modelled.
+      basis: "observed",
     }),
   ];
 }

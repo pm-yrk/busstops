@@ -14,7 +14,12 @@ import {
   RouteDetailResponseSchema,
   SearchResponseSchema,
 } from "@busstops/contracts";
-import { ArtifactStore, InMemoryObjectStore } from "@busstops/pipeline-core";
+import {
+  ArtifactStore,
+  InMemoryObjectStore,
+  objectKeyFor,
+  tileIdFor,
+} from "@busstops/pipeline-core";
 import {
   buildNetwork,
   publishJourneyTiles,
@@ -23,6 +28,19 @@ import {
 } from "@busstops/pipeline-static-network";
 import worker, { initialiseWorker, resetWorkerState } from "./index.js";
 import { R2BindingStore, readFeatureFlags, type R2BucketLike, type WorkerEnv } from "./env.js";
+import {
+  SHARDED,
+  TRIP_TILE_DEGREES,
+  currentArtifactLayout,
+  departureBucketFor,
+  departureShardDataset,
+  encodeDepartureShard,
+  tripWindowFor,
+  patternTripsDataset,
+  type DepartureRow,
+  type NetworkIndexRecord,
+  type PatternTripRow,
+} from "@busstops/pipeline-static-network";
 import {
   RateLimiter,
   clientKeyFor,
@@ -95,6 +113,37 @@ function completeNetwork() {
     retrievedAt: "2026-09-02T06:00:00.000Z",
     serviceDate: "2026-09-02",
   });
+}
+
+/**
+ * Publishes the planner's trips in the shape the pipeline now emits: the pattern, the trip, and
+ * its times. The stops come from the pattern, which is the whole point of the format.
+ */
+async function publishPatternTrips(
+  store: InMemoryObjectStore,
+  network: ReturnType<typeof completeNetwork>,
+): Promise<void> {
+  const byShard = new Map<string, string[]>();
+  for (const journey of network.journeys) {
+    const departures = journey.stopTimes.map((call) =>
+      Math.floor(Date.parse(call.scheduledDeparture) / 1000),
+    );
+    if (!departures.every((seconds) => Number.isFinite(seconds))) continue;
+    const pattern = network.patterns.find((candidate) => candidate.id === journey.routePatternId);
+    const firstStop = network.stops.find((stop) => stop.id === pattern?.stopSequence[0]);
+    if (!firstStop) continue;
+
+    const row: PatternTripRow = { p: journey.routePatternId, j: journey.tripId, t: departures };
+    const dataset = patternTripsDataset(
+      journey.serviceDate,
+      tileIdFor(firstStop.locationCoordinate, TRIP_TILE_DEGREES),
+      tripWindowFor(departures[0]!, journey.serviceDate),
+    );
+    byShard.set(dataset, [...(byShard.get(dataset) ?? []), JSON.stringify(row)]);
+  }
+  for (const [dataset, lines] of byShard) {
+    await store.put(objectKeyFor(dataset, "v1"), lines.join("\n"));
+  }
 }
 
 function makeEnv(store: InMemoryObjectStore, overrides: Partial<WorkerEnv> = {}): WorkerEnv {
@@ -240,6 +289,37 @@ describe("GET /v1/map", () => {
     expect(response.status).toBe(400);
   });
 
+  /*
+   * Run 62 measured this one on the deployment: `projectionUsed=true`, every returned stop
+   * carrying its route list, and `degraded true (stop_routes_budget)` beside it. The projection
+   * reports `truncated` when the box holds more stops than the map draws, which is a statement
+   * about how many markers came back and not about whether their labels are trustworthy — the
+   * names arrive on the same row as the stop. Reading one as the other made every dense viewport
+   * call its own labels unreliable.
+   */
+  it("does not call its labels degraded merely because it drew the stops it can draw", async () => {
+    const store = await publishedStore();
+    const response = await worker.fetch(
+      get("/v1/map?bbox=-1.6,53.7,-1.5,53.85&zoom=14"),
+      makeEnv(store),
+      ctx,
+    );
+    expect(response.status).toBe(200);
+
+    const body = (await response.json()) as {
+      data: {
+        degraded: boolean;
+        degradationReason: string | null;
+        stops: Array<{ routePublicNames: string[] }>;
+      };
+      meta: { diagnostics?: { artifact?: { projectionUsed?: boolean } } };
+    };
+
+    expect(body.meta.diagnostics?.artifact?.projectionUsed).toBe(true);
+    expect(body.data.degradationReason).not.toBe("stop_routes_budget");
+    expect(body.data.degraded).toBe(false);
+  });
+
   it("returns stops for a valid viewport with a contract-valid envelope", async () => {
     const store = await publishedStore();
     const response = await worker.fetch(
@@ -254,6 +334,43 @@ describe("GET /v1/map", () => {
     expect(parsed.success, JSON.stringify(parsed.error?.issues?.slice(0, 3))).toBe(true);
     expect(parsed.data!.data.stops.length).toBeGreaterThan(0);
     expect(parsed.data!.meta.generatedAt).toBeDefined();
+  });
+
+  /*
+   * `routePublicNames` was a literal `[]` in the map projection: declared in the contract, read by
+   * the marker, and never filled. Nothing asserted it, so the stub survived a deployed check whose
+   * whole purpose was to ask this question — it reported "not one stop in the viewport carries a
+   * service" and blamed the national timetable for a hard-coded empty array.
+   */
+  it("tells each stop which services call at it", async () => {
+    const store = await publishedStore();
+    const response = await worker.fetch(
+      get("/v1/map?bbox=-1.6,53.7,-1.5,53.85&zoom=14"),
+      makeEnv(store),
+      ctx,
+    );
+    const body = (await response.json()) as {
+      data: { stops: Array<{ id: string; name: string; routePublicNames: string[] }> };
+    };
+
+    const network = completeNetwork();
+    // What the published network says is true, computed independently of the Worker.
+    const expected = new Map<string, Set<string>>();
+    for (const pattern of network.patterns) {
+      const service = network.services.find((candidate) => candidate.id === pattern.serviceRouteId);
+      if (!service) continue;
+      for (const stopId of pattern.stopSequence) {
+        const names = expected.get(stopId) ?? new Set<string>();
+        names.add(service.publicName);
+        expected.set(stopId, names);
+      }
+    }
+
+    const served = body.data.stops.filter((stop) => stop.routePublicNames.length > 0);
+    expect(served.length).toBeGreaterThan(0);
+    for (const stop of body.data.stops) {
+      expect(stop.routePublicNames).toEqual([...(expected.get(stop.id) ?? [])].sort());
+    }
   });
 
   it("includes live vehicles from the viewport feed", async () => {
@@ -397,6 +514,39 @@ describe("GET /v1/stops/:id", () => {
     expect(body.data.routes[0]!.operatorName).not.toBe("");
   });
 
+  /*
+   * Named from the departures, not from a scan of the tiles around the stop.
+   *
+   * The handler used to ask "which patterns call here" of the pattern tiles, geographically, before
+   * reading any departures — and the densest stops have the largest tiles while needing that
+   * question asked the least, because their departures name their patterns outright. Stop
+   * `1800EB06161` in Manchester answered Cloudflare's error page on every deployed run from 89 to
+   * 94, dying on exactly that read. So this asserts what the board must still produce after the
+   * reorder: a route list where every entry is something a reader can actually follow.
+   */
+  it("names every route it lists with something a reader can follow", async () => {
+    const store = await publishedStore();
+    const withRows = await worker.fetch(get("/v1/stops/450010001"), makeEnv(store), ctx);
+    const body = (await withRows.json()) as {
+      meta: { diagnostics?: Record<string, unknown> };
+      data: {
+        routes: Array<{ id: string; publicName: string; operatorName: string }>;
+        departures: unknown[];
+      };
+    };
+    expect(withRows.status).toBe(200);
+    expect(body.data.routes.length).toBeGreaterThan(0);
+    // Every route is something a reader can follow: a name, an operator and an id that links.
+    for (const route of body.data.routes) {
+      expect(route.publicName).not.toBe("");
+      expect(route.id).not.toBe("");
+      expect(route.operatorName).not.toBe("");
+    }
+
+    // The two reads behind this — targeted by id, and geographic when there are no ids to use —
+    // are asserted to agree in isolate-memory.test.ts, where a reader can be asked each directly.
+  });
+
   it("returns 404 for an unknown stop", async () => {
     const store = await publishedStore();
     const response = await worker.fetch(get("/v1/stops/000000000"), makeEnv(store), ctx);
@@ -432,6 +582,70 @@ describe("GET /v1/stops/:id", () => {
     };
     expect(body.data.stops).toEqual([]);
     expect(body.meta.degradation).not.toBe("normal");
+  });
+
+  it("measures the board it serves, weather stage included", async () => {
+    /*
+     * This endpoint had no ledger until run 68 answered 1102 for it and there was nothing to
+     * read: no stage times, no residency, and no breadcrumb for the next request to carry out.
+     * A healthy board's stage breakdown is the baseline a failing one is read against, so it has
+     * to be present when the endpoint works, not only asserted when it does not.
+     */
+    const store = await publishedStore();
+    const response = await worker.fetch(get("/v1/stops/450010001"), makeEnv(store), ctx);
+    const body = (await response.json()) as {
+      meta: {
+        diagnostics?: {
+          stages?: Record<string, number>;
+          residency?: { requestsServed: number };
+        };
+      };
+    };
+    const diagnostics = body.meta.diagnostics;
+    expect(diagnostics).toBeDefined();
+    expect(Object.keys(diagnostics?.stages ?? {})).toEqual(
+      expect.arrayContaining(["live", "patterns", "services", "weather"]),
+    );
+    expect(diagnostics?.residency?.requestsServed).toBeGreaterThan(0);
+  });
+});
+
+describe("the breadcrumb a killed request leaves in the isolate", () => {
+  /*
+   * The instrument's own failure mode, which matters more than the instrument.
+   *
+   * A handler that returns early — 404, 400, 503 — used to leave its breadcrumb set, because the
+   * breadcrumb was only cleared by the residency callback at the *end* of the happy path. The
+   * next request then carried that breadcrumb out and the verifier printed "a previous request
+   * DID NOT FINISH" for a request that had answered a 404 perfectly well. A false death is worse
+   * than no instrument: it is indistinguishable from the thing being hunted, and it would have
+   * sent the 1102 investigation after a phantom.
+   */
+  it("says nothing about a request that answered a 404", async () => {
+    const store = await publishedStore();
+    const env = makeEnv(store);
+
+    // Route detail returns early here: the id resolves to no route, well before residency ends.
+    const missing = await worker.fetch(get("/v1/routes/does-not-exist"), env, ctx);
+    expect(missing.status).toBe(404);
+
+    const next = await worker.fetch(get("/v1/stops/450010001"), env, ctx);
+    const body = (await next.json()) as {
+      meta: { diagnostics?: { artifact?: Record<string, unknown> } };
+    };
+    expect(body.meta.diagnostics?.artifact?.diedPhase).toBeUndefined();
+  });
+
+  it("says nothing about a request that answered normally", async () => {
+    const store = await publishedStore();
+    const env = makeEnv(store);
+
+    await worker.fetch(get("/v1/nearby?lat=53.7996&lon=-1.56&radius=800"), env, ctx);
+    const next = await worker.fetch(get("/v1/stops/450010001"), env, ctx);
+    const body = (await next.json()) as {
+      meta: { diagnostics?: { artifact?: Record<string, unknown> } };
+    };
+    expect(body.meta.diagnostics?.artifact?.diedPhase).toBeUndefined();
   });
 });
 
@@ -472,6 +686,37 @@ describe("cross-origin access from the Pages app", () => {
     expect(response.headers.get("Access-Control-Allow-Origin")).toBe(PAGES_ORIGIN);
     // Caches must not serve one origin's response to another.
     expect(response.headers.get("Vary")).toContain("Origin");
+  });
+
+  /*
+   * The bug: only the success path carried CORS headers. A 404, a 405, a 429 and a 500 were all
+   * returned before or outside the block that added them, so the browser refused the response and
+   * the app reported `net::ERR_FAILED` — no status, no code, nothing to distinguish a Worker
+   * exception from an unreachable API. It is how the deployed live map said "this stop could not
+   * be loaded" while the Worker was answering with a perfectly explicit error.
+   */
+  it.each([
+    ["an unknown endpoint", () => get("/v1/does-not-exist", { Origin: PAGES_ORIGIN }), 404],
+    [
+      "a refused method",
+      () =>
+        new Request("https://api.busstops.example/v1/sources/health", {
+          method: "PUT",
+          headers: { Origin: PAGES_ORIGIN },
+        }),
+      405,
+    ],
+    ["a bad request", () => get("/v1/map?bbox=nonsense", { Origin: PAGES_ORIGIN }), 400],
+  ])("returns CORS headers on %s, so the app can read the error", async (_label, build, status) => {
+    const store = await publishedStore();
+    const response = await worker.fetch(
+      build(),
+      makeEnv(store, { PUBLIC_BASE_URL: PAGES_ORIGIN }),
+      ctx,
+    );
+
+    expect(response.status).toBe(status);
+    expect(response.headers.get("Access-Control-Allow-Origin")).toBe(PAGES_ORIGIN);
   });
 
   it("gives no CORS headers to an origin it was not configured for", async () => {
@@ -614,6 +859,290 @@ describe("Bus Stops Pro", () => {
     const body = (await response.json()) as { data: { provenance: { dataMode: string } } };
     // A published run with zero incidents is a real "nothing to report", not a missing run.
     expect(body.data.provenance.dataMode).toBe("live");
+  });
+
+  it("publishes the figures the closed window actually measured", async () => {
+    /*
+     * The other half of the run-67 finding. The pipeline was publishing nothing because no bucket
+     * had closed; the edge was showing nothing because `ProService` never read a segment figure
+     * at all — it asked the segment-metrics manifest whether it existed and threw the records
+     * away, deliberately, because that dataset is national and unbounded. Five of six headline
+     * figures were hardcoded `null` on the live path, so fixing the pipeline alone would have
+     * changed nothing on screen.
+     *
+     * The national summary is the small artifact that closes that gap, and this is the assertion
+     * that the edge reads it.
+     */
+    const store = await publishedStore();
+    const artifacts = new ArtifactStore(store);
+    await artifacts.publish({
+      dataset: "intelligence/incidents",
+      version: "v1",
+      records: [],
+      schemaVersion: "1.0.0",
+      minimumRecordCount: 0,
+      allowEmpty: true,
+    });
+    await artifacts.publish({
+      dataset: "intelligence/network-summary",
+      version: "v1",
+      records: [
+        {
+          generatedAt: "2026-09-19T12:20:00.000Z",
+          windowStart: "2026-09-19T11:55:00.000Z",
+          windowEnd: "2026-09-19T12:05:00.000Z",
+          closedAt: "2026-09-19T12:15:00.000Z",
+          bucketSeconds: 300,
+          latenessGraceSeconds: 600,
+          segmentsMeasured: 214,
+          closedBuckets: 380,
+          suppressedBuckets: 166,
+          sampleCount: 1840,
+          distinctVehicles: 613,
+          distinctRoutes: 88,
+          medianTraversalSeconds: 44,
+          p90TraversalSeconds: 121,
+          medianSpeedMetresPerSecond: 6.4,
+          meanMatchConfidence: 0.71,
+          coverage: 0.82,
+        },
+      ],
+      schemaVersion: "1.0.0",
+      minimumRecordCount: 1,
+    });
+
+    const response = await worker.fetch(get("/v1/pro/control-tower"), makeEnv(store), ctx);
+    const parsed = ControlTowerResponseSchema.parse(
+      ((await response.json()) as { data: unknown }).data,
+    );
+    expect(parsed.provenance.dataMode).toBe("live");
+
+    const byKey = new Map(parsed.headline.map((entry) => [entry.key, entry]));
+    expect(byKey.get("active_vehicles")?.value).toBe(613);
+    expect(byKey.get("segments_measured")?.value).toBe(214);
+    expect(byKey.get("median_segment_traversal")?.value).toBe(44);
+
+    /*
+     * And the window each of them names is the one that was measured, not the one the reader
+     * asked for. "last 60 minutes" over a figure from a bucket that closed a quarter of an hour
+     * ago claims a currency the pipeline does not have.
+     */
+    expect(byKey.get("active_vehicles")?.window).toContain("12:05");
+    expect(byKey.get("active_vehicles")?.window).not.toContain("last 60 minutes");
+    expect(byKey.get("active_vehicles")?.freshnessSeconds).toBeGreaterThan(0);
+  });
+
+  it("serves a summary published before closedAt existed, rather than throwing", async () => {
+    /*
+     * The two deployables ship separately, and this record is their wire format. `closedAt` was
+     * added to it after artifacts carrying the older shape were already in the bucket — and the
+     * edge parsed it straight into a Date, so the first Pro request after that deploy answered
+     * 500 with "Invalid time value" and kept doing so until the next batch ran.
+     *
+     * It is derivable from the window end and the grace, which is what the batch itself does, so
+     * it is derived. This fixture is deliberately the *old* shape.
+     */
+    const store = await publishedStore();
+    const artifacts = new ArtifactStore(store);
+    await artifacts.publish({
+      dataset: "intelligence/incidents",
+      version: "v1",
+      records: [],
+      schemaVersion: "1.0.0",
+      minimumRecordCount: 0,
+      allowEmpty: true,
+    });
+    await artifacts.publish({
+      dataset: "intelligence/network-summary",
+      version: "v1",
+      records: [
+        {
+          generatedAt: "2026-09-19T12:20:00.000Z",
+          windowStart: "2026-09-19T11:55:00.000Z",
+          windowEnd: "2026-09-19T12:05:00.000Z",
+          // No closedAt: this is what the previous batch version wrote.
+          bucketSeconds: 300,
+          latenessGraceSeconds: 600,
+          segmentsMeasured: 3,
+          closedBuckets: 9,
+          suppressedBuckets: 6,
+          sampleCount: 120,
+          distinctVehicles: 44,
+          distinctRoutes: 7,
+          medianTraversalSeconds: 51,
+          p90TraversalSeconds: 130,
+          medianSpeedMetresPerSecond: 5.1,
+          meanMatchConfidence: 0.7,
+          coverage: 0.9,
+        },
+      ],
+      schemaVersion: "1.0.0",
+      minimumRecordCount: 1,
+    });
+
+    const response = await worker.fetch(get("/v1/pro/control-tower"), makeEnv(store), ctx);
+    expect(response.status).toBe(200);
+    const parsed = ControlTowerResponseSchema.parse(
+      ((await response.json()) as { data: unknown }).data,
+    );
+    const vehicles = parsed.headline.find((entry) => entry.key === "active_vehicles");
+    expect(vehicles?.value).toBe(44);
+    // Derived: 12:05 plus the 600-second grace is 12:15.
+    expect(vehicles?.window).toContain("settled 12:15");
+  });
+
+  it("fills the live control tower, and marks every figure it could not measure", async () => {
+    /*
+     * The recruiter-demo problem: Pro looked *emptier* in live mode than in demo mode. Once any
+     * intelligence artifact exists the page switches to live, where four of the eight headline
+     * figures came back null because the stage that would compute them — a comparison against a
+     * timetable — does not exist. Four empty cards teach a reader nothing about the product.
+     *
+     * So the cards carry examples, and each example is marked. The rule that makes this safe is
+     * per figure, not per page: a measured figure sitting beside an illustration must still be
+     * unambiguously measured, so nothing that came from real observations may carry the flag.
+     */
+    const store = await publishedStore();
+    const artifacts = new ArtifactStore(store);
+    await artifacts.publish({
+      dataset: "intelligence/incidents",
+      version: "v1",
+      records: [],
+      schemaVersion: "1.0.0",
+      minimumRecordCount: 0,
+      allowEmpty: true,
+    });
+
+    const response = await worker.fetch(get("/v1/pro/control-tower"), makeEnv(store), ctx);
+    const parsed = ControlTowerResponseSchema.parse(
+      ((await response.json()) as { data: unknown }).data,
+    );
+    expect(parsed.provenance.dataMode).toBe("live");
+
+    // Every headline card now carries a figure a reader can look at.
+    expect(parsed.headline.length).toBeGreaterThanOrEqual(6);
+    for (const entry of parsed.headline) {
+      expect(entry.value, `${entry.key} has nothing to show`).not.toBeNull();
+    }
+
+    /*
+     * The four that need a timetable comparison are always marked, whatever else is published:
+     * no amount of observation fills them, so they can never become measurements here.
+     */
+    const marked = new Set(
+      parsed.headline.filter((entry) => entry.illustrative).map((entry) => entry.key),
+    );
+    for (const key of ["network_health", "punctuality", "reliability", "median_delay"]) {
+      expect(marked.has(key), `${key} must be marked as an example`).toBe(true);
+    }
+
+    /*
+     * And the one figure here that IS measured must not be marked. `abnormal_disruptions` is
+     * counted from the published incidents, so a badge on it would be a lie in the other
+     * direction — telling a reader a real measurement is an example.
+     */
+    const abnormal = parsed.headline.find((entry) => entry.key === "abnormal_disruptions");
+    expect(abnormal?.illustrative).toBe(false);
+
+    // Route attention is populated rather than an empty list reading as "nothing needs attention".
+    expect(parsed.routesRequiringAttention.length).toBeGreaterThan(0);
+    for (const route of parsed.routesRequiringAttention) {
+      expect(route.metric.illustrative).toBe(true);
+    }
+  });
+
+  it("stops marking a figure as an example the moment it can be measured", async () => {
+    /*
+     * The other direction, and the one that keeps the badge meaningful. Once a closed window is
+     * published, buses observed and the two segment figures are real measurements and must lose
+     * the badge — otherwise the mark degrades into decoration that appears on everything and a
+     * reader learns to ignore it.
+     */
+    const store = await publishedStore();
+    const artifacts = new ArtifactStore(store);
+    await artifacts.publish({
+      dataset: "intelligence/incidents",
+      version: "v1",
+      records: [],
+      schemaVersion: "1.0.0",
+      minimumRecordCount: 0,
+      allowEmpty: true,
+    });
+    await artifacts.publish({
+      dataset: "intelligence/network-summary",
+      version: "v1",
+      records: [
+        {
+          generatedAt: "2026-09-19T12:20:00.000Z",
+          windowStart: "2026-09-19T11:55:00.000Z",
+          windowEnd: "2026-09-19T12:05:00.000Z",
+          closedAt: "2026-09-19T12:15:00.000Z",
+          bucketSeconds: 300,
+          latenessGraceSeconds: 600,
+          segmentsMeasured: 214,
+          closedBuckets: 380,
+          suppressedBuckets: 166,
+          sampleCount: 1840,
+          distinctVehicles: 613,
+          distinctRoutes: 88,
+          medianTraversalSeconds: 44,
+          p90TraversalSeconds: 121,
+          medianSpeedMetresPerSecond: 6.4,
+          meanMatchConfidence: 0.71,
+          coverage: 0.82,
+        },
+      ],
+      schemaVersion: "1.0.0",
+      minimumRecordCount: 1,
+    });
+
+    const response = await worker.fetch(get("/v1/pro/control-tower"), makeEnv(store), ctx);
+    const parsed = ControlTowerResponseSchema.parse(
+      ((await response.json()) as { data: unknown }).data,
+    );
+    const byKey = new Map(parsed.headline.map((entry) => [entry.key, entry]));
+
+    for (const key of ["active_vehicles", "segments_measured", "median_segment_traversal"]) {
+      expect(byKey.get(key)?.illustrative, `${key} is measured and must not be marked`).toBe(false);
+    }
+    // And the real numbers, not the examples.
+    expect(byKey.get("active_vehicles")?.value).toBe(613);
+    // The timetable four are still examples, because a summary does not give them a timetable.
+    expect(byKey.get("punctuality")?.illustrative).toBe(true);
+  });
+
+  it("still tells a reader that no amount of observation will fill these figures", async () => {
+    /*
+     * This used to assert that punctuality, reliability, delay and network health were
+     * *suppressed* with a reason saying the pipeline does not read the timetable. They now carry
+     * an example value instead, because four blank cards taught a reader nothing — but the
+     * original point must survive the change, and it is the more important half: a reader must
+     * not come away thinking more data would fill them.
+     *
+     * So the guarantee moved rather than went. Each one is marked as an example, and each one's
+     * definition still says outright that this pipeline measures road-segment traversals and
+     * does not read the timetable.
+     */
+    const store = await publishedStore();
+    const artifacts = new ArtifactStore(store);
+    await artifacts.publish({
+      dataset: "intelligence/incidents",
+      version: "v1",
+      records: [],
+      schemaVersion: "1.0.0",
+      minimumRecordCount: 0,
+      allowEmpty: true,
+    });
+
+    const response = await worker.fetch(get("/v1/pro/control-tower"), makeEnv(store), ctx);
+    const parsed = ControlTowerResponseSchema.parse(
+      ((await response.json()) as { data: unknown }).data,
+    );
+    for (const key of ["punctuality", "reliability", "median_delay"]) {
+      const found = parsed.headline.find((entry) => entry.key === key);
+      expect(found?.illustrative, key).toBe(true);
+      expect(found?.definition, key).toMatch(/does not read the timetable/);
+    }
   });
 
   it("never publishes a figure without its denominator, window and coverage", async () => {
@@ -780,10 +1309,61 @@ describe("GET /v1/journeys", () => {
     expect(parsed.data!.data.unavailableReason).not.toBeNull();
   });
 
-  it("plans a journey once the journey tiles are published", async () => {
+  /*
+   * The failure this guard exists for, reconstructed.
+   *
+   * The trip grid moved from half a degree to a quarter. The Worker asked for Leeds at `215_-7`,
+   * the artifact held it at `107_-4`, three shards came back absent, and the planner reported
+   * "No timetable data is published for this area yet" — of a complete national timetable, a
+   * quarter of a mile from where it was looking. An unreadable artifact must not be describable
+   * as an empty country.
+   */
+  it("refuses an artifact stored in a layout it cannot read, rather than calling the area empty", async () => {
     const store = await publishedStore();
     const network = completeNetwork();
-    await publishJourneyTiles(store, network, { version: "v1" });
+    await publishPatternTrips(store, network);
+
+    // Republish the index declaring the grid this reader no longer uses. Written through the
+    // artifact store rather than over the object, so the manifest's own content hash stays honest
+    // and the Worker reads it exactly as it would read a real publish.
+    const artifacts = new ArtifactStore(store);
+    const current = await artifacts.readCurrent<NetworkIndexRecord>(SHARDED.index);
+    const record = current.records[0]!;
+    await artifacts.publish<NetworkIndexRecord>({
+      dataset: SHARDED.index,
+      version: `${record.version}-halfdegree`,
+      records: [{ ...record, layout: { ...currentArtifactLayout(), tripTileDegrees: 0.5 } }],
+      schemaVersion: current.manifest!.schemaVersion,
+      minimumRecordCount: 1,
+    });
+
+    resetWorkerState();
+    const response = await worker.fetch(
+      get("/v1/journeys?fromLat=53.795&fromLon=-1.545&toLat=53.80&toLon=-1.56"),
+      makeEnv(store),
+      ctx,
+    );
+    const body = (await response.json()) as {
+      data: {
+        options: unknown[];
+        unavailableReason: string | null;
+        diagnostics?: { code: string; layout: string; shardsMissing: number };
+      };
+    };
+
+    expect(body.data.options).toEqual([]);
+    expect(body.data.diagnostics?.code).toBe("artifact_format_mismatch");
+    expect(body.data.diagnostics?.layout).toBe("mismatch");
+    // Refused before a single shard was asked for: it never went looking in the wrong place.
+    expect(body.data.diagnostics?.shardsMissing).toBe(0);
+    expect(body.data.unavailableReason).toContain("layout this server cannot read");
+    expect(body.data.unavailableReason).not.toContain("No timetable data is published");
+  });
+
+  it("plans a journey once the pattern trips are published", async () => {
+    const store = await publishedStore();
+    const network = completeNetwork();
+    await publishPatternTrips(store, network);
 
     // Plan between the ends of a real published pattern, so there is a journey to find.
     const pattern = network.patterns[0]!;
@@ -1008,6 +1588,53 @@ describe("GET /v1/sources/health", () => {
     expect(body.data.governorState).toBe("green");
     expect(body.data.safeMode).toBe(false);
   });
+
+  /*
+   * Four deployment verifications in a row reported "no sources reported" against a deployment
+   * whose live vehicles were working. The clients are built lazily by whichever request first
+   * needs one, so a status request that arrived before any map request found an empty map and
+   * answered with an empty array — which reads as an outage and was a cold isolate.
+   */
+  it("names every source this deployment covers, before anything has asked one", async () => {
+    const store = await publishedStore();
+    const response = await worker.fetch(get("/v1/sources/health"), makeEnv(store), ctx);
+    const body = (await response.json()) as {
+      data: { sources: Array<{ source: string; coverageArea: string }> };
+    };
+    const named = body.data.sources.map((source) => source.source);
+    expect(named).toContain("bods");
+    expect(named).toContain("tfl");
+  });
+});
+
+describe("which way a journey gets its patterns", () => {
+  /*
+   * Runs 45, 46 and 47 all refused the same journey on the index path, and run 47 measured why:
+   * 91 buckets, 12.23 MiB — the request's whole byte budget — for 112 of 197 patterns. A bucket
+   * holds every pattern in England whose id hashes to it, so a corridor reads it almost entirely
+   * to discard it. Run 44 planned the same journey from one corridor tile.
+   */
+  it("reads the corridor's own tiles, never a bucket per pattern, and says which", async () => {
+    const store = await publishedStore();
+    const response = await worker.fetch(
+      get(
+        "/v1/journeys?fromLat=53.795&fromLon=-1.548&toLat=53.801&toLon=-1.540&when=2026-09-04T08:00:00.000Z",
+      ),
+      makeEnv(store),
+      ctx,
+    );
+    const body = (await response.json()) as {
+      meta: { diagnostics?: { patternSource?: string; corridorPatternTiles?: number } };
+    };
+    /*
+     * Either geographic path is correct; the hashed one is not. `index-tiles` reads the pattern
+     * index filed by where a pattern runs, `tiles` reads the geometry tiles — both are the
+     * corridor's own strip of the country. `index-hashed` is the layout that scattered a
+     * corridor's patterns across 512 buckets and spent twelve mebibytes resolving half of them.
+     */
+    expect(["index-tiles", "tiles"]).toContain(body.meta.diagnostics?.patternSource);
+    expect(body.meta.diagnostics?.corridorPatternTiles).toBeLessThanOrEqual(4);
+  });
 });
 
 describe("unknown routes", () => {
@@ -1128,5 +1755,370 @@ describe("R2 binding adapter", () => {
 
     await binding.delete("a/b.json");
     expect(await binding.get("a/b.json")).toBeNull();
+  });
+});
+
+/*
+ * The run 26 mismatch, preserved.
+ *
+ * On 2026-09-04 at 09:38 UTC, one request from a GitHub runner straight to the BODS datafeed and
+ * one request through the deployed Worker were made in the same second, for the same four
+ * viewports. BODS answered with 237 vehicles for Leeds, 364 for Manchester, 338 for Birmingham
+ * and 233 for Bristol. The deployment answered zero for all four, and said nothing about why.
+ *
+ * Two separate defects are pinned here, because the second is what made the first so expensive:
+ *
+ *  1. Given a feed carrying those vehicles, the Worker must publish them — capped, but never
+ *     dropped, and never silently.
+ *  2. When a viewport genuinely has no buses, the Worker must be able to say which of the four
+ *     things happened: the request failed, the feed was empty, everything in it was rejected, or
+ *     it was fine. "Zero, unexplained" is the state this build spent a day in.
+ */
+describe("live vehicles: the run 26 mismatch", () => {
+  const AREAS = [
+    {
+      name: "Leeds",
+      bbox: "-1.62,53.75,-1.46,53.84",
+      at: { lat: 53.8, lon: -1.54 },
+      observed: 237,
+    },
+    {
+      name: "Manchester",
+      bbox: "-2.32,53.42,-2.16,53.52",
+      at: { lat: 53.48, lon: -2.24 },
+      observed: 364,
+    },
+    {
+      name: "Birmingham",
+      bbox: "-1.96,52.42,-1.8,52.52",
+      at: { lat: 52.48, lon: -1.9 },
+      observed: 338,
+    },
+    {
+      name: "Bristol",
+      bbox: "-2.66,51.42,-2.5,51.51",
+      at: { lat: 51.45, lon: -2.59 },
+      observed: 233,
+    },
+  ];
+
+  const NOW = new Date("2026-09-04T09:38:48.000Z");
+
+  /** A feed of `count` vehicles inside one viewport, recorded a few seconds ago. */
+  function feedFor(area: (typeof AREAS)[number]): string {
+    const recordedAt = new Date(NOW.getTime() - 6_000).toISOString();
+    const activities = Array.from({ length: area.observed }, (_, index) => {
+      // Spread them over the box so none lands on an edge and every one is plausibly in England.
+      const lat = area.at.lat + ((index % 20) - 10) * 0.001;
+      const lon = area.at.lon + ((Math.floor(index / 20) % 20) - 10) * 0.001;
+      return `<VehicleActivity>
+        <RecordedAtTime>${recordedAt}</RecordedAtTime>
+        <MonitoredVehicleJourney>
+          <LineRef>${(index % 90) + 1}</LineRef>
+          <PublishedLineName>${(index % 90) + 1}</PublishedLineName>
+          <OperatorRef>OP${index % 7}</OperatorRef>
+          <DestinationName>${area.name} Interchange</DestinationName>
+          <VehicleLocation><Longitude>${lon.toFixed(5)}</Longitude><Latitude>${lat.toFixed(5)}</Latitude></VehicleLocation>
+          <Bearing>${index % 360}</Bearing>
+          <VehicleRef>${area.name.toUpperCase()}-${10000 + index}</VehicleRef>
+        </MonitoredVehicleJourney>
+      </VehicleActivity>`;
+    }).join("\n");
+
+    return `<?xml version="1.0" encoding="UTF-8"?>
+<Siri xmlns="http://www.siri.org.uk/siri" version="2.0">
+  <ServiceDelivery>
+    <ResponseTimestamp>${NOW.toISOString()}</ResponseTimestamp>
+    <ProducerRef>DepartmentForTransport</ProducerRef>
+    <VehicleMonitoringDelivery version="2.0">
+      <ResponseTimestamp>${NOW.toISOString()}</ResponseTimestamp>
+      ${activities}
+    </VehicleMonitoringDelivery>
+  </ServiceDelivery>
+</Siri>`;
+  }
+
+  async function envServing(body: string, status = 200) {
+    const store = await publishedStore();
+    const env = makeEnv(store);
+    resetWorkerState();
+    initialiseWorker(
+      env,
+      () => NOW,
+      (async () => new Response(body, { status })) as unknown as typeof fetch,
+    );
+    return env;
+  }
+
+  it.each(AREAS)("publishes the $observed vehicles BODS returned for $name", async (area) => {
+    const env = await envServing(feedFor(area));
+    const response = await worker.fetch(get(`/v1/map?bbox=${area.bbox}&zoom=14`), env, ctx);
+    const body = (await response.json()) as {
+      data: { vehicles: unknown[]; truncated: { vehicles: boolean } };
+    };
+
+    // The map caps a viewport at MAX_VEHICLES and says so, rather than quietly shipping fewer.
+    const expected = Math.min(area.observed, MAP_QUERY_LIMITS.maxVehicles);
+    expect(body.data.vehicles.length).toBe(expected);
+    expect(body.data.truncated.vehicles).toBe(area.observed > expected);
+  });
+
+  it.each(AREAS)("accounts for every one of $name's records in the diagnostics", async (area) => {
+    const env = await envServing(feedFor(area));
+    const response = await worker.fetch(get(`/v1/diagnostics/live?bbox=${area.bbox}`), env, ctx);
+    const body = (await response.json()) as {
+      data: {
+        vehiclesReturned: number;
+        diagnostics: Array<{
+          source: string;
+          outcome: string;
+          accepted: number;
+          rawRecords: number;
+        }>;
+      };
+    };
+
+    const bods = body.data.diagnostics.find((entry) => entry.source === "bods")!;
+    expect(bods.outcome).toBe("ok");
+    expect(bods.accepted).toBe(area.observed);
+    expect(bods.rawRecords).toBe(area.observed);
+    // The diagnostics count observations, not the capped map payload.
+    expect(body.data.vehiclesReturned).toBe(area.observed);
+  });
+
+  it.each([
+    {
+      label: "the request was refused",
+      body: "no",
+      status: 503,
+      outcome: "request_failed",
+    },
+    {
+      label: "the feed was empty",
+      body: `<?xml version="1.0" encoding="UTF-8"?>
+<Siri xmlns="http://www.siri.org.uk/siri" version="2.0"><ServiceDelivery>
+  <ResponseTimestamp>${NOW.toISOString()}</ResponseTimestamp>
+  <VehicleMonitoringDelivery version="2.0"/>
+</ServiceDelivery></Siri>`,
+      status: 200,
+      outcome: "empty_feed",
+    },
+    {
+      label: "every record was too old to use",
+      body: `<?xml version="1.0" encoding="UTF-8"?>
+<Siri xmlns="http://www.siri.org.uk/siri" version="2.0"><ServiceDelivery>
+  <ResponseTimestamp>${NOW.toISOString()}</ResponseTimestamp>
+  <VehicleMonitoringDelivery version="2.0"><VehicleActivity>
+    <RecordedAtTime>2026-09-04T08:00:00.000Z</RecordedAtTime>
+    <MonitoredVehicleJourney>
+      <VehicleLocation><Longitude>-1.54000</Longitude><Latitude>53.80000</Latitude></VehicleLocation>
+      <VehicleRef>LEEDS-1</VehicleRef>
+    </MonitoredVehicleJourney>
+  </VehicleActivity></VehicleMonitoringDelivery>
+</ServiceDelivery></Siri>`,
+      status: 200,
+      outcome: "all_rejected",
+    },
+  ])("says $label rather than reporting an unexplained zero", async (scenario) => {
+    const env = await envServing(scenario.body, scenario.status);
+    const response = await worker.fetch(
+      get(`/v1/diagnostics/live?bbox=${AREAS[0]!.bbox}`),
+      env,
+      ctx,
+    );
+    const body = (await response.json()) as {
+      data: { vehiclesReturned: number; diagnostics: Array<{ source: string; outcome: string }> };
+    };
+
+    expect(body.data.vehiclesReturned).toBe(0);
+    expect(body.data.diagnostics.find((entry) => entry.source === "bods")!.outcome).toBe(
+      scenario.outcome,
+    );
+  });
+});
+
+/**
+ * The stop board, from published shards to response.
+ *
+ * The failure this pins is the one that made every stop in England answer "no departures" with a
+ * 200 and the word `normal`: a whole-tile read inside a `catch` that returned an empty array. The
+ * three cases below are the answers that used to be indistinguishable from one another.
+ *
+ * Times are relative to the real clock because the stop handler reads `new Date()` rather than an
+ * injected one. Pinning a fixed instant here would test a board that is always hours out of its
+ * own window, which is how the first version of this test passed nothing at all.
+ */
+describe("the departure board reads the published index", () => {
+  const ATCO = "450010001";
+  const now = new Date();
+  const today = now.toISOString().slice(0, 10);
+
+  function departureRow(minutesFromNow: number, route: string): DepartureRow {
+    return {
+      s: ATCO,
+      t: Math.floor(now.getTime() / 1000) + minutesFromNow * 60,
+      r: route,
+      d: "Armley Road",
+      j: `VJ-${route}-${minutesFromNow}`,
+      p: "00000000-0000-5000-8000-000000000002",
+      k: 1,
+    };
+  }
+
+  async function storeWithDepartures(rows: DepartureRow[]): Promise<InMemoryObjectStore> {
+    const store = await publishedStore();
+    const byShard = new Map<string, DepartureRow[]>();
+    for (const row of rows) {
+      const dataset = departureShardDataset(today, departureBucketFor(row.s));
+      byShard.set(dataset, [...(byShard.get(dataset) ?? []), row]);
+    }
+    for (const [dataset, shardRows] of byShard) {
+      await store.put(objectKeyFor(dataset, "v1"), encodeDepartureShard(today, shardRows));
+    }
+    return store;
+  }
+
+  it("shows the rows that are due, in order, with what a board renders", async () => {
+    const store = await storeWithDepartures([departureRow(25, "16"), departureRow(6, "72")]);
+    const env = makeEnv(store);
+    resetWorkerState();
+
+    const response = await worker.fetch(get(`/v1/stops/${ATCO}`), env, ctx);
+    const body = (await response.json()) as {
+      meta: { coverage: number; degradation: string };
+      data: { departures: Array<Record<string, unknown>> };
+    };
+
+    expect(response.status).toBe(200);
+    const board = body.data.departures;
+    expect(board).toHaveLength(2);
+    // Soonest first, and every field an arrival board renders a row from.
+    expect(board.map((row) => row.serviceRoutePublicName)).toEqual(["72", "16"]);
+    for (const row of board) {
+      expect(row.destinationName).toBe("Armley Road");
+      expect(typeof row.scheduledTime).toBe("string");
+      expect(row.liveState).toBe("scheduled_only");
+      expect(row.routePatternId).toBe("00000000-0000-5000-8000-000000000002");
+    }
+  });
+
+  it("never reports our own missing timetable as 'no departures'", async () => {
+    /*
+     * The recruiter-demo regression, in one test.
+     *
+     * The national build publishes exactly `[today, tomorrow]` of departure shards, so an
+     * artifact more than a day or two old has no shard for today and every stop outside London
+     * reads a key that is simply absent. The board showed "No departures in the next hour" —
+     * a statement about buses, which a passenger reads as "don't wait here" — when the true
+     * statement was about us.
+     *
+     * Run 73 is the proof that the code was never wrong: a same-day artifact returned real
+     * departures at eight stops across England, and the identical code returned none four days
+     * later. So the fix is not to the reader; it is to stop the board claiming something it
+     * cannot know.
+     */
+    const store = await publishedStore(); // published network, but no departure shard for today
+    resetWorkerState();
+
+    const response = await worker.fetch(get(`/v1/stops/${ATCO}`), makeEnv(store), ctx);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      data: {
+        departures: unknown[];
+        timetableCoverage?: { read: number; missing: number; serviceDates: string[] };
+      };
+    };
+
+    expect(body.data.departures).toHaveLength(0);
+    // The shards were asked for and were not there. That is the fact the board needs.
+    expect(body.data.timetableCoverage).toBeDefined();
+    expect(body.data.timetableCoverage!.read).toBe(0);
+    expect(body.data.timetableCoverage!.missing).toBeGreaterThan(0);
+    // And it names which days it asked about, so the gap can be described precisely.
+    expect(body.data.timetableCoverage!.serviceDates).toContain(today);
+  });
+
+  it("says nothing is due only when the timetable is actually there", async () => {
+    /*
+     * The other half, and the one that stops the fix becoming its own lie: with a shard
+     * published for today that genuinely holds nothing inside the window, "no departures" is
+     * the correct and useful answer, and the board must still be allowed to say it.
+     */
+    const store = await storeWithDepartures([departureRow(600, "16")]); // far outside the window
+    resetWorkerState();
+
+    const response = await worker.fetch(get(`/v1/stops/${ATCO}`), makeEnv(store), ctx);
+    const body = (await response.json()) as {
+      data: {
+        departures: unknown[];
+        timetableCoverage?: { read: number; missing: number };
+      };
+    };
+
+    expect(body.data.departures).toHaveLength(0);
+    // A shard answered, so this is a quiet stop rather than a missing timetable.
+    expect(body.data.timetableCoverage!.read).toBeGreaterThan(0);
+  });
+
+  it("returns the departures when the timetable for today is published", async () => {
+    // The acceptance condition stated plainly: stop exists + future journeys in the index
+    // ⇒ the board must not be empty.
+    const store = await storeWithDepartures([departureRow(4, "4"), departureRow(11, "16A")]);
+    resetWorkerState();
+
+    const response = await worker.fetch(get(`/v1/stops/${ATCO}`), makeEnv(store), ctx);
+    const body = (await response.json()) as {
+      data: { departures: Array<{ serviceRoutePublicName: string }> };
+    };
+    expect(body.data.departures.length).toBeGreaterThan(0);
+    expect(body.data.departures.map((row) => row.serviceRoutePublicName)).toEqual(["4", "16A"]);
+  });
+
+  it("says the timetable could not be read rather than showing an empty board", async () => {
+    const store = await storeWithDepartures([departureRow(6, "72")]);
+    const bucket = bucketFrom(store);
+    // The shard exists and cannot be read: exactly the case the old `catch` turned into silence.
+    const env = makeEnv(store, {
+      ARTIFACTS: {
+        ...bucket,
+        get: async (key: string) => {
+          if (key.includes("network/departures/")) throw new Error("R2 is unavailable");
+          return bucket.get(key);
+        },
+      } as R2BucketLike,
+    });
+
+    resetWorkerState();
+    const response = await worker.fetch(get(`/v1/stops/${ATCO}`), env, ctx);
+    const body = (await response.json()) as {
+      meta: { coverage: number; degradation: string };
+      data: { departures: unknown[] };
+    };
+
+    expect(response.status).toBe(200);
+    expect(body.data.departures).toEqual([]);
+    /*
+     * Coverage zero and a degraded response. The honest statement is that we cannot say what
+     * calls here — not that nothing does — and these two fields are the difference.
+     */
+    expect(body.meta.coverage).toBe(0);
+    expect(body.meta.degradation).not.toBe("normal");
+  });
+
+  it("treats a window with no shard as a quiet hour rather than a failure", async () => {
+    const store = await publishedStore();
+    const env = makeEnv(store);
+    resetWorkerState();
+
+    const response = await worker.fetch(get(`/v1/stops/${ATCO}`), env, ctx);
+    const body = (await response.json()) as {
+      meta: { coverage: number };
+      data: { departures: unknown[] };
+    };
+
+    expect(response.status).toBe(200);
+    expect(body.data.departures).toEqual([]);
+    // Not zero: nothing failed, there is simply nothing due.
+    expect(body.meta.coverage).toBeGreaterThan(0);
   });
 });

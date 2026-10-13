@@ -28,7 +28,9 @@ export type IdentityNamespace =
   | "journey"
   | "segment"
   | "incident"
-  | "vehicle";
+  | "vehicle"
+  /** A named place from OpenStreetMap — a station, a cathedral, a shopping centre. */
+  | "place";
 
 /**
  * Stable UUID for a natural key within a namespace. Format-compatible with UUIDv5 (version

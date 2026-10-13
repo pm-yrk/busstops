@@ -4,7 +4,14 @@ import { LoadingBus } from "../components/LoadingBus.js";
 import { EmptyState, ErrorState } from "../components/primitives.js";
 import { apiClient } from "../lib/api.js";
 import { useFetch } from "../lib/use-fetch.js";
-import { DataModeBanner, ProMetricTile, ScopeFilters } from "./ProPrimitives.js";
+import {
+  DataModeBanner,
+  IllustrativeBanner,
+  ProMetricTile,
+  ProTableWrap,
+  ScopeFilters,
+} from "./ProPrimitives.js";
+import { PixelSectionHeading } from "../components/pixel/PixelSectionHeading.js";
 
 /**
  * Analytics (docs/10_BUS_STOPS_PRO.md).
@@ -45,6 +52,9 @@ export function AnalyticsPage() {
   return (
     <>
       <DataModeBanner provenance={analytics.provenance} />
+      <IllustrativeBanner
+        metrics={analytics.sections.flatMap((section) => section.metrics ?? [])}
+      />
       <ScopeFilters windowMinutes={windowMinutes} onWindowChange={setWindowMinutes} />
 
       {analytics.sections.length > 0 ? (
@@ -64,7 +74,9 @@ export function AnalyticsPage() {
 function Section({ section }: { section: AnalyticsSection }) {
   return (
     <section className="pro-section" aria-labelledby={`analytics-${section.key}`}>
-      <h2 id={`analytics-${section.key}`}>{section.title}</h2>
+      <PixelSectionHeading mark="chart" id={`analytics-${section.key}`}>
+        {section.title}
+      </PixelSectionHeading>
       <p>{section.description}</p>
 
       {section.metrics.length > 0 ? (
@@ -76,7 +88,7 @@ function Section({ section }: { section: AnalyticsSection }) {
       ) : null}
 
       {section.columns.length > 0 && section.rows.length > 0 ? (
-        <div className="pro-table-wrap">
+        <ProTableWrap label={section.title}>
           <table className="pro-table">
             <caption className="visually-hidden">{section.title}</caption>
             <thead>
@@ -98,7 +110,7 @@ function Section({ section }: { section: AnalyticsSection }) {
               ))}
             </tbody>
           </table>
-        </div>
+        </ProTableWrap>
       ) : null}
 
       {/* Rendered verbatim. Paraphrasing these sentences would change what is being claimed. */}

@@ -23,6 +23,8 @@ import {
   locatorBucketFor,
   patternTileDataset,
   searchPrefixDataset,
+  currentArtifactLayout,
+  searchPartKey,
   searchPrefixFor,
   searchTileDataset,
   stopLocatorDataset,
@@ -30,6 +32,24 @@ import {
   tileForSearchEntry,
   tileForStop,
   tilesForPattern,
+  ROUTE_PATTERN_BUCKETS,
+  routePatternsBucketFor,
+  routePatternsDataset,
+  routePatternsShardLines,
+  PATTERN_INDEX_BUCKETS,
+  patternIndexBucketFor,
+  patternIndexDataset,
+  patternIndexTileDataset,
+  patternIndexShardLines,
+  stopRoutesDataset,
+  type PatternIndexRow,
+  type StopRoutesRow,
+  type MapStopRow,
+  mapStopsDataset,
+  type StopDetailRow,
+  stopDetailDataset,
+  stopDetailBucketFor,
+  type RoutePatternsRow,
 } from "./shards.js";
 
 /**
@@ -61,6 +81,17 @@ export interface ShardPublishResult {
    * real national data, not estimating from record counts.
    */
   largest: Array<{ dataset: string; bytes: number; records: number }>;
+  /**
+   * How long each family took, and how many objects it wrote.
+   *
+   * The report said how many objects a build published in total and nothing about where the time
+   * went, so a bootstrap that ran an hour longer than the one before it could only be explained by
+   * guessing which family had grown. These writes are the bulk of the build's wall clock, and the
+   * free tier is counted in operations, so both numbers are worth keeping.
+   */
+  families: Array<{ name: string; objects: number; failed: number; bytes: number; ms: number }>;
+  /** Total bytes this publish occupies, counted as it was written. */
+  publishedBytes: number;
 }
 
 export interface ShardPublishOptions {
@@ -95,6 +126,51 @@ function utf8Bytes(value: string): number {
   return nodeBuffer ? nodeBuffer.byteLength(value, "utf8") : encoder!.encode(value).length;
 }
 
+/**
+ * R2's free storage allowance, and what one publish is allowed to occupy inside it.
+ *
+ * The bucket went over ten gigabytes in run 53 and retention could only claw back four objects a
+ * second, so a publish that does not know its own size is how it happens again. Four versions of
+ * headroom: retention keeps the live one and prunes behind it, and a run that cannot finish its
+ * pruning must still leave room for the next publish.
+ */
+export const FREE_STORAGE_BYTES = 10 * 1024 * 1024 * 1024;
+export const MAX_PUBLISH_BYTES = FREE_STORAGE_BYTES / 4;
+
+export interface StoragePlan {
+  families: Array<{ name: string; objects: number; bytes: number }>;
+  objects: number;
+  bytes: number;
+  limitBytes: number;
+  withinLimit: boolean;
+}
+
+/**
+ * What this publish will occupy, measured before a byte of it is written.
+ *
+ * The lines are built to be measured rather than estimated from record counts: a `Stop` and a map
+ * projection row differ by a factor of four, so a count says nothing useful about bytes. The
+ * caller decides what to do about a plan that does not fit; this only reports it.
+ */
+export function planStorage(families: Array<{ name: string; lines: string[][] }>): StoragePlan {
+  const measured = families.map((family) => ({
+    name: family.name,
+    objects: family.lines.filter((lines) => lines.length > 0).length,
+    bytes: family.lines.reduce(
+      (total, lines) => total + lines.reduce((n, line) => n + utf8Bytes(line) + 1, 0),
+      0,
+    ),
+  }));
+  const bytes = measured.reduce((total, family) => total + family.bytes, 0);
+  return {
+    families: measured,
+    objects: measured.reduce((total, family) => total + family.objects, 0),
+    bytes,
+    limitBytes: MAX_PUBLISH_BYTES,
+    withinLimit: bytes <= MAX_PUBLISH_BYTES,
+  };
+}
+
 export async function publishNetworkShards(
   store: ObjectStore,
   network: BuiltNetwork,
@@ -114,8 +190,29 @@ export async function publishNetworkShards(
    * gigabytes, and an earlier version of this function died there.
    */
   let published = 0;
-  const publishFamily = async (shards: Shard[]): Promise<void> => {
+  /*
+   * How long each family took and how many objects it wrote.
+   *
+   * The report said how many objects a build published in total and nothing about where the time
+   * went, so a bootstrap that ran an hour longer than the one before it could only be explained
+   * by guessing which family had grown. These writes are the bulk of the build's wall clock and
+   * the free tier is counted in operations, so both numbers are worth keeping.
+   */
+  const families: ShardPublishResult["families"] = [];
+  /*
+   * What this publish is occupying, counted as it goes.
+   *
+   * Exact rather than estimated: a `Stop` and a map-projection row differ by a factor of four, so
+   * a record count says nothing useful about bytes. The index is written last and atomically, so a
+   * build that runs past the ceiling is abandoned before it becomes live and the previous artifact
+   * keeps serving — which is the only safe way to fail, given the bucket went over ten gigabytes
+   * in run 53 and retention could only remove four objects a second.
+   */
+  let publishedBytes = 0;
+  const publishFamily = async (name: string, shards: Shard[]): Promise<void> => {
+    const began = Date.now();
     let biggest: ShardPublishResult["largest"][number] | null = null;
+    let familyBytes = 0;
 
     const outcomes = await mapWithConcurrency(shards, TILE_PUBLISH_CONCURRENCY, async (shard) => {
       if (shard.lines.length === 0) return { dataset: shard.dataset, error: null };
@@ -147,6 +244,7 @@ export async function publishNetworkShards(
       if (!biggest || bytes > biggest.bytes) {
         biggest = { dataset: shard.dataset, bytes, records: kept.length };
       }
+      familyBytes += bytes;
 
       try {
         /*
@@ -173,40 +271,143 @@ export async function publishNetworkShards(
       }
     });
 
+    let familyFailed = 0;
     for (const outcome of outcomes) {
       if (outcome.error === null) published += 1;
-      else failed.push({ dataset: outcome.dataset, reason: outcome.error });
+      else {
+        familyFailed += 1;
+        failed.push({ dataset: outcome.dataset, reason: outcome.error });
+      }
     }
     if (biggest) largest.push(biggest);
+    families.push({
+      name,
+      objects: shards.length,
+      failed: familyFailed,
+      bytes: familyBytes,
+      ms: Date.now() - began,
+    });
+    publishedBytes += familyBytes;
   };
 
   const stopShards = groupStopsByTile(network);
   const stopTiles = [...stopShards.keys()].sort();
   await publishFamily(
+    "stops",
     [...stopShards].map(([tile, records]) => shardOf(stopTileDataset(tile), records)),
   );
   stopShards.clear();
 
   const locatorShards = groupLocators(network);
   await publishFamily(
+    "locators",
     [...locatorShards].map(([bucket, records]) => shardOf(stopLocatorDataset(bucket), records)),
   );
   locatorShards.clear();
 
+  const stopDetailShards = groupStopDetail(network);
+  const stopDetailBuckets = [...stopDetailShards.keys()].sort((a, b) => a - b);
+  await publishFamily(
+    "stop-detail",
+    [...stopDetailShards].map(([bucket, rows]) => shardOf(stopDetailDataset(bucket), rows)),
+  );
+  stopDetailShards.clear();
+
   const patternShards = groupPatternsByTile(network);
   const patternTiles = [...patternShards.keys()].sort();
   await publishFamily(
+    "patterns",
     [...patternShards].map(([tile, lines]) => shardOf(patternTileDataset(tile), lines)),
   );
   patternShards.clear();
 
-  await publishFamily([shardOf(SHARDED.routeTiles, routeTileRecords(network))]);
+  await publishFamily("route-tiles", [shardOf(SHARDED.routeTiles, routeTileRecords(network))]);
+
+  /*
+   * The route-pattern index: one line per service, carrying that service's whole route.
+   *
+   * Route detail asked the geographic tiles for this, which meant opening every tile a service
+   * crossed and parsing every other route in each of them. A cross-country service took the
+   * isolate over its limit doing it. Here the whole route is one line of one object.
+   */
+  const routePatternShards = groupPatternsByService(network);
+  const routePatternBuckets = ROUTE_PATTERN_BUCKETS;
+  const routePatternShardList = [...routePatternShards.keys()].sort((a, b) => a - b);
+  await publishFamily(
+    "route-patterns",
+    [...routePatternShards].map(([bucket, rows]) => ({
+      dataset: routePatternsDataset(bucket),
+      lines: routePatternsShardLines(rows),
+      records: rows.length,
+    })),
+  );
+  routePatternShards.clear();
+
+  /*
+   * The route names each stop has on it, filed on the stop grid.
+   *
+   * The map was answering "what routes call here" by reading pattern tiles, which carry geometry:
+   * a dense one is 3,935,975 bytes against a three-mebibyte cap, so in Leeds the read truncated on
+   * its first tile every time and every stop came back with no services on it. This is the answer
+   * published as the answer — a list of names is tens of bytes where a polyline is megabytes — so
+   * the map reads the tiles it was already reading and never opens a pattern tile at all.
+   */
+  const namesByStop = routeNamesByStop(network);
+
+  const mapStopShards = groupMapStopsByTile(network, namesByStop);
+  const mapStopTiles = [...mapStopShards.keys()].sort();
+  await publishFamily(
+    "map-stops",
+    [...mapStopShards].map(([tile, rows]) => shardOf(mapStopsDataset(tile), rows)),
+  );
+  mapStopShards.clear();
+
+  const stopRouteShards = groupStopRoutesByTile(network, namesByStop);
+  const stopRouteTiles = [...stopRouteShards.keys()].sort();
+  await publishFamily(
+    "stop-routes",
+    [...stopRouteShards].map(([tile, records]) => shardOf(stopRoutesDataset(tile), records)),
+  );
+  stopRouteShards.clear();
+
+  /*
+   * And every pattern by its own id, without its geometry.
+   *
+   * The planner reads `pattern.stopSequence` and never touches a shape, and it was getting that
+   * from the corridor's pattern tiles against the same cap — so a Leeds corridor came back
+   * incomplete and the planner refused to plan rather than plan on half of one. Trips name their
+   * pattern, so the planner can ask for exactly the patterns its trips referenced.
+   */
+  const patternIndexShardMap = groupPatternIndexByBucket(network);
+  const patternIndexShards = [...patternIndexShardMap.keys()].sort((a, b) => a - b);
+  await publishFamily(
+    "pattern-index-hashed",
+    [...patternIndexShardMap].map(([bucket, rows]) => ({
+      dataset: patternIndexDataset(bucket),
+      lines: patternIndexShardLines(rows),
+      records: rows.length,
+    })),
+  );
+  patternIndexShardMap.clear();
+
+  const patternIndexTileMap = groupPatternIndexByTile(network);
+  const patternIndexTiles = [...patternIndexTileMap.keys()].sort();
+  await publishFamily(
+    "pattern-index-tiles",
+    [...patternIndexTileMap].map(([tile, rows]) => ({
+      dataset: patternIndexTileDataset(tile),
+      lines: patternIndexShardLines(rows),
+      records: rows.length,
+    })),
+  );
+  patternIndexTileMap.clear();
 
   const searchEntries = buildSearchIndex(network, { builtAt: now().toISOString() }).entries;
 
   const searchTileShards = groupSearchByTile(searchEntries);
   const searchTiles = [...searchTileShards.keys()].sort();
   await publishFamily(
+    "search-tiles",
     [...searchTileShards].map(([tile, records]) => shardOf(searchTileDataset(tile), records)),
   );
   searchTileShards.clear();
@@ -214,13 +415,35 @@ export async function publishNetworkShards(
   const searchPrefixShards = groupSearchByPrefix(searchEntries);
   const searchPrefixes = [...searchPrefixShards.keys()].sort();
   await publishFamily(
+    "search-prefixes",
     [...searchPrefixShards].map(([prefix, records]) =>
       shardOf(searchPrefixDataset(prefix), records),
     ),
   );
   searchPrefixShards.clear();
 
-  const partial = { published, failed, oversized, truncated, largest };
+  const partial = { published, failed, oversized, truncated, largest, families, publishedBytes };
+
+  if (publishedBytes > MAX_PUBLISH_BYTES) {
+    /*
+     * Abandoned before the index, so nothing published here is ever served. Raising the ceiling is
+     * not the remedy: a publish this size means a family has grown and the question is which.
+     */
+    return {
+      index: null,
+      ...partial,
+      failed: [
+        ...failed,
+        {
+          dataset: SHARDED.index,
+          reason:
+            `this publish would occupy ${(publishedBytes / 1024 / 1024).toFixed(0)} MiB, past the ` +
+            `${(MAX_PUBLISH_BYTES / 1024 / 1024).toFixed(0)} MiB one version may hold. The index ` +
+            `was not written, so the previous artifact is still live.`,
+        },
+      ],
+    };
+  }
 
   if (failed.length > 0) {
     // The index is the pointer that makes a publish live. Withholding it when a shard failed
@@ -230,12 +453,25 @@ export async function publishNetworkShards(
 
   const index: NetworkIndexRecord = {
     version: options.version,
+    // What this publish was stored with, so a reader checks rather than assumes. The grids are
+    // compiled-in constants on both sides and they were trusted to agree because they came from
+    // one codebase; the two are deployed independently, and when the trip grid halved the planner
+    // reported England as having no timetable rather than reporting that it could not read one.
+    layout: currentArtifactLayout(),
     publishedAt: now().toISOString(),
     partialCoverage: network.counts.danglingStopReferences > 0 || network.counts.parseErrors > 0,
     stopTiles,
     patternTiles,
     searchTiles,
     searchPrefixes,
+    stopRouteTiles,
+    mapStopTiles,
+    stopDetailBuckets,
+    patternIndexBuckets: PATTERN_INDEX_BUCKETS,
+    patternIndexShards,
+    patternIndexTiles,
+    routePatternBuckets,
+    routePatternShards: routePatternShardList,
     counts: {
       stops: network.stops.length,
       patterns: network.patterns.length,
@@ -355,6 +591,196 @@ function groupPatternsByTile(network: BuiltNetwork): Map<string, PatternTileLine
   return lines;
 }
 
+/**
+ * The same patterns, filed by the service that runs them rather than by where they go.
+ *
+ * Each service's shapes are written once, before the patterns that name them, exactly as a tile
+ * does — so `assemblePatternTile` reads either and the two forms cannot drift. A service appears
+ * in exactly one bucket, so a route is always one object.
+ */
+function groupPatternsByService(network: BuiltNetwork): Map<number, RoutePatternsRow[]> {
+  const stopsById = new Map(network.stops.map((stop) => [stop.id, stop]));
+
+  const byService = new Map<string, { shapes: Set<string>; lines: PatternTileLine[] }>();
+  for (const pattern of network.patterns) {
+    const shape = network.shapes.get(pattern.shapeRef);
+    if (!shape || shape.length < 2) continue;
+
+    let entry = byService.get(pattern.serviceRouteId);
+    if (!entry) {
+      entry = { shapes: new Set<string>(), lines: [] };
+      byService.set(pattern.serviceRouteId, entry);
+    }
+    if (!entry.shapes.has(pattern.shapeRef)) {
+      entry.shapes.add(pattern.shapeRef);
+      entry.lines.push({
+        kind: "shape",
+        shapeRef: pattern.shapeRef,
+        points: shape as Coordinate[],
+      });
+    }
+    entry.lines.push({
+      kind: "pattern",
+      pattern,
+      shapeRef: pattern.shapeRef,
+      stopDistancesMetres: stopDistancesAlongShape(pattern, shape as Coordinate[], stopsById),
+    });
+  }
+
+  const buckets = new Map<number, RoutePatternsRow[]>();
+  for (const [serviceId, entry] of byService) {
+    const bucket = routePatternsBucketFor(serviceId);
+    const rows = buckets.get(bucket);
+    const row = { serviceId, lines: entry.lines };
+    if (rows) rows.push(row);
+    else buckets.set(bucket, [row]);
+  }
+  // Deterministic order, so the same network publishes byte-identical shards.
+  for (const rows of buckets.values()) rows.sort((a, b) => (a.serviceId < b.serviceId ? -1 : 1));
+  return buckets;
+}
+
+/**
+ * Which route names call at each stop, on the stop grid.
+ *
+ * Walked once over the patterns rather than once per stop: a network holds tens of thousands of
+ * patterns and hundreds of thousands of stops, and the per-stop version is the product of the two.
+ * Names are deduplicated and sorted, so a marker's label is the same between requests rather than
+ * reshuffling as the map refreshes.
+ */
+/**
+ * The map projection: every stop a viewport can draw, with its route names beside it.
+ *
+ * Built from the same per-stop name index `groupStopRoutesByTile` uses, so the two families agree
+ * by construction rather than by coincidence. Unlike that one, a stop with nothing calling at it
+ * is still published — the map draws it, and an absent row would take it off the screen.
+ */
+function groupMapStopsByTile(
+  network: BuiltNetwork,
+  namesByStop: ReadonlyMap<string, ReadonlySet<string>>,
+): Map<string, MapStopRow[]> {
+  const byTile = new Map<string, MapStopRow[]>();
+  for (const stop of network.stops) {
+    const names = namesByStop.get(stop.id);
+    const row: MapStopRow = {
+      i: stop.id,
+      a: stop.atcoCode,
+      n: stop.name,
+      y: stop.locationCoordinate.lat,
+      x: stop.locationCoordinate.lon,
+      ...(stop.indicator === undefined ? {} : { d: stop.indicator }),
+      ...(names && names.size > 0 ? { r: [...names].sort() } : {}),
+    };
+    const tile = tileForStop(stop);
+    const rows = byTile.get(tile);
+    if (rows) rows.push(row);
+    else byTile.set(tile, [row]);
+  }
+  // Deterministic order, so the same network publishes byte-identical shards.
+  for (const rows of byTile.values()) rows.sort((a, b) => (a.i < b.i ? -1 : 1));
+  return byTile;
+}
+
+/** The per-stop route names both the stop-routes family and the map projection are built from. */
+function routeNamesByStop(network: BuiltNetwork): Map<string, Set<string>> {
+  const serviceNames = new Map(network.services.map((service) => [service.id, service.publicName]));
+  const namesByStop = new Map<string, Set<string>>();
+  for (const pattern of network.patterns) {
+    const name = serviceNames.get(pattern.serviceRouteId);
+    // A pattern whose service is not in this build has no name to publish. Filing the id instead
+    // would put a UUID on a bus stop.
+    if (!name) continue;
+    for (const stopId of pattern.stopSequence) {
+      const names = namesByStop.get(stopId);
+      if (names) names.add(name);
+      else namesByStop.set(stopId, new Set([name]));
+    }
+  }
+  return namesByStop;
+}
+
+function groupStopRoutesByTile(
+  network: BuiltNetwork,
+  namesByStop: ReadonlyMap<string, ReadonlySet<string>> = routeNamesByStop(network),
+): Map<string, StopRoutesRow[]> {
+  const byTile = new Map<string, StopRoutesRow[]>();
+  for (const stop of network.stops) {
+    const names = namesByStop.get(stop.id);
+    // A stop nothing calls at publishes no row rather than an empty one: the map reads an absent
+    // row as "no services here", which is the same answer for a fraction of the bytes.
+    if (!names || names.size === 0) continue;
+    const tile = tileForStop(stop);
+    const row: StopRoutesRow = { s: stop.id, r: [...names].sort() };
+    const rows = byTile.get(tile);
+    if (rows) rows.push(row);
+    else byTile.set(tile, [row]);
+  }
+
+  // Deterministic order, so the same network publishes byte-identical shards.
+  for (const rows of byTile.values()) rows.sort((a, b) => (a.s < b.s ? -1 : 1));
+  return byTile;
+}
+
+/**
+ * Every pattern by its id, carrying what a planner needs and nothing else.
+ *
+ * No shape. `buildGraphFor` reads the stop sequence and never looks at geometry, and the geometry
+ * is the whole reason the tiles are too big to read a corridor's worth of.
+ */
+/**
+ * The same rows as `groupPatternIndexByBucket`, filed by the tiles the pattern runs through.
+ *
+ * A journey corridor wants the patterns along one strip of the country, and a hash scatters those
+ * across every bucket — so the planner read one bucket per pattern and threw away almost all of
+ * each. Filed geographically, a corridor reads the two or three tiles it crosses and wants most
+ * of what is in them.
+ *
+ * A pattern crossing four tiles is written into all four, exactly as its geometry is: a corridor
+ * must find it from whichever tile it enters on, and these rows are small enough that the
+ * duplication is cheaper than the read it prevents.
+ */
+function groupPatternIndexByTile(network: BuiltNetwork): Map<string, PatternIndexRow[]> {
+  const byTile = new Map<string, PatternIndexRow[]>();
+  for (const pattern of network.patterns) {
+    const shape = network.shapes.get(pattern.shapeRef);
+    // No geometry means no tile to file it under; the hashed layout still carries it.
+    if (!shape || shape.length < 2) continue;
+    const row: PatternIndexRow = {
+      id: pattern.id,
+      serviceRouteId: pattern.serviceRouteId,
+      direction: pattern.direction,
+      stopSequence: [...pattern.stopSequence],
+      distanceMetres: pattern.distanceMetres,
+    };
+    for (const tile of tilesForPattern(shape)) {
+      const rows = byTile.get(tile);
+      if (rows) rows.push(row);
+      else byTile.set(tile, [row]);
+    }
+  }
+  for (const rows of byTile.values()) rows.sort((a, b) => (a.id < b.id ? -1 : 1));
+  return byTile;
+}
+
+function groupPatternIndexByBucket(network: BuiltNetwork): Map<number, PatternIndexRow[]> {
+  const buckets = new Map<number, PatternIndexRow[]>();
+  for (const pattern of network.patterns) {
+    const row: PatternIndexRow = {
+      id: pattern.id,
+      serviceRouteId: pattern.serviceRouteId,
+      direction: pattern.direction,
+      stopSequence: [...pattern.stopSequence],
+      distanceMetres: pattern.distanceMetres,
+    };
+    const bucket = patternIndexBucketFor(pattern.id);
+    const rows = buckets.get(bucket);
+    if (rows) rows.push(row);
+    else buckets.set(bucket, [row]);
+  }
+  for (const rows of buckets.values()) rows.sort((a, b) => (a.id < b.id ? -1 : 1));
+  return buckets;
+}
+
 function groupSearchByTile(entries: readonly SearchIndexEntry[]): Map<string, SearchIndexEntry[]> {
   const byTile = new Map<string, SearchIndexEntry[]>();
   for (const entry of entries) {
@@ -468,10 +894,39 @@ function groupSearchByPrefix(
     if (!anyOversized) break;
   }
 
+  /*
+   * A bucket the prefix could not divide is divided by hash instead.
+   *
+   * Deepening takes more characters of the word, which assumes the words differ somewhere further
+   * along. They do not always: "Northbound", "Southbound" and their kind tokenise to a word that
+   * normalises to `bound`, padded to the six-character maximum as `bound_`, so every entry
+   * produces the identical deeper key however far the loop goes. The loop then gave up and the
+   * publisher truncated to fit the byte budget — 65,573 entries in that one bucket, 31,385 kept,
+   * 34,188 dropped, and the drop reported as a statistic rather than as a fault.
+   *
+   * Splitting by a hash of the entry's own id has none of the prefix's assumptions: it divides
+   * any bucket, into as many parts as it takes, deterministically, and a reader finds the parts
+   * because they are named from the prefix they came from.
+   */
+  const partitioned = new Map<string, SearchIndexEntry[]>();
+  for (const [key, bucket] of split) {
+    if (bucket.length <= SEARCH_BUCKET_SPLIT_AT) {
+      partitioned.set(key, bucket);
+      continue;
+    }
+    const parts = Math.ceil(bucket.length / SEARCH_BUCKET_SPLIT_AT);
+    for (const entry of bucket) {
+      const partKey = searchPartKey(key, locatorBucketFor(entry.id, parts));
+      const existing = partitioned.get(partKey);
+      if (existing) existing.push(entry);
+      else partitioned.set(partKey, [entry]);
+    }
+  }
+
   // Sorted rather than truncated arbitrarily: what survives a full bucket should be what people
   // mean by the word they typed.
-  for (const bucket of split.values()) bucket.sort((a, b) => b.prominence - a.prominence);
-  return split;
+  for (const bucket of partitioned.values()) bucket.sort((a, b) => b.prominence - a.prominence);
+  return partitioned;
 }
 
 /**
@@ -529,6 +984,30 @@ function groupLocators(network: BuiltNetwork): Map<number, StopLocatorRecord[]> 
     add(stop.id, tile);
     if (stop.atcoCode !== stop.id) add(stop.atcoCode, tile);
   }
+  return byBucket;
+}
+
+/**
+ * The stop page's lookup. See `STOP_DETAIL_BUCKETS` for why it is hashed rather than geographic.
+ *
+ * The stop is filed once under its id; its ATCO code gets an alias row rather than a second copy.
+ */
+function groupStopDetail(network: BuiltNetwork): Map<number, StopDetailRow[]> {
+  const byBucket = new Map<number, StopDetailRow[]>();
+  const add = (bucket: number, row: StopDetailRow) => {
+    const rows = byBucket.get(bucket);
+    if (rows) rows.push(row);
+    else byBucket.set(bucket, [row]);
+  };
+
+  for (const stop of network.stops) {
+    add(stopDetailBucketFor(stop.id), { k: stop.id, s: stop });
+    if (stop.atcoCode !== stop.id) {
+      add(stopDetailBucketFor(stop.atcoCode), { k: stop.atcoCode, a: stop.id });
+    }
+  }
+  // Deterministic order, so the same network publishes byte-identical shards.
+  for (const rows of byBucket.values()) rows.sort((a, b) => (a.k < b.k ? -1 : 1));
   return byBucket;
 }
 

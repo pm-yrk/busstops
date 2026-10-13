@@ -1,0 +1,30 @@
+/*
+ * A hand-off, set apart from the page's own content.
+ *
+ * Deliberately not styled as a primary call to action when it is only the operator's website: the
+ * emphasis a button carries is a promise, and we only make that promise for a verified seller.
+ */
+.ticket-handoff {
+  display: grid;
+  gap: var(--space-xs);
+}
+
+.ticket-handoff h2,
+.ticket-handoff h3 {
+  margin: 0;
+  font-size: var(--font-size-small);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.ticket-handoff p {
+  margin: 0;
+}
+
+.ticket-handoff__buy {
+  font-weight: 600;
+}
+
+.ticket-handoff__note {
+  display: block;
+}

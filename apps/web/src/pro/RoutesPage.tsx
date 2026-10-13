@@ -1,10 +1,17 @@
 import { useCallback, useState } from "react";
 import type { RoutesResponse } from "@busstops/contracts";
 import { LoadingBus } from "../components/LoadingBus.js";
-import { EmptyState, ErrorState } from "../components/primitives.js";
+import { EmptyState, ErrorState, RouteBadge } from "../components/primitives.js";
 import { apiClient } from "../lib/api.js";
 import { useFetch } from "../lib/use-fetch.js";
-import { DataModeBanner, ScopeFilters, formatMetricValue } from "./ProPrimitives.js";
+import {
+  DataModeBanner,
+  IllustrativeBanner,
+  ProTableWrap,
+  ScopeFilters,
+  formatMetricValue,
+} from "./ProPrimitives.js";
+import { PixelSectionHeading } from "../components/pixel/PixelSectionHeading.js";
 
 /**
  * Route comparison (docs/10_BUS_STOPS_PRO.md "Routes and operators").
@@ -42,6 +49,7 @@ export function RoutesPage() {
   return (
     <>
       <DataModeBanner provenance={routes.provenance} />
+      <IllustrativeBanner metrics={routes.rows.flatMap((row) => row.metrics)} />
       <ScopeFilters windowMinutes={windowMinutes} onWindowChange={setWindowMinutes} />
 
       {routes.comparabilityWarning ? (
@@ -49,9 +57,11 @@ export function RoutesPage() {
       ) : null}
 
       <section className="pro-section" aria-labelledby="routes-heading">
-        <h2 id="routes-heading">Route comparison</h2>
+        <PixelSectionHeading mark="route" id="routes-heading">
+          Route comparison
+        </PixelSectionHeading>
         {routes.rows.length > 0 ? (
-          <div className="pro-table-wrap">
+          <ProTableWrap label="Route performance, with denominators and suppression reasons">
             <table className="pro-table">
               <caption className="visually-hidden">
                 Route performance, with denominators and suppression reasons
@@ -72,7 +82,14 @@ export function RoutesPage() {
               <tbody>
                 {routes.rows.map((row) => (
                   <tr key={row.routeId}>
-                    <th scope="row">{row.routeName}</th>
+                    {/*
+                      The same badge the passenger side draws, so a route is the same object in
+                      both products. A comparison table whose first column is plain text makes the
+                      reader find the row they came for by reading; a badge is found by shape.
+                    */}
+                    <th scope="row">
+                      <RouteBadge name={row.routeName} ariaLabel={`Route ${row.routeName}`} />
+                    </th>
                     <td>{row.operatorName}</td>
                     {row.metrics.map((metric) => (
                       <td key={metric.key} className="numeric">
@@ -93,7 +110,7 @@ export function RoutesPage() {
                 ))}
               </tbody>
             </table>
-          </div>
+          </ProTableWrap>
         ) : (
           <EmptyState
             title="No route analysis published"
@@ -104,13 +121,17 @@ export function RoutesPage() {
 
       {routes.rows.some((row) => row.weatherSensitivity) ? (
         <section className="pro-section" aria-labelledby="routes-weather">
-          <h2 id="routes-weather">Weather sensitivity</h2>
+          <PixelSectionHeading mark="weather" id="routes-weather">
+            Weather sensitivity
+          </PixelSectionHeading>
           <ul className="pro-list">
             {routes.rows
               .filter((row) => row.weatherSensitivity)
               .map((row) => (
                 <li key={row.routeId} className="pro-card">
-                  <h3>Route {row.routeName}</h3>
+                  <h3>
+                    <RouteBadge name={row.routeName} ariaLabel={`Route ${row.routeName}`} />
+                  </h3>
                   <p>{row.weatherSensitivity}</p>
                 </li>
               ))}

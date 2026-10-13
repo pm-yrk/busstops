@@ -1,5 +1,6 @@
 import { NavLink, Outlet } from "react-router-dom";
 import { PixelRouteMark } from "../components/pixel/PixelArt.js";
+import { PixelVistaScene } from "../components/pixel/PixelVista.js";
 import "./ProLayout.css";
 
 /**
@@ -44,6 +45,15 @@ export function ProLayout() {
           Public, read-only, and open without an account. Every figure states how it was measured,
           how much it rests on, and how much of the network it can actually see.
         </p>
+        {/*
+          The room the product is watched from.
+          
+          Pro had the same strip of pavement every other page had, which made the analytics tool
+          look like a passenger page with the content missing. This says what Pro is in one
+          picture: a desk, a window onto the city, and three screens showing a map, a chart and a
+          status list. It is decoration — none of those screens is showing this deployment.
+        */}
+        <PixelVistaScene vista="controlRoom" className="pro-layout__vista" />
       </header>
 
       <nav className="pro-layout__nav" aria-label="Pro sections">

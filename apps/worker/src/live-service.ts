@@ -9,6 +9,7 @@ import type {
   VehicleObservation,
 } from "@busstops/contracts";
 import { MAP_QUERY_LIMITS, attributionsFor, getSourceRegistryEntry } from "@busstops/contracts";
+import { passengerName, routeBadgeName } from "@busstops/pipeline-static-network";
 import { SourceClient, ageSeconds } from "@busstops/pipeline-core";
 import {
   bodsDatafeedUrl,
@@ -19,6 +20,7 @@ import {
 } from "@busstops/adapters";
 import { cacheTtlMultiplier } from "@busstops/governor";
 import type { WorkerEnv } from "./env.js";
+import { mark } from "./breadcrumb.js";
 
 /**
  * Live data service.
@@ -75,10 +77,147 @@ export interface VehicleFetchResult {
   health: SourceHealth[];
   /** Sources that were expected to contribute but failed. */
   failedSources: string[];
+  /**
+   * Why a viewport came back with no buses.
+   *
+   * "Zero vehicles" has four causes that look identical from outside — the request never left,
+   * it was refused, the body was empty, or the body was full and every record was rejected — and
+   * a bare catch collapsed all four into "bods failed". Each is a different bug, so each is
+   * reported separately. Counts and reasons only: never a source vehicle reference.
+   */
+  diagnostics: VehicleSourceDiagnostics[];
+}
+
+export interface VehicleSourceDiagnostics {
+  source: string;
+  /** "ok" | "request_failed" | "empty_feed" | "all_rejected" */
+  outcome: "ok" | "request_failed" | "empty_feed" | "all_rejected";
+  rawRecords: number;
+  accepted: number;
+  /** Rejection reasons with the numbers generalised, so this is a handful of keys not thousands. */
+  rejectedBy: Record<string, number>;
+  /** Age in seconds of the newest and oldest record the feed offered, accepted or not. */
+  newestRecordAgeSeconds: number | null;
+  oldestRecordAgeSeconds: number | null;
+  /**
+   * Where the time in this stage actually went.
+   *
+   * Every 1102 this deployment has produced arrived immediately after the largest `vehicles` stage
+   * in its trail, and run 49 measured that stage at 1,379ms, 1,729ms and 2,530ms during the
+   * morning peak against a 1,200ms budget — on route detail and then on the map, which is every
+   * endpoint that reads this feed. Handing the fetch a deadline did not shorten it, which points
+   * at the parse; but "points at" is not a measurement, and the last time a sound-looking
+   * inference went in without one it cost three runs. These two numbers settle it.
+   */
+  fetchMs?: number;
+  parseMs?: number;
+  /** Characters of feed text this source returned, which is what the parse is proportional to. */
+  chars?: number;
+  /**
+   * Whether this answer reused a parse instead of making one.
+   *
+   * The only way to see the saving from outside: a Worker's clock does not advance across pure
+   * computation, so `parseMs` cannot show it and never could.
+   */
+  reusedParse?: boolean;
+  error?: string;
+}
+
+/**
+ * What went wrong, in a form that is safe to publish.
+ *
+ * An upstream error message can carry the request URL, and the request URL carries the API key,
+ * so the message is reduced to its class and its status. That is enough to tell a refused request
+ * from a timed-out one, which is the distinction that matters.
+ */
+export function describeFetchFailure(error: unknown): string {
+  if (!(error instanceof Error)) return "unknown_error";
+
+  const status = /\b([45]\d\d)\b/.exec(error.message)?.[1];
+  if (error.name === "TimeoutError" || /abort|timeout/i.test(error.message)) return "timeout";
+  if (status) return `http_${status}`;
+
+  /*
+   * The class alone was not enough.
+   *
+   * "network_error" is what a deployment reports when its fetch never left, when the runtime
+   * refused the call and when the host was unreachable — three different faults with one label,
+   * and the whole point of this diagnosis is telling them apart. So the message comes too, with
+   * anything that could carry a secret taken out of it first: query strings go entirely, and any
+   * host is reduced to the fact that there was one.
+   */
+  const safeMessage = error.message
+    .replace(/https?:\/\/[^\s"']+/g, "<url>")
+    .replace(/api_key=[^&\s]*/gi, "api_key=<redacted>")
+    .slice(0, 120);
+
+  const name = error.name === "Error" ? "network_error" : error.name;
+  return safeMessage.length > 0 ? `${name}: ${safeMessage}` : name;
+}
+
+/**
+ * Turns one source's normalisation result into a publishable diagnosis.
+ *
+ * The distinction it exists to draw: a feed that returned nothing, and a feed that returned
+ * plenty which we then threw away. The second is our bug and used to be invisible.
+ */
+export function summariseVehicleSource(
+  source: string,
+  accepted: number,
+  rejected: ReadonlyArray<{ reason: string }>,
+  now: Date,
+  recordAgeSeconds: readonly number[] = [],
+): VehicleSourceDiagnostics {
+  void now;
+  const rejectedBy: Record<string, number> = {};
+  for (const entry of rejected) {
+    // Bucket by shape: "observation 812s old" would otherwise be a thousand distinct keys.
+    const key = entry.reason.replace(/\d+/g, "N");
+    rejectedBy[key] = (rejectedBy[key] ?? 0) + 1;
+  }
+  const rawRecords = accepted + rejected.length;
+  const ages = [...recordAgeSeconds].sort((a, b) => a - b);
+  return {
+    source,
+    outcome: accepted > 0 ? "ok" : rawRecords === 0 ? "empty_feed" : "all_rejected",
+    rawRecords,
+    accepted,
+    rejectedBy,
+    newestRecordAgeSeconds: ages.length > 0 ? ages[0]! : null,
+    oldestRecordAgeSeconds: ages.length > 0 ? ages[ages.length - 1]! : null,
+  };
+}
+
+/**
+ * How long a normalised feed is reused before it is parsed again.
+ *
+ * BODS republishes SIRI-VM every ten seconds or so, so a parse held for less than that cannot
+ * make an answer staler than the feed already is — the observations keep the timestamps they were
+ * published with, so freshness is reported from the data rather than from when it was reused.
+ */
+const NORMALIZED_FEED_TTL_MS = 8_000;
+
+interface NormalizedFeed {
+  /** The whole parse, so a reuse answers exactly what a fresh parse would have. */
+  parsed: ReturnType<typeof normalizeSiriVm>;
+  chars: number;
+  at: number;
 }
 
 export class LiveService {
   private readonly clients = new Map<string, SourceClient>();
+
+  /**
+   * The parsed feed, not just the in-flight fetch.
+   *
+   * `coalesce` deduplicates concurrent requests and drops the entry the moment one settles, so
+   * every `/v1/map` re-fetched *and* re-parsed the feed. On the free plan that is the expensive
+   * half: a local benchmark puts SIRI-VM at about a hundred milliseconds per mebibyte, and the
+   * whole CPU budget for an invocation is ten. The Worker's own diagnostics could never show it —
+   * `Date.now()` in Workers advances only across I/O, so every one of these parses has been
+   * reporting `parse=0ms` while costing several times the budget.
+   */
+  private readonly normalized = new Map<string, NormalizedFeed>();
 
   constructor(private readonly deps: LiveServiceDeps) {}
 
@@ -92,6 +231,23 @@ export class LiveService {
       source === "tfl" ? "london" : "non_london",
       entry.freshnessSlaSeconds,
       this.deps.fetchImpl ? { fetchImpl: this.deps.fetchImpl } : {},
+      /*
+       * A tighter breaker than a scheduled collector's, because an isolate does not live as long
+       * as one.
+       *
+       * The default opens after five failed calls, which is calibrated for a job that makes
+       * hundreds over minutes. Here a failure costs a passenger's request its budget, and the
+       * isolate carrying the breaker is destroyed after a handful of them — so the counter resets
+       * before it ever reaches five, and the breaker is defeated by exactly the failure it exists
+       * to prevent. Run 52 is what that looks like: `/v1/map` killed on the first attempt of the
+       * first city, taking `/v1/search` and `/v1/nearby` with it.
+       *
+       * Two, so the third request in a struggling isolate fails fast and cheaply instead of
+       * spending its whole deadline finding out. Thirty seconds, because a passenger refreshing a
+       * map should get live buses back quickly once the upstream recovers, and the half-open
+       * probe means one request pays to find out rather than all of them.
+       */
+      { failureThreshold: 2, openDurationMs: 30_000 },
     );
     this.clients.set(source, client);
     return client;
@@ -106,7 +262,19 @@ export class LiveService {
   }
 
   /** Live vehicles inside a viewport. Never fetches beyond the requested bounding box. */
-  async vehiclesInBoundingBox(bbox: BoundingBox): Promise<VehicleFetchResult> {
+  /**
+   * @param timeoutMs How long the upstream fetch may take. Defaults to the map's own limit.
+   *
+   * Route detail checks its time budget before starting this and the check cannot help, because
+   * the overrun happens *inside* the stage: run 48's last request before the platform killed it
+   * spent 1,167ms here alone, having entered with time to spare. Run 45's spent 891ms, and both
+   * kills arrived immediately after the largest `vehicles` stage in their trail. A caller with a
+   * deadline has to be able to hand it over rather than hope.
+   */
+  async vehiclesInBoundingBox(
+    bbox: BoundingBox,
+    timeoutMs: number = MAP_QUERY_LIMITS.timeoutMs,
+  ): Promise<VehicleFetchResult> {
     const now = this.deps.now();
     const observations: VehicleObservation[] = [];
     const journeyContext = new Map<
@@ -115,6 +283,7 @@ export class LiveService {
     >();
     const health: SourceHealth[] = [];
     const failedSources: string[] = [];
+    const diagnostics: VehicleSourceDiagnostics[] = [];
 
     const sources = sourcesForBoundingBox(bbox);
 
@@ -122,17 +291,89 @@ export class LiveService {
       const client = this.client("bods");
       const url = bodsDatafeedUrl(bbox, this.deps.env.BODS_API_KEY);
       const cacheKey = `bods:${url}`;
+      // Outside the try, so a failure can say how long it spent failing. Run 50's longest stages
+      // reported "fetch=?ms parse=?ms" — the throw skipped the assignment, and the one number
+      // that would have named the retry chain was the one that went missing.
+      const fetchBegan = Date.now();
       try {
-        const xml = await client.coalesce(cacheKey, () =>
-          client.fetchText(url, { timeoutMs: MAP_QUERY_LIMITS.timeoutMs }),
-        );
-        const normalized = normalizeSiriVm(xml, {
-          retrievedAt: now.toISOString(),
-          vehicleSalt: this.vehicleSalt(),
-          now,
-        });
-        observations.push(...normalized.observations);
-        for (const [ref, context] of normalized.journeyContext) {
+        /*
+         * A deadline is for the whole stage, so it gets one attempt.
+         *
+         * `fetchText` retries three times with exponential backoff, and `timeoutMs` bounds each
+         * attempt rather than the operation. Handing it a deadline of the request's remaining time
+         * therefore made the overrun worse, not better: the first attempt now times out where it
+         * would have finished, and the two retries and their backoff follow. Run 49 measured the
+         * result — 2,530ms from a stage given about 850ms, which is 3 x 850 plus jitter almost
+         * exactly, and the platform answered the request after it.
+         *
+         * A local benchmark says the parse is not where that time goes: 2.51 MiB of SIRI-VM
+         * normalises in 242ms and 7.53 MiB in 728ms, about a hundred milliseconds a mebibyte. So
+         * the retries are the whole of it. A caller with a deadline gets one attempt inside it;
+         * a caller without one keeps the three, because a scheduled collector genuinely should
+         * retry a flaky upstream and has no passenger waiting.
+         */
+        const bounded = timeoutMs !== MAP_QUERY_LIMITS.timeoutMs;
+
+        const fresh = this.normalized.get(cacheKey);
+        const reused = fresh !== undefined && now.getTime() - fresh.at < NORMALIZED_FEED_TTL_MS;
+
+        let normalized: NormalizedFeed;
+        if (reused) {
+          mark("siri:cache-hit", { chars: fresh.chars, cached: true });
+          normalized = fresh;
+        } else {
+          /*
+           * Three stamps around the one stage nothing has been able to see inside.
+           *
+           * A request the platform kills reports nothing, so the only way to learn whether it
+           * died waiting on the socket or partway through turning 0.4 MiB of XML into objects is
+           * to leave a mark before each and let the next request carry it out. `parseMs` cannot
+           * answer this — a Worker's clock does not advance across pure computation — and the
+           * distinction is the whole question: waiting costs no CPU, parsing costs nothing else.
+           */
+          mark("siri:fetch:begin", { bounded, cached: false, timeoutMs });
+          const fetchStartedAt = Date.now();
+          const xml = await client.coalesce(cacheKey, () =>
+            client.fetchText(url, { timeoutMs, ...(bounded ? { maxAttempts: 1 } : {}) }),
+          );
+          /*
+           * A stamp of its own between the socket and the parser.
+           *
+           * Without it, `siri:parse:begin` was the first evidence the fetch had returned at all,
+           * so "died on the socket" and "died in the gap after it" were the same reading. This
+           * also carries the fetch's own duration into the breadcrumb, which is one of the
+           * correlates a pattern across several deaths needs and which a killed request could
+           * never report from its own ledger.
+           */
+          mark("siri:fetch:done", {
+            chars: xml.length,
+            elapsedMs: Date.now() - fetchStartedAt,
+          });
+          mark("siri:parse:begin", { chars: xml.length });
+          const parsed = normalizeSiriVm(xml, {
+            retrievedAt: now.toISOString(),
+            vehicleSalt: this.vehicleSalt(),
+            now,
+          });
+          mark("siri:parse:done", {
+            chars: xml.length,
+            observations: parsed.observations.length,
+          });
+          normalized = { parsed, chars: xml.length, at: now.getTime() };
+          /*
+           * One feed per viewport, and only the newest. The key carries the bounding box, so a
+           * sweep across five cities would otherwise leave five parses resident for nothing.
+           */
+          this.normalized.clear();
+          this.normalized.set(cacheKey, normalized);
+        }
+
+        const fetchMs = Date.now() - fetchBegan;
+        // Zero on a reuse, and zero on a parse too: see `normalized` — a Worker's clock does not
+        // advance across pure computation, so this number has never been able to show the cost.
+        const parseMs = 0;
+        observations.push(...normalized.parsed.observations);
+        for (const [ref, context] of normalized.parsed.journeyContext) {
           journeyContext.set(ref, {
             ...(context.publishedLineName === undefined
               ? {}
@@ -142,8 +383,35 @@ export class LiveService {
               : { destinationName: context.destinationName }),
           });
         }
-      } catch {
+        diagnostics.push({
+          ...summariseVehicleSource(
+            "bods",
+            normalized.parsed.observations.length,
+            normalized.parsed.rejected,
+            now,
+            normalized.parsed.recordAgeSeconds,
+          ),
+          fetchMs,
+          parseMs,
+          chars: normalized.chars,
+          // So a run can see how often the parse is actually being paid for.
+          reusedParse: reused,
+        });
+      } catch (error) {
         failedSources.push("bods");
+        diagnostics.push({
+          source: "bods",
+          outcome: "request_failed",
+          rawRecords: 0,
+          accepted: 0,
+          rejectedBy: {},
+          newestRecordAgeSeconds: null,
+          oldestRecordAgeSeconds: null,
+          fetchMs: Date.now() - fetchBegan,
+          parseMs: 0,
+          chars: 0,
+          error: describeFetchFailure(error),
+        });
       }
       health.push(client.health(now));
     }
@@ -155,13 +423,17 @@ export class LiveService {
       health.push(client.health(now));
     }
 
-    return { observations, journeyContext, health, failedSources };
+    return { observations, journeyContext, health, failedSources, diagnostics };
   }
 
   /** Departures for one stop, from whichever source covers it. */
-  async departuresForStop(
-    atcoCode: string,
-  ): Promise<{ departures: DeparturePrediction[]; health: SourceHealth[]; failed: boolean }> {
+  async departuresForStop(atcoCode: string): Promise<{
+    departures: DeparturePrediction[];
+    health: SourceHealth[];
+    failed: boolean;
+    /** When the data behind these departures was observed — never a future arrival time. */
+    observedAt: string | null;
+  }> {
     const now = this.deps.now();
 
     if (isLondonAtcoCode(atcoCode)) {
@@ -175,20 +447,48 @@ export class LiveService {
           client.fetchJson<unknown>(url, { timeoutMs: MAP_QUERY_LIMITS.timeoutMs }),
         );
         const normalized = normalizeTflArrivals(payload, { retrievedAt: now.toISOString(), now });
-        return { departures: normalized.departures, health: [client.health(now)], failed: false };
+        return {
+          departures: normalized.departures,
+          health: [client.health(now)],
+          failed: false,
+          // TfL answers with predictions it has just computed, so the fetch is the observation.
+          observedAt: now.toISOString(),
+        };
       } catch {
-        return { departures: [], health: [client.health(now)], failed: true };
+        return {
+          departures: [],
+          health: [client.health(now)],
+          failed: true,
+          observedAt: null,
+        };
       }
     }
 
-    // Outside London, live departures are derived from matched vehicle positions plus the
-    // timetable; the caller composes them, so this reports only source health.
+    /*
+     * Outside London there is no per-stop live source: BODS publishes vehicle positions, not
+     * arrival predictions. The board is composed from the timetable by the caller, which is
+     * exactly what this used to say and exactly what nothing did.
+     */
     const client = this.client("bods");
-    return { departures: [], health: [client.health(now)], failed: false };
+    return { departures: [], health: [client.health(now)], failed: false, observedAt: null };
   }
 
+  /**
+   * Health for every source this deployment covers, used or not.
+   *
+   * This returned the clients that happened to have been constructed, and the clients are built
+   * lazily by whichever request first needs one — so on a cold isolate `/v1/sources/health`
+   * answered with an empty array and four deployment verifications in a row reported "no sources
+   * reported". That read as an outage and was a lazy map: the sources were fine and nobody had
+   * asked them anything yet.
+   *
+   * Naming both sources makes the answer a property of the deployment rather than of what it has
+   * been asked so far. A source that has never been called reports its own never-fetched state,
+   * which is the truth and is what a status page should show.
+   */
   health(): SourceHealth[] {
     const now = this.deps.now();
+    for (const source of ["bods", "tfl"] as const) this.client(source);
     return [...this.clients.values()].map((client) => client.health(now));
   }
 }
@@ -202,6 +502,8 @@ export interface MetaInput {
   networkPartialCoverage?: boolean;
   failedSources?: readonly string[];
   safeMode?: boolean;
+  /** What the request cost. Counts and durations; see ResponseMetaSchema.diagnostics. */
+  diagnostics?: Record<string, unknown>;
 }
 
 /**
@@ -220,6 +522,7 @@ export function buildMeta(input: MetaInput): ResponseMeta {
     degradation,
     governorState: input.governorState,
     attribution: attributionsFor([...sourceNames, "naptan", "osm"]),
+    ...(input.diagnostics === undefined ? {} : { diagnostics: input.diagnostics }),
   };
 }
 
@@ -265,8 +568,18 @@ export function toMapVehicle(
     vehicleRef: observation.vehicleRef,
     coordinate: observation.coordinate,
     bearingDegrees: observation.bearingDegrees ?? null,
-    routePublicName: context?.publishedLineName ?? null,
-    destinationName: context?.destinationName ?? null,
+    routePublicName: context?.publishedLineName ? routeBadgeName(context.publishedLineName) : null,
+    /*
+     * Unknown until the viewport's patterns say otherwise.
+     *
+     * A live feed gives the number on the front and nothing that identifies the service, so this
+     * cannot be filled in here however tempting it is to reuse the name. The map handler resolves
+     * it where the viewport's own patterns make it unambiguous, and leaves it null where they do
+     * not — a bus linked to the wrong operator's 36 is worse than a bus with no route link.
+     */
+    routeId: null,
+    routePatternId: null,
+    destinationName: context?.destinationName ? passengerName(context.destinationName) : null,
     delaySeconds,
     freshnessSeconds: ageSeconds(observation.observedAt, now),
     motionState,

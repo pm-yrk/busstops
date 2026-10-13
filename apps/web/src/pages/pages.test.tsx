@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactElement } from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
@@ -12,9 +12,11 @@ import type {
 } from "@busstops/contracts";
 import { DisruptionsPage } from "./DisruptionsPage.js";
 import { JourneyPage, clockLabel } from "./JourneyPage.js";
+import { LiveMapPage } from "./LiveMapPage.js";
 import { OperatorPage } from "./OperatorPage.js";
 import { RoutePage } from "./RoutePage.js";
-import { apiClient } from "../lib/api.js";
+import { SearchPage } from "./SearchPage.js";
+import { ApiError, apiClient } from "../lib/api.js";
 
 const meta: ResponseMeta = {
   generatedAt: "2026-09-03T09:00:00.000Z",
@@ -96,6 +98,7 @@ describe("RoutePage", () => {
       headwaySummary: null,
       reliability: [],
       incidents: [],
+      disruptions: [],
       ticketUrl: null,
     },
   };
@@ -104,16 +107,114 @@ describe("RoutePage", () => {
     vi.spyOn(apiClient, "route").mockResolvedValue(response);
     renderAt("/routes/r1", "/routes/:routeId", <RoutePage />);
 
-    expect(await screen.findByText("Leeds to Bradford")).toBeTruthy();
+    /*
+     * The heading names the route by its number first and then by where it goes.
+     *
+     * It used to be the description alone — "Leeds to Bradford" — with the number only in the
+     * badge beside it, so the page's heading, its document title and the first thing a screen
+     * reader announced all identified the route by its destinations rather than by what is written
+     * on the front of the bus. A passenger looking for the 36 is looking for "36".
+     */
+    const heading = await screen.findByRole("heading", { level: 1 });
+    expect(heading.textContent).toContain(response.data.route.publicName);
+    expect(heading.textContent).toContain("Leeds to Bradford");
+
     expect(screen.getByRole("link", { name: "First West Yorkshire" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Leeds City Bus Station" })).toBeTruthy();
   });
 
-  it("says why no frequency is shown rather than inventing one", async () => {
+  /*
+   * The page opens on the route, not on whichever pattern the API happened to list first.
+   *
+   * `variants` is sorted by direction before length, so a service whose inbound short working sorts
+   * first opened on its shortest pattern while the real one sat behind a tab. A passenger means the
+   * long one by "the route".
+   */
+  it("opens on the pattern with the most stops, whatever order they arrive in", async () => {
+    const shortWorking = {
+      patternId: "00000000-0000-5000-8000-0000000000b2",
+      direction: "inbound" as const,
+      description: "Leeds City Bus Station to Bradford Interchange",
+      distanceMetres: 4200,
+      stops: response.data.variants[0]!.stops.slice(0, 2),
+    };
+    const fullRoute = {
+      ...response.data.variants[0]!,
+      stops: [
+        ...response.data.variants[0]!.stops,
+        {
+          stopId: "00000000-0000-5000-8000-0000000000c3",
+          atcoCode: "450010003",
+          name: "Pudsey Market",
+          locality: "Pudsey",
+          sequence: 2,
+        },
+      ],
+    };
+    // Inbound first, which is the order the API's own sort produces.
+    vi.spyOn(apiClient, "route").mockResolvedValue({
+      ...response,
+      data: { ...response.data, variants: [shortWorking, fullRoute] },
+    });
+    renderAt("/routes/r1", "/routes/:routeId", <RoutePage />);
+
+    // The third stop only exists on the full pattern, so finding it is the whole assertion.
+    expect(await screen.findByRole("link", { name: "Pudsey Market" })).toBeTruthy();
+    expect(screen.getAllByText(/3 stops/).length).toBeGreaterThan(0);
+  });
+
+  it("says so when the route was read short, instead of drawing it as whole", async () => {
+    /*
+     * The Worker has always sent `complete`, and the page destructured every field except that
+     * one. A sequence cut off by a byte budget was drawn with the same line of dots as a whole
+     * route, so a stop missing from the list read as a stop the bus does not call at.
+     */
+    vi.spyOn(apiClient, "route").mockResolvedValue({
+      ...response,
+      data: { ...response.data, complete: false },
+    });
+    renderAt("/routes/r1", "/routes/:routeId", <RoutePage />);
+
+    expect(await screen.findByText(/may be missing stops/)).toBeTruthy();
+    // And it says what the gap is not, because a missing stop reads as a skipped one.
+    expect(screen.getByText(/not a statement that the bus skips them/)).toBeTruthy();
+  });
+
+  it("draws no such warning on a route that came back whole", async () => {
+    vi.spyOn(apiClient, "route").mockResolvedValue({
+      ...response,
+      data: { ...response.data, complete: true },
+    });
+    renderAt("/routes/r1", "/routes/:routeId", <RoutePage />);
+
+    await screen.findByRole("heading", { name: /Where it goes/i });
+    expect(screen.queryByText(/may be missing stops/)).toBeNull();
+  });
+
+  it("says the frequency is ours to work out, not the timetable's to support", async () => {
+    /*
+     * The wording this asserts used to be "this route's timetable does not support a meaningful
+     * frequency", which is a claim about the bus service — true of a route with three journeys a
+     * day — and it appeared on every route, because the Worker sends `headwaySummary: null`
+     * unconditionally. Our own missing figure must not be reported as a fact about the buses, so
+     * the absent sentence is asserted as well as the present one.
+     */
     vi.spyOn(apiClient, "route").mockResolvedValue(response);
     renderAt("/routes/r1", "/routes/:routeId", <RoutePage />);
 
-    expect(await screen.findByText(/does not support a meaningful frequency/)).toBeTruthy();
+    expect(await screen.findByText(/do not state a frequency for this route yet/)).toBeTruthy();
+    expect(screen.queryByText(/does not support a meaningful frequency/)).toBeNull();
+  });
+
+  it("prints the frequency when there is one, instead of the explanation", async () => {
+    vi.spyOn(apiClient, "route").mockResolvedValue({
+      ...response,
+      data: { ...response.data, headwaySummary: "About every 12 minutes" },
+    });
+    renderAt("/routes/r1", "/routes/:routeId", <RoutePage />);
+
+    expect(await screen.findByText("About every 12 minutes")).toBeTruthy();
+    expect(screen.queryByText(/do not state a frequency/)).toBeNull();
   });
 
   it("distinguishes a feed outage from there genuinely being no buses", async () => {
@@ -125,6 +226,65 @@ describe("RoutePage", () => {
 
     expect(await screen.findByText(/Live vehicle data is not available/)).toBeTruthy();
     expect(screen.getByText(/timetable below is unaffected/)).toBeTruthy();
+  });
+
+  /*
+   * One stop, one URL.
+   *
+   * This page linked to a stop by its internal UUID while everywhere else linked by ATCO code.
+   * Both resolve, which is why it went unnoticed — and it meant a link shared from a route page
+   * looked nothing like the same link shared from the map or from a departure board.
+   */
+  it("links to stops by the code on the pole, not by an internal identifier", async () => {
+    vi.spyOn(apiClient, "route").mockResolvedValue(response);
+    renderAt("/routes/r1", "/routes/:routeId", <RoutePage />);
+
+    const link = await screen.findByRole("link", { name: "Leeds City Bus Station" });
+    expect(link).toHaveAttribute("href", "/stops/450010001");
+
+    for (const anchor of screen.getAllByRole("link")) {
+      // No stop link may carry a UUID: that is the shape the bug had.
+      expect(anchor.getAttribute("href") ?? "").not.toMatch(/^\/stops\/[0-9a-f]{8}-/);
+    }
+  });
+
+  /*
+   * A route page showed nothing about disruption unless the intelligence pipeline had derived an
+   * incident — and it has derived none. So a route with a published closure on it was a page that
+   * said nothing, on a site whose subject is saying what is known.
+   */
+  it("shows what the operator has announced about the route", async () => {
+    vi.spyOn(apiClient, "route").mockResolvedValue({
+      ...response,
+      data: {
+        ...response.data,
+        disruptions: [
+          {
+            id: "bods-sx:72",
+            source: "bods_situations",
+            sourceRef: "72",
+            publisher: "First West Yorkshire",
+            officialStatus: "official",
+            lifecycle: "open",
+            severity: "severe",
+            summary: "Road closed at Stanningley Bypass",
+            reason: null,
+            startsAt: meta.generatedAt,
+            endsAt: null,
+            updatedAt: meta.generatedAt,
+            affectedRoutes: [],
+            affectedStops: [],
+            affectedAreas: [],
+            infoLinks: [],
+            attribution: "Bus Open Data Service",
+            provenance: { source: "bods", retrievedAt: meta.generatedAt, externalIds: [] },
+          },
+        ],
+      },
+    } as never);
+    renderAt("/routes/r1", "/routes/:routeId", <RoutePage />);
+
+    expect(await screen.findByText("Road closed at Stanningley Bypass")).toBeTruthy();
   });
 });
 
@@ -168,6 +328,32 @@ describe("OperatorPage", () => {
     },
   };
 
+  /*
+   * An operator with forty undescribed routes printed "No description published" forty times.
+   * A wall of the same absence reads as a broken page rather than as a gap in the data, so the
+   * absence is counted once and the badge carries the route on its own.
+   */
+  it("counts the missing descriptions once instead of repeating the absence", async () => {
+    vi.spyOn(apiClient, "operator").mockResolvedValue({
+      ...response,
+      data: {
+        ...response.data,
+        routes: [
+          { id: "00000000-0000-5000-8000-000000000001", publicName: "72", description: null },
+          { id: "00000000-0000-5000-8000-000000000002", publicName: "16", description: null },
+        ],
+      },
+    });
+    renderAt("/operators/o1", "/operators/:operatorId", <OperatorPage />);
+
+    expect(await screen.findByText("First West Yorkshire")).toBeTruthy();
+    expect(screen.queryByText(/No description published/)).toBeNull();
+    expect(screen.getByText(/None of these routes has a description/)).toBeTruthy();
+    // The routes themselves are still there, named by their badge.
+    expect(screen.getByText("72")).toBeTruthy();
+    expect(screen.getByText("16")).toBeTruthy();
+  });
+
   it("shows a dash and the reason instead of a suppressed figure", async () => {
     vi.spyOn(apiClient, "operator").mockResolvedValue(response);
     renderAt("/operators/o1", "/operators/:operatorId", <OperatorPage />);
@@ -194,6 +380,9 @@ describe("DisruptionsPage", () => {
   const response: DisruptionsResponse = {
     meta,
     data: {
+      official: [],
+      sourcesQueried: [],
+      officialCollectedAt: null,
       byDelayBurden: [],
       byAbnormality: [],
       uncoveredAreas: ["No incident analysis has been published yet."],
@@ -244,8 +433,12 @@ describe("JourneyPage", () => {
               toStopId: "s1",
               fromName: "Where you are",
               toName: "Leeds City Bus Station",
+              fromCoordinate: { lat: 53.7955, lon: -1.5478 },
+              toCoordinate: { lat: 53.7971, lon: -1.5401 },
               departureSeconds: 32_400,
               arrivalSeconds: 32_700,
+              departAtExpected: "2026-09-03T09:00:00.000Z",
+              arriveAtExpected: "2026-09-03T09:05:00.000Z",
             },
             {
               mode: "bus",
@@ -253,10 +446,16 @@ describe("JourneyPage", () => {
               toStopId: "s2",
               fromName: "Leeds City Bus Station",
               toName: "Bradford Interchange",
+              fromCoordinate: { lat: 53.7971, lon: -1.5401 },
+              toCoordinate: { lat: 53.7929, lon: -1.7514 },
+              routeId: "service-72",
+              routePatternId: "pattern-72-outbound",
               routeName: "72",
               headsign: "Bradford",
               departureSeconds: 32_760,
               arrivalSeconds: 34_500,
+              departAtExpected: "2026-09-03T09:06:00.000Z",
+              arriveAtExpected: "2026-09-03T09:35:00.000Z",
             },
           ],
           departureSeconds: 32_400,
@@ -304,6 +503,143 @@ describe("JourneyPage", () => {
 
     const arrival = await screen.findByText(/Arrive between/);
     expect(arrival.textContent).toMatch(/Arrive between \d{2}:\d{2} and \d{2}:\d{2}/);
+  });
+
+  /*
+   * The deployed sweep found this at all three widths: "Plan a journey", forty-eight words, and
+   * no itinerary — while the same corridor planned fine through the API in under two seconds.
+   * `/journey?fromLat=…&toLat=…` is how a destination tapped on the map arrives here, and the
+   * page seeded both fields from the URL and then waited for somebody to press a button they had
+   * effectively already pressed.
+   */
+  it("plans on arrival when both ends came from the link", async () => {
+    const journey = vi.spyOn(apiClient, "journey").mockResolvedValue(plan);
+
+    render(
+      <MemoryRouter
+        initialEntries={[
+          "/journey?fromLat=53.7965&fromLon=-1.5478&fromLabel=Leeds" +
+            "&toLat=53.8659&toLon=-1.6606&toLabel=Leeds%20Bradford%20Airport",
+        ]}
+      >
+        <JourneyPage />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText(/Arrive between/)).toBeTruthy();
+    expect(journey).toHaveBeenCalledTimes(1);
+    expect(journey.mock.calls[0]![0]).toEqual({ lat: 53.7965, lon: -1.5478 });
+    expect(journey.mock.calls[0]![1]).toEqual({ lat: 53.8659, lon: -1.6606 });
+  });
+
+  /*
+   * A journey asked for by a link is never silent, at any moment between the ask and the answer.
+   *
+   * The deployed sweep found the page showing "Plan a journey", ninety-one words and no
+   * explanation, on two widths in the same run. The cause was a race: the plan was dispatched on
+   * a `setTimeout` whose `clearTimeout` was the effect's cleanup, while the "already planned" ref
+   * was set immediately — so a re-render inside that tick cancelled the request and the re-run
+   * declined to send it again. The page then had no plan, no error and no loading state, and every
+   * branch rendered `null`.
+   *
+   * This asserts the invariant rather than the mechanism: from the first paint until the answer
+   * arrives, the page says it is working on it.
+   */
+  /*
+   * Dispatched inside the effect, with no tick in between, which is the mechanism rather than the
+   * symptom. The symptom test below cannot reproduce the race — jsdom renders nothing inside the
+   * cancelled tick, so a restored `setTimeout` still passes it — and that is precisely why this
+   * one asserts the call has already happened by the time `render` returns. Reintroduce a deferred
+   * dispatch and this fails immediately.
+   */
+  it("asks for the plan synchronously, leaving no tick for a cleanup to cancel it", () => {
+    const journey = vi.spyOn(apiClient, "journey").mockResolvedValue(plan);
+
+    render(
+      <MemoryRouter
+        initialEntries={[
+          "/journey?fromLat=53.7965&fromLon=-1.5478&fromLabel=Leeds" +
+            "&toLat=53.8659&toLon=-1.6606&toLabel=Leeds%20Bradford%20Airport",
+        ]}
+      >
+        <JourneyPage />
+      </MemoryRouter>,
+    );
+
+    // No await: React has flushed the effect, and the request must already be out.
+    expect(journey).toHaveBeenCalledTimes(1);
+  });
+
+  it("never shows a bare form when a link asked it to plan", async () => {
+    let settle: ((value: typeof plan) => void) | null = null;
+    vi.spyOn(apiClient, "journey").mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          settle = resolve;
+        }),
+    );
+
+    render(
+      <MemoryRouter
+        initialEntries={[
+          "/journey?fromLat=53.7965&fromLon=-1.5478&fromLabel=Leeds" +
+            "&toLat=53.8659&toLon=-1.6606&toLabel=Leeds%20Bradford%20Airport",
+        ]}
+      >
+        <JourneyPage />
+      </MemoryRouter>,
+    );
+
+    // In flight: the page says so rather than showing the form it was handed. Named twice on
+    // purpose — a visually-hidden live region and a visible caption — so this counts rather than
+    // expecting one.
+    expect((await screen.findAllByText(/Planning your journey/i)).length).toBeGreaterThan(0);
+
+    settle!(plan);
+    expect(await screen.findByText(/Arrive between/)).toBeTruthy();
+    // And the working state goes when the answer arrives.
+    expect(screen.queryAllByText(/Planning your journey/i)).toEqual([]);
+  });
+
+  it("says why when a link's journey comes back with nothing", async () => {
+    vi.spyOn(apiClient, "journey").mockResolvedValue({
+      ...plan,
+      data: {
+        ...plan.data,
+        options: [],
+        unavailableReason: "We could not read the whole network along this corridor.",
+      },
+    });
+
+    render(
+      <MemoryRouter
+        initialEntries={[
+          "/journey?fromLat=53.7965&fromLon=-1.5478&fromLabel=Leeds" +
+            "&toLat=53.8659&toLon=-1.6606&toLabel=Leeds%20Bradford%20Airport",
+        ]}
+      >
+        <JourneyPage />
+      </MemoryRouter>,
+    );
+
+    expect(
+      await screen.findByText(/could not read the whole network along this corridor/),
+    ).toBeTruthy();
+    expect(screen.queryAllByText(/Planning your journey/i)).toEqual([]);
+  });
+
+  /* Half a link is not a request: one endpoint seeded is a form to finish, not a plan to run. */
+  it("does not plan when the link carries only one end", async () => {
+    const journey = vi.spyOn(apiClient, "journey").mockResolvedValue(plan);
+
+    render(
+      <MemoryRouter initialEntries={["/journey?fromLat=53.7965&fromLon=-1.5478&fromLabel=Leeds"]}>
+        <JourneyPage />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByLabelText("To")).toBeTruthy();
+    expect(journey).not.toHaveBeenCalled();
   });
 
   it("says the journey could not be planned instead of showing an empty list", async () => {
@@ -377,8 +713,181 @@ describe("JourneyPage", () => {
     expect(screen.getByText(/are not stored/)).toBeTruthy();
   });
 
-  it("renders times past midnight as the next day's clock, not as 25:10", () => {
-    expect(clockLabel(90_600, "2026-09-03")).toBe("01:10");
-    expect(clockLabel(32_400, "2026-09-03")).toBe("09:00");
+  /*
+   * These two assertions used to read 01:10 and 09:00, which is what the arithmetic produced and
+   * not what a passenger's clock says. The seconds are counted from `${serviceDate}T00:00:00Z`,
+   * so dividing them up renders a UTC clock face — and for the seven months of British Summer
+   * Time that is an hour behind the wall, which made every planned journey look like it had
+   * already gone. The old numbers were the implementation written down rather than the
+   * requirement, so they move.
+   */
+  it("renders a journey time on the passenger's clock, through British Summer Time", () => {
+    // 3 September is BST (UTC+1): nine hours after UTC midnight is ten in the morning here.
+    expect(clockLabel(32_400, "2026-09-03")).toBe("10:00");
+    // And past midnight is the next day's clock rather than 25:10.
+    expect(clockLabel(90_600, "2026-09-03")).toBe("02:10");
+  });
+
+  it("renders the same seconds an hour differently once the clocks go back", () => {
+    // 3 January is GMT, so the offset is zero and the arithmetic and the clock agree.
+    expect(clockLabel(32_400, "2026-01-03")).toBe("09:00");
+    expect(clockLabel(90_600, "2026-01-03")).toBe("01:10");
+  });
+});
+
+describe("the live map's deep link", () => {
+  /**
+   * The viewport the page asked the API for, which is the only observable that says where the
+   * map actually opened.
+   */
+  function bboxFromFirstCall(): string {
+    const call = vi.mocked(apiClient.map).mock.calls[0];
+    const bounds = call?.[0] as { west: number; south: number; east: number; north: number };
+    return [bounds.west, bounds.south, bounds.east, bounds.north].join(",");
+  }
+
+  function renderLive(path: string) {
+    vi.spyOn(apiClient, "map").mockImplementation(
+      () => new Promise(() => {}) as ReturnType<typeof apiClient.map>,
+    );
+    return renderAt(path, "/live", <LiveMapPage />);
+  }
+
+  it("opens on the viewport the URL names", () => {
+    renderLive("/live?bbox=-1.12,53.94,-1.03,53.99");
+    // York, not the Leeds default.
+    expect(bboxFromFirstCall()).toBe("-1.12,53.94,-1.03,53.99");
+  });
+
+  it("opens on the default camera when no viewport is named", () => {
+    renderLive("/live");
+    expect(bboxFromFirstCall()).toBe("-1.6,53.775,-1.49,53.825");
+  });
+
+  /*
+   * A half-understood bbox would frame somewhere nobody asked for. Every one of these falls back
+   * to the default rather than being corrected into a viewport of its own.
+   */
+  it.each([
+    ["too few numbers", "/live?bbox=-1.12,53.94,-1.03"],
+    ["not numbers", "/live?bbox=york,please,now,thanks"],
+    ["inverted west and east", "/live?bbox=-1.03,53.94,-1.12,53.99"],
+    ["inverted south and north", "/live?bbox=-1.12,53.99,-1.03,53.94"],
+    ["off the planet", "/live?bbox=-400,53.94,-1.03,53.99"],
+  ])("ignores a bbox that is %s", (_why, path) => {
+    renderLive(path);
+    expect(bboxFromFirstCall()).toBe("-1.6,53.775,-1.49,53.825");
+  });
+});
+
+/*
+ * The map survives the platform refusing it.
+ *
+ * `/v1/map` is the request error 1102 lands on, and because Cloudflare's error page carries no CORS
+ * header a browser reports it as a bare `TypeError` rather than a status. The page used to render
+ * the whole canvas behind `{response && ...}`, so one refusal left no basemap, no attribution, no
+ * stops and nothing to click: the deployed sweep measured 0 bytes of rendered map and 0 stops drawn
+ * at tablet width while the same endpoint answered fine at desktop width seconds earlier.
+ */
+describe("the live map when the platform refuses the data", () => {
+  it("keeps a basemap on the screen and says what is missing", async () => {
+    vi.spyOn(apiClient, "map").mockRejectedValue(new TypeError("Failed to fetch"));
+
+    const { container } = renderAt("/live", "/live", <LiveMapPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/could not load stops and buses/i)).toBeTruthy();
+    });
+    // The canvas is the point: it does not depend on our API, so it does not wait for it.
+    expect(container.querySelector(".live-map__canvas")).not.toBeNull();
+    expect(screen.getByRole("button", { name: /try again/i })).toBeTruthy();
+  });
+
+  /*
+   * Three attempts, and the third asks for a quarter of the view. Deaths cluster on a warm isolate
+   * and fall roughly every other request, so asking again is the cheapest fix there is; asking for
+   * less is the fallback when asking again does not work.
+   */
+  it("asks again, then asks for a smaller area", async () => {
+    const map = vi.spyOn(apiClient, "map").mockRejectedValue(new TypeError("Failed to fetch"));
+
+    renderAt("/live?bbox=-1.12,53.94,-1.03,53.99", "/live", <LiveMapPage />);
+
+    await waitFor(() => expect(map).toHaveBeenCalledTimes(3), { timeout: 5000 });
+
+    const first = map.mock.calls[0]?.[0] as { west: number; east: number };
+    const third = map.mock.calls[2]?.[0] as { west: number; east: number };
+    expect(third.east - third.west).toBeLessThan(first.east - first.west);
+  });
+
+  it("stops asking when the Worker has given a considered answer", async () => {
+    const map = vi
+      .spyOn(apiClient, "map")
+      .mockRejectedValue(new ApiError("Requested area is too large", 400, "bbox_too_large"));
+
+    renderAt("/live", "/live", <LiveMapPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/too large to load at once/i)).toBeTruthy();
+    });
+    expect(map).toHaveBeenCalledTimes(1);
+  });
+});
+
+/*
+ * Every result goes to the thing it is.
+ *
+ * Only a stop did. A route and an operator linked to `/search?q=<their own title>` — back to this
+ * page, with the same query, for the same results. It looked like a broken link and was in fact a
+ * link to where you already were.
+ */
+describe("search results go somewhere", () => {
+  const results = [
+    {
+      kind: "stop" as const,
+      id: "00000000-0000-5000-8000-0000000000c1",
+      title: "Leeds City Bus Station",
+      coordinate: { lat: 53.79, lon: -1.54 },
+    },
+    {
+      kind: "route" as const,
+      id: "00000000-0000-5000-8000-0000000000e1",
+      title: "36",
+      subtitle: "Transdev",
+    },
+    {
+      kind: "operator" as const,
+      id: "00000000-0000-5000-8000-0000000000a1",
+      title: "First West Yorkshire",
+    },
+  ];
+
+  it("sends a stop, a route and an operator to their own pages", async () => {
+    vi.spyOn(apiClient, "search").mockResolvedValue({ meta, data: { results } });
+
+    render(
+      <MemoryRouter initialEntries={["/search?q=leeds"]}>
+        <Routes>
+          <Route path="/search" element={<SearchPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    const stop = await screen.findByRole("link", { name: /Leeds City Bus Station/ });
+    expect(stop).toHaveAttribute("href", "/stops/00000000-0000-5000-8000-0000000000c1");
+
+    expect(screen.getByRole("link", { name: /36/ })).toHaveAttribute(
+      "href",
+      "/routes/00000000-0000-5000-8000-0000000000e1",
+    );
+    expect(screen.getByRole("link", { name: /First West Yorkshire/ })).toHaveAttribute(
+      "href",
+      "/operators/00000000-0000-5000-8000-0000000000a1",
+    );
+
+    // And none of them back to the page they are already on.
+    for (const link of screen.getAllByRole("link")) {
+      expect(link.getAttribute("href")).not.toMatch(/^\/search/);
+    }
   });
 });

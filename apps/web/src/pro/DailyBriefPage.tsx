@@ -6,6 +6,7 @@ import { apiClient } from "../lib/api.js";
 import { useFetch } from "../lib/use-fetch.js";
 import { formatLondonDate } from "../lib/format.js";
 import { DataModeBanner, ProMetricTile } from "./ProPrimitives.js";
+import { PixelSectionHeading } from "../components/pixel/PixelSectionHeading.js";
 
 /**
  * The Daily Brief browser view (docs/12_DAILY_BRIEF.md).
@@ -41,18 +42,31 @@ export function DailyBriefPage() {
     <>
       <DataModeBanner provenance={brief.provenance} />
 
-      <section className="pro-section" aria-labelledby="brief-heading">
-        <h2 id="brief-heading">Daily Brief</h2>
-        <p className="muted small">
-          For {formatLondonDate(new Date(brief.periodStart))}. This page and the email are built
-          from the same frozen snapshot, so the figures cannot drift apart between them.
+      {/*
+        A masthead, because this is an edition rather than a screen.
+
+        The Brief is the one Pro surface that is published — frozen, dated, and sent to people who
+        read it away from the product — and it was presented as another `pro-section` with an h2.
+        The date is the largest thing on it: a reader's first question about a brief is always
+        which one they are looking at.
+      */}
+      <header className="pro-brief" aria-labelledby="brief-heading">
+        <p className="pro-brief__kicker">Bus Stops Pro · Daily Brief</p>
+        <h2 id="brief-heading" className="pro-brief__date">
+          {formatLondonDate(new Date(brief.periodStart))}
+        </h2>
+        <p className="pro-brief__standfirst">
+          This page and the email are built from the same frozen snapshot, so the figures cannot
+          drift apart between them.
         </p>
-      </section>
+      </header>
 
       {brief.sections.length > 0 ? (
         <>
           <section className="pro-section" aria-labelledby="brief-yesterday">
-            <h2 id="brief-yesterday">Yesterday</h2>
+            <PixelSectionHeading mark="clock" id="brief-yesterday">
+              Yesterday
+            </PixelSectionHeading>
             {brief.sections.map((section) => (
               <div key={section.title} className="pro-card">
                 <h3>{section.title}</h3>
@@ -67,7 +81,9 @@ export function DailyBriefPage() {
           </section>
 
           <section className="pro-section" aria-labelledby="brief-today">
-            <h2 id="brief-today">Today</h2>
+            <PixelSectionHeading mark="clock" id="brief-today">
+              Today
+            </PixelSectionHeading>
             <p>
               Today&apos;s outlook is published once the morning peak has produced enough
               observations to say anything useful. Until then this section stays empty rather than
@@ -83,7 +99,9 @@ export function DailyBriefPage() {
       )}
 
       <section className="pro-section" aria-labelledby="brief-caveats">
-        <h2 id="brief-caveats">Coverage</h2>
+        <PixelSectionHeading mark="warning" id="brief-caveats">
+          Coverage
+        </PixelSectionHeading>
         <ul>
           {brief.coverageCaveats.map((caveat) => (
             <li key={caveat}>{caveat}</li>

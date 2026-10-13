@@ -9,6 +9,18 @@ import type {
 import type { PatternGeometry } from "@busstops/matching";
 
 /**
+ * As much of a stop as a route page draws.
+ *
+ * Route detail used to resolve its stops as full `Stop` records — provenance, quality flags,
+ * amenities, accessibility — and print four of their fields. Naming the four is what lets the
+ * cheap read answer: both the general tiles and the map projection satisfy this, so the caller
+ * cannot accidentally reach for something only the expensive one carries.
+ */
+export type RouteStop = Pick<Stop, "id" | "atcoCode" | "name" | "locationCoordinate"> & {
+  indicator?: string;
+};
+
+/**
  * Read-only queries over whatever slice of the network a request has read.
  *
  * These are derivations of static data, not new analysis: the Worker composes what the pipelines
@@ -37,7 +49,7 @@ export interface RouteVariant {
 /** Every pattern of a service, with its stop sequence resolved to names. */
 export function routeVariants(
   patterns: readonly PatternGeometry[],
-  stopsById: ReadonlyMap<string, Stop>,
+  stopsById: ReadonlyMap<string, RouteStop>,
 ): RouteVariant[] {
   return patterns
     .map((geometry) => {
@@ -76,17 +88,52 @@ export function routeVariants(
     .sort((a, b) => a.direction.localeCompare(b.direction) || b.stops.length - a.stops.length);
 }
 
+/**
+ * Two variants that read as the same route, told apart.
+ *
+ * A description is built from the first and last stop, so a short working, a branch and the full
+ * route often come out identically — "Leeds City Bus Station to Beeston" three times over, from
+ * three patterns that call at 38, 22 and 19 stops. A selector offering the same words three times
+ * is worse than no selector: it tells a passenger the choice does not matter when it decides
+ * whether their stop is on the list at all.
+ *
+ * So where a direction holds several variants with the same description, each gains its stop count.
+ * Only where it is needed: a route with one pattern per direction keeps the plain words.
+ */
+export function distinguishVariantDescriptions(variants: readonly RouteVariant[]): RouteVariant[] {
+  const counts = new Map<string, number>();
+  for (const variant of variants) {
+    const key = `${variant.direction}\u0000${variant.description}`;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return variants.map((variant) => {
+    const key = `${variant.direction}\u0000${variant.description}`;
+    if ((counts.get(key) ?? 0) < 2) return variant;
+    return {
+      ...variant,
+      description: `${variant.description} · ${variant.stops.length} stops`,
+    };
+  });
+}
+
 /** Services that call at a stop, derived from the patterns read around it. */
+/**
+ * Takes patterns rather than geometries, because a board names routes and draws no line.
+ *
+ * The caller used to hand over `PatternGeometry[]`, which meant the read behind it had to produce
+ * polylines nothing here looks at — and in a city that is thousands of coordinate objects per
+ * board. The signature is the honest one now: a stop sequence and a service id are all this uses.
+ */
 export function routesServingStop(
-  patterns: readonly PatternGeometry[],
+  patterns: readonly RoutePattern[],
   stopId: string,
   services: ReadonlyMap<string, ServiceRoute>,
   operators: ReadonlyMap<string, Operator>,
-): Array<{ id: string; publicName: string; operatorName: string }> {
+): Array<{ id: string; publicName: string; operatorId: string; operatorName: string }> {
   const serviceIds = new Set<string>();
-  for (const geometry of patterns) {
-    if (geometry.pattern.stopSequence.includes(stopId)) {
-      serviceIds.add(geometry.pattern.serviceRouteId);
+  for (const pattern of patterns) {
+    if (pattern.stopSequence.includes(stopId)) {
+      serviceIds.add(pattern.serviceRouteId);
     }
   }
 
@@ -98,11 +145,22 @@ export function routesServingStop(
       return {
         id: service.id,
         publicName: service.publicName,
+        /*
+         * The operator's id as well as its name, so a stop can link to them.
+         *
+         * The name alone is a label; a passenger whose bus has not come wants the operator's own
+         * page — their contact details and what else they run — and the stop board was the one
+         * place that named an operator without being able to reach it.
+         */
+        operatorId: service.operatorId,
         operatorName: operator?.name ?? "Unknown operator",
       };
     })
     .filter(
-      (entry): entry is { id: string; publicName: string; operatorName: string } => entry !== null,
+      (
+        entry,
+      ): entry is { id: string; publicName: string; operatorId: string; operatorName: string } =>
+        entry !== null,
     )
     .sort((a, b) => compareRouteNames(a.publicName, b.publicName));
 }

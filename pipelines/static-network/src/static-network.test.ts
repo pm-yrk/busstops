@@ -408,6 +408,71 @@ describe("publishNetwork", () => {
     expect(current?.version).toBe("v1");
   });
 
+  /*
+   * Run 59 measured this one: a Saturday rebuild produced 31,045 patterns against the previous
+   * Friday version's ~45,900 — a 32.4% shrink that failed the 25% default and rolled back a build
+   * in which all 11,483 shard objects had published cleanly. A pattern is an ordered stop list
+   * accumulated only from trips inside the service-date horizon, so a weekend carries a third
+   * fewer of them than a weekday; both source fingerprints came back unchanged, which is what
+   * proves the shrink was the calendar rather than a broken read.
+   */
+  it("publishes a weekend-sized pattern set instead of calling the calendar corruption", async () => {
+    const store = new InMemoryObjectStore();
+    const network = buildCompleteNetwork();
+    const pattern = network.patterns[0]!;
+    const patterns = (count: number) =>
+      Array.from({ length: count }, (_, index) => ({ ...pattern, id: `pattern-${index}` }));
+
+    // Friday, then Saturday: the same 32.4% the deployment actually measured.
+    await publishNetwork(store, { ...network, patterns: patterns(100) }, { version: "v1" });
+    const result = await publishNetwork(
+      store,
+      { ...network, patterns: patterns(68) },
+      { version: "v2" },
+    );
+
+    expect(result.failed.filter((f) => f.dataset === DATASETS.patterns)).toEqual([]);
+    const artifacts = new ArtifactStore(store);
+    expect((await artifacts.readManifest(DATASETS.patterns))?.version).toBe("v2");
+  });
+
+  /*
+   * And the floor that replaces what the widened shrink allowance gives up — which is strictly
+   * more protection than the shrink guard offered, because a shrink guard compares this build
+   * against a version whose own health it assumes, and a floor does not. The shrink here is 17%,
+   * well inside any allowance; it is the absolute count that is impossible for a national build.
+   */
+  it("still refuses a pattern set too small for the services it claims to cover", async () => {
+    const store = new InMemoryObjectStore();
+    const network = buildCompleteNetwork();
+    const service = network.services[0]!;
+    const pattern = network.patterns[0]!;
+    const wide = {
+      ...network,
+      services: Array.from({ length: 200 }, (_, index) => ({ ...service, id: `service-${index}` })),
+    };
+    const patterns = (count: number) =>
+      Array.from({ length: count }, (_, index) => ({ ...pattern, id: `pattern-${index}` }));
+
+    /*
+     * 200 services puts the floor at 100. v1 clears it; v2 does not — and the step between them
+     * is only 17.5%, comfortably inside both the old 25% default and the widened allowance. That
+     * is the point: this is a build the shrink guard would have waved through in either form.
+     */
+    await publishNetwork(store, { ...wide, patterns: patterns(120) }, { version: "v1" });
+    const result = await publishNetwork(
+      store,
+      { ...wide, patterns: patterns(99) },
+      { version: "v2" },
+    );
+
+    expect(result.complete).toBe(false);
+    expect(result.failed.some((f) => f.dataset === DATASETS.patterns)).toBe(true);
+
+    const artifacts = new ArtifactStore(store);
+    expect((await artifacts.readManifest(DATASETS.patterns))?.version).toBe("v1");
+  });
+
   it("reports a dataset that produced no records instead of publishing an empty one", async () => {
     const store = new InMemoryObjectStore();
     const network = { ...buildCompleteNetwork(), journeys: [] };

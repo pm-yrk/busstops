@@ -7,6 +7,9 @@ import {
 } from "./common.js";
 import { DeparturePredictionSchema, VehicleStateSchema } from "./live.js";
 import { GovernorStateSchema, IncidentSchema, SourceHealthSchema } from "./derived.js";
+import { StopAccessibilitySchema } from "./accessibility.js";
+import { DisruptionBoardSchema, DisruptionNoticeSchema } from "./disruptions.js";
+import { StopWeatherSchema } from "./weather.js";
 import { OperatorSchema, ServiceRouteSchema, StopSchema } from "./static.js";
 
 /**
@@ -36,6 +39,18 @@ export const ResponseMetaSchema = z.object({
   degradation: DegradationStatusSchema,
   governorState: GovernorStateSchema,
   attribution: z.array(z.string()),
+  /**
+   * What this request cost, for the requests that survive to say.
+   *
+   * Cloudflare answers a Worker over its resource limit with error 1102 and an HTML page that
+   * names neither the limit nor how close anything else came to it. The only requests that can
+   * carry evidence are the ones that finish, so they carry it: elapsed time, objects asked for and
+   * read, characters decoded, records parsed, and which stage of the handler spent them.
+   *
+   * Counts and durations only — never a key, a URL or a credential. Optional because the light
+   * endpoints do not measure themselves.
+   */
+  diagnostics: z.record(z.string(), z.unknown()).optional(),
 });
 export type ResponseMeta = z.infer<typeof ResponseMetaSchema>;
 
@@ -82,7 +97,18 @@ export const MapVehicleSummarySchema = z.object({
   vehicleRef: z.string(),
   coordinate: CoordinateSchema,
   bearingDegrees: z.number().nullable(),
+  /**
+   * What is on the front of the bus, and — separately — which service that actually is.
+   *
+   * These are not interchangeable and were being treated as though they were. `routePublicName`
+   * is "36": several operators run one, it is what a passenger reads, and it is not an
+   * identifier. `routeId` is the published service, which is what a link to the route page has to
+   * be built from. Null when the viewport's patterns cannot say which service this is — a bus
+   * whose route we are unsure of is shown without a route link rather than with a wrong one.
+   */
   routePublicName: z.string().nullable(),
+  routeId: z.string().nullable().default(null),
+  routePatternId: z.string().nullable().default(null),
   destinationName: z.string().nullable(),
   delaySeconds: z.number().nullable(),
   freshnessSeconds: z.number().nonnegative(),
@@ -94,12 +120,35 @@ export const MapResponseDataSchema = z.object({
   stops: z.array(MapStopSummarySchema),
   vehicles: z.array(MapVehicleSummarySchema),
   incidents: z.array(IncidentSchema),
+  /**
+   * Official disruption notices touching this viewport.
+   *
+   * Separate from `incidents` because they are different claims: an incident is something Bus
+   * Stops inferred from watching buses, a notice is something an operator published. The map
+   * draws both, and says which is which.
+   */
+  disruptions: z.array(DisruptionNoticeSchema),
   /** True when results were capped, so the UI can prompt the user to zoom in. */
   truncated: z.object({
     stops: z.boolean(),
     vehicles: z.boolean(),
     incidents: z.boolean(),
   }),
+  /**
+   * Whether the optional half of this map arrived.
+   *
+   * Stops and live vehicles are essential and are never skipped. Which services call at a stop,
+   * and which route a vehicle is on, come from pattern tiles that carry geometry and reach four
+   * megabytes each — expensive enough that a dense viewport used to take the whole isolate over
+   * its limit, and Cloudflare would answer with its own page instead of a map.
+   *
+   * So enrichment now runs on whatever time is left and stops when that is gone. When it does,
+   * the map is still returned, still true about where the buses are, and says here that some
+   * stops are missing their route names. A partial map that says so is a working map; silence
+   * would be the map claiming those stops have no services.
+   */
+  degraded: z.boolean(),
+  degradationReason: z.string().nullable(),
 });
 export type MapResponseData = z.infer<typeof MapResponseDataSchema>;
 
@@ -112,8 +161,67 @@ export const StopDeparturesResponseSchema = apiEnvelope(
     departures: z.array(DeparturePredictionSchema),
     /** Routes serving this stop, for the arrival board and route links. */
     routes: z.array(
-      z.object({ id: z.string().uuid(), publicName: z.string(), operatorName: z.string() }),
+      z.object({
+        id: z.string().uuid(),
+        publicName: z.string(),
+        /** The operator's own id, so a stop can link to them and not merely name them. */
+        operatorId: z.string().uuid().optional(),
+        operatorName: z.string(),
+      }),
     ),
+    /**
+     * Whether that list is all of them.
+     *
+     * The read behind it is bounded, and a board at a busy interchange can reach the bound. A
+     * short list presented as the complete one tells a passenger their route does not stop here,
+     * which is a statement about the bus service made out of a limit of ours. Optional only so an
+     * older client is not broken by its arrival; the Worker always sends it.
+     */
+    routesComplete: z.boolean().optional(),
+    /**
+     * Accessibility, as facts with sources rather than a verdict.
+     *
+     * Mostly `unknown` today and honestly so: the sources that would answer these questions are
+     * sparse, and a stop nobody has surveyed must say that rather than default to "no".
+     */
+    accessibility: StopAccessibilitySchema,
+    /** Official notices naming this stop or a route that calls here. */
+    disruptions: z.array(DisruptionNoticeSchema),
+    /**
+     * Whether a timetable for today was published at all.
+     *
+     * The board said "No departures in the next hour" in two completely different situations:
+     * the timetable is published and genuinely has nothing due, and no timetable for today was
+     * ever published. The first is information; the second is the board reporting a gap in our
+     * own data as a fact about the bus service, which is the worst thing a departure board can
+     * do — a passenger reads it as "don't wait here".
+     *
+     * Departure shards are keyed `departures/<serviceDate>/<bucket>`, so a stale artifact has no
+     * shard for today and every stop outside London reads a key that is simply absent. The
+     * reader already counted that; nothing carried it to the screen.
+     *
+     * Optional so an older client is unaffected; the Worker always sends it.
+     */
+    timetableCoverage: z
+      .object({
+        /** Shards that answered. */
+        read: z.number().int().nonnegative(),
+        /** Shards the reader asked for and did not find — a published-data gap, not a quiet day. */
+        missing: z.number().int().nonnegative(),
+        /** The service dates the board asked about, so the gap can be named precisely. */
+        serviceDates: z.array(z.string()).default([]),
+      })
+      .optional(),
+    /**
+     * What it is like standing here, or null.
+     *
+     * Null is a real answer and a common one: the weather job publishes a degree square at a
+     * time and a square it has not reached yet, or could not get an answer for, has none. The
+     * stop page then shows no vignette. Filling the gap with a nearby square, or with a picture
+     * of a sky nobody measured, would make the one thing on the page that is a drawing also the
+     * one thing that is not true.
+     */
+    weather: StopWeatherSchema.nullable(),
   }),
 );
 export type StopDeparturesResponse = z.infer<typeof StopDeparturesResponseSchema>;
@@ -121,7 +229,17 @@ export type StopDeparturesResponse = z.infer<typeof StopDeparturesResponseSchema
 export const VehicleDetailResponseSchema = apiEnvelope(
   z.object({
     vehicle: VehicleStateSchema,
+    /**
+     * What is on the front, and which service that is.
+     *
+     * The page could only ever link back to a route by its public name, which is not an
+     * identifier — so "which route is this bus on" had no answer a link could be built from.
+     * `routeId` is null when the viewport's patterns could not identify the service, and the page
+     * says so rather than offering a link to somebody else's route of the same number.
+     */
     routePublicName: z.string().nullable(),
+    routeId: z.string().nullable().default(null),
+    routePatternId: z.string().nullable().default(null),
     destinationName: z.string().nullable(),
     nextStops: z.array(
       z.object({
@@ -137,6 +255,17 @@ export const VehicleDetailResponseSchema = apiEnvelope(
     recentTrace: z.array(z.object({ coordinate: CoordinateSchema, observedAt: IsoInstantSchema })),
     scheduledShape: z.array(CoordinateSchema),
     incidents: z.array(IncidentSchema),
+    /**
+     * Who runs this bus, when the observation matched a pattern and the pattern named a service.
+     *
+     * "Bus stopped?" offers to put the passenger in touch with the operator, and was passing null
+     * for both the name and the contact because nothing on this endpoint had ever looked one up.
+     * Null still happens — an unmatched observation is a number on the front and nothing else —
+     * and the panel says so rather than showing an empty row.
+     */
+    operator: OperatorSchema.nullable().default(null),
+    /** Published notices touching this bus's route, which is context the panel can act on. */
+    disruptions: z.array(DisruptionNoticeSchema).default([]),
   }),
 );
 export type VehicleDetailResponse = z.infer<typeof VehicleDetailResponseSchema>;
@@ -161,6 +290,15 @@ export type PublishedMetric = z.infer<typeof PublishedMetricSchema>;
 
 export const RouteDetailResponseSchema = apiEnvelope(
   z.object({
+    /**
+     * Whether the variants below are the whole route.
+     *
+     * A route's stops and geometry are a statement of fact — this is where the 36 goes — so a
+     * read that hit its byte budget must not publish the part it managed as the extent of the
+     * route. Optional only so an older client is not broken by its arrival; the Worker always
+     * sends it.
+     */
+    complete: z.boolean().optional(),
     route: ServiceRouteSchema,
     operator: OperatorSchema.nullable(),
     variants: z.array(
@@ -194,6 +332,14 @@ export const RouteDetailResponseSchema = apiEnvelope(
     headwaySummary: z.string().nullable(),
     reliability: z.array(PublishedMetricSchema),
     incidents: z.array(IncidentSchema),
+    /**
+     * What the operator and the highway authority have said about this route.
+     *
+     * `incidents` are derived from observation and stay empty until the intelligence pipeline has
+     * something to say; these are the published notices, which exist now. A route page that shows
+     * neither, on a route with a closure on it, is the site being quieter than its sources.
+     */
+    disruptions: z.array(DisruptionNoticeSchema).default([]),
     ticketUrl: z.string().url().nullable(),
   }),
 );
@@ -223,6 +369,21 @@ export type DisruptionItem = z.infer<typeof DisruptionItemSchema>;
 
 export const DisruptionsResponseSchema = apiEnvelope(
   z.object({
+    /*
+     * Two layers, kept apart on purpose.
+     *
+     * `official` is what an operator or authority published. The rankings below are what Bus
+     * Stops worked out from watching buses. A passenger deciding whether to wait is entitled to
+     * know which of those they are reading, and merging them into one list would take that away.
+     * The official layer also does not wait for an analytics baseline: an operator saying a route
+     * is suspended is useful on the first day, before anything has a baseline at all.
+     */
+    official: z.array(DisruptionNoticeSchema),
+    /** Which publishers were asked and what came back, so silence is attributable. */
+    sourcesQueried: DisruptionBoardSchema.shape.sourcesQueried,
+    /** When the notices were collected from the publishers — not when this response was built. */
+    officialCollectedAt: IsoInstantSchema.nullable(),
+
     /** Two rankings, never merged into one league table: they answer different questions. */
     byDelayBurden: z.array(DisruptionItemSchema),
     byAbnormality: z.array(DisruptionItemSchema),
@@ -270,16 +431,41 @@ export const AreaDetailResponseSchema = apiEnvelope(
 );
 export type AreaDetailResponse = z.infer<typeof AreaDetailResponseSchema>;
 
+/**
+ * One leg of an itinerary, carrying everything a passenger reads off it.
+ *
+ * A leg used to be a mode, two names and two offsets into the service day. That satisfies a
+ * schema and fails a reader: "leg 1 of 3" could not say where on the map it went, what time it
+ * was in any timezone a person uses, or — on a bus leg — which bus. A returned itinerary whose
+ * first leg cannot be drawn, timed or identified is not a journey, so the fields that make it one
+ * are required here rather than hoped for downstream.
+ */
 export const JourneyPlanLegSchema = z.object({
   mode: z.enum(["walk", "bus"]),
   fromStopId: z.string().nullable(),
   toStopId: z.string().nullable(),
-  fromName: z.string(),
-  toName: z.string(),
+  fromName: z.string().min(1),
+  toName: z.string().min(1),
+  /** Where the leg begins and ends. The ends of the journey are the points that were asked for. */
+  fromCoordinate: CoordinateSchema,
+  toCoordinate: CoordinateSchema,
+  /**
+   * The service and pattern a bus leg is on.
+   *
+   * `routeId` is the published service identifier, not the number on the front: several operators
+   * run a "36", and a link built from the public name opens somebody else's route. `routeName` is
+   * what a passenger reads. Absent on a walking leg, and required on a bus leg by the refinement
+   * below rather than by being non-optional here.
+   */
+  routeId: z.string().optional(),
+  routePatternId: z.string().optional(),
   routeName: z.string().optional(),
   headsign: z.string().optional(),
   departureSeconds: z.number(),
   arrivalSeconds: z.number(),
+  /** The same two times as instants, so a reader never has to know what a service day is. */
+  departAtExpected: z.string().datetime(),
+  arriveAtExpected: z.string().datetime(),
 });
 export type JourneyPlanLeg = z.infer<typeof JourneyPlanLegSchema>;
 
@@ -299,6 +485,65 @@ export const JourneyPlanOptionSchema = z.object({
 });
 export type JourneyPlanOption = z.infer<typeof JourneyPlanOptionSchema>;
 
+export const JourneyDiagnosticsSchema = z.object({
+  code: z.enum([
+    "planned",
+    "no_options",
+    "too_far",
+    "no_data",
+    "unreadable",
+    "too_large",
+    "artifact_format_mismatch",
+    /*
+     * The corridor's trip shards could not all be opened inside the request's budget.
+     *
+     * Distinct from `too_large`, which is a graph the planner refuses to build, and from
+     * `no_data`, which is a corridor with nothing published. This one means the timetable is
+     * there and part of it was not read — so any itinerary built on it would be a plausible
+     * guess rather than a plan, and the planner refuses to offer one.
+     */
+    "incomplete_read",
+  ]),
+  /** Whether the artifact declared its storage layout, and whether the reader agreed with it. */
+  layout: z.enum(["compatible", "undeclared", "mismatch"]),
+  corridorTiles: z.number().int().nonnegative(),
+  windows: z.array(z.number().int().nonnegative()),
+  /** Shards the corridor needed, before any budget was applied. */
+  shardsRequested: z.number().int().nonnegative().optional(),
+  shardsRead: z.number().int().nonnegative(),
+  shardsMissing: z.number().int().nonnegative(),
+  /** Shards the corridor needed and the budget left unopened. Non-zero means `incomplete_read`. */
+  shardsSkipped: z.number().int().nonnegative().optional(),
+  /** Trips read and immediately discarded as outside the plan's window or corridor patterns. */
+  tripsFiltered: z.number().int().nonnegative().optional(),
+  tripsLoaded: z.number().int().nonnegative(),
+  tripsWithPattern: z.number().int().nonnegative(),
+  tripsWithoutPattern: z.number().int().nonnegative(),
+  tripsInGraph: z.number().int().nonnegative(),
+  stopsInGraph: z.number().int().nonnegative(),
+  transferEdges: z.number().int().nonnegative(),
+  /**
+   * Milliseconds per stage of the plan, and the text it decoded.
+   *
+   * Leeds to Leeds Bradford Airport answered Cloudflare error 1102 — the platform killing the
+   * isolate — and counts alone cannot say whether the cost was reading the shards, parsing them,
+   * joining trips to patterns, building the graph or running the search. Optional so an older
+   * deployment's response still validates.
+   */
+  stageMs: z.record(z.string(), z.number()).optional(),
+  tripChars: z.number().int().nonnegative().optional(),
+  /** The character budget the trip read was given, so a truncation can be read against it. */
+  tripCharBudget: z.number().int().nonnegative().optional(),
+  originCandidates: z.number().int().nonnegative(),
+  destinationCandidates: z.number().int().nonnegative(),
+  rounds: z.number().int().nonnegative(),
+  roundsWithOption: z.number().int().nonnegative(),
+  patternsInSlice: z.number().int().nonnegative(),
+  stopsInSlice: z.number().int().nonnegative(),
+  failures: z.array(z.object({ dataset: z.string(), reason: z.string() })),
+});
+export type JourneyDiagnostics = z.infer<typeof JourneyDiagnosticsSchema>;
+
 export const JourneyPlanResponseSchema = apiEnvelope(
   z.object({
     serviceDate: z.string(),
@@ -307,6 +552,17 @@ export const JourneyPlanResponseSchema = apiEnvelope(
     explanation: z.string().nullable(),
     /** Stated when no plan could be produced, in the words shown to the reader. */
     unavailableReason: z.string().nullable(),
+    /**
+     * Why the answer is the shape it is, in counts.
+     *
+     * Part of the contract rather than a debug extra, because the thing being guarded against is
+     * a zero that cannot be interpreted. One sentence covered six unrelated situations — nothing
+     * published here, a shard that could not be read, a corridor too wide to plan, trips whose
+     * patterns were not in the slice, a graph over its size limit, and a search that genuinely
+     * found no path — and without these a deployed check cannot tell a broken join from a quiet
+     * moor, which is exactly the confusion that let an empty national timetable read as `normal`.
+     */
+    diagnostics: JourneyDiagnosticsSchema.optional(),
   }),
 );
 export type JourneyPlanResponse = z.infer<typeof JourneyPlanResponseSchema>;

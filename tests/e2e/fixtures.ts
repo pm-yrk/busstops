@@ -86,13 +86,102 @@ export const STOP_RESPONSE = {
         confidence: { level: "low", score: 0.3, reasons: ["timetable only"] },
       },
     ],
+    /*
+     * Two routes, and the first of them is the one `ROUTE_DETAIL` describes.
+     *
+     * It used to name only a "72" whose id resolved, in the mock, to a route page headed "36" —
+     * so the fixture world contradicted itself at exactly the join a passenger walks, and
+     * flows.spec.ts caught it on its first run. A stop served by two routes where only one has a
+     * departure due in the window is an ordinary stop, so the 72 stays.
+     */
     routes: [
+      {
+        id: "00000000-0000-5000-8000-0000000000d1",
+        publicName: "36",
+        operatorName: "First West Yorkshire",
+      },
       {
         id: "00000000-0000-5000-8000-0000000000e1",
         publicName: "72",
         operatorName: "First West Yorkshire",
       },
     ],
+    /*
+     * A stop where the register says what kind of boarding point it is and nobody has surveyed
+     * anything else — which is the commonest real case, and the one the card has to handle
+     * without implying the stop is inaccessible.
+     */
+    accessibility: {
+      atcoCode: "450010001",
+      facts: [
+        {
+          key: "shelter",
+          status: "yes",
+          source: "naptan",
+          sourceField: "amenities.shelter",
+          sourceUpdatedAt: null,
+          provenance: "NaPTAN stop record",
+          confidence: "high",
+        },
+        {
+          key: "step_free",
+          status: "unknown",
+          detail: "An on-street stop, usually a pole or shelter on the pavement",
+          source: "naptan",
+          sourceField: "StopType",
+          sourceUpdatedAt: "2026-01-15T09:00:00.000Z",
+          provenance:
+            "NaPTAN records the kind of boarding point, not whether the approach to it is step-free.",
+          confidence: "high",
+        },
+      ],
+      sourcesConsulted: [
+        { source: "naptan", outcome: "had_data" },
+        { source: "gtfs_stop", outcome: "not_available" },
+        { source: "osm", outcome: "not_available" },
+      ],
+    },
+    disruptions: [],
+    /*
+     * Rain at the stop, so the vignette in the art bench is the one worth looking at — the
+     * umbrella, the near and far rain layers, and advice with the numbers it was chosen from.
+     * Real weather is not reproducible on demand and a screenshot of a clear sky proves nothing
+     * about the states that have to work.
+     */
+    weather: {
+      cell: "537_-16",
+      cellCentre: { lat: 53.75, lon: -1.55 },
+      cellSizeDegrees: 0.1,
+      current: {
+        time: "2026-09-03T09:00:00.000Z",
+        temperatureCelsius: 11.4,
+        apparentTemperatureCelsius: 8.9,
+        precipitationMm: 1.8,
+        precipitationProbability: 82,
+        weatherCode: 63,
+        windSpeedKph: 21,
+        windGustKph: 38,
+        uvIndex: 1.2,
+        isDay: true,
+      },
+      next: [
+        {
+          time: "2026-09-03T10:00:00.000Z",
+          temperatureCelsius: 11.9,
+          apparentTemperatureCelsius: 9.4,
+          precipitationMm: 0.9,
+          precipitationProbability: 61,
+          weatherCode: 61,
+          windSpeedKph: 19,
+          windGustKph: 34,
+          uvIndex: 1.6,
+          isDay: true,
+        },
+      ],
+      retrievedAt: "2026-09-03T08:55:00.000Z",
+      attribution:
+        "Weather data by Open-Meteo.com (CC BY 4.0), used under its free non-commercial terms",
+    },
   },
 };
 
@@ -123,7 +212,7 @@ export const PRO_CONTROL_TOWER = {
         unit: "points",
         denominator: 1103,
         window: "last 60 minutes",
-        freshnessSeconds: 30,
+        freshnessSeconds: null,
         coverage: 0.86,
         confidence: { level: "medium", score: 0.66, reasons: ["capped by 86% source coverage"] },
         suppressed: false,
@@ -140,11 +229,81 @@ export const PRO_CONTROL_TOWER = {
         unit: "percent",
         denominator: 4,
         window: "last 60 minutes",
-        freshnessSeconds: 30,
+        freshnessSeconds: null,
         coverage: 0.86,
         confidence: null,
         suppressed: true,
         suppressionReason: "Based on 4 observations; 20 are needed before a figure is published.",
+        baselineValue: null,
+        evidence: [],
+      },
+      /*
+       * Enough tiles to fill the three-column grid at tablet width. Two was not enough: the grid
+       * is `auto-fit`, so with empty tracks collapsed each tile got a third more room than it
+       * really has and the layout test passed on a page the deployed Pro could not reproduce.
+       * A fixture that is easier to lay out than the real response is a test that does not run.
+       */
+      {
+        key: "active_vehicles",
+        label: "Buses observed",
+        definition: "Distinct vehicles that reported a usable position in the window.",
+        value: 1642,
+        unit: "count",
+        denominator: 1642,
+        window: "last 60 minutes",
+        freshnessSeconds: null,
+        coverage: 0.86,
+        confidence: null,
+        suppressed: false,
+        suppressionReason: null,
+        baselineValue: null,
+        evidence: [],
+      },
+      {
+        key: "reliability",
+        label: "Reliability",
+        definition: "The share of scheduled departures that were observed running at all.",
+        value: 0.93,
+        unit: "percent",
+        denominator: 1189,
+        window: "last 60 minutes",
+        freshnessSeconds: null,
+        coverage: 0.86,
+        confidence: null,
+        suppressed: false,
+        suppressionReason: null,
+        baselineValue: 0.95,
+        evidence: [],
+      },
+      {
+        key: "median_delay",
+        label: "Median delay",
+        definition: "The middle value of actual minus scheduled time across observed departures.",
+        value: 168,
+        unit: "seconds",
+        denominator: 1103,
+        window: "last 60 minutes",
+        freshnessSeconds: null,
+        coverage: 0.86,
+        confidence: null,
+        suppressed: false,
+        suppressionReason: null,
+        baselineValue: 132,
+        evidence: [],
+      },
+      {
+        key: "abnormal_disruptions",
+        label: "Abnormal disruptions",
+        definition: "Situations outside the normal range for this time and place.",
+        value: 3,
+        unit: "count",
+        denominator: 5,
+        window: "last 60 minutes",
+        freshnessSeconds: null,
+        coverage: 0.86,
+        confidence: null,
+        suppressed: false,
+        suppressionReason: null,
         baselineValue: null,
         evidence: [],
       },
@@ -179,7 +338,98 @@ export const EMPTY_MAP = {
     stops: [],
     vehicles: [],
     incidents: [],
+    disruptions: [],
     truncated: { stops: false, vehicles: false, incidents: false },
+    degraded: false,
+    degradationReason: null,
+  },
+};
+
+/**
+ * A viewport with buses in it.
+ *
+ * Lives here rather than in the bench that uses it so the contract test parses it. It did not,
+ * once, and the map fixture went on missing `disruptions` for as long as it took someone to look
+ * at a screenshot: the bench asserted that every sprite loaded, a page in its error state has no
+ * sprites, and so it passed over a live map that said "Something went wrong".
+ */
+export const MAP_WITH_TRAFFIC = {
+  meta: META,
+  data: {
+    stops: [
+      {
+        id: "00000000-0000-5000-8000-0000000000d1",
+        atcoCode: "450010001",
+        name: "Boar Lane",
+        indicator: "Stand A",
+        coordinate: { lat: 53.7965, lon: -1.5445 },
+        routePublicNames: ["36"],
+        hasLiveCoverage: true,
+      },
+      {
+        id: "00000000-0000-5000-8000-0000000000d2",
+        atcoCode: "450010002",
+        name: "City Square",
+        indicator: "B",
+        coordinate: { lat: 53.7952, lon: -1.5478 },
+        routePublicNames: ["12"],
+        hasLiveCoverage: true,
+      },
+      {
+        id: "00000000-0000-5000-8000-0000000000d3",
+        atcoCode: "450010003",
+        name: "Park Row",
+        coordinate: { lat: 53.7988, lon: -1.5462 },
+        routePublicNames: [],
+        hasLiveCoverage: false,
+      },
+    ],
+    vehicles: [
+      {
+        vehicleRef: "v1",
+        coordinate: { lat: 53.7972, lon: -1.5432 },
+        bearingDegrees: 90,
+        routePublicName: "36",
+        routeId: "00000000-0000-5000-8000-0000000000e1",
+        routePatternId: "00000000-0000-5000-8000-0000000000f1",
+        destinationName: "Ripon",
+        delaySeconds: 60,
+        freshnessSeconds: 20,
+        motionState: "moving" as const,
+      },
+      {
+        vehicleRef: "v2",
+        coordinate: { lat: 53.7944, lon: -1.5495 },
+        bearingDegrees: 260,
+        routePublicName: "12",
+        routeId: "00000000-0000-5000-8000-0000000000e2",
+        routePatternId: null,
+        destinationName: "Beeston",
+        delaySeconds: null,
+        freshnessSeconds: 40,
+        motionState: "moving" as const,
+      },
+      {
+        // Old enough to be drawn as a stale vehicle rather than a fresh one.
+        vehicleRef: "v3",
+        coordinate: { lat: 53.7995, lon: -1.543 },
+        bearingDegrees: 10,
+        routePublicName: "X84",
+        // Null on purpose: the viewport could not say which operator's X84 this is, and the map
+        // must show it without offering a link to somebody else's route.
+        routeId: null,
+        routePatternId: null,
+        destinationName: "Otley",
+        delaySeconds: null,
+        freshnessSeconds: 900,
+        motionState: "stationary" as const,
+      },
+    ],
+    incidents: [],
+    disruptions: [],
+    truncated: { stops: false, vehicles: false, incidents: false },
+    degraded: false,
+    degradationReason: null,
   },
 };
 
@@ -215,7 +465,402 @@ export const PRO_EMPTY_SECTION = {
   },
 };
 
+/**
+ * A disruptions board with both layers present and neither claiming the other's authority.
+ *
+ * An empty `{ data: {} }` fallback would have rendered a page that had crashed on a missing array,
+ * and an accessibility pass over a crashed page proves nothing. This gives the page one official
+ * notice, one ranked item, a source that answered and a source that did not, and an uncovered
+ * area — every branch the page draws differently.
+ */
+export const DISRUPTIONS_RESPONSE = {
+  meta: META,
+  data: {
+    official: [
+      {
+        id: "bods-situation-nh-1",
+        source: "bods_situations",
+        sourceRef: "NH-1",
+        publisher: "First West Yorkshire",
+        officialStatus: "official",
+        lifecycle: "open",
+        severity: "moderate",
+        summary: "A64 eastbound closed for resurfacing",
+        description: "One carriageway is closed between junctions overnight.",
+        advice: "Allow extra time; services 36 and X99 are diverted via the ring road.",
+        reason: { category: "EnvironmentReason", value: "Road works" },
+        startsAt: "2026-09-03T07:00:00.000Z",
+        endsAt: null,
+        updatedAt: "2026-09-03T07:05:00.000Z",
+        affectedRoutes: [],
+        affectedStops: [],
+        affectedAreas: ["Leeds city centre"],
+        infoLinks: [],
+        attribution: "First West Yorkshire, via the Bus Open Data Service",
+        provenance: {
+          source: "bods",
+          retrievedAt: "2026-09-03T08:00:00.000Z",
+          externalIds: [],
+        },
+      },
+    ],
+    sourcesQueried: [
+      {
+        source: "bods_situations",
+        outcome: "ok",
+        records: 1,
+        queriedAt: "2026-09-03T08:00:00.000Z",
+      },
+      {
+        source: "tfl_status",
+        outcome: "not_configured",
+        records: 0,
+        queriedAt: "2026-09-03T08:00:00.000Z",
+      },
+    ],
+    officialCollectedAt: "2026-09-03T08:00:00.000Z",
+    byDelayBurden: [],
+    byAbnormality: [],
+    uncoveredAreas: ["Cornwall", "Cumbria"],
+  },
+};
+
+export const ROUTE_ID = "00000000-0000-5000-8000-0000000000d1";
+export const VEHICLE_REF = "veh-e2e-1";
+
+const OPERATOR_FIXTURE = {
+  id: "00000000-0000-5000-8000-0000000000e1",
+  provenance: { source: "naptan", retrievedAt: META.generatedAt, externalIds: [] },
+  ingestedAt: META.generatedAt,
+  qualityFlags: [],
+  name: "First West Yorkshire",
+  licenceRegistryIds: ["FLDS"],
+  /*
+   * The address this operator really does publish as `agency_url` in its BODS feed, because that
+   * is what the ticket hand-off decides on. With it absent the hand-off correctly renders nothing
+   * at all, which meant the one thing on the route page a passenger might actually press was
+   * never on screen in any test.
+   */
+  contactUrl: "https://www.firstbus.co.uk/west-yorkshire",
+  ticketDomains: [],
+  serviceAreas: ["non_london"],
+  active: true,
+};
+
+/**
+ * A route page with enough of a route on it to be looked at.
+ *
+ * Route and vehicle were two of the pages named as visual priorities and neither had a fixture,
+ * so neither had ever been screenshotted locally — the art bench went home, stop, live, journey,
+ * disruptions, notfound, search, saved, pro and stopped. Improving a composition nobody can see
+ * is guesswork, and the deployed sweep is the only other place these render.
+ *
+ * Twelve stops, because the route strip draws eleven intermediate marks and a terminus at each
+ * end: fewer and the diagram never reaches the shape it is built for.
+ */
+const ROUTE_STOPS = [
+  "Leeds City Bus Station",
+  "Vicar Lane",
+  "Eastgate",
+  "St Peter's Street",
+  "Mabgate",
+  "Burmantofts Street",
+  "Stoney Rock Lane",
+  "Harehills Lane",
+  "Roundhay Road",
+  "Gipton Approach",
+  "Oakwood Lane",
+  "Roundhay Park",
+].map((name, index) => ({
+  stopId: `00000000-0000-5000-8000-${String(index + 200).padStart(12, "0")}`,
+  atcoCode: `450010${String(index + 100).padStart(3, "0")}`,
+  name,
+  locality: "Leeds",
+  sequence: index,
+}));
+
+export const ROUTE_DETAIL = {
+  meta: META,
+  data: {
+    complete: true,
+    route: {
+      id: ROUTE_ID,
+      provenance: { source: "bods", retrievedAt: META.generatedAt, externalIds: [] },
+      ingestedAt: META.generatedAt,
+      qualityFlags: [],
+      operatorId: OPERATOR_FIXTURE.id,
+      publicName: "36",
+      mode: "bus",
+      description: "Leeds — Roundhay Park",
+      coverageArea: "non_london",
+      validFrom: "2026-09-01T00:00:00.000Z",
+      validTo: null,
+    },
+    operator: OPERATOR_FIXTURE,
+    /*
+     * Both directions, because every real route has them and one variant let a test skip itself.
+     *
+     * `flows.spec.ts` guards the variant selector behind `tabs.count() > 1` — correctly, since a
+     * single-pattern route shows no tablist — and with one variant here the assertions about
+     * selecting a direction never ran. A fixture that is simpler than the product lets a test pass
+     * by not executing.
+     */
+    variants: [
+      {
+        patternId: "00000000-0000-5000-8000-0000000000f2",
+        direction: "outbound",
+        description: "Leeds City Bus Station to Roundhay Park",
+        distanceMetres: 8400,
+        stops: ROUTE_STOPS,
+      },
+      {
+        patternId: "00000000-0000-5000-8000-0000000000f3",
+        direction: "inbound",
+        description: "Roundhay Park to Leeds City Bus Station",
+        distanceMetres: 8400,
+        stops: [...ROUTE_STOPS].reverse().map((stop, index) => ({ ...stop, sequence: index })),
+      },
+    ],
+    // Three live vehicles, so the per-vehicle sprite row is drawn more than once.
+    activeVehicles: [
+      {
+        vehicleRef: VEHICLE_REF,
+        destinationName: "Roundhay Park",
+        delaySeconds: 124,
+        observedAt: META.generatedAt,
+        coordinate: { lat: 53.8, lon: -1.53 },
+      },
+      {
+        vehicleRef: "veh-e2e-2",
+        destinationName: "Roundhay Park",
+        delaySeconds: -40,
+        observedAt: META.generatedAt,
+        coordinate: { lat: 53.81, lon: -1.52 },
+      },
+      {
+        vehicleRef: "veh-e2e-3",
+        destinationName: "Leeds City Bus Station",
+        delaySeconds: null,
+        observedAt: META.generatedAt,
+        coordinate: { lat: 53.82, lon: -1.51 },
+      },
+    ],
+    headwaySummary: "About every 12 minutes, Monday to Saturday daytime",
+    reliability: [],
+    incidents: [],
+    disruptions: [],
+    ticketUrl: null,
+  },
+};
+
+/** A vehicle page with a bus on a journey, so the hero and the next-stop list both draw. */
+export const VEHICLE_DETAIL = {
+  meta: META,
+  data: {
+    vehicle: {
+      id: "00000000-0000-5000-8000-0000000000f5",
+      provenance: { source: "bods", retrievedAt: META.generatedAt, externalIds: [] },
+      ingestedAt: META.generatedAt,
+      qualityFlags: [],
+      vehicleRef: VEHICLE_REF,
+      matchedRoutePatternId: "00000000-0000-5000-8000-0000000000f2",
+      matchedScheduledJourneyId: null,
+      position: { lat: 53.8, lon: -1.53 },
+      bearingDegrees: 45,
+      delaySeconds: 124,
+      motionState: "moving",
+      nextStopId: ROUTE_STOPS[4]!.stopId,
+      freshnessSeconds: 18,
+      matchConfidence: { level: "high", score: 0.88, reasons: [] },
+    },
+    routePublicName: "36",
+    routeId: ROUTE_ID,
+    routePatternId: "00000000-0000-5000-8000-0000000000f2",
+    destinationName: "Roundhay Park",
+    nextStops: ROUTE_STOPS.slice(3, 9).map((stop, index) => ({
+      stopId: stop.stopId,
+      name: stop.name,
+      atcoCode: stop.atcoCode,
+      scheduledTime: new Date(Date.parse(META.generatedAt) + index * 180_000).toISOString(),
+      expectedTimeLow: new Date(Date.parse(META.generatedAt) + index * 180_000).toISOString(),
+      expectedTimeHigh: new Date(
+        Date.parse(META.generatedAt) + index * 180_000 + 120_000,
+      ).toISOString(),
+      passed: index === 0,
+    })),
+    recentTrace: [
+      { coordinate: { lat: 53.796, lon: -1.54 }, observedAt: META.generatedAt },
+      { coordinate: { lat: 53.798, lon: -1.535 }, observedAt: META.generatedAt },
+      { coordinate: { lat: 53.8, lon: -1.53 }, observedAt: META.generatedAt },
+    ],
+    scheduledShape: [
+      { lat: 53.796, lon: -1.54 },
+      { lat: 53.81, lon: -1.52 },
+    ],
+    incidents: [],
+    operatorName: OPERATOR_FIXTURE.name,
+  },
+};
+
 /** Routes every API call to a fixture, so no test depends on an upstream being reachable. */
+/**
+ * Search and nearby, answering with the same world the rest of these fixtures describe.
+ *
+ * Both used to answer `{ results: [] }`, which meant no end-to-end flow could be walked at all:
+ * a passenger's actual path is home → search → stop → departure → route → an ordered stop → that
+ * stop's board, and the second hop was a dead end. Every page was tested in isolation and the
+ * joins between them — the thing a person actually experiences — were tested nowhere.
+ *
+ * So the search result *is* `STOP_RESPONSE`'s stop, and the route a result leads to *is*
+ * `ROUTE_DETAIL`'s route. A fixture world that contradicts itself would let a flow test pass on
+ * links that go nowhere in the real product.
+ */
+export const SEARCH_RESULTS = {
+  meta: META,
+  data: {
+    results: [
+      {
+        kind: "stop",
+        id: STOP_ID,
+        title: "Leeds City Bus Station",
+        subtitle: "Stand 12 · Leeds",
+        coordinate: { lat: 53.7965, lon: -1.5379 },
+        atcoCode: "450010001",
+        hasLiveCoverage: true,
+      },
+      {
+        kind: "place",
+        id: "place:node:1",
+        title: "Leeds Station",
+        subtitle: "Railway station in Leeds",
+        coordinate: { lat: 53.7955, lon: -1.5486 },
+        hasLiveCoverage: false,
+      },
+      {
+        kind: "route",
+        id: ROUTE_ID,
+        title: "36",
+        subtitle: "Leeds — Roundhay Park · First West Yorkshire",
+        hasLiveCoverage: true,
+      },
+    ],
+  },
+};
+
+/** The same stop, as "stops near me" returns it: with how far away it is. */
+export const NEARBY_RESULTS = {
+  meta: META,
+  data: {
+    results: [
+      {
+        kind: "stop",
+        id: STOP_ID,
+        title: "Leeds City Bus Station",
+        subtitle: "Stand 12 · Leeds",
+        coordinate: { lat: 53.7965, lon: -1.5379 },
+        atcoCode: "450010001",
+        hasLiveCoverage: true,
+        distanceMetres: 120,
+      },
+      {
+        kind: "stop",
+        id: "00000000-0000-5000-8000-000000000201",
+        title: "Vicar Lane",
+        subtitle: "Leeds",
+        coordinate: { lat: 53.798, lon: -1.539 },
+        atcoCode: "450010101",
+        hasLiveCoverage: true,
+        distanceMetres: 310,
+      },
+    ],
+  },
+};
+
+/**
+ * A journey through the same world: Leeds City Bus Station, the 36, Roundhay Park.
+ *
+ * `/v1/journeys` had no fixture at all, so every journey the end-to-end suite asked for fell to
+ * the catch-all `{ data: {} }`, failed schema validation, and the page showed its error state —
+ * which a flow test accepting "an itinerary *or* a stated reason" passes on. The result a
+ * passenger reads was therefore never looked at by anything that runs here.
+ *
+ * Built so that each thing a passenger needs is present and distinguishable: a walk at each end,
+ * one bus leg naming its service and where it is heading, named boarding and alighting stops, and
+ * times on every leg.
+ */
+const JOURNEY_BASE = Date.parse("2026-09-03T09:00:00.000Z") / 1000;
+const JOURNEY_DAY_START = Date.parse("2026-09-03T00:00:00.000Z") / 1000;
+
+function journeyLeg(
+  mode: "walk" | "bus",
+  fromName: string,
+  toName: string,
+  startOffsetSeconds: number,
+  durationSeconds: number,
+  service?: { routeName: string; headsign: string },
+  /*
+   * Real ids on the ride, so the walk out of a journey plan is covered: the planner always puts
+   * a bus leg between two known stops (`itinerary-check` refuses one that is not), and the ends
+   * of the journey are the pin the passenger dropped and have none.
+   */
+  stops?: { fromStopId: string; toStopId: string },
+) {
+  const departureSeconds = JOURNEY_BASE + startOffsetSeconds - JOURNEY_DAY_START;
+  return {
+    mode,
+    fromStopId: stops?.fromStopId ?? null,
+    toStopId: stops?.toStopId ?? null,
+    fromName,
+    toName,
+    fromCoordinate: { lat: 53.7965, lon: -1.5379 },
+    toCoordinate: { lat: 53.8266, lon: -1.4976 },
+    ...(service
+      ? { routeId: ROUTE_ID, routeName: service.routeName, headsign: service.headsign }
+      : {}),
+    departureSeconds,
+    arrivalSeconds: departureSeconds + durationSeconds,
+    departAtExpected: new Date((JOURNEY_BASE + startOffsetSeconds) * 1000).toISOString(),
+    arriveAtExpected: new Date(
+      (JOURNEY_BASE + startOffsetSeconds + durationSeconds) * 1000,
+    ).toISOString(),
+  };
+}
+
+export const JOURNEY_PLAN = {
+  meta: META,
+  data: {
+    serviceDate: "2026-09-03",
+    options: [
+      {
+        ranking: "fastest",
+        legs: [
+          journeyLeg("walk", "Your starting point", "Leeds City Bus Station", 0, 240),
+          journeyLeg(
+            "bus",
+            "Leeds City Bus Station",
+            "Oakwood Lane",
+            300,
+            1_140,
+            { routeName: "36", headsign: "Roundhay Park" },
+            { fromStopId: ROUTE_STOPS[0]!.stopId, toStopId: ROUTE_STOPS[10]!.stopId },
+          ),
+          journeyLeg("walk", "Oakwood Lane", "Your destination", 1_440, 300),
+        ],
+        departureSeconds: JOURNEY_BASE - JOURNEY_DAY_START,
+        arrivalSeconds: JOURNEY_BASE + 1_740 - JOURNEY_DAY_START,
+        arrivalLowSeconds: JOURNEY_BASE + 1_680 - JOURNEY_DAY_START,
+        arrivalHighSeconds: JOURNEY_BASE + 1_860 - JOURNEY_DAY_START,
+        totalWalkSeconds: 540,
+        changeCount: 0,
+        boardingStopId: STOP_ID,
+        confidence: { level: "medium", score: 0.6, reasons: ["timetable only"] },
+      },
+    ],
+    explanation: null,
+    unavailableReason: null,
+  },
+};
+
 export async function mockApi(page: Page, overrides: Record<string, unknown> = {}): Promise<void> {
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
@@ -276,11 +921,21 @@ export async function mockApi(page: Page, overrides: Record<string, unknown> = {
                             coverageCaveats: ["No live analysis has been published."],
                           },
                         }
-                      : path === "/v1/map"
-                        ? EMPTY_MAP
-                        : path === "/v1/search" || path === "/v1/nearby"
-                          ? { meta: META, data: { results: [] } }
-                          : { meta: META, data: {} });
+                      : path === "/v1/journeys"
+                        ? JOURNEY_PLAN
+                        : path === "/v1/disruptions"
+                          ? DISRUPTIONS_RESPONSE
+                          : path.startsWith("/v1/routes/")
+                            ? ROUTE_DETAIL
+                            : path.startsWith("/v1/vehicles/")
+                              ? VEHICLE_DETAIL
+                              : path === "/v1/map"
+                                ? EMPTY_MAP
+                                : path === "/v1/search"
+                                  ? SEARCH_RESULTS
+                                  : path === "/v1/nearby"
+                                    ? NEARBY_RESULTS
+                                    : { meta: META, data: {} });
 
     await route.fulfill({
       status: 200,

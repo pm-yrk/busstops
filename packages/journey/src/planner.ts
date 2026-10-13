@@ -34,6 +34,12 @@ export interface PlannedLeg {
   toStopId: string | null;
   fromName: string;
   toName: string;
+  /** Where the leg begins and ends. The ends of the journey are the points that were asked for. */
+  fromCoordinate: Coordinate;
+  toCoordinate: Coordinate;
+  /** The published service identifier, not the number on the front. Bus legs only. */
+  routeId?: string;
+  routePatternId?: string;
   routeName?: string;
   headsign?: string;
   departureSeconds: number;
@@ -61,6 +67,22 @@ export interface PlanResult {
   /** Stops considered for boarding, with the walk to each. */
   candidateStops: Array<{ stop: JourneyStop; walkSeconds: number }>;
   explanation: string | null;
+  /**
+   * Where a plan with no options stopped.
+   *
+   * `candidateStops` alone could not answer this: it holds the origin candidates, so a search
+   * that failed because nothing was within walking distance of the *destination* looked identical
+   * to one that failed in the search itself. Both counts are reported, and whether any round
+   * reached a destination at all, which separates "could not board" from "boarded and could not
+   * arrive".
+   */
+  reach: {
+    originCandidates: number;
+    destinationCandidates: number;
+    /** Rounds the search ran, and rounds that produced an itinerary. */
+    rounds: number;
+    roundsWithOption: number;
+  };
 }
 
 export const PLANNER_DEFAULTS = {
@@ -92,6 +114,8 @@ function walkOnlyOption(request: PlanRequest, directWalkSeconds: number): Planne
         toStopId: null,
         fromName: "Your starting point",
         toName: "Your destination",
+        fromCoordinate: request.origin,
+        toCoordinate: request.destination,
         departureSeconds: request.departAtSeconds,
         arrivalSeconds,
       },
@@ -156,7 +180,17 @@ export function plan(graph: JourneyGraph, request: PlanRequest): PlanResult {
   );
 
   if (origins.length === 0 || destinations.length === 0) {
-    return { options: [], candidateStops: origins, explanation: null };
+    return {
+      options: [],
+      candidateStops: origins,
+      explanation: null,
+      reach: {
+        originCandidates: origins.length,
+        destinationCandidates: destinations.length,
+        rounds: 0,
+        roundsWithOption: 0,
+      },
+    };
   }
 
   const searchOrigins: SearchOrigin[] = origins.map((candidate) => ({
@@ -214,7 +248,17 @@ export function plan(graph: JourneyGraph, request: PlanRequest): PlanResult {
   }
 
   if (perRound.length === 0) {
-    return { options: [], candidateStops: origins, explanation: null };
+    return {
+      options: [],
+      candidateStops: origins,
+      explanation: null,
+      reach: {
+        originCandidates: origins.length,
+        destinationCandidates: destinations.length,
+        rounds: result.labelsByRound.length,
+        roundsWithOption: 0,
+      },
+    };
   }
 
   const options = rankOptions(perRound);
@@ -235,7 +279,17 @@ export function plan(graph: JourneyGraph, request: PlanRequest): PlanResult {
     nearestArrivalSeconds,
   });
 
-  return { options, candidateStops: origins, explanation };
+  return {
+    options,
+    candidateStops: origins,
+    explanation,
+    reach: {
+      originCandidates: origins.length,
+      destinationCandidates: destinations.length,
+      rounds: result.labelsByRound.length,
+      roundsWithOption: perRound.length,
+    },
+  };
 }
 
 /** Earliest arrival when only one boarding stop is permitted. Used by the stop explanation. */
@@ -285,6 +339,7 @@ function buildOption(
   const boardingStopId = firstLeg.fromStopId;
   const access = origins.find((candidate) => candidate.stop.id === boardingStopId);
   const accessSeconds = access?.walkSeconds ?? 0;
+  const boardingStop = graph.stops.get(boardingStopId);
 
   const planned: PlannedLeg[] = [];
   const originName = "Your starting point";
@@ -295,7 +350,9 @@ function buildOption(
       fromStopId: null,
       toStopId: boardingStopId,
       fromName: originName,
-      toName: graph.stops.get(boardingStopId)?.name ?? boardingStopId,
+      toName: boardingStop?.name ?? boardingStopId,
+      fromCoordinate: request.origin,
+      toCoordinate: boardingStop?.coordinate ?? request.origin,
       departureSeconds: firstLeg.departureSeconds - accessSeconds,
       arrivalSeconds: firstLeg.departureSeconds,
     });
@@ -307,8 +364,18 @@ function buildOption(
   let previousArrival: number | null = null;
 
   for (const leg of legs) {
-    const fromName = graph.stops.get(leg.fromStopId)?.name ?? leg.fromStopId;
-    const toName = graph.stops.get(leg.toStopId)?.name ?? leg.toStopId;
+    const fromStop = graph.stops.get(leg.fromStopId);
+    const toStop = graph.stops.get(leg.toStopId);
+    /*
+     * A leg between stops the graph cannot place is not a leg.
+     *
+     * Every stop in a search leg came out of the graph, so this should not happen — and when it
+     * did, the itinerary still went out, with a stop UUID where the stop name belonged and no
+     * coordinate at all. An option that cannot be drawn is discarded here rather than shown.
+     */
+    if (!fromStop || !toStop) return null;
+    const fromName = fromStop.name;
+    const toName = toStop.name;
 
     if (leg.kind === "transfer") {
       walkSecondsTotal += leg.arrivalSeconds - leg.departureSeconds;
@@ -318,6 +385,8 @@ function buildOption(
         toStopId: leg.toStopId,
         fromName,
         toName,
+        fromCoordinate: fromStop.coordinate,
+        toCoordinate: toStop.coordinate,
         departureSeconds: leg.departureSeconds,
         arrivalSeconds: leg.arrivalSeconds,
       });
@@ -331,13 +400,27 @@ function buildOption(
     }
     previousArrival = leg.arrivalSeconds;
 
+    /*
+     * A ride with no trip behind it cannot say which bus it is, so it is not offered.
+     *
+     * The option used to be assembled anyway, with the route fields simply absent — a leg that
+     * told a passenger to get on at 08:42 and did not say what to get on. There is no version of
+     * that which is useful, and a plan containing one is thrown away whole.
+     */
+    if (!leg.trip) return null;
+
     planned.push({
       mode: "bus",
       fromStopId: leg.fromStopId,
       toStopId: leg.toStopId,
       fromName,
       toName,
-      ...(leg.trip ? { routeName: leg.trip.routeName, headsign: leg.trip.headsign } : {}),
+      fromCoordinate: fromStop.coordinate,
+      toCoordinate: toStop.coordinate,
+      routeId: leg.trip.routeId,
+      routePatternId: leg.trip.patternId,
+      routeName: leg.trip.routeName,
+      headsign: leg.trip.headsign,
       departureSeconds: leg.departureSeconds,
       arrivalSeconds: leg.arrivalSeconds,
     });
@@ -352,6 +435,8 @@ function buildOption(
       toStopId: null,
       fromName: graph.stops.get(arrival.stopId)?.name ?? arrival.stopId,
       toName: "Your destination",
+      fromCoordinate: graph.stops.get(arrival.stopId)?.coordinate ?? request.destination,
+      toCoordinate: request.destination,
       departureSeconds: lastArrival,
       arrivalSeconds: lastArrival + arrival.egressSeconds,
     });

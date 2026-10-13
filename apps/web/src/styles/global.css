@@ -243,3 +243,14 @@ input[type="email"] {
     background: #fff;
   }
 }
+
+/*
+ * The drawing on an empty passenger surface. Sized by the sprite itself, so it lands on whole
+ * pixels; centred with the text rather than floated beside it, because at this size a picture
+ * beside a sentence reads as an icon and the point is that it is a picture.
+ */
+.state-block__art {
+  /* Left, with the text. Centred over left-aligned copy it read as a stray floating object. */
+  margin: 0 0 var(--space-md);
+  opacity: 0.92;
+}

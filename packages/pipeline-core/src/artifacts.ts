@@ -186,6 +186,40 @@ export class ArtifactStore {
   }
 
   /**
+   * Every published version of a dataset, newest first.
+   *
+   * The manifest names one version — the live one — which is all a reader serving traffic needs.
+   * A batch that has to aggregate a *closed* window needs the others: a five-minute bucket stays
+   * open for ten minutes after it ends, so the observations that can be aggregated are never the
+   * ones just collected. They are in the versions before it.
+   */
+  async listVersions(dataset: string): Promise<string[]> {
+    const keys = await this.store.list(`data/${dataset}/`);
+    return keys
+      .map((key) => /\/([^/]+)\.jsonl$/.exec(key)?.[1] ?? null)
+      .filter((version): version is string => version !== null)
+      .sort()
+      .reverse();
+  }
+
+  /**
+   * One historical version's records.
+   *
+   * Deliberately without the checksum comparison `readRecords` makes: a manifest describes the
+   * current version only, so there is no recorded hash for an older object to be checked against.
+   * The guard that matters is still in place — `readCurrent` is what serves traffic and it still
+   * verifies — and a corrupted line here fails loudly on `JSON.parse` rather than silently.
+   */
+  async readVersionRecords<T>(dataset: string, version: string): Promise<T[]> {
+    const raw = await this.store.get(objectKeyFor(dataset, version));
+    if (raw === null) return [];
+    return raw
+      .split("\n")
+      .filter((line) => line.length > 0)
+      .map((line) => JSON.parse(line) as T);
+  }
+
+  /**
    * Validate, write the versioned object, then atomically swap the manifest pointer.
    * Throws before the swap when validation fails, leaving the previous version live.
    */
@@ -251,7 +285,22 @@ export class ArtifactStore {
       contentHash: contentHash(body),
       sizeBytes: body.length,
       schemaVersion,
-      previousVersion: previous?.version ?? null,
+      /*
+       * The version this one superseded — which is not this one.
+       *
+       * Republishing a dataset at the version already live is an in-place correction, not a new
+       * version: a departures refresh does it to `network/operators` to carry a field the build
+       * had not been reading. Pointing `previousVersion` at the same string would make
+       * `rollback()` for that dataset a no-op, silently costing the recoverability the pointer
+       * exists for. So an in-place republish carries the existing pointer forward, because the
+       * version it superseded has not changed.
+       */
+      previousVersion:
+        previous === null
+          ? null
+          : previous.version === version
+            ? previous.previousVersion
+            : previous.version,
       sources: [...sources],
       partialCoverage,
       ...(notes === undefined ? {} : { notes }),

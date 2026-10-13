@@ -124,3 +124,62 @@
 .stop-page__plan {
   align-self: center;
 }
+
+/*
+ * The weather sits with the rest of what is known about the stop, below the board and above the
+ * accessibility facts. It is a picture with numbers under it, not a hero: at this width the
+ * vignette is the same size as a photograph would be in a newspaper column.
+ */
+.stop-page__weather {
+  margin-bottom: var(--space-xl);
+}
+
+/*
+ * Routes calling here: a badge and who runs it, one per line.
+ *
+ * A list rather than a row of chips, because the operator name belongs beside each badge and a
+ * wrapped row of two-part chips reads as noise. The whole line is the link, so the target is the
+ * row rather than the four characters of a route number.
+ */
+.stop-page__route-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.stop-page__route-list a {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm);
+  text-decoration: none;
+  color: inherit;
+  border-bottom: 1px solid var(--colour-hairline);
+}
+
+.stop-page__route-list a:hover,
+.stop-page__route-list a:focus-visible {
+  background: var(--colour-surface-raised, rgba(0, 0, 0, 0.04));
+}
+
+.stop-page__route-operator {
+  font-size: var(--font-size-small);
+  color: var(--colour-ink-secondary);
+}
+
+/*
+ * A route list that was read short, said once, above the list it affects.
+ *
+ * The same shape as the route page's notice rather than an alarm: most of the routes are there.
+ * What it must not do is look identical to a complete list, because a route missing from it reads
+ * as a route that does not stop here.
+ */
+.stop-page__routes-note {
+  margin: 0 0 var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  background: var(--colour-canvas);
+  border-left: 3px solid var(--colour-red);
+}

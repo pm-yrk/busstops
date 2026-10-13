@@ -1,12 +1,18 @@
 import type { CSSProperties, ReactNode } from "react";
+import { PixelSprite } from "./PixelImage.js";
+import { ART } from "./sprites/generated.js";
 
 /**
- * Original pixel-art library on a fixed 16-unit grid (docs/02_DESIGN_SYSTEM.md).
+ * The pixel-art library (docs/02_DESIGN_SYSTEM.md).
  *
- * Every sprite is drawn from `<rect>` units so edges stay crisp at any size, uses a limited
- * palette drawn from the design tokens, and is decorative-by-default: sprites are hidden from
- * assistive technology unless given a `title`, because a decorative bus announced on every row
- * is noise, not information.
+ * Two kinds of thing live here. The vehicles and the street furniture are the real artwork,
+ * drawn on the art-pixel grid in tools/pixel-art and shipped as images; a bus in a row is the
+ * same bus that drives across the home page and the same bus that appears on the map, because
+ * it is literally the same drawing reduced. The small interface marks — a clock, a warning, the
+ * weather — stay as a handful of `<rect>` units on a 16-unit grid, because at 16 to 24 pixels
+ * there is nothing to draw that a few squares cannot say.
+ *
+ * Everything is decorative by default: a bus announced on every row is noise, not information.
  */
 
 const INK = "var(--colour-ink)";
@@ -19,6 +25,8 @@ const BLUE = "var(--colour-blue)";
 
 export interface SpriteProps {
   size?: number;
+  /** Explicit whole-number scale, for artwork whose shape makes a target height meaningless. */
+  scale?: number;
   /** Accessible name. When omitted the sprite is decorative and hidden from screen readers. */
   title?: string;
   className?: string;
@@ -30,13 +38,22 @@ interface CanvasProps extends SpriteProps {
   children: ReactNode;
 }
 
-function PixelCanvas({ viewBox, size = 24, title, className, style, children }: CanvasProps) {
+function PixelCanvas({
+  viewBox,
+  size = 24,
+  scale,
+  title,
+  className,
+  style,
+  children,
+}: CanvasProps) {
+  const rendered = scale ? 16 * scale : size;
   const decorative = title === undefined;
   return (
     <svg
       viewBox={viewBox}
-      width={size}
-      height={size}
+      width={rendered}
+      height={rendered}
       className={className}
       style={{ display: "block", imageRendering: "pixelated", ...style }}
       role={decorative ? "presentation" : "img"}
@@ -50,68 +67,85 @@ function PixelCanvas({ viewBox, size = 24, title, className, style, children }: 
   );
 }
 
-/** Side-on bus: the workhorse sprite for rows, loading and the road scene. */
-export function PixelBusSide(props: SpriteProps) {
-  return (
-    <PixelCanvas viewBox="0 0 16 16" {...props}>
-      <rect x="1" y="4" width="14" height="7" fill={RED} />
-      <rect x="1" y="4" width="14" height="1" fill={RED_DARK} />
-      <rect x="2" y="6" width="3" height="2" fill={SURFACE} />
-      <rect x="6" y="6" width="3" height="2" fill={SURFACE} />
-      <rect x="10" y="6" width="3" height="2" fill={SURFACE} />
-      <rect x="1" y="11" width="14" height="1" fill={RED_DARK} />
-      <rect x="3" y="12" width="2" height="2" fill={INK} />
-      <rect x="11" y="12" width="2" height="2" fill={INK} />
-      <rect x="14" y="8" width="1" height="1" fill={SURFACE} />
-    </PixelCanvas>
-  );
+/** Side-on bus: the workhorse sprite for rows, loading and anywhere a vehicle is named. */
+export function PixelBusSide({ frame = "a", ...props }: SpriteProps & { frame?: "a" | "b" }) {
+  return <PixelSprite image={(frame === "b" ? ART.busMidB : ART.busMid)!} {...props} />;
 }
 
-/** Front-facing bus, used in the wordmark full stop and map markers. */
+/** The same vehicle head on. */
 export function PixelBusFront(props: SpriteProps) {
-  return (
-    <PixelCanvas viewBox="0 0 16 16" {...props}>
-      <rect x="3" y="2" width="10" height="11" fill={RED} />
-      <rect x="4" y="4" width="8" height="4" fill={SURFACE} />
-      <rect x="4" y="9" width="2" height="2" fill={INK} />
-      <rect x="10" y="9" width="2" height="2" fill={INK} />
-      <rect x="3" y="13" width="2" height="1" fill={INK} />
-      <rect x="11" y="13" width="2" height="1" fill={INK} />
-      <rect x="7" y="9" width="2" height="1" fill={RED_DARK} />
-    </PixelCanvas>
-  );
+  return <PixelSprite image={ART.busFront!} {...props} />;
 }
 
+/** A stop flag on its pole, which is how a stop is signed on an actual street. */
 export function PixelStopPole(props: SpriteProps) {
-  return (
-    <PixelCanvas viewBox="0 0 16 16" {...props}>
-      <rect x="7" y="4" width="2" height="10" fill={MUTED} />
-      <rect x="4" y="2" width="8" height="4" fill={RED} />
-      <rect x="5" y="3" width="6" height="2" fill={SURFACE} />
-      <rect x="5" y="14" width="6" height="1" fill={INK} />
-    </PixelCanvas>
-  );
+  return <PixelSprite image={ART.stopFlag!} {...props} />;
 }
 
 export function PixelShelter(props: SpriteProps) {
+  return <PixelSprite image={ART.shelter!} {...props} />;
+}
+
+export function PixelTree(props: SpriteProps) {
+  return <PixelSprite image={ART.tree!} {...props} />;
+}
+
+export function PixelWalkingPerson(props: SpriteProps) {
+  return <PixelSprite image={ART.personWaiting!} {...props} />;
+}
+
+export function PixelBin(props: SpriteProps) {
+  return <PixelSprite image={ART.bin!} {...props} />;
+}
+
+export function PixelCloudDrift(props: SpriteProps) {
+  return <PixelSprite image={ART.cloud!} {...props} />;
+}
+
+/*
+ * Interface marks for the things the artwork draws at full size.
+ *
+ * A heading wants a bus at sixteen units, not the ninety-six-pixel sprite that drives across the
+ * home page: asked for at 24px, `PixelSprite` rounds to the nearest whole multiple of the native
+ * height, which for a 33-pixel-tall bus is one — so the "small" mark would have come out 96 pixels
+ * wide and pushed the heading off its line. These are the same vehicle, the same flag and the same
+ * person said in a few squares, which is what the rest of the mark set does.
+ */
+export function PixelBusMark(props: SpriteProps) {
   return (
     <PixelCanvas viewBox="0 0 16 16" {...props}>
-      <rect x="2" y="4" width="12" height="1" fill={INK} />
-      <rect x="2" y="5" width="1" height="8" fill={MUTED} />
-      <rect x="13" y="5" width="1" height="8" fill={MUTED} />
-      <rect x="3" y="5" width="10" height="5" fill={BLUE} opacity="0.15" />
-      <rect x="3" y="11" width="10" height="2" fill={HAIRLINE} />
+      <rect x="2" y="3" width="12" height="8" fill={RED} />
+      <rect x="2" y="3" width="12" height="2" fill={RED_DARK} />
+      <rect x="3" y="6" width="4" height="3" fill={SURFACE} />
+      <rect x="9" y="6" width="4" height="3" fill={SURFACE} />
+      <rect x="2" y="11" width="12" height="1" fill={INK} />
+      <rect x="4" y="12" width="2" height="2" fill={INK} />
+      <rect x="10" y="12" width="2" height="2" fill={INK} />
     </PixelCanvas>
   );
 }
 
-export function PixelRoad(props: SpriteProps) {
+export function PixelStopMark(props: SpriteProps) {
   return (
     <PixelCanvas viewBox="0 0 16 16" {...props}>
-      <rect x="0" y="6" width="16" height="6" fill={HAIRLINE} />
-      <rect x="1" y="9" width="3" height="1" fill={SURFACE} />
-      <rect x="6" y="9" width="3" height="1" fill={SURFACE} />
-      <rect x="11" y="9" width="3" height="1" fill={SURFACE} />
+      <rect x="4" y="2" width="8" height="6" fill={RED} />
+      <rect x="5" y="4" width="6" height="1" fill={SURFACE} />
+      <rect x="5" y="6" width="4" height="1" fill={SURFACE} />
+      <rect x="7" y="8" width="2" height="6" fill={INK} />
+      <rect x="4" y="14" width="8" height="1" fill={HAIRLINE} />
+    </PixelCanvas>
+  );
+}
+
+export function PixelPersonMark(props: SpriteProps) {
+  return (
+    <PixelCanvas viewBox="0 0 16 16" {...props}>
+      <rect x="6" y="2" width="4" height="3" fill={INK} />
+      <rect x="5" y="6" width="6" height="5" fill={BLUE} />
+      <rect x="3" y="7" width="2" height="3" fill={BLUE} />
+      <rect x="11" y="7" width="2" height="3" fill={BLUE} />
+      <rect x="5" y="11" width="2" height="4" fill={INK} />
+      <rect x="9" y="11" width="2" height="4" fill={INK} />
     </PixelCanvas>
   );
 }
@@ -135,63 +169,6 @@ export function PixelCone(props: SpriteProps) {
       <rect x="6" y="6" width="4" height="2" fill={SURFACE} />
       <rect x="5" y="8" width="6" height="3" fill={RED} />
       <rect x="3" y="11" width="10" height="2" fill={RED_DARK} />
-    </PixelCanvas>
-  );
-}
-
-export function PixelTree(props: SpriteProps) {
-  return (
-    <PixelCanvas viewBox="0 0 16 16" {...props}>
-      <rect x="7" y="9" width="2" height="5" fill={MUTED} />
-      <rect x="4" y="3" width="8" height="6" fill="var(--colour-success)" />
-      <rect x="5" y="2" width="6" height="1" fill="var(--colour-success)" />
-    </PixelCanvas>
-  );
-}
-
-export function PixelBench(props: SpriteProps) {
-  return (
-    <PixelCanvas viewBox="0 0 16 16" {...props}>
-      <rect x="2" y="7" width="12" height="2" fill={MUTED} />
-      <rect x="3" y="9" width="1" height="4" fill={INK} />
-      <rect x="12" y="9" width="1" height="4" fill={INK} />
-      <rect x="2" y="5" width="12" height="1" fill={HAIRLINE} />
-    </PixelCanvas>
-  );
-}
-
-export function PixelStreetLamp(props: SpriteProps) {
-  return (
-    <PixelCanvas viewBox="0 0 16 16" {...props}>
-      <rect x="7" y="4" width="2" height="11" fill={MUTED} />
-      <rect x="5" y="2" width="6" height="2" fill={INK} />
-      <rect x="6" y="4" width="4" height="1" fill="var(--colour-amber)" />
-    </PixelCanvas>
-  );
-}
-
-export function PixelShops(props: SpriteProps) {
-  return (
-    <PixelCanvas viewBox="0 0 16 16" {...props}>
-      <rect x="1" y="5" width="6" height="9" fill={SURFACE} stroke={HAIRLINE} strokeWidth="0.5" />
-      <rect x="9" y="3" width="6" height="11" fill={SURFACE} stroke={HAIRLINE} strokeWidth="0.5" />
-      <rect x="2" y="7" width="4" height="2" fill={BLUE} opacity="0.2" />
-      <rect x="10" y="5" width="4" height="2" fill={BLUE} opacity="0.2" />
-      <rect x="2" y="11" width="2" height="3" fill={INK} />
-      <rect x="11" y="10" width="2" height="4" fill={INK} />
-    </PixelCanvas>
-  );
-}
-
-export function PixelWalkingPerson(props: SpriteProps) {
-  return (
-    <PixelCanvas viewBox="0 0 16 16" {...props}>
-      <rect x="7" y="2" width="2" height="2" fill={INK} />
-      <rect x="6" y="4" width="4" height="5" fill={INK} />
-      <rect x="5" y="9" width="2" height="4" fill={INK} />
-      <rect x="9" y="9" width="2" height="4" fill={INK} />
-      <rect x="4" y="13" width="2" height="1" fill={INK} />
-      <rect x="10" y="13" width="2" height="1" fill={INK} />
     </PixelCanvas>
   );
 }
@@ -251,12 +228,26 @@ export function PixelSun(props: SpriteProps) {
   );
 }
 
+/*
+ * A cloud with an edge on it.
+ *
+ * It was three rectangles of `--colour-hairline`, which is the colour a divider is drawn in — on
+ * the warm-white canvas the mark was very nearly invisible, and beside a heading it read as a
+ * rendering fault rather than as a cloud. The body stays pale, because a cloud is pale; the
+ * outline in muted ink is what makes it a shape.
+ */
 export function PixelCloud(props: SpriteProps) {
   return (
     <PixelCanvas viewBox="0 0 16 16" {...props}>
-      <rect x="4" y="6" width="8" height="3" fill={HAIRLINE} />
-      <rect x="3" y="7" width="10" height="3" fill={HAIRLINE} />
-      <rect x="6" y="4" width="5" height="2" fill={HAIRLINE} />
+      <rect x="5" y="3" width="6" height="1" fill={MUTED} />
+      <rect x="4" y="4" width="8" height="1" fill={MUTED} />
+      <rect x="2" y="6" width="3" height="1" fill={MUTED} />
+      <rect x="1" y="7" width="2" height="4" fill={MUTED} />
+      <rect x="13" y="5" width="2" height="6" fill={MUTED} />
+      <rect x="2" y="11" width="12" height="1" fill={MUTED} />
+      <rect x="4" y="5" width="9" height="1" fill={SURFACE} />
+      <rect x="3" y="6" width="10" height="5" fill={SURFACE} />
+      <rect x="2" y="7" width="1" height="4" fill={SURFACE} />
     </PixelCanvas>
   );
 }
@@ -290,26 +281,6 @@ export function PixelFlood(props: SpriteProps) {
       <rect x="0" y="11" width="16" height="3" fill={BLUE} opacity="0.7" />
       <rect x="3" y="4" width="4" height="5" fill={MUTED} />
       <rect x="9" y="6" width="4" height="3" fill={MUTED} />
-    </PixelCanvas>
-  );
-}
-
-export function PixelSkyline(props: SpriteProps) {
-  return (
-    <PixelCanvas
-      viewBox="0 0 32 16"
-      {...props}
-      style={{ width: "100%", height: "auto", ...props.style }}
-    >
-      <rect x="0" y="8" width="5" height="8" fill={HAIRLINE} />
-      <rect x="6" y="5" width="4" height="11" fill={HAIRLINE} />
-      <rect x="11" y="10" width="6" height="6" fill={HAIRLINE} />
-      <rect x="18" y="3" width="4" height="13" fill={HAIRLINE} />
-      <rect x="23" y="7" width="4" height="9" fill={HAIRLINE} />
-      <rect x="28" y="9" width="4" height="7" fill={HAIRLINE} />
-      <rect x="7" y="7" width="1" height="1" fill="var(--colour-amber)" />
-      <rect x="19" y="6" width="1" height="1" fill="var(--colour-amber)" />
-      <rect x="24" y="9" width="1" height="1" fill="var(--colour-amber)" />
     </PixelCanvas>
   );
 }

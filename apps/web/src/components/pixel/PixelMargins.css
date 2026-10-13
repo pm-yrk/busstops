@@ -1,0 +1,64 @@
+/*
+ * The walls sit outside the reading column, not inside it.
+ *
+ * Fixed to the viewport rather than positioned in flow: a margin that scrolled with the page
+ * would end where the content did, and a wall that stops halfway down a street is a set, not a
+ * street. Nothing here can take a pointer event or affect layout.
+ */
+.pixel-margins {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.pixel-margins__wall {
+  --scale: 2;
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: calc(var(--art-w) * var(--scale) * 1px);
+  background-repeat: repeat-y;
+  /*
+   * Drawn at a whole multiple of the tile's own size, which the component passes in.
+   * `background-size` names both axes so the repeat is exact: left to the browser, a repeated
+   * background at an odd height develops a half-course at the seam.
+   */
+  background-size: calc(var(--art-w) * var(--scale) * 1px) calc(var(--art-h) * var(--scale) * 1px);
+  image-rendering: pixelated;
+  /*
+   * Quiet. The wall is a background for the page, and at full strength it competed with the 2px
+   * ink rules the layout is built from — which is the specific failure the brief warns against:
+   * decoration that overpowers the real content.
+   */
+  opacity: 0.55;
+}
+
+.pixel-margins__wall--left {
+  left: 0;
+}
+
+.pixel-margins__wall--right {
+  right: 0;
+}
+
+/*
+ * Shown only where there is room for them outside the widest reading column.
+ *
+ * The pages that use this set their own `--page-max`, the largest of which is 1180px, and the
+ * walls are 56px each. Below roughly 1400px they would either overlap the text or sit on top of
+ * a scrollbar, so they are simply absent — which is the correct recomposition for a narrow
+ * window, and is not the same as hiding the art on a phone: a phone has its own page artwork.
+ */
+@media (max-width: 1399px) {
+  .pixel-margins {
+    display: none;
+  }
+}
+
+/* Decorative, and the first thing to go where the viewer has asked for plain surfaces. */
+@media (forced-colors: active) {
+  .pixel-margins {
+    display: none;
+  }
+}

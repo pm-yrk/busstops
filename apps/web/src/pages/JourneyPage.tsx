@@ -1,17 +1,20 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import type { JourneyPlanOption, JourneyPlanResponse, SearchResult } from "@busstops/contracts";
+import { JourneyStrip } from "../components/JourneyStrip.js";
+import { ART } from "../components/pixel/sprites/generated.js";
+import { PixelVista } from "../components/pixel/PixelVista.js";
+import { PixelMargins } from "../components/pixel/PixelMargins.js";
 import { LoadingBus } from "../components/LoadingBus.js";
 import {
   ConfidenceChip,
   EmptyState,
   ErrorState,
-  RouteBadge,
   ServiceBanner,
   StateLozenge,
 } from "../components/primitives.js";
 import { apiClient, ApiError } from "../lib/api.js";
-import { minutesLabel } from "../lib/format.js";
+import { formatLondonTime, minutesLabel } from "../lib/format.js";
 import { savedPlatform, suggestPlatform, walkingUrlFor } from "../lib/navigation-handoff.js";
 import "./JourneyPage.css";
 
@@ -70,6 +73,92 @@ export function JourneyPage() {
     }
   }, []);
 
+  /*
+   * A journey that arrives with both ends already on it is a journey somebody has asked for.
+   *
+   * `/journey?fromLat=…&toLat=…` is how a destination tapped on the map, or opened from a stop
+   * page, gets here — and the page seeded the two fields from the URL and then did nothing, so
+   * what a passenger saw was a form they had already filled in, waiting for them to press the
+   * button again. The deployed sweep caught it at all three widths: the planner answers this
+   * corridor in under two seconds through the API, and the page showed forty-eight words and no
+   * itinerary.
+   *
+   * Once, on arrival, and only for endpoints that came from the URL. A ref rather than a
+   * dependency list because the point is that it does not run again: re-planning as somebody
+   * edits an endpoint would fire a request per keystroke and fight the form.
+   */
+  /*
+   * Whether this page was *asked* to plan, which is a fact about the URL and not about a request.
+   *
+   * Derived during render rather than tracked in a ref, and that is the fix. The page used to know
+   * it had started a plan only through a ref the render could not legitimately read, and between
+   * setting that ref and the request actually starting there was a window with no plan, no error
+   * and no loading state — every branch below rendering `null`. The sweep caught it as "2 content
+   * elements, 91 words, and nothing saying why" on two widths in one run. A link carrying both
+   * ends is a request for a journey whatever the request state happens to be, so the page can say
+   * it is working from its very first paint.
+   */
+  const linkOrigin = endpointFromParams(searchParams, "from");
+  const linkDestination = endpointFromParams(searchParams, "to");
+  const askedByLink = linkOrigin !== null && linkDestination !== null;
+
+  /*
+   * Once, on arrival, and only for endpoints that came from the URL. A ref rather than a
+   * dependency list because the point is that it does not run again: re-planning as somebody
+   * edits an endpoint would fire a request per keystroke and fight the form.
+   *
+   * No timer. It used to be `setTimeout(..., 0)` with `clearTimeout` as the cleanup, to save one
+   * render — and any re-render inside that tick cancelled the request, while the ref above had
+   * already recorded that it had been sent, so it was never sent again and the page waited
+   * forever. The request goes out in the effect body now, and nothing it does before its first
+   * `await` touches state, so there is no synchronous cascade either.
+   */
+  const planned = useRef(false);
+  /*
+   * Liveness is its own effect, deliberately, and this is the second half of the same bug.
+   *
+   * A `let live = true` closed over by the planning effect, cleared in that effect's cleanup, is
+   * the obvious way to write this and it is wrong here. `searchParams` is stable per location but
+   * the effect still re-runs whenever React re-runs it, and every re-run fires the previous
+   * cleanup — so the in-flight request's own `live` goes false, its answer is discarded, and the
+   * `planned` guard makes sure nothing asks again. That is the silent empty page all over again,
+   * arrived at from the other side. Mount state belongs to the mount, so it is tracked by an
+   * effect with no other job and the planning effect has no cleanup to misfire.
+   */
+  const mounted = useRef(true);
+  useEffect(
+    () => () => {
+      mounted.current = false;
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (planned.current) return;
+    const from = endpointFromParams(searchParams, "from");
+    const to = endpointFromParams(searchParams, "to");
+    if (!from || !to) return;
+    planned.current = true;
+
+    void (async () => {
+      try {
+        const response = await apiClient.journey(
+          { lat: from.lat, lon: from.lon },
+          { lat: to.lat, lon: to.lon },
+        );
+        if (mounted.current) setPlan(response);
+      } catch (caught) {
+        if (mounted.current) {
+          setError(
+            caught instanceof ApiError
+              ? caught.message
+              : "The journey could not be planned just now.",
+          );
+        }
+      }
+    })();
+  }, [searchParams]);
+
   const useMyLocation = useCallback(() => {
     if (!globalThis.navigator?.geolocation) {
       setGeolocationDenied(true);
@@ -99,15 +188,15 @@ export function JourneyPage() {
 
   return (
     <article className="page journey-page">
+      {/* Restrained side decoration, per the approved direction: quiet walls, never a scene. */}
+      <PixelMargins feature="lantern" />
       {plan ? <ServiceBanner meta={plan.meta} /> : null}
 
-      <header className="journey-page__header">
-        <h1>Plan a journey</h1>
-        <p className="muted">
-          We show when you are likely to arrive as a range, not a single time, because that is what
-          the data actually supports.
-        </p>
-      </header>
+      <PixelVista
+        title="Plan a journey"
+        standfirst="We show when you are likely to arrive as a range, not a single time, because that is what the data actually supports."
+        vista="journey"
+      />
 
       <form
         className="journey-page__form"
@@ -140,7 +229,19 @@ export function JourneyPage() {
         </p>
       ) : null}
 
-      {planning && !plan ? <LoadingBus label="Planning your journey" /> : null}
+      {/*
+        Asked for and not yet answered, however it got that way.
+
+        The condition was `planning && !plan`, which is the loading state and not the same thing: a
+        journey that has been requested but whose request has not started yet satisfies neither
+        that nor the error branch nor the result branch, and the page renders nothing. The race
+        above is fixed, but a page whose only honest states are "loading", "failed" and "here it
+        is" should not be one refactor away from silence again, so this asks the question the
+        passenger is actually asking — has an answer arrived? — rather than tracking a flag.
+      */}
+      {!plan && !error && (planning || askedByLink) ? (
+        <LoadingBus label="Planning your journey" />
+      ) : null}
 
       {error ? (
         <ErrorState
@@ -163,6 +264,7 @@ export function JourneyPage() {
           </ol>
         ) : (
           <EmptyState
+            art="front"
             title="No bus journey found"
             description={
               plan.data.unavailableReason ??
@@ -209,12 +311,32 @@ function JourneyOptionCard({
   return (
     <li className="journey-option">
       <header>
-        <StateLozenge tone="info">{rankingLabel}</StateLozenge>
-        <p className="journey-option__arrival">
-          Arrive between {clockLabel(option.arrivalLowSeconds, serviceDate)} and{" "}
-          {clockLabel(option.arrivalHighSeconds, serviceDate)}
-        </p>
-        <ConfidenceChip confidence={option.confidence} />
+        <div className="journey-option__head">
+          <StateLozenge tone="info">{rankingLabel}</StateLozenge>
+          <p className="journey-option__arrival">
+            Arrive between {clockLabel(option.arrivalLowSeconds, serviceDate)} and{" "}
+            {clockLabel(option.arrivalHighSeconds, serviceDate)}
+          </p>
+          <ConfidenceChip confidence={option.confidence} />
+        </div>
+
+        {/*
+          A journey in miniature, beside the arrival time.
+
+          Deliberately generic: two unnamed civic silhouettes with a dashed run and a bus between
+          them. The planner knows the names of the two ends and nothing about what they look
+          like, so drawing a minster because the destination string says "Minster" would be the
+          artwork asserting something nothing checked. Orientation and warmth; the itinerary
+          below carries every fact.
+        */}
+        <img
+          className="journey-option__mini"
+          src={ART.journeyMini!.src}
+          alt=""
+          aria-hidden="true"
+          width={ART.journeyMini!.w}
+          height={ART.journeyMini!.h}
+        />
       </header>
 
       <p className="journey-option__summary">
@@ -226,25 +348,25 @@ function JourneyOptionCard({
         {uncertaintySeconds > 0 ? ` · ${minutesLabel(uncertaintySeconds)} of uncertainty` : ""}
       </p>
 
-      <ol className="journey-option__legs">
-        {option.legs.map((leg, index) => (
-          <li key={`${leg.fromName}-${leg.toName}-${index}`}>
-            {leg.mode === "walk" ? (
-              <span className="journey-option__leg-mode">Walk</span>
-            ) : (
-              <RouteBadge name={leg.routeName ?? "Bus"} />
-            )}
-            <span>
-              {leg.fromName} → {leg.toName}
-              {leg.headsign ? <span className="muted small"> towards {leg.headsign}</span> : null}
-            </span>
-            <span className="muted small">
-              {clockLabel(leg.departureSeconds, serviceDate)}–
-              {clockLabel(leg.arrivalSeconds, serviceDate)}
-            </span>
-          </li>
-        ))}
-      </ol>
+      {/*
+        The legs as a journey rather than as sentences about one. Every value passed is the
+        planner's own: no leg is summarised, merged or invented on the way to the picture.
+      */}
+      <JourneyStrip
+        legs={option.legs.map((leg) => ({
+          mode: leg.mode === "walk" ? "walk" : "bus",
+          fromName: leg.fromName,
+          toName: leg.toName,
+          routeName: leg.routeName ?? null,
+          headsign: leg.headsign ?? null,
+          routeId: leg.routeId ?? null,
+          fromStopId: leg.fromStopId,
+          toStopId: leg.toStopId,
+          departureLabel: clockLabel(leg.departureSeconds, serviceDate),
+          arrivalLabel: clockLabel(leg.arrivalSeconds, serviceDate),
+          minutes: Math.max(0, (leg.arrivalSeconds - leg.departureSeconds) / 60),
+        }))}
+      />
 
       {option.explanation ? (
         <p className="journey-option__explanation">{option.explanation}</p>
@@ -253,12 +375,25 @@ function JourneyOptionCard({
   );
 }
 
-/** Seconds into the service day rendered as a clock time; 25:10 becomes 01:10 the next day. */
-export function clockLabel(secondsIntoServiceDay: number, _serviceDate: string): string {
-  const wrapped = ((secondsIntoServiceDay % 86_400) + 86_400) % 86_400;
-  const hours = Math.floor(wrapped / 3600);
-  const minutes = Math.floor((wrapped % 3600) / 60);
-  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+/**
+ * Seconds into the service day, rendered as the clock a passenger is looking at.
+ *
+ * This used to be arithmetic — take the seconds modulo a day and divide — and the unused
+ * `_serviceDate` parameter was the tell that something was wrong. The seconds are counted from
+ * `${serviceDate}T00:00:00.000Z`, so dividing them up produces a **UTC** clock face. Every other
+ * time in this product goes through `formatLondonTime`; this one did not, so from late March to
+ * late October it showed every journey an hour behind the clock on the passenger's wall. A bus
+ * leaving at 09:14 read 08:14, which is not merely wrong, it is in the past — which is exactly
+ * what it looked like.
+ *
+ * Rebuilding the instant and formatting it in Europe/London fixes the offset and the day boundary
+ * at once: 25:10 is a real moment after midnight, and the formatter renders it 01:10 without the
+ * modulo, in whichever of GMT or BST applies on that date.
+ */
+export function clockLabel(secondsIntoServiceDay: number, serviceDate: string): string {
+  const dayStart = Date.parse(`${serviceDate}T00:00:00.000Z`);
+  if (!Number.isFinite(dayStart)) return "--:--";
+  return formatLondonTime(new Date(dayStart + secondsIntoServiceDay * 1000));
 }
 
 function EndpointPicker({

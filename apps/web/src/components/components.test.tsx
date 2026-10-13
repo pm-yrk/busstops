@@ -60,9 +60,10 @@ describe("Wordmark", () => {
 describe("pixel art", () => {
   it("is decorative by default, so rows do not announce a bus each time", () => {
     const { container } = render(<PixelBusSide />);
-    const svg = container.querySelector("svg")!;
-    expect(svg.getAttribute("aria-hidden")).toBe("true");
-    expect(svg.getAttribute("role")).toBe("presentation");
+    const sprite = container.querySelector("img")!;
+    expect(sprite.getAttribute("aria-hidden")).toBe("true");
+    expect(sprite.getAttribute("role")).toBe("presentation");
+    expect(sprite.getAttribute("alt")).toBe("");
   });
 
   it("becomes an image with a name when given a title", () => {
@@ -202,6 +203,42 @@ describe("ArrivalBoard", () => {
       />,
     );
     expect(screen.getByText(/No live departures available right now/)).toBeInTheDocument();
+  });
+
+  it("does not claim 'no departures' when we published no timetable for today", () => {
+    /*
+     * A departure board saying "No departures in the next hour" is making a claim about buses,
+     * and somebody standing at the stop reads it as "do not wait here". When every shard we
+     * asked for was absent, the honest statement is about our data and not about the service.
+     */
+    render(
+      <ArrivalBoard
+        stopName="Blackman Lane"
+        stopCode="45001"
+        departures={[]}
+        now={new Date()}
+        ageSeconds={30}
+        timetableCoverage={{ read: 0, missing: 3, serviceDates: ["2026-09-30"] }}
+      />,
+    );
+    expect(screen.queryByText(/No departures in the next hour/)).toBeNull();
+    expect(screen.getByText(/no timetable published for today/i)).toBeInTheDocument();
+    expect(screen.getByText(/gap in our data, not a gap in the service/i)).toBeInTheDocument();
+  });
+
+  it("still says nothing is due when the timetable is there and empty", () => {
+    // The fix must not become its own lie: a published, genuinely quiet stop still says so.
+    render(
+      <ArrivalBoard
+        stopName="Blackman Lane"
+        stopCode="45001"
+        departures={[]}
+        now={new Date()}
+        ageSeconds={30}
+        timetableCoverage={{ read: 2, missing: 1, serviceDates: ["2026-09-30"] }}
+      />,
+    );
+    expect(screen.getByText(/No departures in the next hour/)).toBeInTheDocument();
   });
 
   it("offers view all departures when the caller provides the action", async () => {

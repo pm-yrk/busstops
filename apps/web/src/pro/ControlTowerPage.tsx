@@ -4,7 +4,15 @@ import { LoadingBus } from "../components/LoadingBus.js";
 import { EmptyState, ErrorState, StateLozenge } from "../components/primitives.js";
 import { apiClient } from "../lib/api.js";
 import { useFetch } from "../lib/use-fetch.js";
-import { CoverageWarning, DataModeBanner, ProMetricTile, ScopeFilters } from "./ProPrimitives.js";
+import {
+  BandStrip,
+  CoverageWarning,
+  DataModeBanner,
+  IllustrativeBanner,
+  ProMetricTile,
+  ScopeFilters,
+} from "./ProPrimitives.js";
+import { PixelSectionHeading } from "../components/pixel/PixelSectionHeading.js";
 
 /**
  * Control Tower (docs/10_BUS_STOPS_PRO.md).
@@ -43,12 +51,15 @@ export function ControlTowerPage() {
   return (
     <>
       <DataModeBanner provenance={tower.provenance} />
+      <IllustrativeBanner metrics={tower.headline} />
       <CoverageWarning message={tower.coverageWarning} />
 
       <ScopeFilters windowMinutes={windowMinutes} onWindowChange={setWindowMinutes} />
 
       <section className="pro-section" aria-labelledby="ct-headline">
-        <h2 id="ct-headline">Network at a glance</h2>
+        <PixelSectionHeading mark="chart" id="ct-headline">
+          Network at a glance
+        </PixelSectionHeading>
         <div className="pro-grid">
           {tower.headline.map((metric) => (
             <ProMetricTile key={metric.key} metric={metric} />
@@ -57,11 +68,25 @@ export function ControlTowerPage() {
       </section>
 
       <section className="pro-section" aria-labelledby="ct-sources">
-        <h2 id="ct-sources">Source health</h2>
+        <PixelSectionHeading mark="warning" id="ct-sources">
+          Source health
+        </PixelSectionHeading>
+        {/*
+          The same strip the exception inbox uses for severity, because this is the same kind of
+          question: what is this total made of. Four sources down out of six and four out of
+          forty were the same sentence before, read at the same speed.
+        */}
+        <BandStrip
+          label="Sources by health"
+          bands={[
+            { tone: "healthy", label: "healthy", count: tower.sourceHealth.healthy },
+            { tone: "elevated", label: "degraded", count: tower.sourceHealth.degraded },
+            { tone: "abnormal", label: "stale", count: tower.sourceHealth.stale },
+            { tone: "highly_abnormal", label: "down", count: tower.sourceHealth.down },
+          ]}
+        />
         <p className="pro-note">
-          {tower.sourceHealth.healthy} healthy, {tower.sourceHealth.degraded} degraded,{" "}
-          {tower.sourceHealth.stale} stale, {tower.sourceHealth.down} down. Where a source is not
-          reporting, the network is unmeasured rather than clear.
+          Where a source is not reporting, the network is unmeasured rather than clear.
         </p>
         {tower.sourceHealth.problems.length > 0 ? (
           <ul className="pro-list">
@@ -80,7 +105,9 @@ export function ControlTowerPage() {
       </section>
 
       <section className="pro-section" aria-labelledby="ct-exceptions">
-        <h2 id="ct-exceptions">Priority exceptions</h2>
+        <PixelSectionHeading mark="works" id="ct-exceptions">
+          Priority exceptions
+        </PixelSectionHeading>
         {tower.priorityExceptions.length > 0 ? (
           <ul className="pro-list">
             {tower.priorityExceptions.map((exception) => (
@@ -97,21 +124,36 @@ export function ControlTowerPage() {
 
       <div className="pro-two-up">
         <section className="pro-section" aria-labelledby="ct-burden">
-          <h2 id="ct-burden">Biggest delay burden</h2>
+          <PixelSectionHeading mark="clock" id="ct-burden">
+            Biggest delay burden
+          </PixelSectionHeading>
           <p className="muted small">Where the most passenger time is being lost.</p>
           <RankingList items={tower.biggestDelayBurden} emptyLabel="No measured delay burden." />
         </section>
 
         <section className="pro-section" aria-labelledby="ct-abnormal">
-          <h2 id="ct-abnormal">Most abnormal</h2>
+          <PixelSectionHeading mark="chart" id="ct-abnormal">
+            Most abnormal
+          </PixelSectionHeading>
           <p className="muted small">Where conditions are furthest from normal for this time.</p>
           <RankingList items={tower.mostAbnormal} emptyLabel="Nothing outside the normal range." />
         </section>
       </div>
 
-      {tower.routesRequiringAttention.length > 0 ? (
-        <section className="pro-section" aria-labelledby="ct-routes">
-          <h2 id="ct-routes">Routes requiring attention</h2>
+      {/*
+        The one section on this page that used to disappear when it had nothing to say.
+ 
+        Every other one states its empty case — the exception inbox has an `EmptyState`, both
+        ranking lists have an `emptyLabel`, source health says "every source is reporting
+        normally". A dashboard where most sections answer and one silently goes missing reads as
+        a page that failed to load part of itself, and "no route needs attention" is the answer an
+        operations team most wants at a glance.
+      */}
+      <section className="pro-section" aria-labelledby="ct-routes">
+        <PixelSectionHeading mark="route" id="ct-routes">
+          Routes requiring attention
+        </PixelSectionHeading>
+        {tower.routesRequiringAttention.length > 0 ? (
           <ul className="pro-list">
             {tower.routesRequiringAttention.map((route) => (
               <li key={route.routeId} className="pro-card">
@@ -126,11 +168,18 @@ export function ControlTowerPage() {
               </li>
             ))}
           </ul>
-        </section>
-      ) : null}
+        ) : (
+          <p className="muted small">
+            No route in this scope crossed the attention threshold in this window. That is a
+            statement about the routes we can measure, not about the whole network.
+          </p>
+        )}
+      </section>
 
       <section className="pro-section" aria-labelledby="ct-outlook">
-        <h2 id="ct-outlook">Outlook</h2>
+        <PixelSectionHeading mark="clock" id="ct-outlook">
+          Outlook
+        </PixelSectionHeading>
         <p>{tower.outlook}</p>
         <ul className="pro-list">
           {tower.intelligenceSummary.map((line) => (

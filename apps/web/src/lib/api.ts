@@ -2,6 +2,11 @@ import {
   AnalyticsResponseSchema,
   CongestionResponseSchema,
   ControlTowerResponseSchema,
+  DisruptionsResponseSchema,
+  JourneyPlanResponseSchema,
+  OperatorDetailResponseSchema,
+  RouteDetailResponseSchema,
+  VehicleDetailResponseSchema,
   LiveOperationsResponseSchema,
   MapResponseSchema,
   OperatorsResponseSchema,
@@ -66,6 +71,40 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * The ways a request can fail that asking again might fix.
+ *
+ * A `TypeError` from `fetch` is the browser's report of a blocked or dropped response, which is what
+ * a Worker that died looks like from the outside: Cloudflare's error 1102 page carries no
+ * `Access-Control-Allow-Origin` header, so the browser never lets the client see the 503 that a
+ * `curl` would. 502 and 503 are the same event when the platform does send the header.
+ *
+ * It lives here rather than beside the map's retry ladder because `ApiError` is here, and the one
+ * thing worse than two copies of this predicate is a circular import between them.
+ */
+export function isPlatformFailure(error: unknown): boolean {
+  if (error instanceof ApiError) return error.status === 503 || error.status === 502;
+  if (error instanceof DOMException && error.name === "AbortError") return false;
+  return error instanceof TypeError;
+}
+
+/** Long enough for the isolate that refused to be replaced, short enough that nobody notices. */
+const RETRY_DELAY_MS = 350;
+
+/**
+ * How long any one attempt waits before it is a stated failure.
+ *
+ * Twenty seconds, which is far longer than a healthy answer and far shorter than forever. The
+ * Worker's own budgets are 1.8 seconds for a map and 6 for a journey, so anything approaching this
+ * is not slow, it is gone. Two attempts plus the delay between them puts the worst case a
+ * passenger can see at about forty seconds, which is the price of retrying a platform failure that
+ * is usually transient.
+ */
+const REQUEST_TIMEOUT_MS = 20_000;
+
+/** A viewport's own deadline. See `map`, which takes it three times over if it has to. */
+const MAP_TIMEOUT_MS = 8_000;
+
 export interface ProScopeQuery {
   areaId?: string | null;
   operatorId?: string | null;
@@ -87,15 +126,87 @@ export class ApiClient {
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
   }
 
+  /**
+   * One retry, for the platform refusing rather than the Worker answering.
+   *
+   * `/v1/search`, `/v1/nearby`, the stop weather and the place-journey were all measured answering
+   * Cloudflare's error 1102 page on the deployed preview — "Worker exceeded resource limits" — which
+   * in a browser arrives as a blocked fetch rather than a status, because that page carries no
+   * `Access-Control-Allow-Origin` header. A recruiter typing "Bullring" got no results, from a search
+   * index that holds Bull Ring. The deaths cluster on a warm isolate and fall roughly every other
+   * request, so asking once more is the whole fix for most of them.
+   *
+   * Every call here is a GET, so a second attempt cannot do anything a first one did not. An answer
+   * the Worker meant — a 404, a 400, a rate limit — is never retried: it would be the same answer,
+   * more slowly, and a retry on a 429 is an attack on ourselves.
+   */
   private async request<T>(
     path: string,
     signal?: AbortSignal,
     schema?: { safeParse: (value: unknown) => { success: boolean; data?: unknown } },
+    options: { retries?: number; timeoutMs?: number } = {},
   ): Promise<T> {
-    const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
-      headers: { Accept: "application/json" },
-      ...(signal ? { signal } : {}),
-    });
+    const retries = options.retries ?? 1;
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await this.attempt<T>(path, signal, schema, options.timeoutMs);
+      } catch (error) {
+        if (attempt >= retries) throw error;
+        if (signal?.aborted === true) throw error;
+        if (!isPlatformFailure(error)) throw error;
+        await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+      }
+    }
+  }
+
+  private async attempt<T>(
+    path: string,
+    signal?: AbortSignal,
+    schema?: { safeParse: (value: unknown) => { success: boolean; data?: unknown } },
+    timeoutMs = REQUEST_TIMEOUT_MS,
+  ): Promise<T> {
+    /*
+     * Every request gets a deadline, and until now none of them did.
+     *
+     * A caller could pass an abort signal — the map does, so a fast pan drops its own request —
+     * but nothing bounded a request the server simply never answered. Run 96's sweep caught the
+     * consequence twice: the journey page showing a working animation, no result and no reason,
+     * because its request had neither returned nor failed. A passenger watching a bus drive across
+     * the screen for thirty seconds has been told nothing, and the page cannot say why it is stuck
+     * because as far as it knows nothing has gone wrong.
+     *
+     * A timeout is a failure, not a cancellation, and the two have to stay distinguishable: a
+     * caller's abort is something the page did deliberately and every one of them ignores it,
+     * while this is something a passenger has to be told about. So the deadline is its own
+     * controller and the abort it raises is converted into an `ApiError` the pages already render.
+     */
+    const deadline = new AbortController();
+    const timer = setTimeout(() => deadline.abort(), timeoutMs);
+    const onCallerAbort = () => deadline.abort();
+    signal?.addEventListener("abort", onCallerAbort);
+
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`${this.baseUrl}${path}`, {
+        headers: { Accept: "application/json" },
+        signal: deadline.signal,
+      });
+    } catch (error) {
+      // The caller's own abort is theirs; pages treat it as "never mind" and must keep doing so.
+      if (signal?.aborted === true) throw error;
+      if (deadline.signal.aborted) {
+        throw new ApiError(
+          `We asked for this and heard nothing back within ${Math.round(timeoutMs / 1000)} seconds. ` +
+            `That is a fault on our side rather than a statement about the buses.`,
+          504,
+          "timeout",
+        );
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onCallerAbort);
+    }
 
     if (!response.ok) {
       let code = "internal";
@@ -116,9 +227,18 @@ export class ApiClient {
 
     const body = (await response.json()) as unknown;
 
-    // Validated at the boundary when a schema is supplied. Rendering an unvalidated payload is
-    // how a malformed response becomes a blank white page instead of an error state — and the
-    // person looking at it has no idea whether the bus is coming or the site is broken.
+    /*
+     * Validated at the boundary when a schema is supplied. Rendering an unvalidated payload is
+     * how a malformed response becomes a blank white page instead of an error state — and the
+     * person looking at it has no idea whether the bus is coming or the site is broken.
+     *
+     * Six of the ten calls here skipped it, which is how the vehicle page came to crash on a
+     * response the contract explicitly permits. `disruptions` and `operator` on vehicle detail
+     * both carry `.default()`, meaning the server may omit them — but a default is applied by
+     * *parsing*, and nothing parsed, so the page read `undefined.length` and the error boundary
+     * caught it. Every call that has a schema now passes it: validation and defaults are the
+     * same act, and skipping it leaves each page to guess which optional fields arrived.
+     */
     if (schema) {
       const parsed = schema.safeParse(body);
       if (!parsed.success) {
@@ -146,6 +266,21 @@ export class ApiClient {
       `/v1/map?bbox=${encodeURIComponent(bboxParam)}&zoom=${Math.round(zoom)}`,
       signal,
       MapResponseSchema,
+      {
+        // The live map runs its own ladder — the view, the view again, then a quarter of it — so a
+        // retry here would turn three requests into six against a Worker already over its limit.
+        retries: 0,
+        /*
+         * And a shorter deadline than everything else, because the ladder multiplies it.
+         *
+         * The Worker gives a viewport 1.8 seconds of its own budget, so eight is already far
+         * beyond a healthy answer — while the default twenty, taken three times by the ladder,
+         * would leave a passenger looking at a basemap with no stops on it for a minute before
+         * anything was said. A map that gives up sooner retries sooner, and the next rung of the
+         * ladder asks for less.
+         */
+        timeoutMs: MAP_TIMEOUT_MS,
+      },
     );
   }
 
@@ -206,15 +341,24 @@ export class ApiClient {
     return this.request<VehicleDetailResponse>(
       `/v1/vehicles/${encodeURIComponent(ref)}?bbox=${encodeURIComponent(bboxParam)}`,
       signal,
+      VehicleDetailResponseSchema,
     );
   }
 
   route(id: string, signal?: AbortSignal): Promise<RouteDetailResponse> {
-    return this.request<RouteDetailResponse>(`/v1/routes/${encodeURIComponent(id)}`, signal);
+    return this.request<RouteDetailResponse>(
+      `/v1/routes/${encodeURIComponent(id)}`,
+      signal,
+      RouteDetailResponseSchema,
+    );
   }
 
   operator(id: string, signal?: AbortSignal): Promise<OperatorDetailResponse> {
-    return this.request<OperatorDetailResponse>(`/v1/operators/${encodeURIComponent(id)}`, signal);
+    return this.request<OperatorDetailResponse>(
+      `/v1/operators/${encodeURIComponent(id)}`,
+      signal,
+      OperatorDetailResponseSchema,
+    );
   }
 
   /**
@@ -237,11 +381,15 @@ export class ApiClient {
       params.set("departAt", String(Math.round(options.departAtSeconds)));
     }
     if (options.serviceDate) params.set("date", options.serviceDate);
-    return this.request<JourneyPlanResponse>(`/v1/journeys?${params.toString()}`, signal);
+    return this.request<JourneyPlanResponse>(
+      `/v1/journeys?${params.toString()}`,
+      signal,
+      JourneyPlanResponseSchema,
+    );
   }
 
   disruptions(signal?: AbortSignal): Promise<DisruptionsResponse> {
-    return this.request<DisruptionsResponse>("/v1/disruptions", signal);
+    return this.request<DisruptionsResponse>("/v1/disruptions", signal, DisruptionsResponseSchema);
   }
 
   /**

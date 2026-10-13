@@ -1,0 +1,638 @@
+import { Canvas } from "./canvas.mjs";
+import { busSide2, busMid2 } from "./bus2.mjs";
+import { shelter, stopFlag, tree } from "./street.mjs";
+import { PEOPLE, drawPerson, PERSON_H } from "./people.mjs";
+import { shopBuilding } from "./buildings.mjs";
+import { text } from "./font.mjs";
+import { farBus } from "./vignette2.mjs";
+import {
+  barrier,
+  cat,
+  cone,
+  desk,
+  diversionSign,
+  messageBoard,
+  monitor,
+  mug,
+  pigeon,
+  pottedPlant,
+  worker,
+} from "./props.mjs";
+
+/**
+ * One composed scene per page.
+ *
+ * The run before this one gave every page the same strip of pavement with a stop flag on it, and
+ * the result was a footer tile moved to the top: it cost a lot of vertical space and told you
+ * nothing about the page you were on. These are the replacement. Each is a small world that
+ * belongs to its page — a road being dug up, a control desk, a street you would wait on — built
+ * from the same sprite library the home page hero uses, so it is the same city throughout.
+ *
+ * All of them are decoration and none of them states a fact. A bus in the roadworks scene is not
+ * a bus that is late; the message board says ROAD WORKS AHEAD and never a real closure. Anything
+ * that has to be true is drawn by the page from its data, not in here.
+ *
+ * One height for all of them, so the masthead is one band and pages do not jump as you move
+ * between them. Width varies, because a control room needs more of it than a bus does.
+ */
+export const VISTA_H = 76;
+
+/** The ground line every vista shares, so the art sits on one pavement across the site. */
+const GROUND = 62;
+const KERB = 68;
+
+/** Sky, in two bands, with a soft join. The top band is where the clouds go. */
+function sky(c, { top = "S", low = "T" } = {}) {
+  const horizon = Math.round(VISTA_H * 0.42);
+  c.rect(0, 0, c.w, horizon, top);
+  c.rect(0, horizon, c.w, GROUND - horizon, low);
+  for (let x = 0; x < c.w; x += 2) c.px(x, horizon, top);
+}
+
+/** Pavement, kerb and a strip of road, the same three surfaces as the hero. */
+function ground(c, { road = true } = {}) {
+  c.rect(0, GROUND, c.w, KERB - GROUND, "Q");
+  c.hline(0, GROUND, c.w, "R");
+  // Paving joints, so the pavement is laid rather than poured.
+  for (let x = 4; x < c.w; x += 14) c.vline(x, GROUND + 1, KERB - GROUND - 1, "P");
+  c.hline(0, KERB - 1, c.w, "P");
+  if (!road) return;
+  c.rect(0, KERB, c.w, VISTA_H - KERB, "N");
+  c.hline(0, KERB, c.w, "P");
+  c.speckle(0, KERB + 1, c.w, VISTA_H - KERB - 1, "M", 0.16, 5);
+}
+
+/** A row of distant blocks along the horizon, paler than anything in front of them. */
+function skylineRow(c, { from = 0, to = c.w, base = GROUND - 8, seed = 5, tone = "Q" } = {}) {
+  let x = from;
+  let n = seed;
+  while (x < to) {
+    n = (n * 1103515245 + 12345) & 0x7fffffff;
+    const w = 12 + (n % 18);
+    n = (n * 1103515245 + 12345) & 0x7fffffff;
+    const h = 14 + (n % 18);
+    c.rect(x, base - h, Math.min(w, to - x), h, tone);
+    c.hline(x, base - h, Math.min(w, to - x), "P");
+    if (w > 18) c.rect(x + 3, base - h - 4, 3, 4, tone);
+    x += w + 2;
+  }
+}
+
+function clouds(c, spots) {
+  for (const [cx, cy, w] of spots) {
+    c.rect(cx, cy + 3, w, 4, "W");
+    c.rect(cx + 4, cy, w - 10, 4, "W");
+    c.rect(cx + 2, cy + 1, 5, 3, "X");
+    c.hline(cx, cy + 6, w, "R");
+  }
+}
+
+/**
+ * The red bus, at the middle size.
+ *
+ * `busMid2` defaults to the blue livery, which is the second operator on the home page's road.
+ * Every vista that shows one bus should show the product's own red, so the colour that means
+ * "Bus Stops." is the one carried across the site.
+ */
+function redMid(route) {
+  return busMid2({
+    route,
+    body: "t",
+    bodyDark: "s",
+    bodyDeep: "r",
+    bodyLight: "u",
+    bodyGlow: "v",
+  });
+}
+
+/** Drops a sprite with its feet on a given line. */
+function stand(c, sprite, x, footY = GROUND) {
+  c.blit(sprite, x, footY - sprite.h);
+}
+
+/* ------------------------------------------------------------------ route */
+
+/**
+ * The route page: the bus itself, large, against the city it runs through.
+ *
+ * The bus is the subject here — it is the thing the page is about — so it gets the middle of the
+ * composition at full size rather than being a 96-pixel prop at the end of a kerb.
+ */
+export function routeVista({ route = "1" } = {}) {
+  const c = new Canvas(232, VISTA_H);
+  sky(c);
+  skylineRow(c, { from: 0, to: 232, base: GROUND - 6, seed: 9, tone: "Q" });
+  skylineRow(c, { from: 12, to: 232, base: GROUND - 4, seed: 21, tone: "P" });
+  clouds(c, [
+    [16, 6, 24],
+    [150, 4, 20],
+  ]);
+  ground(c);
+  stand(c, tree({ w: 30, h: 40, seed: 3 }), 6);
+  stand(c, stopFlag({ h: 44, routes: route }), 206);
+  stand(c, drawPerson(PEOPLE[0], "plain"), 182);
+  // The bus on the road, wheels on the carriageway rather than on the kerb.
+  c.blit(busSide2({ route }), 44, VISTA_H - 50);
+  stand(c, pigeon({ facing: "left" }), 200, GROUND);
+  return c;
+}
+
+/* ---------------------------------------------------------------- journey */
+
+/**
+ * The journey page: a street you would actually wait on.
+ *
+ * Terrace, tree, shelter, someone waiting, and a bus arriving — the beginning of a trip rather
+ * than an illustration of transport in general.
+ */
+export function journeyVista() {
+  const c = new Canvas(272, VISTA_H);
+  sky(c);
+  clouds(c, [
+    [10, 5, 22],
+    [128, 3, 26],
+  ]);
+  // Two terraced fronts, the nearer one taller, so the roofline steps.
+  c.blit(
+    shopBuilding({ w: 46, h: 58, sign: "s", signText: "SHOP", floors: 2, shopH: 22 }),
+    4,
+    GROUND - 58,
+  );
+  c.blit(
+    shopBuilding({
+      w: 40,
+      h: 50,
+      wall: "render",
+      sign: "b",
+      signText: "POST",
+      floors: 1,
+      shopH: 20,
+      seed: 3,
+    }),
+    50,
+    GROUND - 50,
+  );
+  ground(c);
+  stand(c, tree({ w: 32, h: 42, seed: 7 }), 92);
+  c.blit(shelter({ w: 56, h: 44 }), 124, GROUND - 44);
+  stand(c, drawPerson(PEOPLE[3], "plain"), 130);
+  stand(c, drawPerson(PEOPLE[1], "plain"), 152);
+  stand(c, stopFlag({ h: 42, routes: "36" }), 182);
+  /*
+   * The bus on the carriageway, not over the pavement.
+   *
+   * The first placement put it at `VISTA_H - 36`, which is above the kerb line — so a
+   * thirty-three-pixel bus floated across the shelter and the people waiting at it. Its wheels
+   * belong on the road, which means its bottom edge is the canvas floor.
+   */
+  c.blit(redMid("36"), 172, VISTA_H - 33);
+  return c;
+}
+
+/* ------------------------------------------------------------- roadworks */
+
+/**
+ * The disruptions page: a road being dug up.
+ *
+ * The message board carries generic words, never a real closure. The page states the actual
+ * notices in type, where they can carry their source and their time; a drawing that spelled out
+ * a specific road would be the artwork making a claim the data has not checked.
+ */
+export function roadworksVista() {
+  const c = new Canvas(288, VISTA_H);
+  sky(c);
+  skylineRow(c, { from: 130, to: 288, base: GROUND - 6, seed: 4, tone: "Q" });
+  clouds(c, [
+    [96, 4, 22],
+    [206, 9, 18],
+  ]);
+  ground(c);
+  // A bus going past behind the works, so the street is still working.
+  c.blit(redMid("36"), 142, VISTA_H - 33);
+  // The works themselves, left to right: board, barrier, cones, worker, diversion.
+  c.blit(messageBoard(), 4, GROUND - 72);
+  stand(c, barrier({ w: 46, h: 20 }), 72);
+  stand(c, cone({ h: 18 }), 122);
+  stand(c, cone({ h: 20 }), 136, GROUND + 4);
+  stand(c, worker({ h: 42 }), 96);
+  stand(c, diversionSign({ w: 34, h: 42, arrow: "right" }), 244);
+  stand(c, cone({ h: 16 }), 118, GROUND + 5);
+  return c;
+}
+
+/* ----------------------------------------------------------- control room */
+
+/**
+ * Pro: the room behind the product.
+ *
+ * A window onto the city, a desk, three screens showing three different kinds of thing, and
+ * somebody watching them. This one is an interior, so it has no sky band and no kerb — it is the
+ * only vista that steps off the street, which is the point of it.
+ */
+export function controlRoomVista() {
+  const c = new Canvas(248, VISTA_H);
+  const floor = VISTA_H - 6;
+  const deskTop = floor - 18;
+
+  // Wall, skirting, floor.
+  c.rect(0, 0, c.w, floor, "8");
+  c.speckle(0, 0, c.w, floor, "7", 0.05, 3);
+  c.rect(0, floor, c.w, VISTA_H - floor, "6");
+  c.hline(0, floor, c.w, "M");
+
+  /*
+   * The window sits entirely above the desk.
+   *
+   * The first version gave it forty-four rows starting at six, and the monitors — which stand on
+   * a desk two thirds of the way down — were drawn straight through it. An interior only reads
+   * as a room if the things in it are at different depths *and* different heights; a window and
+   * a monitor occupying the same rectangle is neither.
+   */
+  const win = { x: 8, y: 2, w: 104, h: 32 };
+  c.rect(win.x, win.y, win.w, win.h, "S");
+  c.rect(win.x, win.y + 18, win.w, win.h - 18, "T");
+  // Skyline outside, kept low so most of the pane is sky.
+  let n = 17;
+  let bx = win.x;
+  while (bx < win.x + win.w) {
+    n = (n * 1103515245 + 12345) & 0x7fffffff;
+    const bw = Math.min(9 + (n % 12), win.x + win.w - bx);
+    n = (n * 1103515245 + 12345) & 0x7fffffff;
+    const bh = 6 + (n % 12);
+    c.rect(bx, win.y + win.h - 6 - bh, bw, bh, "Q");
+    c.hline(bx, win.y + win.h - 6 - bh, bw, "P");
+    bx += bw + 2;
+  }
+  // The street outside, with a small bus on it — the far-distance bus, not the full-size one.
+  c.rect(win.x, win.y + win.h - 6, win.w, 6, "P");
+  c.hline(win.x, win.y + win.h - 6, win.w, "Q");
+  /*
+   * The bus goes in the left half of the pane, which is the half no monitor stands in front of.
+   *
+   * Everything interesting in a window is worth nothing if a screen is parked over it. The desk
+   * starts far enough right that the first forty-odd columns of glass stay visible, so that is
+   * where the one moving thing outside is put.
+   */
+  c.blit(farBus({}), win.x + 4, win.y + win.h - 6 - 22);
+  // Glazing bars, then the frame over the top so the pane is behind it.
+  c.vline(win.x + Math.round(win.w / 2), win.y, win.h, "N");
+  c.hline(win.x, win.y + 15, win.w, "N");
+  c.frame(win.x, win.y, win.w, win.h, "M");
+  c.rect(win.x - 2, win.y - 2, win.w + 4, 2, "M");
+  c.rect(win.x - 3, win.y + win.h + 1, win.w + 6, 2, "9");
+  c.hline(win.x - 3, win.y + win.h + 1, win.w + 6, "R");
+
+  // A status board on the wall, beside the window rather than over the desk.
+  c.rect(206, 6, 34, 22, "K");
+  c.frame(206, 6, 34, 22, "M");
+  for (let y = 10; y < 26; y += 4) c.hline(209, y, 16 + ((y * 7) % 10), "z");
+
+  /*
+   * The operator goes down before the desk does, so the desk occludes her legs.
+   *
+   * Drawn afterwards she stood on top of it, which is the classic painter's-algorithm mistake:
+   * in a side-on interior, everything behind the desk must be laid down before the desk is.
+   */
+  c.blit(drawPerson(PEOPLE[0], "plain"), 176, deskTop - PERSON_H + 22);
+
+  // The desk, and what is on it.
+  c.blit(desk({ w: 184, h: 18 }), 56, deskTop);
+  c.blit(monitor({ w: 40, h: 24, screen: "map" }), 62, deskTop - 24);
+  c.blit(monitor({ w: 36, h: 22, screen: "chart" }), 106, deskTop - 22);
+  c.blit(monitor({ w: 36, h: 22, screen: "list" }), 146, deskTop - 22);
+  c.blit(mug(), 210, deskTop - 14);
+  // A keyboard: a dark slab with key rows, not a rectangle.
+  c.rect(104, deskTop - 4, 32, 4, "M");
+  c.hline(104, deskTop - 4, 32, "N");
+  for (let x = 106; x < 134; x += 3) c.px(x, deskTop - 3, "P");
+
+  // A plant in the corner, and a cat under the desk because somebody brought one in.
+  c.blit(pottedPlant({ w: 20, h: 28 }), 224, floor - 28);
+  c.blit(cat({ facing: "right" }), 80, floor - 18);
+  return c;
+}
+
+/* --------------------------------------------------------------- operator */
+
+/**
+ * The operator page: a depot rather than a street.
+ *
+ * Two buses, the shed they sleep in, and somebody with a clipboard — the place the vehicles on
+ * the rest of the site come from.
+ */
+export function depotVista() {
+  const c = new Canvas(264, VISTA_H);
+  sky(c);
+  clouds(c, [[150, 5, 22]]);
+  // The depot shed: a long dark building with a roller door and a sign band.
+  const shedTop = 8;
+  c.rect(0, shedTop, 150, GROUND - shedTop, "7");
+  c.rect(0, shedTop, 150, 5, "M");
+  c.hline(0, shedTop, 150, "N");
+  c.rect(6, shedTop + 2, 30, 6, "s");
+  c.hline(6, shedTop + 2, 30, "t");
+  // Roller door: horizontal slats, darker towards the bottom.
+  c.rect(44, shedTop + 10, 62, GROUND - shedTop - 10, "N");
+  for (let y = shedTop + 12; y < GROUND; y += 3) c.hline(45, y, 60, "M");
+  c.frame(44, shedTop + 10, 62, GROUND - shedTop - 10, "M");
+  // A high strip window along the shed.
+  for (let x = 112; x < 146; x += 9) {
+    c.rect(x, shedTop + 10, 7, 8, "h");
+    c.hline(x, shedTop + 10, 7, "g");
+  }
+  ground(c);
+  // Two buses on the apron: one nosing out of the door, one alongside.
+  c.blit(busMid2({ route: "1" }), 50, GROUND - 31);
+  c.blit(redMid("36"), 152, VISTA_H - 33);
+  stand(c, drawPerson(PEOPLE[5], "plain"), 18);
+  stand(c, tree({ w: 26, h: 34, seed: 11 }), 236);
+  return c;
+}
+
+/* ------------------------------------------------------------ fragments */
+
+/**
+ * A pale skyline, for the bottom of a card.
+ *
+ * Deliberately one tone and no windows: it sits behind real figures — stop counts, distances,
+ * how many buses are running — and anything with more contrast than this competes with them.
+ * Drawn wide and shallow so a card can show whatever slice of it fits and crop the rest.
+ */
+export function skylineStrip({ w = 240, h = 34, seed = 12 } = {}) {
+  const c = new Canvas(w, h);
+  let x = -3;
+  let n = seed;
+  while (x < w) {
+    n = (n * 1103515245 + 12345) & 0x7fffffff;
+    const bw = 10 + (n % 20);
+    n = (n * 1103515245 + 12345) & 0x7fffffff;
+    const bh = 10 + (n % (h - 8));
+    c.rect(x, h - bh, bw, bh, "Q");
+    c.hline(x, h - bh, bw, "P");
+    // A mast or a lift overrun on the taller ones, so the roofline is not all flat.
+    if (bh > h - 14) {
+      c.rect(x + 3, h - bh - 5, 2, 5, "Q");
+      c.px(x + 3, h - bh - 6, "P");
+    }
+    x += bw + 1 + (n % 3);
+  }
+  return c;
+}
+
+/**
+ * A bus at list size: small enough for a table row, detailed enough to be the same vehicle.
+ *
+ * `busMid2` at 96 pixels is too wide for a row of live vehicles, and the 16-unit mark is a
+ * symbol rather than a drawing. This is the middle: a bus you can tell is facing right, with
+ * windows, a blind and wheels.
+ */
+export function busRow({ route = "" } = {}) {
+  const c = new Canvas(44, 18);
+  // Body, with the front lower and chamfered.
+  c.rect(1, 3, 42, 11, "s");
+  c.rect(3, 2, 38, 2, "s");
+  c.hline(3, 2, 38, "t");
+  c.vline(1, 4, 9, "t");
+  c.hline(1, 13, 42, "q");
+  // Windows: three bays and a door gap.
+  for (const [x, bw] of [
+    [4, 8],
+    [14, 6],
+    [26, 7],
+  ]) {
+    c.rect(x, 5, bw, 5, "h");
+    c.hline(x, 5, bw, "g");
+    c.px(x + 1, 6, "j");
+  }
+  // Doors, darker than the glass so they read as a division.
+  c.rect(22, 5, 3, 8, "f");
+  // Destination blind.
+  c.rect(34, 4, 8, 4, "K");
+  if (route) {
+    text(c, 35, 5, route.slice(0, 2), "Z");
+  } else {
+    /*
+     * A lit blind with no number on it, rather than a black rectangle.
+     *
+     * The sprite is shipped once and reused for every vehicle in a list, so it cannot carry a
+     * route number — but an unlit black box on the front of a bus reads as a hole in the
+     * bodywork. Two amber bars is what a blind looks like from across a street.
+     */
+    c.hline(35, 5, 6, "y");
+    c.hline(35, 6, 4, "Z");
+  }
+  // Lights.
+  c.px(42, 5, "Z");
+  c.px(42, 12, "t");
+  // Wheels with hubs.
+  for (const wx of [9, 33]) {
+    c.disc(wx, 14, 3, "K");
+    c.disc(wx, 14, 1, "P");
+  }
+  c.hline(2, 17, 40, "=");
+  return c;
+}
+
+/**
+ * A journey, in miniature: somewhere, a line with a bus on it, somewhere else.
+ *
+ * Deliberately generic. The planner knows the names of the two ends and nothing about what they
+ * look like, so drawing York Minster because the destination string says "York Minster" would be
+ * the artwork asserting something the data never checked. These are two unnamed civic
+ * silhouettes — one low and wide, one taller — which is enough to read as "from a place to
+ * another place" without claiming which places.
+ *
+ * Orientation and warmth, not navigation. The itinerary underneath carries the facts.
+ */
+export function journeyMini({ w = 184, h = 48 } = {}) {
+  const c = new Canvas(w, h);
+  const ground = h - 7;
+
+  // Sky, lightest at the horizon.
+  c.rect(0, 0, w, ground - 12, "S");
+  c.rect(0, ground - 12, w, 12, "T");
+  for (let x = 0; x < w; x += 2) c.px(x, ground - 12, "S");
+
+  // Two small clouds, well clear of both silhouettes.
+  for (const [cx, cy, cw] of [
+    [62, 4, 16],
+    [116, 8, 13],
+  ]) {
+    c.rect(cx, cy + 2, cw, 3, "W");
+    c.rect(cx + 3, cy, cw - 7, 3, "W");
+    c.px(cx + 4, cy + 1, "X");
+  }
+
+  /* The origin: a low civic block with a portico and a clock, drawn in masonry tones. */
+  c.rect(4, ground - 22, 40, 22, "8");
+  c.hline(4, ground - 22, 40, "9");
+  c.rect(16, ground - 30, 16, 8, "8");
+  c.hline(16, ground - 30, 16, "9");
+  c.rect(22, ground - 34, 4, 4, "7");
+  c.disc(24, ground - 26, 3, "R");
+  c.px(24, ground - 26, "K");
+  c.px(24, ground - 28, "K");
+  for (let x = 8; x < 42; x += 6) c.rect(x, ground - 16, 3, 8, "h");
+  c.rect(4, ground - 3, 40, 3, "7");
+
+  /* The destination: taller, with a spire, so the two ends are told apart at a glance. */
+  const dx = w - 44;
+  c.rect(dx, ground - 26, 36, 26, "8");
+  c.hline(dx, ground - 26, 36, "9");
+  c.rect(dx + 24, ground - 38, 9, 12, "8");
+  c.hline(dx + 24, ground - 38, 9, "9");
+  /* A spire that tapers to a point, rather than a stub: four courses, each narrower. */
+  for (let i = 0; i < 4; i++) {
+    const sw = 9 - i * 2;
+    c.hline(dx + 24 + i, ground - 39 - i, sw, "7");
+  }
+  c.vline(dx + 28, ground - 45, 3, "7");
+  for (let x = dx + 4; x < dx + 22; x += 6) c.rect(x, ground - 20, 3, 10, "h");
+  c.rect(dx, ground - 3, 36, 3, "7");
+
+  /* The path between them: a dashed run at ground level with a bus on it. */
+  for (let x = 48; x < dx - 4; x += 6) c.hline(x, ground, 3, "P");
+  c.blit(busRow(), Math.round((48 + dx) / 2) - 22, ground - 17);
+
+  /*
+   * A pin at each end of the path, not on the buildings.
+   *
+   * The first placement put them over the masonry, where they read as doors. On the ground at
+   * the two ends of the dashed run they read as what they are: this journey starts here and
+   * finishes there.
+   */
+  for (const px of [50, dx - 6]) {
+    c.rect(px - 2, ground - 9, 5, 5, "t");
+    c.hline(px - 2, ground - 9, 5, "u");
+    c.px(px, ground - 7, "W");
+    c.vline(px, ground - 4, 4, "s");
+  }
+  c.hline(0, h - 1, w, "=");
+  return c;
+}
+
+/**
+ * A narrow vertical strip for the outside edge of a page column.
+ *
+ * The approved mockups keep quiet artwork down the margins, so the text column sits in a street
+ * rather than on a white field. This is that, and the emphasis is on *restrained*: nothing here
+ * is a scene and nothing competes with the page's own artwork.
+ *
+ * It is a wall, seen face-on, and the first attempt was not. That one drew the pavement from
+ * above and then stood a lamp post and a pigeon on it in elevation — two projections in one
+ * strip, which reads as a lamp floating in a corridor. A wall is the one piece of street that
+ * survives being cropped to a hand's width: the courses run horizontally so the strip tiles down
+ * a column of any height, and everything on it — ivy, a drainpipe, a bracket lantern — is
+ * attached to the wall rather than standing in front of it.
+ */
+export function marginStrip({ w = 28, h = 240, feature = "ivy", side = "left" } = {}) {
+  const c = new Canvas(w, h, ".");
+
+  /*
+   * Brickwork, kept pale.
+   *
+   * The first wall was a course darker and, beside warm white paper, read as a solid band down
+   * the page rather than as a margin. Restraint here is a colour decision before it is a content
+   * one: the lighter brick and the lighter mortar keep the strip inside the paper's own family.
+   */
+  const courseH = 6;
+  const unit = 13;
+  c.rect(0, 0, w, h, "8");
+  c.speckle(0, 0, w, h, "7", 0.06, 5);
+  for (let y = 0; y < h; y += courseH) {
+    c.hline(0, y, w, "9");
+    // Every other course offset by half a brick, which is what a stretcher bond looks like.
+    const offset = ((y / courseH) % 2) * Math.round(unit / 2);
+    for (let x = offset - unit; x < w + unit; x += unit) {
+      if (x >= 0 && x < w) c.vline(x, y + 1, courseH - 1, "9");
+    }
+  }
+
+  /*
+   * A coping course and a shadow on whichever side faces the text.
+   *
+   * The shadow is what stops the strip reading as a flat panel of texture: it says the wall has a
+   * face and the page is in front of it.
+   */
+  const innerX = side === "left" ? w - 1 : 0;
+  c.vline(innerX, 0, h, "-");
+  c.vline(side === "left" ? w - 2 : 1, 0, h, "=");
+  const outerX = side === "left" ? 0 : w - 1;
+  c.vline(outerX, 0, h, "7");
+
+  /*
+   * A cast-iron downpipe, on the outer side, with its fixing bands.
+   *
+   * Grey rather than the near-black it was first drawn in. A black bar down the margin is the
+   * loudest thing on a page of warm white and 2px ink rules, and it was pulling the eye off the
+   * text the strip is supposed to sit quietly beside.
+   */
+  const pipeX = side === "left" ? 3 : w - 6;
+  c.vline(pipeX, 0, h, "O");
+  c.vline(pipeX + 1, 0, h, "P");
+  c.vline(pipeX + 2, 0, h, "N");
+  for (let y = 18; y < h; y += 46) {
+    c.hline(pipeX - 1, y, 5, "N");
+    c.hline(pipeX - 1, y + 1, 5, "O");
+  }
+
+  const mid = Math.round(h / 2);
+  if (feature === "ivy") {
+    /*
+     * Ivy, climbing. Drawn as a wandering stem with leaves either side of it rather than as a
+     * column of discs, which is what the first attempt's "planting" looked like: a string of
+     * beads. The wander is deterministic, so the art does not change between builds.
+     */
+    const baseX = side === "left" ? w - 9 : 8;
+    let x = baseX;
+    /*
+     * Foliage from the middle of the ramp, not the bottom of it.
+     *
+     * The first pass used steps 1 and 2 — #161c16 and #243024 — which against pale brick read as
+     * soot rather than as leaves. Ivy on a wall in daylight is a mid green; the dark steps are
+     * for a tree's core, where there is something lighter in front of them.
+     */
+    for (let y = h - 4; y > 24; y -= 3) {
+      x += ((y * 7) % 5) - 2;
+      x = Math.max(4, Math.min(w - 5, x));
+      c.px(x, y, "3");
+      // Leaves in threes, so each one is a shape rather than a speck.
+      const leaf = (y * 11) % 4;
+      if (leaf === 0 || leaf === 3) {
+        c.px(x - 1, y, "4");
+        c.px(x - 2, y, "3");
+        c.px(x - 1, y - 1, "5");
+      }
+      if (leaf === 2 || leaf === 3) {
+        c.px(x + 1, y, "4");
+        c.px(x + 2, y, "3");
+        c.px(x + 1, y - 1, "5");
+      }
+      if (leaf === 1) {
+        c.px(x, y - 1, "4");
+        c.px(x - 1, y - 1, "3");
+      }
+    }
+  } else if (feature === "lantern") {
+    /*
+     * A bracket lantern, the kind fixed to a wall rather than standing on a pavement. Its arm
+     * comes out of the brickwork, so it belongs to the wall the way the downpipe does.
+     */
+    const armX = side === "left" ? w - 4 : 3;
+    const dir = side === "left" ? -1 : 1;
+    c.hline(Math.min(armX, armX + dir * 6), mid - 40, 7, "M");
+    // A short stay back to the wall, which is what stops the arm reading as a floating line.
+    c.px(armX + dir * 2, mid - 39, "N");
+    c.px(armX + dir * 3, mid - 38, "N");
+    c.px(armX + dir * 6, mid - 39, "M");
+    c.px(armX + dir * 6, mid - 38, "M");
+    const lx = armX + dir * 8;
+    c.rect(Math.min(lx, lx + 5), mid - 37, 6, 8, "L");
+    c.rect(Math.min(lx + 1, lx + 4), mid - 36, 4, 6, "z");
+    c.px(armX + dir * 6, mid - 36, "y");
+    c.hline(Math.min(lx, lx + 5), mid - 38, 6, "M");
+    c.hline(Math.min(lx, lx + 5), mid - 29, 6, "M");
+  }
+
+  return c;
+}

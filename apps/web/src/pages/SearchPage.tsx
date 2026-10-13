@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import type { SearchResult } from "@busstops/contracts";
 import { apiClient } from "../lib/api.js";
 import { distanceLabel } from "../lib/format.js";
@@ -16,8 +16,67 @@ import "./SearchPage.css";
 
 const DEBOUNCE_MS = 250;
 
+/**
+ * Where a search result goes.
+ *
+ * `id` is the published identifier for its kind — a stop's, a service's, an operator's — and each
+ * page takes exactly that. An `area` has no page of its own yet, so it opens the map where it is
+ * rather than pretending to be somewhere to visit.
+ */
+function resultHref(result: SearchResult): string {
+  switch (result.kind) {
+    case "stop":
+      return `/stops/${encodeURIComponent(result.id)}`;
+    case "route":
+      return `/routes/${encodeURIComponent(result.id)}`;
+    case "operator":
+      return `/operators/${encodeURIComponent(result.id)}`;
+    default: {
+      /*
+       * A place is somewhere to go, not a departure board.
+       *
+       * York Minster has no ATCO code and no next bus; what a passenger wants from it is a
+       * journey to it, with the planner choosing the boarding and alighting stops. So a place
+       * result opens the planner with the destination already filled in — which is also why the
+       * gazetteer exists rather than a hard-coded special case for York Minster.
+       */
+      if (!result.coordinate) return `/live?q=${encodeURIComponent(result.title)}`;
+      const query = new URLSearchParams({
+        toLat: String(result.coordinate.lat),
+        toLon: String(result.coordinate.lon),
+        toLabel: result.title,
+      });
+      return `/journey?${query.toString()}`;
+    }
+  }
+}
+
+/** The kind, as a passenger reads it. `rail_station` is a tag, not a word. */
+function kindLabel(kind: SearchResult["kind"]): string {
+  switch (kind) {
+    case "stop":
+      return "Stop";
+    case "route":
+      return "Route";
+    case "operator":
+      return "Operator";
+    case "place":
+      return "Place";
+    default:
+      return "Area";
+  }
+}
+
 export function SearchPage() {
-  const [query, setQuery] = useState("");
+  /*
+   * `?q=` is read, which it was not.
+   *
+   * The page always started empty, so every `/search?q=...` link — including the ones this page
+   * used to generate for its own route and operator results — arrived at a blank search box. Half
+   * of "the search result loop" was the wrong link; this is the other half.
+   */
+  const [searchParams] = useSearchParams();
+  const [query, setQuery] = useState(() => searchParams.get("q") ?? "");
   const [results, setResults] = useState<SearchResult[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
@@ -145,6 +204,7 @@ export function SearchPage() {
 
           {results.length === 0 ? (
             <EmptyState
+              art="shelter"
               title="Nothing matched that search"
               description="Try a shorter search, a stop code, or a route number. Coverage is England-wide, so a place name usually works."
             />
@@ -152,19 +212,21 @@ export function SearchPage() {
             <ul className="search-page__results">
               {results.map((result) => (
                 <li key={`${result.kind}-${result.id}`} className="search-page__result surface">
-                  <Link
-                    to={
-                      result.kind === "stop"
-                        ? `/stops/${result.id}`
-                        : `/search?q=${encodeURIComponent(result.title)}`
-                    }
-                    className="search-page__result-link"
-                  >
+                  {/*
+                    Every result goes to the thing it is.
+
+                    Only a stop did. A route and an operator went to
+                    `/search?q=<their own title>` — back to this page, with the same query, for
+                    the same results: a loop that looked like a broken link and was in fact a link
+                    to where you already were. The index carries the published identifier for each
+                    kind, which is exactly what each page takes.
+                  */}
+                  <Link to={resultHref(result)} className="search-page__result-link">
                     <span className="search-page__result-title">{result.title}</span>
                     {result.subtitle && <span className="muted small"> {result.subtitle}</span>}
                   </Link>
                   <span className="search-page__result-meta">
-                    <StateLozenge tone="neutral">{result.kind}</StateLozenge>
+                    <StateLozenge tone="neutral">{kindLabel(result.kind)}</StateLozenge>
                     {result.distanceMetres !== undefined && (
                       <span className="muted small">{distanceLabel(result.distanceMetres)}</span>
                     )}

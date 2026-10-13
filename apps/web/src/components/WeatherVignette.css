@@ -1,0 +1,263 @@
+/*
+ * The weather vignette.
+ *
+ * Every sprite is positioned in whole art pixels and scaled by a whole number, so the scene never
+ * lands on a half pixel. The animation is restrained on purpose: rain falls, snow drifts, streaks
+ * pass and heat wavers, and nothing else moves — a stop that jiggles would be a toy.
+ */
+
+/*
+ * The scene measures the room it has and picks a whole scale that fits it. The holder is what it
+ * measures: the figure itself is exactly as wide as the artwork, so measuring that would only
+ * ever return the size it already chose.
+ */
+.vignette__holder {
+  width: 100%;
+  min-width: 0;
+}
+
+.vignette {
+  margin: 0;
+  /*
+   * Stacked, the figure is as wide as its picture, so the caption wraps to the same column the
+   * artwork occupies — which is what a photograph and its caption do on a page.
+   */
+  width: min(100%, calc(var(--scene-w) * 1px));
+  display: grid;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+/*
+ * Side by side once there is room for both.
+ *
+ * Stacked, the picture is 576 pixels of artwork with 560 pixels of nothing beside it and the
+ * numbers underneath — which is how the stop page came to have a section that was half empty
+ * white. The scene takes the width it chose and the reading, the advice and the facts take the
+ * rest, so the section is as wide as its own heading rule.
+ *
+ * `auto 1fr` rather than two equal columns because the scene's width is not negotiable: it is a
+ * whole multiple of 192 art pixels, and a column that squeezed it would push it down a scale.
+ */
+@media (min-width: 900px) {
+  .vignette {
+    /* Side by side, the figure takes the section; only the scene keeps the artwork's width. */
+    width: 100%;
+    /*
+     * The readings get a floor.
+     *
+     * `minmax(0, 1fr)` let the second column collapse to whatever the picture left over, which
+     * on the stop page was about 150 pixels — enough to break "Don't forget your umbrella" over
+     * three lines and stack every fact label above its value. Sixteen rems is the width at which
+     * the temperature, the advice and the facts grid all read normally.
+     */
+    grid-template-columns: auto minmax(16rem, 1fr);
+    align-items: start;
+    gap: var(--space-lg);
+  }
+}
+
+.vignette__scene {
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--colour-hairline);
+  /* The picture is the object; the border is the frame it sits in. */
+  background: var(--colour-canvas);
+}
+
+.vignette__scene img {
+  position: absolute;
+  image-rendering: pixelated;
+  /* Everything is placed by its own left/top; this stops a stray baseline gap. */
+  display: block;
+}
+
+.vignette__backdrop {
+  left: 0;
+  top: 0;
+}
+
+.vignette__person,
+.vignette__accessory {
+  /* Above the weather that falls behind them, below the weather that falls in front. */
+  z-index: 2;
+}
+
+.vignette__effect {
+  z-index: 1;
+}
+
+/* The near rain layer passes in front of the person; the far one stays behind. */
+.vignette__effect--rainNear {
+  z-index: 3;
+}
+
+@keyframes vignette-rain {
+  from {
+    transform: translate3d(0, -100%, 0);
+  }
+  to {
+    transform: translate3d(0, 100%, 0);
+  }
+}
+
+@keyframes vignette-snow {
+  from {
+    transform: translate3d(0, -100%, 0);
+  }
+  to {
+    transform: translate3d(4px, 100%, 0);
+  }
+}
+
+@keyframes vignette-drift {
+  from {
+    transform: translate3d(-100%, 0, 0);
+  }
+  to {
+    transform: translate3d(100%, 0, 0);
+  }
+}
+
+@keyframes vignette-shimmer {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+    opacity: 0.85;
+  }
+  50% {
+    transform: translate3d(2px, -1px, 0);
+    opacity: 1;
+  }
+}
+
+/*
+ * Two copies of each falling layer, one offset by half the cycle, so the loop has no seam. The
+ * duplicate is drawn by the same element twice over via `background`-style repetition — here it
+ * is simpler: the layer is twice the scene's height and translates through a full cycle.
+ */
+.vignette__effect--rainNear {
+  animation: vignette-rain 0.9s linear infinite;
+}
+.vignette__effect--rainFar {
+  animation: vignette-rain 1.6s linear infinite;
+}
+.vignette__effect--snow {
+  animation: vignette-snow 6s linear infinite;
+}
+.vignette__effect--wind {
+  animation: vignette-drift 3.2s linear infinite;
+}
+.vignette__effect--heat {
+  animation: vignette-shimmer 2.4s ease-in-out infinite;
+}
+.vignette__effect--fog {
+  animation: vignette-drift 22s linear infinite;
+  opacity: 0.9;
+}
+
+/*
+ * Reduced motion stops the weather rather than hiding it: a still frame of rain still says it is
+ * raining, and removing the layer entirely would remove the information.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .vignette__effect {
+    animation: none !important;
+  }
+}
+
+.vignette__caption {
+  display: grid;
+  gap: var(--space-xs);
+  min-width: 0;
+}
+
+.vignette__reading {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-sm);
+}
+
+.vignette__reading strong {
+  font-size: 1.4rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.vignette__advice {
+  margin: 0;
+  font-weight: 600;
+}
+
+.vignette__because {
+  font-weight: 400;
+}
+
+.vignette__facts {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(9rem, 100%), 1fr));
+  gap: var(--space-xs) var(--space-md);
+}
+
+.vignette__facts dt {
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--colour-muted);
+}
+
+.vignette__facts dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.vignette__source {
+  margin: 0;
+}
+
+/*
+ * The approaching bus sits on the road with everything else in the scene, and moves only if
+ * motion is welcome. Drawn only when one is truthfully due, so its absence is information too.
+ */
+.vignette__bus {
+  position: absolute;
+  image-rendering: pixelated;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .vignette__bus {
+    animation: vignette-bus-approach 9s linear infinite;
+  }
+}
+
+@keyframes vignette-bus-approach {
+  from {
+    transform: translateX(-30%);
+  }
+  to {
+    transform: translateX(40%);
+  }
+}
+
+/*
+ * The state with no reading behind it.
+ *
+ * Desaturated rather than hidden: the shelter and the person waiting in it are true whatever the
+ * sky is doing, and a section that vanishes is what made the product look unfinished. No effect
+ * layer, no accessory and no numbers are drawn, so nothing here claims a condition.
+ */
+.vignette--unavailable .vignette__scene {
+  filter: saturate(0.45);
+}
+
+.vignette__unavailable {
+  margin: 0;
+  font-weight: 600;
+  color: var(--colour-muted);
+}

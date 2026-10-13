@@ -1,0 +1,538 @@
+import { readFileSync } from "node:fs";
+import { describe, expect, it } from "vitest";
+import { InMemoryObjectStore, objectKeyFor, corridorBoundingBox } from "@busstops/pipeline-core";
+import {
+  currentArtifactLayout,
+  patternTripsDataset,
+  tripTilesForBoundingBox,
+  tripWindowsFor,
+} from "@busstops/pipeline-static-network";
+import { JOURNEY_LIMITS, JourneyService } from "./journey-service.js";
+import type { NetworkSlice } from "./network-reader.js";
+import { LiveService } from "./live-service.js";
+import { NetworkReader } from "./network-reader.js";
+import { patternTilesForBoundingBox } from "@busstops/pipeline-static-network";
+
+/**
+ * The stage that answered Cloudflare error 1102 on Leeds to Leeds Bradford Airport.
+ *
+ * `loadTrips` was a plain nested loop: every corridor tile crossed with every window, each one
+ * `await store.get(...)` and a whole-shard parse, and nothing counting what it had opened. The
+ * largest published pattern-trips shard is 8,109,406 bytes, and `JOURNEY_LIMITS.maxTiles` is
+ * sixteen, so a corridor could ask for far more than an isolate holds and the platform ended the
+ * request before the search ran.
+ *
+ * Two things are asserted here. That the read stops at a budget it owns — and that when it does,
+ * the planner refuses rather than planning on the part of the corridor it managed to read. That
+ * second half is the whole difference between this endpoint and the map: a partly drawn map is
+ * still a map, and a journey missing the shard the direct bus was in is a confident wrong answer.
+ */
+
+const SERVICE_DATE = "2026-09-17";
+const DEPART_AT = 8 * 3600;
+const ORIGIN = { lat: 53.7955, lon: -1.5478 };
+const DESTINATION = { lat: 53.8659, lon: -1.6606 };
+
+const corridor = corridorBoundingBox(ORIGIN, DESTINATION, JOURNEY_LIMITS.maxAccessWalkMetres);
+
+function stop(id: string, name: string, lat: number, lon: number) {
+  return { id, name, coordinate: { lat, lon } };
+}
+
+/** A corridor with one pattern that actually gets you there, plus filler to make shards big. */
+function slice(): NetworkSlice {
+  const stops = [
+    stop("s-leeds", "Leeds City Square", 53.7955, -1.5478),
+    stop("s-horsforth", "Horsforth Town Street", 53.8395, -1.6294),
+    stop("s-airport", "Leeds Bradford Airport", 53.8659, -1.6606),
+  ];
+  return {
+    stopsById: new Map(
+      stops.map((entry) => [
+        entry.id,
+        {
+          id: entry.id,
+          atcoCode: entry.id.toUpperCase(),
+          name: entry.name,
+          locationCoordinate: entry.coordinate,
+        } as never,
+      ]),
+    ),
+    patternsById: new Map([
+      [
+        "p-a2",
+        {
+          id: "p-a2",
+          serviceRouteId: "svc-a2",
+          direction: "outbound",
+          stopSequence: ["s-leeds", "s-horsforth", "s-airport"],
+          distanceMetres: 14_000,
+          shapeRef: "shape-a2",
+        } as never,
+      ],
+    ]),
+    services: new Map([["svc-a2", { id: "svc-a2", publicName: "A2", operatorId: "op" } as never]]),
+  };
+}
+
+function tripLine(index: number, startSeconds: number): string {
+  const base = Date.parse(`${SERVICE_DATE}T00:00:00.000Z`) / 1000 + startSeconds;
+  return JSON.stringify({
+    p: "p-a2",
+    j: `trip-${index}`,
+    t: [base, base + 900, base + 1500],
+  });
+}
+
+/** Rows on a pattern the corridor does not have, which the reader must drop as it parses. */
+function fillerLine(index: number): string {
+  const base = Date.parse(`${SERVICE_DATE}T00:00:00.000Z`) / 1000 + DEPART_AT;
+  return JSON.stringify({
+    p: `p-filler-${index}`,
+    j: `filler-${index}`,
+    t: [base, base + 600],
+    note: "x".repeat(400),
+  });
+}
+
+async function publish(fillerPerShard: number) {
+  const store = new InMemoryObjectStore();
+  const tiles = tripTilesForBoundingBox(corridor);
+  const midnight = Date.parse(`${SERVICE_DATE}T00:00:00.000Z`) / 1000;
+  const windows = tripWindowsFor(
+    midnight + DEPART_AT,
+    midnight + DEPART_AT + 4 * 3600,
+    SERVICE_DATE,
+  );
+
+  for (const tile of tiles) {
+    for (const window of windows) {
+      const lines = [
+        tripLine(0, DEPART_AT + 600),
+        tripLine(1, DEPART_AT + 1800),
+        ...Array.from({ length: fillerPerShard }, (_, i) => fillerLine(i)),
+      ];
+      await store.put(
+        objectKeyFor(patternTripsDataset(SERVICE_DATE, tile, window), "v1"),
+        `${lines.join("\n")}\n`,
+      );
+    }
+  }
+  return { store, shards: tiles.length * windows.length };
+}
+
+const request = {
+  origin: ORIGIN,
+  destination: DESTINATION,
+  departAtSeconds: DEPART_AT,
+  serviceDate: SERVICE_DATE,
+  version: "v1",
+  layout: currentArtifactLayout(),
+};
+
+describe("a journey plan owns its trip read", () => {
+  it("plans from a corridor it could read in full, and says what the read cost", async () => {
+    const { store, shards } = await publish(10);
+    const outcome = await new JourneyService(store).planJourney(slice(), request);
+
+    expect(outcome.diagnostics.shardsRequested).toBe(shards);
+    expect(outcome.diagnostics.shardsSkipped).toBe(0);
+    expect(outcome.diagnostics.tripChars).toBeGreaterThan(0);
+    expect(outcome.diagnostics.stageMs?.readTrips).toBeGreaterThanOrEqual(0);
+    expect(outcome.ok).toBe(true);
+  });
+
+  /*
+   * The slice no longer brings the national service list, so the plan has to ask for the services
+   * of the patterns it ends up with — and a plan that cannot name its service prints a blank where
+   * "First Bristol" belongs. The failure mode is silent, which is why it is asserted both ways.
+   */
+  it("names its route from the services it asked for, not from a slice that carried them all", async () => {
+    const { store } = await publish(10);
+    const asked: string[][] = [];
+    const outcome = await new JourneyService(store).planJourney(
+      // A slice as the reader now builds one for a corridor that skipped the pattern tiles: it has
+      // the patterns the trips need and no services at all.
+      { ...slice(), services: new Map() },
+      {
+        ...request,
+        resolveServices: (serviceIds: readonly string[]) => {
+          asked.push([...serviceIds]);
+          return Promise.resolve(
+            new Map([["svc-a2", { id: "svc-a2", publicName: "A2", operatorId: "op" } as never]]),
+          );
+        },
+      },
+    );
+
+    expect(outcome.ok).toBe(true);
+    // Asked for exactly the one service its patterns name, not for everything.
+    expect(asked).toEqual([["svc-a2"]]);
+    /*
+     * The route's own name, in the plan. Asserted against the serialised result rather than by
+     * walking the leg shape, because what matters here is that "A2" reached the answer at all —
+     * the previous version of this read every service in England to find it.
+     */
+    const planned = outcome.ok ? JSON.stringify(outcome.result) : "";
+    expect(planned).toContain("A2");
+  });
+
+  it("asks for nothing when the slice already has every service its patterns name", async () => {
+    const { store } = await publish(10);
+    let calls = 0;
+    const outcome = await new JourneyService(store).planJourney(slice(), {
+      ...request,
+      resolveServices: (serviceIds: readonly string[]) => {
+        calls += 1;
+        void serviceIds;
+        return Promise.resolve(new Map());
+      },
+    });
+
+    expect(outcome.ok).toBe(true);
+    expect(calls).toBe(0);
+  });
+
+  it("drops rows it could never use while parsing, rather than after building a graph", async () => {
+    const { store } = await publish(50);
+    const outcome = await new JourneyService(store).planJourney(slice(), request);
+
+    // Every filler row is on a pattern the corridor slice does not have.
+    expect(outcome.diagnostics.tripsFiltered).toBeGreaterThan(0);
+    expect(outcome.diagnostics.tripsLoaded).toBeLessThan(outcome.diagnostics.tripsFiltered!);
+    expect(outcome.diagnostics.tripsWithoutPattern).toBe(0);
+  });
+
+  it("refuses to plan on a corridor it could not read in full", async () => {
+    const { store, shards } = await publish(200);
+    expect(shards).toBeGreaterThan(1);
+
+    // A budget a real corridor would never hit, so the refusal can be proved on a small fixture.
+    const outcome = await new JourneyService(store, 2_000).planJourney(slice(), request);
+
+    expect(outcome.ok).toBe(false);
+    expect(outcome.diagnostics.code).toBe("incomplete_read");
+    expect(outcome.diagnostics.shardsSkipped).toBeGreaterThan(0);
+    if (!outcome.ok) {
+      // And says so in words a passenger can act on, rather than "no journeys found".
+      expect(outcome.reason).toContain("could not read the whole timetable");
+    }
+  });
+
+  it("never returns a shortened itinerary as though the corridor had been read", async () => {
+    const { store } = await publish(200);
+    const outcome = await new JourneyService(store, 2_000).planJourney(slice(), request);
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) expect(outcome.code).toBe("incomplete_read");
+  });
+});
+
+/**
+ * The order reversal that takes geometry out of the corridor.
+ *
+ * The slice used to read the corridor's pattern tiles — shapes and all — and a Leeds corridor
+ * spent the whole pattern budget on geometry the planner never looks at, came back incomplete,
+ * and the planner refused to plan. The trips name their patterns, so the read order reverses:
+ * trips first, then exactly the patterns they named.
+ */
+describe("a corridor's patterns get a corridor's budget", () => {
+  it("never lets a caller's pattern budget exceed the request's own ceiling", async () => {
+    /*
+     * The journey asks for six mebibytes of pattern where the map asks for three, because a
+     * corridor is not a viewport. What must not follow is a caller being able to ask for more
+     * than the request may hold in total — that ceiling is the one the isolate depends on.
+     */
+    const { store } = await publish(20);
+    const reader = new NetworkReader(store, 15 * 60 * 1000, 1024);
+    const result = await reader.patternsInTilesDetailed(
+      patternTilesForBoundingBox(corridorBoundingBox(request.origin, request.destination, 800)),
+      Date.now(),
+      undefined,
+      // Far above the request ceiling this reader was built with.
+      64 * 1024 * 1024,
+    );
+    // The request ceiling wins: a kilobyte cannot hold a pattern tile, so the read is cut short
+    // and says so — which is what the caller's budget must never be able to talk it out of.
+    expect(result.complete).toBe(false);
+  });
+});
+
+describe("a live lookup cannot outlive the budget it entered with", () => {
+  it("hands the route's remaining time to the vehicle fetch", async () => {
+    /*
+     * Run 48's last request before the platform killed it entered this stage with time to spare
+     * and spent 1,167ms inside it; run 45's spent 891ms. Both kills arrived immediately after the
+     * largest `vehicles` stage in their trail. A budget checked before a stage cannot stop the
+     * stage overrunning, so the deadline is handed over.
+     */
+    let sawTimeout: number | undefined;
+    const service = new LiveService({
+      env: { BODS_API_KEY: "k", VEHICLE_SALT_SECRET: "s" } as never,
+      now: () => new Date("2026-09-04T08:00:00.000Z"),
+      fetchImpl: (async (_url: string, init?: { signal?: AbortSignal }) => {
+        sawTimeout = init?.signal ? 1 : 0;
+        return new Response("<Siri/>", { status: 200 });
+      }) as unknown as typeof fetch,
+    });
+
+    await service.vehiclesInBoundingBox({ west: -1.6, south: 53.7, east: -1.5, north: 53.8 }, 500);
+    // The fetch was given an abort signal, which is what a deadline is made of.
+    expect(sawTimeout).toBe(1);
+  });
+
+  /*
+   * And the deadline bounds the stage, not each attempt.
+   *
+   * `fetchText` retries three times with backoff and `timeoutMs` bounds one attempt, so handing it
+   * the request's remaining time made the overrun worse: run 49 measured 2,530ms from a stage
+   * given about 850ms — three attempts plus jitter — and the platform answered the request after
+   * it. A caller with a deadline gets one attempt inside it.
+   */
+  it("does not retry inside a deadline, which is how one attempt became three", async () => {
+    let attempts = 0;
+    const service = new LiveService({
+      env: { BODS_API_KEY: "k", VEHICLE_SALT_SECRET: "s" } as never,
+      now: () => new Date("2026-09-04T08:00:00.000Z"),
+      fetchImpl: (async () => {
+        attempts += 1;
+        // A retryable failure: without the bound this is attempted three times.
+        return new Response("upstream busy", { status: 503 });
+      }) as unknown as typeof fetch,
+    });
+
+    await service.vehiclesInBoundingBox({ west: -1.6, south: 53.7, east: -1.5, north: 53.8 }, 500);
+    expect(attempts).toBe(1);
+  });
+
+  it("bounds every endpoint that reads the feed, not only the one that was measured", async () => {
+    /*
+     * Run 52 bounded route detail and left the map, the vehicle page and the live endpoint on
+     * three retries — and the platform answered `/v1/map` on the first attempt of the first city,
+     * taking `/v1/search` and `/v1/nearby` down with it on the same isolate. A request holding a
+     * four-second retry does not fail alone, so a fix that covers one caller covers none.
+     */
+    const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+    const calls = [...source.matchAll(/vehiclesInBoundingBox\(([^)]*)\)/g)].map((m) => m[1]!);
+    expect(calls.length).toBeGreaterThan(2);
+    for (const args of calls) {
+      // Every call site passes a second argument: a deadline, from a ledger or a named constant.
+      expect(args.includes(","), `un-bounded call: vehiclesInBoundingBox(${args})`).toBe(true);
+    }
+  });
+
+  it("stops asking a failing upstream before the isolate pays for it three times", async () => {
+    /*
+     * The default breaker opens after five failed *calls*, which is calibrated for a job making
+     * hundreds of them over minutes. An isolate does not live that long: run 52 was killed on the
+     * first attempt of the first city, so the counter reset before it ever reached five and the
+     * breaker was defeated by the very failure it exists to prevent.
+     */
+    let attempts = 0;
+    const service = new LiveService({
+      env: { BODS_API_KEY: "k", VEHICLE_SALT_SECRET: "s" } as never,
+      now: () => new Date("2026-09-04T08:00:00.000Z"),
+      fetchImpl: (async () => {
+        attempts += 1;
+        return new Response("upstream busy", { status: 503 });
+      }) as unknown as typeof fetch,
+    });
+
+    const bbox = { west: -1.6, south: 53.7, east: -1.5, north: 53.8 };
+    // Two bounded calls, each one attempt, is enough to open it.
+    await service.vehiclesInBoundingBox(bbox, 500);
+    await service.vehiclesInBoundingBox(bbox, 500);
+    const spentSoFar = attempts;
+
+    // The third asks nothing at all: it fails fast off the open breaker.
+    const third = await service.vehiclesInBoundingBox(bbox, 500);
+    expect(attempts).toBe(spentSoFar);
+    // And says so, rather than reporting an empty viewport as though London had no buses.
+    expect(third.failedSources).toContain("bods");
+  });
+
+  it("keeps its retries when nobody handed it a deadline", async () => {
+    let attempts = 0;
+    const service = new LiveService({
+      env: { BODS_API_KEY: "k", VEHICLE_SALT_SECRET: "s" } as never,
+      now: () => new Date("2026-09-04T08:00:00.000Z"),
+      fetchImpl: (async () => {
+        attempts += 1;
+        return new Response("upstream busy", { status: 503 });
+      }) as unknown as typeof fetch,
+    });
+
+    // A scheduled collector genuinely should retry a flaky upstream: nobody is waiting for it.
+    await service.vehiclesInBoundingBox({ west: -1.6, south: 53.7, east: -1.5, north: 53.8 });
+    expect(attempts).toBeGreaterThan(1);
+  });
+});
+
+describe("patterns arrive after the trips that name them", () => {
+  it("asks only for the patterns the corridor's trips actually reference", async () => {
+    const { store } = await publish(20);
+    const asked: string[][] = [];
+
+    const outcome = await new JourneyService(store).planJourney(
+      // An empty slice: with a resolver, the corridor's own patterns are not read at all.
+      { ...slice(), patternsById: new Map() },
+      {
+        ...request,
+        resolvePatterns: (ids) => {
+          asked.push([...ids]);
+          return Promise.resolve({
+            patterns: slice().patternsById as Map<string, never>,
+            complete: true,
+            available: true,
+          });
+        },
+      },
+    );
+
+    expect(asked).toHaveLength(1);
+    // The fixture's trips are all on one pattern, plus filler on patterns the slice never had.
+    expect(asked[0]).toContain("p-a2");
+    expect(outcome.diagnostics.patternsRequested).toBe(asked[0]!.length);
+    expect(outcome.ok).toBe(true);
+  });
+
+  it("refuses when a pattern the trips named could not be read", async () => {
+    const { store } = await publish(5);
+    const outcome = await new JourneyService(store).planJourney(
+      { ...slice(), patternsById: new Map() },
+      {
+        ...request,
+        resolvePatterns: () =>
+          Promise.resolve({ patterns: new Map(), complete: false, available: true }),
+      },
+    );
+
+    expect(outcome.ok).toBe(false);
+    expect(outcome.diagnostics.code).toBe("incomplete_read");
+    if (!outcome.ok) expect(outcome.reason).toContain("could not read every route");
+  });
+
+  /*
+   * Run 46: 190 patterns wanted, 92 index buckets read, the whole twelve-mebibyte request budget
+   * spent, and the read cut short with 114 of 190 resolved — so the planner refused a journey it
+   * had most of the material for. The corridor slice had already read patterns as geometry a
+   * moment earlier and this asked the index for them again.
+   */
+  it("does not ask the index for a pattern the corridor slice already read", async () => {
+    const { store } = await publish(20);
+    const asked: string[][] = [];
+
+    await new JourneyService(store).planJourney(slice(), {
+      ...request,
+      resolvePatterns: (ids) => {
+        asked.push([...ids]);
+        return Promise.resolve({ patterns: new Map(), complete: true, available: true });
+      },
+    });
+
+    expect(asked).toHaveLength(1);
+    for (const id of slice().patternsById.keys()) {
+      expect(asked[0]).not.toContain(id);
+    }
+  });
+
+  it("keeps the slice's own patterns when the index answers with fewer", async () => {
+    const { store } = await publish(20);
+    // An index that resolves nothing at all: the slice's patterns must survive it, because
+    // replacing rather than merging threw away records already in the isolate.
+    const outcome = await new JourneyService(store).planJourney(slice(), {
+      ...request,
+      resolvePatterns: () =>
+        Promise.resolve({ patterns: new Map(), complete: true, available: true }),
+    });
+
+    expect(outcome.diagnostics.patternsInSlice).toBe(slice().patternsById.size);
+    expect(outcome.ok).toBe(true);
+  });
+
+  it("falls back to the corridor's own patterns when no index has been published", async () => {
+    const { store } = await publish(5);
+    // No resolver at all, which is an artifact published before the pattern index existed.
+    const outcome = await new JourneyService(store).planJourney(slice(), request);
+    expect(outcome.ok).toBe(true);
+  });
+});
+
+/**
+ * The parse is the expensive half, and it was being paid for on every request.
+ *
+ * `coalesce` deduplicates concurrent fetches and drops its entry the moment one settles, so two
+ * sequential `/v1/map` requests fetched and parsed the feed twice. On Workers Free the whole CPU
+ * budget for an invocation is ten milliseconds and SIRI-VM normalises at roughly a hundred per
+ * mebibyte, so that parse is several times the budget on its own — and `parseMs` could never show
+ * it, because a Worker's clock does not advance across pure computation.
+ */
+describe("a feed is parsed once, not once per request", () => {
+  const bbox = { west: -1.6, south: 53.7, east: -1.5, north: 53.8 };
+  const siri = `<?xml version="1.0"?><Siri xmlns="http://www.siri.org.uk/siri"><ServiceDelivery>
+    <ResponseTimestamp>2026-09-04T08:00:00Z</ResponseTimestamp><VehicleMonitoringDelivery>
+    <VehicleActivity><RecordedAtTime>2026-09-04T07:59:50Z</RecordedAtTime>
+    <MonitoredVehicleJourney><LineRef>36</LineRef><VehicleRef>v1</VehicleRef>
+    <VehicleLocation><Longitude>-1.55</Longitude><Latitude>53.75</Latitude></VehicleLocation>
+    </MonitoredVehicleJourney></VehicleActivity>
+    </VehicleMonitoringDelivery></ServiceDelivery></Siri>`;
+
+  function serviceAt(clock: { now: Date }, counter: { fetches: number }) {
+    return new LiveService({
+      env: { BODS_API_KEY: "k", VEHICLE_SALT_SECRET: "s" } as never,
+      now: () => clock.now,
+      fetchImpl: (async () => {
+        counter.fetches += 1;
+        return new Response(siri, { status: 200 });
+      }) as unknown as typeof fetch,
+    });
+  }
+
+  it("reuses the parse for a second request in the same window, and says so", async () => {
+    const clock = { now: new Date("2026-09-04T08:00:00.000Z") };
+    const counter = { fetches: 0 };
+    const service = serviceAt(clock, counter);
+
+    const first = await service.vehiclesInBoundingBox(bbox, 500);
+    clock.now = new Date("2026-09-04T08:00:03.000Z");
+    const second = await service.vehiclesInBoundingBox(bbox, 500);
+
+    expect(counter.fetches).toBe(1);
+    expect(first.diagnostics[0]?.reusedParse).toBe(false);
+    expect(second.diagnostics[0]?.reusedParse).toBe(true);
+    // And the answer is the same one, not a degraded version of it.
+    expect(second.observations.map((o) => o.vehicleRef)).toEqual(
+      first.observations.map((o) => o.vehicleRef),
+    );
+  });
+
+  it("parses again once the feed could have moved on", async () => {
+    const clock = { now: new Date("2026-09-04T08:00:00.000Z") };
+    const counter = { fetches: 0 };
+    const service = serviceAt(clock, counter);
+
+    await service.vehiclesInBoundingBox(bbox, 500);
+    // Past the window: BODS republishes about every ten seconds, so reusing beyond it would be
+    // answering with something staler than the feed.
+    clock.now = new Date("2026-09-04T08:00:20.000Z");
+    const later = await service.vehiclesInBoundingBox(bbox, 500);
+
+    expect(counter.fetches).toBe(2);
+    expect(later.diagnostics[0]?.reusedParse).toBe(false);
+  });
+
+  it("does not answer one viewport with another viewport's buses", async () => {
+    const clock = { now: new Date("2026-09-04T08:00:00.000Z") };
+    const counter = { fetches: 0 };
+    const service = serviceAt(clock, counter);
+
+    await service.vehiclesInBoundingBox(bbox, 500);
+    // A different box is a different feed URL, so it must be fetched rather than reused.
+    const elsewhere = await service.vehiclesInBoundingBox(
+      { west: -2.3, south: 53.4, east: -2.2, north: 53.5 },
+      500,
+    );
+
+    expect(counter.fetches).toBe(2);
+    expect(elsewhere.diagnostics[0]?.reusedParse).toBe(false);
+  });
+});

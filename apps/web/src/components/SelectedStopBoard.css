@@ -2,22 +2,87 @@
  * The board sits over the map rather than beside it: on a phone it is a sheet at the bottom of
  * the screen, on a wide screen a panel in the corner. Either way the map stays visible behind it,
  * which is the reason for opening it in place instead of navigating.
+ *
+ * **Width is a decision, not a leftover.** It was 380px at every size, which on a desktop is a
+ * column narrow enough to wrap "Leeds Bradford Airport" onto three lines and push the next
+ * departure below the fold — the one thing on the panel a passenger came for. The sizes below are
+ * three intentional shapes: a wide sheet across the bottom of a phone, a side panel on a tablet,
+ * and a panel on a desktop wide enough for a destination and a time on one line.
  */
 .selected-stop {
   position: absolute;
   z-index: 2;
-  inset: auto var(--space-md) var(--space-md) var(--space-md);
-  max-width: 380px;
+  /*
+   * Flush to the map's sides on a phone, inset only from the bottom.
+   *
+   * Sixteen pixels each side is thirty-two off the width the weather scene measures, and the
+   * scene is only ever drawn at a whole multiple of 176 art pixels — so those thirty-two pixels
+   * were the difference between two of them and one. The deployed sweep measured it directly:
+   * "176x128 scene in a 326px panel (scale 1)", where my local ruler had predicted 356px, because
+   * the map on the real page is narrower than the viewport. A bottom sheet that touches the sides
+   * is also simply what a bottom sheet is.
+   */
+  inset: auto 0 0 0;
+  /*
+   * A phone gets the full width of the map: a bottom sheet, not a card floating in a corner.
+   *
+   * Bounded by the map as well as by the viewport, because 62vh of a short map is nearly all of
+   * it. Axe found the consequence on the deployment: `.maplibregl-ctrl-zoom-out` reported "target
+   * has insufficient size because it is partially obscured (smallest space is 29px by 16px)" —
+   * the sheet had risen far enough to cover the controls in the opposite corner, which also means
+   * a passenger could not zoom or pan while a board was open.
+   *
+   * Six rems of map are kept clear above it: the zoom pair is two 29px buttons and a ten-pixel
+   * offset, so that clears them with room rather than exactly.
+   */
+  /*
+   * A board's worth of height, not an illustration's.
+   *
+   * This went to 80vh to fit the weather scene, and the scene has moved to the stop page where it
+   * belongs. What is left is a heading, the next bus and a few rows, so the sheet takes what it
+   * needs and leaves the map visible behind it — which is the reason for opening it in place.
+   */
+  max-height: min(58vh, calc(100% - 4rem));
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: var(--space-md);
-  border-radius: var(--radius-md);
+  /* A sheet rises from the edge, so only its top corners are round and only its top has a line. */
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
   background: var(--colour-surface);
   border: 1px solid var(--colour-hairline);
-  box-shadow: 0 12px 32px rgb(0 0 0 / 18%);
+  border-width: 1px 0 0;
+  box-shadow: 0 -4px 32px rgb(0 0 0 / 18%);
 }
 
-@media (min-width: 900px) {
+/* Tablet and up: a side panel, so the map keeps its width and the board keeps its own. */
+@media (min-width: 700px) {
   .selected-stop {
-    inset: var(--space-md) var(--space-md) auto auto;
+    inset: var(--space-md) var(--space-md) var(--space-md) auto;
+    width: 420px;
+    max-height: none;
+    /* A card again rather than a sheet: it floats, so it is round and outlined all the way. */
+    border-radius: var(--radius-md);
+    border-width: 1px;
+    box-shadow: 0 12px 32px rgb(0 0 0 / 18%);
+  }
+}
+
+/*
+ * Desktop: five hundred to five hundred and sixty. Wide enough that the stop name, the route
+ * badge and the time it is due sit on one line each, which is what makes NEXT BUS readable at a
+ * glance rather than something to be parsed.
+ */
+@media (min-width: 1100px) {
+  /*
+   * Wide enough that a destination and a time sit on one line each.
+   *
+   * The floor here used to be three times the weather art's 176 pixels. That picture is on the
+   * stop page now, so the number goes back to the thing it was always really about: "Leeds
+   * Bradford Airport" wrapping onto three lines is what pushed the next departure below the fold,
+   * and around five hundred is where that stops happening.
+   */
+  .selected-stop {
+    width: clamp(500px, 34vw, 560px);
   }
 }
 
@@ -52,4 +117,45 @@
   display: inline-block;
   margin-top: var(--space-sm);
   font-size: var(--font-size-small);
+}
+
+/*
+ * The panel's rhythm, rather than a stack of components.
+ *
+ * Three movements, in the order a passenger needs them: when the bus is, what this stop is, and
+ * the way through to everything else. The rules below are about the joins — space between the
+ * movements, and a hairline before the last one so the link reads as a way out rather than as
+ * another fact.
+ */
+.selected-stop > * + * {
+  margin-top: var(--space-md);
+}
+
+.stop-facts {
+  display: grid;
+  gap: var(--space-xs);
+}
+
+.stop-facts__routes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+}
+
+.stop-facts__routes a {
+  text-decoration: none;
+}
+
+.stop-facts__detail {
+  margin: 0;
+}
+
+.selected-stop__more {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--min-touch-target);
+  padding-top: var(--space-sm);
+  border-top: 1px solid var(--colour-hairline);
+  width: 100%;
+  font-weight: 600;
 }

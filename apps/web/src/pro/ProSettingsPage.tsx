@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import "./ProLayout.css";
+import { PixelSectionHeading } from "../components/pixel/PixelSectionHeading.js";
 
 /**
  * Pro settings (docs/10_BUS_STOPS_PRO.md "Settings").
@@ -59,7 +60,9 @@ export function ProSettingsPage() {
   return (
     <>
       <section className="pro-section" aria-labelledby="settings-display">
-        <h2 id="settings-display">Display</h2>
+        <PixelSectionHeading mark="chart" id="settings-display">
+          Display
+        </PixelSectionHeading>
         <p className="muted small">
           These preferences are kept in this browser only. Nothing is sent to a server and nothing
           is stored against you.
@@ -115,7 +118,9 @@ export function ProSettingsPage() {
       </section>
 
       <section className="pro-section" aria-labelledby="settings-account">
-        <h2 id="settings-account">Organisation and delivery</h2>
+        <PixelSectionHeading mark="person" id="settings-account">
+          Organisation and delivery
+        </PixelSectionHeading>
         <p>
           Organisation scope, permitted data scope, recipient lists and Daily Brief delivery need an
           account, because they involve sending email to named people. They are not part of the
@@ -129,7 +134,9 @@ export function ProSettingsPage() {
       </section>
 
       <section className="pro-section" aria-labelledby="settings-methodology">
-        <h2 id="settings-methodology">Definitions</h2>
+        <PixelSectionHeading mark="route" id="settings-methodology">
+          Definitions
+        </PixelSectionHeading>
         <p className="muted small">
           Every metric on Pro states its own definition in place. The full methodology, including
           how baselines and confidence are built, is on the{" "}

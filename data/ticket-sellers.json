@@ -1,0 +1,162 @@
+{
+  "_comment": [
+    "Candidate ticket-seller pages, and the result of checking them.",
+    "",
+    "A seller is matched to an operator by the domain the OPERATOR THEMSELVES publishes as",
+    "agency_url in their BODS GTFS feed. That is the operator telling the national dataset where",
+    "to find them, so no table of which subsidiary belongs to which group has to be guessed at —",
+    "which is exactly the kind of guess that would send a passenger to a competitor's shop.",
+    "",
+    "`candidatePaths` are proposals only. `url` is set only from a check that actually ran:",
+    "scripts/verify-ticket-links.mjs fetches each candidate from a CI runner (this container has",
+    "no egress to operator sites), requires https, a 200, and a final hostname still on the",
+    "seller's own domain, and reports the page <title> it found. Nothing is active until a run",
+    "has reported it and that result has been written back here."
+  ],
+  "sellers": [
+    {
+      "domain": "firstbus.co.uk",
+      "sellerName": "First Bus",
+      "candidatePaths": ["/tickets", "/tickets-and-fares"],
+      "url": null,
+      "pageTitle": null,
+      "verifiedAt": null,
+      "evidence": null
+    },
+    {
+      "domain": "stagecoachbus.com",
+      "sellerName": "Stagecoach",
+      "candidatePaths": ["/tickets", "/promos-and-offers"],
+      "url": null,
+      "pageTitle": null,
+      "verifiedAt": null,
+      "evidence": null
+    },
+    {
+      "domain": "arrivabus.co.uk",
+      "sellerName": "Arriva",
+      "candidatePaths": ["/tickets", "/m-ticket"],
+      "url": null,
+      "pageTitle": null,
+      "verifiedAt": null,
+      "evidence": null
+    },
+    {
+      "domain": "tfl.gov.uk",
+      "sellerName": "Transport for London",
+      "candidatePaths": ["/fares/", "/fares"],
+      "url": null,
+      "pageTitle": null,
+      "verifiedAt": null,
+      "evidence": null
+    },
+    {
+      "domain": "nxbus.co.uk",
+      "sellerName": "National Express West Midlands",
+      "candidatePaths": ["/tickets", "/tickets-and-passes"],
+      "url": null,
+      "pageTitle": null,
+      "verifiedAt": null,
+      "evidence": null
+    },
+    {
+      "domain": "transdevbus.co.uk",
+      "sellerName": "Transdev Blazefield",
+      "candidatePaths": ["/tickets", "/fares"],
+      "url": null,
+      "pageTitle": null,
+      "verifiedAt": null,
+      "evidence": null
+    },
+    {
+      "domain": "trentbarton.co.uk",
+      "sellerName": "trentbarton",
+      "candidatePaths": ["/tickets", "/fares"],
+      "url": null,
+      "pageTitle": null,
+      "verifiedAt": null,
+      "evidence": null
+    },
+    {
+      "domain": "nctx.co.uk",
+      "sellerName": "Nottingham City Transport",
+      "candidatePaths": ["/tickets", "/fares"],
+      "url": null,
+      "pageTitle": null,
+      "verifiedAt": null,
+      "evidence": null
+    },
+    {
+      "domain": "oxfordbus.co.uk",
+      "sellerName": "Oxford Bus Company",
+      "candidatePaths": ["/tickets", "/fares-and-tickets"],
+      "url": null,
+      "pageTitle": null,
+      "verifiedAt": null,
+      "evidence": null
+    },
+    {
+      "domain": "reading-buses.co.uk",
+      "sellerName": "Reading Buses",
+      "candidatePaths": ["/tickets", "/fares"],
+      "url": null,
+      "pageTitle": null,
+      "verifiedAt": null,
+      "evidence": null
+    },
+    {
+      "domain": "gonortheast.co.uk",
+      "sellerName": "Go North East",
+      "candidatePaths": ["/tickets", "/fares"],
+      "url": null,
+      "pageTitle": null,
+      "verifiedAt": null,
+      "evidence": null
+    },
+    {
+      "domain": "bluestarbus.co.uk",
+      "sellerName": "Bluestar",
+      "candidatePaths": ["/tickets", "/fares"],
+      "url": null,
+      "pageTitle": null,
+      "verifiedAt": null,
+      "evidence": null
+    },
+    {
+      "domain": "morebus.co.uk",
+      "sellerName": "morebus",
+      "candidatePaths": ["/tickets", "/fares"],
+      "url": null,
+      "pageTitle": null,
+      "verifiedAt": null,
+      "evidence": null
+    },
+    {
+      "domain": "metrobus.co.uk",
+      "sellerName": "Metrobus",
+      "candidatePaths": ["/tickets", "/fares"],
+      "url": null,
+      "pageTitle": null,
+      "verifiedAt": null,
+      "evidence": null
+    },
+    {
+      "domain": "diamondbuses.com",
+      "sellerName": "Diamond Bus",
+      "candidatePaths": ["/tickets", "/fares"],
+      "url": null,
+      "pageTitle": null,
+      "verifiedAt": null,
+      "evidence": null
+    },
+    {
+      "domain": "konectbus.co.uk",
+      "sellerName": "Konectbus",
+      "candidatePaths": ["/tickets", "/fares"],
+      "url": null,
+      "pageTitle": null,
+      "verifiedAt": null,
+      "evidence": null
+    }
+  ]
+}

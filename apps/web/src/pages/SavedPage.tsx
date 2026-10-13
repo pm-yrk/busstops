@@ -17,6 +17,19 @@ import "./SavedPage.css";
  * export are first-class controls, not buried, because that is what makes local-first honest.
  */
 
+/** Where a saved item opens. */
+function savedHref(favourite: { kind: string; id: string }): string {
+  switch (favourite.kind) {
+    case "stop":
+      return `/stops/${encodeURIComponent(favourite.id)}`;
+    case "route":
+      return `/routes/${encodeURIComponent(favourite.id)}`;
+    default:
+      // A saved journey is a pair of points rather than a page; the planner is where it belongs.
+      return "/journey";
+  }
+}
+
 export function SavedPage() {
   // Read once during initialisation: favourites live in this browser, so there is nothing to
   // synchronise with and no reason to render twice.
@@ -43,11 +56,16 @@ export function SavedPage() {
 
       {favourites.length === 0 ? (
         <EmptyState
+          art="stop"
           title="Nothing saved yet"
-          description="Save a stop from its page and it will appear here, ready for next time."
+          /*
+           * Routes are saveable too, from the route page, and this said only "a stop" — the one
+           * place in the product that told a passenger less than it does.
+           */
+          description="Save a stop or a route from its page and it will appear here, ready for next time."
           action={
             <Link to="/search" className="button-primary">
-              Find a stop
+              Find a stop or a route
             </Link>
           }
         />
@@ -56,10 +74,15 @@ export function SavedPage() {
           <ul className="saved-page__list">
             {favourites.map((favourite) => (
               <li key={`${favourite.kind}-${favourite.id}`} className="saved-page__item surface">
-                <Link
-                  to={favourite.kind === "stop" ? `/stops/${favourite.id}` : "/search"}
-                  className="saved-page__link"
-                >
+                {/*
+                  A saved thing opens the thing.
+
+                  A saved route went to `/search` — not to a search *for it*, just to the search
+                  page — which is the same dead end the search results themselves used to have.
+                  The id stored is the published identifier for its kind, which is what each page
+                  takes.
+                */}
+                <Link to={savedHref(favourite)} className="saved-page__link">
                   <span className="saved-page__title">{favourite.title}</span>
                   {favourite.subtitle && <span className="muted small"> {favourite.subtitle}</span>}
                 </Link>

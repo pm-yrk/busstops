@@ -1,0 +1,135 @@
+/*
+ * A line with a weighted end at each side and the stops marked along it.
+ *
+ * Flexbox rather than a drawn graphic, so the line stretches to whatever width the card has and
+ * the marks stay evenly spaced without any measurement. The two ends are the only heavy shapes:
+ * everything between them is deliberately light, because the middle of a route is a lot of stops
+ * and none of them is the answer to "where does this go".
+ */
+.route-strip {
+  margin: 0;
+  display: grid;
+  gap: var(--space-xs);
+}
+
+.route-strip__track {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  min-height: 28px;
+  position: relative;
+}
+
+/* The line, drawn once behind the circles and inset so it starts inside the two termini. */
+.route-strip__track::before {
+  content: "";
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  top: 50%;
+  translate: 0 -50%;
+  height: 3px;
+  background: var(--colour-red);
+}
+
+.route-strip__end,
+.route-strip__mark {
+  position: relative;
+  z-index: 1;
+}
+
+/* The terminus: a ring with a filled centre, which is the transit-map convention. */
+.route-strip__end {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 3px solid var(--colour-red);
+  background: var(--colour-surface);
+  box-shadow: inset 0 0 0 2px var(--colour-surface);
+  position: relative;
+}
+
+.route-strip__end::after {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background: var(--colour-red);
+}
+
+.route-strip__mark {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 2px solid var(--colour-red);
+  background: var(--colour-surface);
+}
+
+/*
+ * A bus on the line, a third of the way along.
+ *
+ * Decorative: its position says nothing about where any vehicle is. It is there because a red
+ * line between two circles is a diagram, and this page is about buses.
+ */
+.route-strip__bus {
+  position: absolute;
+  left: 34%;
+  top: -6px;
+  width: calc(var(--strip-bus-scale, 1) * 44px);
+  height: calc(var(--strip-bus-scale, 1) * 18px);
+  image-rendering: pixelated;
+  pointer-events: none;
+}
+
+.route-strip__labels {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-md);
+}
+
+.route-strip__place {
+  font-weight: 600;
+  max-width: 45%;
+}
+
+.route-strip__place--end {
+  text-align: right;
+}
+
+.route-strip__caption {
+  margin: 0;
+}
+
+/*
+ * The honesty clause, quieter than the counts but never hidden.
+ *
+ * The drawing spaces stops evenly because the endpoint returns no coordinates. Saying so in the
+ * caption is what keeps it a diagram rather than a map somebody might navigate by.
+ */
+.route-strip__disclaimer {
+  display: block;
+  margin-top: 2px;
+}
+
+@media (max-width: 599px) {
+  .route-strip__mark:nth-child(n + 8) {
+    display: none;
+  }
+
+  .route-strip__bus {
+    display: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .route-strip__line {
+    background: CanvasText;
+  }
+
+  .route-strip__bus {
+    display: none;
+  }
+}

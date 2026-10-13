@@ -10,6 +10,7 @@ import { buildSearchIndex } from "./search-index.js";
 import {
   MAX_SEARCH_BUCKETS_PER_WORD,
   MAX_SHARD_BYTES,
+  MAX_SHARD_RECORDS,
   SEARCH_BUCKET_SPLIT_AT,
   assemblePatternTile,
   searchPrefixesForWord,
@@ -225,9 +226,19 @@ describe("search buckets", () => {
     // Both words resolve to a bucket, and both buckets hold the stop.
     for (const word of ["bolton", "bondgate"]) {
       const buckets = searchPrefixesForWord(word, published);
-      expect(buckets.length).toBe(1);
-      const body = (await store.get(objectKeyFor(searchPrefixDataset(buckets[0]!), "v1"))) ?? "";
-      expect(body).toContain("Bolton Bondgate");
+      /*
+       * One bucket, or the parts one became. "bondgate" here is the pathological family: six
+       * thousand entries sharing a word, which the prefix cannot divide however deep it goes, so
+       * the publisher divides it by hash instead. What matters is that the word still finds the
+       * stop, not how many objects that took.
+       */
+      expect(buckets.length).toBeGreaterThan(0);
+      let found = false;
+      for (const bucket of buckets) {
+        const body = (await store.get(objectKeyFor(searchPrefixDataset(bucket), "v1"))) ?? "";
+        if (body.includes("Bolton Bondgate")) found = true;
+      }
+      expect(found, `"${word}" did not find the stop in any of ${buckets.join(", ")}`).toBe(true);
     }
   });
 
@@ -353,5 +364,117 @@ describe("pattern tiles", () => {
         expect(record.shape.length).toBeGreaterThanOrEqual(2);
       }
     }
+  });
+});
+
+/*
+ * The bucket the prefix cannot divide.
+ *
+ * England's stop names are full of "Northbound", "Southbound", "Eastbound" — words that normalise
+ * to `bound` and pad to the six-character maximum as `bound_`. Deepening the prefix takes more
+ * characters of the word, so every entry produces the identical deeper key however far it goes;
+ * the loop gave up and the publisher truncated to fit the byte budget. On the real archive that
+ * was 65,573 entries, 31,385 kept, **34,188 dropped**, reported as a statistic and accepted.
+ */
+describe("a search bucket that extending the prefix cannot split", () => {
+  /**
+   * Stops whose searchable words are identical but whose locations are not.
+   *
+   * Spread across England on purpose. "Northbound" is not a place, it is an indicator on every
+   * other stop in the country, so clustering the fixture at one coordinate would overflow a stop
+   * tile instead and test the wrong thing — which is exactly what the first version of this
+   * fixture did.
+   */
+  function boundStops(count: number) {
+    const network = build([txcXml]);
+    const stop = network.stops[0]!;
+    for (let i = 0; i < count; i++) {
+      network.stops.push({
+        ...stop,
+        id: `bound-${i}`,
+        atcoCode: `BD${String(i).padStart(6, "0")}`,
+        name: "Bound",
+        locationCoordinate: {
+          lat: 50.5 + ((i * 7) % 700) / 100,
+          lon: -5 + ((i * 13) % 700) / 100,
+        },
+      });
+    }
+    return network;
+  }
+
+  /** Truncation of the family under test, rather than of anything the fixture happens to crowd. */
+  function searchPrefixTruncation(result: Awaited<ReturnType<typeof publish>>["result"]) {
+    return result.truncated.filter((entry) => entry.dataset.includes("search-prefix"));
+  }
+
+  it("publishes every record instead of truncating the ones that will not fit", async () => {
+    // Past MAX_SHARD_RECORDS on purpose: below it the old code produced one large-but-legal
+    // object and the assertion proved nothing. This is the size at which it used to drop rows.
+    const network = boundStops(MAX_SHARD_RECORDS * 2);
+    const { result } = await publish(network);
+
+    expect(result.index).not.toBeNull();
+    // The two numbers the national build reported, which must now both be zero.
+    expect(searchPrefixTruncation(result)).toEqual([]);
+    expect(result.oversized.filter((d) => d.includes("search-prefix"))).toEqual([]);
+    expect(result.failed).toEqual([]);
+  });
+
+  it("splits it into parts a reader can find, and the parts hold everything", async () => {
+    const count = SEARCH_BUCKET_SPLIT_AT * 3;
+    const network = boundStops(count);
+    const { store, result } = await publish(network);
+    const published = new Set(result.index!.searchPrefixes);
+
+    const buckets = searchPrefixesForWord("bound", published);
+    expect(buckets.length).toBeGreaterThan(1);
+    // Named from the prefix they came from, which is how the reader finds them at all.
+    expect(buckets.every((bucket) => bucket.startsWith("bound"))).toBe(true);
+
+    const seen = new Set<string>();
+    for (const bucket of buckets) {
+      const body = (await store.get(objectKeyFor(searchPrefixDataset(bucket), "v1"))) ?? "";
+      for (const line of body.split("\n")) {
+        if (line.length === 0) continue;
+        seen.add((JSON.parse(line) as { id: string }).id);
+      }
+    }
+
+    // Every stop that shares the word is reachable by it. Not most of them.
+    const expected = new Set(network.stops.filter((s) => s.name === "Bound").map((s) => s.id));
+    expect(expected.size).toBe(count);
+    for (const id of expected) {
+      expect(seen.has(id), `${id} is in no part of the bucket`).toBe(true);
+    }
+  });
+
+  it("puts a given stop in exactly one part, so a reader cannot double-count it", async () => {
+    const network = boundStops(SEARCH_BUCKET_SPLIT_AT * 2);
+    const { store, result } = await publish(network);
+    const published = new Set(result.index!.searchPrefixes);
+
+    const counts = new Map<string, number>();
+    for (const bucket of searchPrefixesForWord("bound", published)) {
+      const body = (await store.get(objectKeyFor(searchPrefixDataset(bucket), "v1"))) ?? "";
+      for (const line of body.split("\n")) {
+        if (line.length === 0) continue;
+        const id = (JSON.parse(line) as { id: string }).id;
+        counts.set(id, (counts.get(id) ?? 0) + 1);
+      }
+    }
+    expect([...counts.values()].every((n) => n === 1)).toBe(true);
+  });
+
+  it("keeps each part comfortably inside the budget a shard is allowed", async () => {
+    const network = boundStops(MAX_SHARD_RECORDS * 2);
+    const { result } = await publish(network);
+    const published = new Set(result.index!.searchPrefixes);
+
+    for (const bucket of searchPrefixesForWord("bound", published)) {
+      const shard = result.largest.find((entry) => entry.dataset.endsWith(bucket));
+      if (shard) expect(shard.bytes).toBeLessThan(MAX_SHARD_BYTES);
+    }
+    expect(searchPrefixTruncation(result)).toEqual([]);
   });
 });

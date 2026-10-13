@@ -2,14 +2,25 @@ import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { InMemoryObjectStore } from "@busstops/pipeline-core";
+import { ArtifactStore, InMemoryObjectStore } from "@busstops/pipeline-core";
 import {
   DATASETS,
   SHARDED,
   buildNetwork,
   publishNetworkShards,
 } from "@busstops/pipeline-static-network";
+import { objectKeyFor } from "@busstops/pipeline-core";
+import { patternTilesForBoundingBox } from "@busstops/pipeline-static-network";
+import { PLACES_DATASET } from "@busstops/pipeline-places";
 import { NetworkReader } from "./network-reader.js";
+import { ReadLedger } from "./read-ledger.js";
+import {
+  MAP_STOPS_PREFIX,
+  ROUTE_PATTERN_BUCKETS,
+  routePatternsBucketFor,
+  routePatternsDataset,
+  stopTilesForBoundingBox,
+} from "@busstops/pipeline-static-network";
 
 /**
  * Guards against the national network returning to the isolate.
@@ -145,8 +156,187 @@ describe("the edge never reads a national dataset", () => {
     const viewport = await reader.stopsInBoundingBox(box, 400);
     expect(viewport.stops.map((s) => s.id)).toContain(stop!.id);
 
-    const serving = await reader.patternsServingStop(stop!);
-    expect(serving.length).toBeGreaterThan(0);
+    const serving = await reader.patternsCallingAtStop(stop!);
+    expect(serving.patterns.length).toBeGreaterThan(0);
+    expect(serving.complete).toBe(true);
+    /*
+     * And from the shape-free index, not the geometry tiles — which is the whole difference
+     * between a board that answers and one the platform kills. A geometry tile reaches 4.21 MiB
+     * and the bytes arrive whether or not they are parsed; scanning them is itself milliseconds
+     * of the ten an invocation gets. A change that sent this back to the tiles would pass every
+     * other assertion here.
+     */
+    expect(serving.source).toBe("pattern_index_tiles");
+    // Every pattern it returns calls here, which is the claim the board makes from this list.
+    expect(serving.patterns.every((pattern) => pattern.stopSequence.includes(stop!.id))).toBe(true);
+  });
+
+  /*
+   * A board that has already spent its budget declines this read instead of starting it.
+   *
+   * Run 89's Manchester board died inside the old version of this call, at `atMs: 0`, having
+   * already read its live departures — and it died because the read was on no ledger at all, so
+   * nothing could tell it the request was nearly over. Declining is what turns that into a board
+   * with departures and a short route list; the alternative is Cloudflare's error page, which
+   * carries no CORS header and so reaches the browser as a bare network failure.
+   */
+  /*
+   * A journey corridor reads the projection, and only the stops inside its box.
+   *
+   * This read had neither property. It opened every stop tile the corridor touched with **no
+   * filter at all**, parsing every stop in each of them including the ones outside the box, and it
+   * read the full stop family — records carrying provenance, quality flags, amenities,
+   * accessibility and NaPTAN status, in tiles reaching 8.1 MiB. The planner reads three fields.
+   * Run 95 put the journey planner's death inside this read, with the pattern tiles already
+   * skipped so nothing else was in the window.
+   */
+  it("reads a corridor from the map projection rather than the full stop family", async () => {
+    const { reader, reads } = await publishedReader();
+    const built = network();
+    const anyStop = built.stops[0]!.locationCoordinate;
+    const bbox = {
+      west: anyStop.lon - 0.02,
+      east: anyStop.lon + 0.02,
+      south: anyStop.lat - 0.02,
+      north: anyStop.lat + 0.02,
+    };
+
+    reads.length = 0;
+    const slice = await reader.sliceForBoundingBox(bbox, Date.now(), undefined, undefined, {
+      patterns: "skip",
+    });
+
+    expect(slice.stopsById.size).toBeGreaterThan(0);
+    expect(slice.complete).toBe(true);
+    // The projection, by key, and not one object of the full stop family.
+    expect(reads.filter((key) => key.includes(MAP_STOPS_PREFIX)).length).toBeGreaterThan(0);
+    expect(reads.filter((key) => key.includes(`${SHARDED.stopTile}/`))).toEqual([]);
+
+    // And every stop it returns is inside the box it was asked about.
+    for (const stop of slice.stopsById.values()) {
+      const { lat, lon } = stop.locationCoordinate;
+      expect(lat).toBeGreaterThanOrEqual(bbox.south);
+      expect(lat).toBeLessThanOrEqual(bbox.north);
+      expect(lon).toBeGreaterThanOrEqual(bbox.west);
+      expect(lon).toBeLessThanOrEqual(bbox.east);
+    }
+
+    // The three fields a plan actually reads are all present on each one.
+    for (const stop of slice.stopsById.values()) {
+      expect(stop.id).not.toBe("");
+      expect(stop.name).not.toBe("");
+      expect(Number.isFinite(stop.locationCoordinate.lat)).toBe(true);
+    }
+  });
+
+  /*
+   * The two ways a board can learn its routes, asserted to agree.
+   *
+   * The departure board asks by id when its own rows name the patterns, and geographically when
+   * they do not — late at night, or a stop served only outside the window. Two paths to one fact
+   * is two chances to disagree, and a disagreement here is a stop that lists different routes at
+   * different times of day with no explanation.
+   */
+  it("finds the same patterns by id as it finds by looking around the stop", async () => {
+    const { reader } = await publishedReader();
+    const built = network();
+    const stop = built.stops.find((candidate) =>
+      built.patterns.some((pattern) => pattern.stopSequence.includes(candidate.id)),
+    )!;
+
+    const geographic = await reader.patternsCallingAtStop(stop);
+    expect(geographic.patterns.length).toBeGreaterThan(0);
+
+    const wanted = new Set(geographic.patterns.map((pattern) => pattern.id));
+    const byId = await reader.patternsByIdsNearStop(stop, wanted);
+
+    expect(byId.source).toBe("pattern_index_by_id");
+    expect(byId.complete).toBe(true);
+    expect(byId.patterns.map((pattern) => pattern.id).sort()).toEqual([...wanted].sort());
+    // And the records themselves, not merely the ids: the stop sequence is what the board reads.
+    expect(
+      byId.patterns.map((pattern) => pattern.stopSequence.length).sort((a, b) => a - b),
+    ).toEqual(
+      geographic.patterns.map((pattern) => pattern.stopSequence.length).sort((a, b) => a - b),
+    );
+  });
+
+  /*
+   * An id that is not there is an incomplete answer, not an empty one. A board that resolved
+   * eight of twelve patterns names eight routes, and must be able to say the list is short rather
+   * than presenting eight as everything that calls.
+   */
+  it("says a by-id read is incomplete when an id could not be found", async () => {
+    const { reader } = await publishedReader();
+    const built = network();
+    const stop = built.stops.find((candidate) =>
+      built.patterns.some((pattern) => pattern.stopSequence.includes(candidate.id)),
+    )!;
+    const real = (await reader.patternsCallingAtStop(stop)).patterns[0]!;
+
+    const found = await reader.patternsByIdsNearStop(
+      stop,
+      new Set([real.id, "no-such-pattern-id"]),
+    );
+
+    expect(found.patterns.map((pattern) => pattern.id)).toEqual([real.id]);
+    expect(found.complete).toBe(false);
+  });
+
+  it("reads nothing at all when no pattern was named", async () => {
+    const { reader } = await publishedReader();
+    const built = network();
+    const stop = built.stops[0]!;
+    const ledger = new ReadLedger(5_000);
+
+    const found = await reader.patternsByIdsNearStop(stop, new Set(), Date.now(), ledger);
+
+    expect(found.patterns).toEqual([]);
+    expect(found.complete).toBe(true);
+    expect(ledger.toJSON().charsDecoded).toBe(0);
+  });
+
+  /*
+   * The trap the filter opened, which is worth a test of its own.
+   *
+   * `patternsInIndexTiles` builds its line filter from the ids the caller names, and an empty list
+   * has no filter — which is right for a caller that wants the whole tile and wrong for the
+   * planner, whose want list is empty when its corridor held no trips. Unguarded, that case opens
+   * every corridor tile and parses every row in it to answer nothing.
+   */
+  it("reads no corridor tile at all when no pattern was named", async () => {
+    const { reader } = await publishedReader();
+    const index = (await reader.networkIndex())!;
+    const tiles = index.patternIndexTiles ?? [];
+    expect(tiles.length).toBeGreaterThan(0);
+
+    const ledger = new ReadLedger(5_000);
+    const resolved = await reader.patternsInIndexTiles(tiles, Date.now(), ledger, undefined, []);
+
+    expect(resolved.patterns.size).toBe(0);
+    // Complete, because an empty answer to an empty question is a whole one — a refusal here
+    // would make the planner reject a corridor it had nothing left to resolve.
+    expect(resolved.complete).toBe(true);
+    expect(resolved.available).toBe(true);
+    // And it cost nothing: no read was recorded against the ledger.
+    expect(ledger.toJSON().charsDecoded).toBe(0);
+  });
+
+  it("declines to read the patterns at all when the board has no budget left", async () => {
+    const { reader } = await publishedReader();
+    const built = network();
+    const stop = built.stops.find((candidate) =>
+      built.patterns.some((pattern) => pattern.stopSequence.includes(candidate.id)),
+    )!;
+
+    // Zero milliseconds: a ledger that is over before it is asked anything.
+    const spent = new ReadLedger(0);
+    const serving = await reader.patternsCallingAtStop(stop, Date.now(), spent);
+
+    expect(serving.patterns).toEqual([]);
+    // And it says so, rather than reporting an empty list as the whole truth about the stop.
+    expect(serving.complete).toBe(false);
+    expect(spent.toJSON().degradationReason).toBe("pattern_enrichment_budget");
   });
 
   it("finds a stop whose letter had to be split into deeper buckets", async () => {
@@ -222,15 +412,82 @@ describe("national datasets the edge does still hold", () => {
       expect(allowance.maxRecords, allowance.why).toBeGreaterThan(0);
     }
 
-    const readerSource = readFileSync(join(here, "network-reader.ts"), "utf8");
-    // readCurrent reads a whole dataset. It may only ever be used on the allowed ones.
-    const wholeDatasetReads = [...readerSource.matchAll(/readCurrent<[^>]+>\(\s*([^,\n)]+)/g)].map(
-      (match) => match[1]!.trim(),
-    );
+    /*
+     * Every reader in the Worker, not just the network one. The guard used to scan a single file,
+     * which meant a new reader could add a whole-dataset read and never be asked about it — and
+     * one promptly did.
+     */
+    /*
+     * Named "every reader" and listing two of them, which is how `pro-service.ts` came to read the
+     * whole national segment-metrics dataset into the isolate in order to test a manifest for
+     * null. The list is now derived rather than maintained: every non-test source in the Worker,
+     * so a new file cannot add a whole-dataset read without appearing here.
+     */
+    const readerSource = readdirSync(here)
+      .filter((name) => name.endsWith(".ts") && !name.endsWith(".test.ts"))
+      .map((name) => readFileSync(join(here, name), "utf8"))
+      .join("\n");
+    /*
+     * readCurrent reads a whole dataset. It may only ever be used on the allowed ones.
+     *
+     * The argument may itself be a call — `journeyTileDataset(tile)` — so one level of nesting is
+     * matched. Stopping at the first bracket truncated it to `journeyTileDataset(tile`, which then
+     * failed the check for a reason that had nothing to do with what was being read.
+     */
+    const wholeDatasetReads = [
+      ...readerSource.matchAll(/readCurrent<[^>]+>\(\s*([A-Za-z_$][\w$.]*(?:\([^()]*\))?)/g),
+    ].map((match) => match[1]!.trim());
     const allowedExpressions = new Set([
       "SHARDED.index",
       "DATASETS.operators",
       "DATASETS.services",
+      /*
+       * A journey tile is already one spatial shard — the same bounded read the journey planner
+       * makes — so reading it whole is reading a shard, not a nation. It is on this list because
+       * the guard matches on the call rather than on what the call resolves to, and a stop board
+       * has to be able to load the timetable for its own tile.
+       */
+      "journeyTileDataset(tile)",
+      /*
+       * The disruption set is bounded at publish time — MAX_PUBLISHED_NOTICES, ordered
+       * worst-first — so its size is a property of the pipeline rather than of how disrupted
+       * England happens to be today. That is what makes reading it whole safe, and it is the
+       * only reason: if the cap ever comes off, this entry must come off with it.
+       */
+      "DISRUPTIONS_DATASET",
+      /*
+       * The gazetteer is capped at publish time — MAX_GAZETTEER_RECORDS, enforced by the job that
+       * writes it, which refuses rather than trimming — so its size is a property of the pipeline
+       * and not of how many landmarks England has. Same reasoning as the disruption set, and the
+       * same condition: if that ceiling ever comes off, this entry comes off with it and the
+       * gazetteer gets sharded the way the search index is.
+       */
+      "PLACES_DATASET",
+      /*
+       * The intelligence incidents are capped at publish — MAX_PUBLISHED_INCIDENTS, ordered
+       * worst-first — so their size is a property of the batch rather than of how disrupted
+       * England is today. Third time this reasoning has been needed and the third time it carries
+       * the same condition: if that ceiling comes off, this entry comes off with it and the
+       * Worker's read gets sharded or scoped before the cap does.
+       */
+      "INTELLIGENCE_INCIDENTS_DATASET",
+      /*
+       * One degree square of weather, which is a shard by construction: the grid is a degree, a
+       * square holds about a hundred cells and a few kilobytes, and a stop page reads exactly one.
+       * Same category as `journeyTileDataset(tile)` — the guard matches the call, not what it
+       * resolves to.
+       */
+      "weatherShardDataset(tile)",
+      /*
+       * The national summary is one record, and one record is what the pipeline writes: the
+       * batch builds a single `NetworkSummaryRecord` from the closed buckets and publishes it as
+       * a one-element array. Its size is a property of the format rather than of the network, so
+       * it cannot grow with coverage the way the segment metrics it is derived from do — which is
+       * the entire reason it exists. It is on this list for the same condition as the others: if
+       * this dataset is ever made to hold a record per segment, area or operator, this entry
+       * comes off and the edge reads a shard instead.
+       */
+      "INTELLIGENCE_SUMMARY_DATASET",
     ]);
     for (const expression of wholeDatasetReads) {
       expect(allowedExpressions.has(expression), `${expression} is read whole`).toBe(true);
@@ -294,15 +551,72 @@ describe("the shard cache stays bounded", () => {
      * capped, so reading many distinct tiles cannot grow past it.
      */
     const { reader } = await publishedReader();
+    // Unfiltered tile reads, for the reason given above: a viewport read no longer caches.
     for (let lat = 50; lat < 56; lat += 0.25) {
       for (let lon = -6; lon < 1; lon += 0.25) {
-        await reader.stopsInBoundingBox(
-          { west: lon, south: lat, east: lon + 0.1, north: lat + 0.1 },
-          10,
+        await reader.stopsInTiles(
+          stopTilesForBoundingBox({ west: lon, south: lat, east: lon + 0.1, north: lat + 0.1 }),
         );
       }
     }
     expect(reader.cachedShardCount).toBeLessThanOrEqual(24);
+  });
+
+  /*
+   * What the isolate is holding, which is the measurement four runs of diagnostics did not have.
+   *
+   * Run 45's route detail answered six requests of 300–900ms each, reading two or three
+   * mebibytes apiece, and the platform killed the seventh with error 1102. Every number in those
+   * diagnostics described one request, so "the requests were cheap" and "the isolate was full"
+   * were indistinguishable. These are the two things that make them distinguishable.
+   */
+  it("says what it is still holding from the requests before this one", async () => {
+    const { reader } = await publishedReader();
+    expect(reader.residency()).toMatchObject({ shards: 0, chars: 0, records: 0 });
+
+    /*
+     * Through `stopsInTiles` rather than `stopsInBoundingBox`.
+     *
+     * A viewport read now filters at parse time and a filtered parse is deliberately never cached
+     * — see `withinBoundingBox` — so it is no longer a way to put anything in the cache. What is
+     * being asserted here is the cache, so the read has to be one that fills it.
+     */
+    await reader.stopsInTiles(
+      stopTilesForBoundingBox({ west: -1.6, south: 53.7, east: -1.5, north: 53.8 }),
+    );
+    const after = reader.residency();
+    expect(after.shards).toBeGreaterThan(0);
+    expect(after.chars).toBeGreaterThan(0);
+    // Records rather than characters: the parsed objects are what occupy the isolate.
+    expect(after.records).toBeGreaterThan(0);
+  });
+
+  it("can be trimmed to a floor before a request starts, rather than after it has failed", async () => {
+    const { reader } = await publishedReader();
+    // Unfiltered tile reads: a viewport read filters at parse time and is never cached, so it is
+    // no longer a way to fill the cache this test is about.
+    for (let lat = 50; lat < 56; lat += 0.25) {
+      for (let lon = -6; lon < 1; lon += 0.25) {
+        const box = { west: lon, south: lat, east: lon + 0.1, north: lat + 0.1 };
+        await reader.stopsInTiles(stopTilesForBoundingBox(box));
+        // Two families, so "trim frees everything" is tested against more than a single shard.
+        await reader.patternsInTiles(patternTilesForBoundingBox(box));
+      }
+    }
+    const before = reader.residency();
+    expect(before.shards).toBeGreaterThan(1);
+
+    const evicted = reader.trimTo(0);
+    expect(evicted).toBe(before.shards);
+    expect(reader.residency()).toMatchObject({ shards: 0, chars: 0, records: 0 });
+
+    // And a floor above what is resident is a no-op, so a warm isolate keeps its working set.
+    await reader.stopsInTiles(
+      stopTilesForBoundingBox({ west: -1.6, south: 53.7, east: -1.5, north: 53.8 }),
+    );
+    const warm = reader.residency();
+    expect(reader.trimTo(warm.chars)).toBe(0);
+    expect(reader.residency().shards).toBe(warm.shards);
   });
 });
 
@@ -315,5 +629,1107 @@ describe("worker source", () => {
       .join("\n");
     expect(sources).not.toMatch(/NetworkSnapshot/);
     expect(sources).not.toMatch(/network-repository/);
+  });
+});
+
+/*
+ * A route's stops and geometry are a statement of fact — this is where the 36 goes.
+ *
+ * Pattern reads are capped, because `/v1/map` and `/v1/routes/:id` are the only two endpoints
+ * that read pattern tiles in bulk and both answered Cloudflare's own HTML 503 on two consecutive
+ * deployments. The cap is containment, and containment that silently shortens a route is worse
+ * than the crash it prevents: a passenger would be shown part of a route as though it were all
+ * of it. So the read reports whether it got everything, and the endpoint carries that through.
+ */
+describe("a route too large for one request", () => {
+  /** A route whose patterns are spread over enough tiles that a small budget cannot hold them. */
+  async function sprawlingRoute() {
+    const sprawling = network();
+    const seed = sprawling.stops[0]!;
+    const pattern = sprawling.patterns[0]!;
+    const stopIds = [...pattern.stopSequence];
+
+    // Stops strung across England, so the route's patterns land in many different tiles.
+    for (let i = 0; i < 400; i++) {
+      const id = `sprawl-${i}`;
+      sprawling.stops.push({
+        ...seed,
+        id,
+        atcoCode: `SPR${String(i).padStart(5, "0")}`,
+        name: `Sprawl ${i}`,
+        locationCoordinate: { lat: 51 + (i % 50) / 20, lon: -4 + (i % 40) / 10 },
+      });
+      stopIds.push(id);
+    }
+    sprawling.patterns[0] = { ...pattern, stopSequence: stopIds };
+    /*
+     * And the shape, which is what decides the tiles.
+     *
+     * The route-tiles index is built from a pattern's geometry, not from its stop sequence, so a
+     * fixture that stretched only the stops left the route in its original handful of tiles and
+     * the budget never bit. Worth knowing generally: these two can disagree.
+     */
+    sprawling.shapes.set(
+      pattern.shapeRef,
+      Array.from({ length: 400 }, (_, i) => ({
+        lat: 51 + (i % 50) / 20,
+        lon: -4 + (i % 40) / 10,
+      })),
+    );
+
+    const store = new InMemoryObjectStore();
+    await publishNetworkShards(store, sprawling, { version: "v1" });
+    return { store, serviceId: pattern.serviceRouteId };
+  }
+
+  /*
+   * The dense route, which is the case that used to kill the isolate.
+   *
+   * It is read from the route-pattern index now: one object, one line. The byte budget that used
+   * to decide how much of this route a passenger saw is irrelevant to it, which is the point —
+   * starving the reader to two thousand characters no longer shortens the route, because the
+   * route was never being assembled from a scan.
+   */
+  it("reads a route spanning the country completely, from one object", async () => {
+    const { store, serviceId } = await sprawlingRoute();
+
+    const starved = new NetworkReader(store, 15 * 60 * 1000, 2_000);
+    const capped = await starved.patternsForService(serviceId);
+
+    expect(capped.source).toBe("route_pattern_index");
+    expect(capped.complete).toBe(true);
+    expect(capped.geometries.length).toBeGreaterThan(0);
+    // The whole route, not the part that fitted: the fixture's pattern calls at 400+ stops.
+    expect(capped.geometries[0]!.pattern.stopSequence.length).toBeGreaterThan(400);
+  });
+
+  it("asks for one object to answer a route, however far the route goes", async () => {
+    const { store, serviceId } = await sprawlingRoute();
+    const reader = new NetworkReader(store);
+    const ledger = new ReadLedger(60_000);
+
+    await reader.patternsForService(serviceId, Date.now(), ledger);
+
+    const report = ledger.toJSON();
+    expect(report.families["route-patterns"]?.requested).toBe(1);
+    expect(report.families.patterns).toBeUndefined();
+  });
+
+  /*
+   * The half-a-route case, which must never be presentable as a whole one.
+   *
+   * With the index there is no such thing as a partly-read route: the bucket is there or it is
+   * not. An object the index promises and the store cannot produce is `unavailable`, which is a
+   * different answer from "this route has no patterns" and is what stops an empty route being
+   * drawn as though the emptiness were a fact about the route.
+   */
+  it("cannot label an unreadable route complete", async () => {
+    const { store, serviceId } = await sprawlingRoute();
+    const reader = new NetworkReader(store);
+
+    const bucket = routePatternsBucketFor(serviceId, ROUTE_PATTERN_BUCKETS);
+    await store.delete(objectKeyFor(routePatternsDataset(bucket), "v1"));
+
+    const answer = await reader.patternsForService(serviceId);
+    expect(answer.source).toBe("unavailable");
+    expect(answer.complete).toBe(false);
+    expect(answer.geometries).toEqual([]);
+  });
+
+  it("tells an unreadable route apart from one with no patterns", async () => {
+    const { store } = await sprawlingRoute();
+    const reader = new NetworkReader(store);
+
+    // A service the index has never heard of: its bucket exists, its line does not.
+    const absent = await reader.patternsForService("00000000-0000-5000-8000-00000000beef");
+    expect(absent.source).toBe("route_pattern_index");
+    expect(absent.complete).toBe(true);
+    expect(absent.geometries).toEqual([]);
+  });
+
+  /*
+   * The other direction, on an ordinary route rather than the sprawling one.
+   *
+   * The sprawling fixture is genuinely too big for the cap even at the production budget — a
+   * pattern is written into every tile its shape crosses, so a route spanning England carries its
+   * geometry hundreds of times over. That is real duplication rather than a fixture artefact,
+   * which is why "complete" has to be provable on a route of normal size instead.
+   */
+  it("reports an ordinary route as whole", async () => {
+    const ordinary = network();
+    const store = new InMemoryObjectStore();
+    await publishNetworkShards(store, ordinary, { version: "v1" });
+
+    const reader = new NetworkReader(store);
+    const full = await reader.patternsForService(ordinary.patterns[0]!.serviceRouteId);
+    expect(full.complete).toBe(true);
+    expect(full.source).toBe("route_pattern_index");
+    expect(full.geometries.length).toBeGreaterThan(0);
+  });
+
+  it("reports a viewport whose patterns did not all fit", async () => {
+    const { store } = await sprawlingRoute();
+    const starved = new NetworkReader(store, 15 * 60 * 1000, 2_000);
+
+    const wide = { west: -4, east: 0, south: 51, north: 53.5 };
+    const detailed = await starved.patternsInTilesDetailed(patternTilesForBoundingBox(wide));
+    expect(detailed.complete).toBe(false);
+  });
+
+  /*
+   * An empty answer is complete when the publish says the route touches no tiles. Conflating that
+   * with a starved read would make every route without geometry look like a fault.
+   */
+  it("calls a route with no published patterns complete, not truncated", async () => {
+    const { store } = await sprawlingRoute();
+    const reader = new NetworkReader(store);
+    const absent = await reader.patternsForService("00000000-0000-5000-8000-00000000dead");
+    expect(absent.complete).toBe(true);
+    expect(absent.geometries).toEqual([]);
+  });
+});
+
+/*
+ * The clock, rather than the byte cap.
+ *
+ * Error 1102 is the platform killing a Worker that ran out of *something* — its page does not say
+ * what, and a budget counted in characters cannot stop a request that is slow rather than large.
+ * So the reader watches a wall clock the request owns, declines to start optional work when it has
+ * already gone, and books every object it touches so a request that survives can say what it cost.
+ */
+describe("a request that watches its own clock", () => {
+  /** A clock the test drives, so "out of time" is a fact rather than a race. */
+  function fakeClock(start = 1_000) {
+    let t = start;
+    return { now: () => t, advance: (ms: number) => (t += ms) };
+  }
+
+  it("declines to start pattern enrichment once the budget has gone", async () => {
+    const ordinary = network();
+    const store = new InMemoryObjectStore();
+    await publishNetworkShards(store, ordinary, { version: "v1" });
+    const reader = new NetworkReader(store);
+
+    const clock = fakeClock();
+    const ledger = new ReadLedger(500, clock.now);
+    clock.advance(600);
+
+    const detailed = await reader.patternsInTilesDetailed(
+      patternTilesForBoundingBox({ west: -2, east: 0, south: 53, north: 54 }),
+      Date.now(),
+      ledger,
+    );
+
+    expect(detailed.geometries).toEqual([]);
+    expect(detailed.complete).toBe(false);
+    expect(ledger.stopped).toBe(true);
+    expect(ledger.reason).toBe("pattern_enrichment_budget");
+  });
+
+  it("does the work when there is time for it, and says what it cost", async () => {
+    const ordinary = network();
+    const store = new InMemoryObjectStore();
+    await publishNetworkShards(store, ordinary, { version: "v1" });
+    const reader = new NetworkReader(store);
+
+    const ledger = new ReadLedger(60_000);
+    const detailed = await reader.patternsInTilesDetailed(
+      patternTilesForBoundingBox({ west: -2, east: 0, south: 53, north: 54 }),
+      Date.now(),
+      ledger,
+    );
+
+    expect(detailed.complete).toBe(true);
+    expect(ledger.stopped).toBe(false);
+
+    const report = ledger.toJSON();
+    expect(report.objectsRequested).toBeGreaterThan(0);
+    expect(report.families.patterns?.requested).toBeGreaterThan(0);
+    expect(report.chars).toBeGreaterThan(0);
+    expect(report.counts.patterns).toBe(detailed.geometries.length);
+    expect(report.degradationReason).toBeNull();
+  });
+
+  it("counts a cache hit apart from a read, because a cache hit decodes nothing", async () => {
+    const ordinary = network();
+    const store = new InMemoryObjectStore();
+    await publishNetworkShards(store, ordinary, { version: "v1" });
+    const reader = new NetworkReader(store);
+    const tiles = patternTilesForBoundingBox({ west: -2, east: 0, south: 53, north: 54 });
+
+    const first = new ReadLedger(60_000);
+    await reader.patternsInTilesDetailed(tiles, Date.now(), first);
+    const second = new ReadLedger(60_000);
+    await reader.patternsInTilesDetailed(tiles, Date.now(), second);
+
+    expect(first.toJSON().families.patterns?.read).toBeGreaterThan(0);
+    expect(second.toJSON().families.patterns?.read).toBe(0);
+    expect(second.toJSON().families.patterns?.cached).toBeGreaterThan(0);
+  });
+
+  it("books a missing shard as missing rather than as a failure", async () => {
+    const ordinary = network();
+    const store = new InMemoryObjectStore();
+    await publishNetworkShards(store, ordinary, { version: "v1" });
+    const reader = new NetworkReader(store);
+
+    const ledger = new ReadLedger(60_000);
+    await reader.stopsInTiles(["999_999"], Date.now(), ledger);
+    const report = ledger.toJSON();
+    expect(report.objectsFailed).toBe(0);
+  });
+
+  it("never puts a key or a URL in what it reports", async () => {
+    const ordinary = network();
+    const store = new InMemoryObjectStore();
+    await publishNetworkShards(store, ordinary, { version: "v1" });
+    const reader = new NetworkReader(store);
+
+    const ledger = new ReadLedger(60_000);
+    await reader.patternsInTilesDetailed(
+      patternTilesForBoundingBox({ west: -2, east: 0, south: 53, north: 54 }),
+      Date.now(),
+      ledger,
+    );
+
+    const serialised = JSON.stringify(ledger.toJSON()) + ledger.serverTiming();
+    expect(serialised).not.toMatch(/data\/network/);
+    expect(serialised).not.toMatch(/https?:/);
+    expect(serialised).not.toMatch(/\.jsonl/);
+  });
+});
+
+/*
+ * The first round trip is the one no budget can undo.
+ *
+ * Tiles were read six at a time, in parallel, and the budget was checked afterwards. A budget
+ * cannot un-fetch what has arrived: `stops-tile/206_-1` is 3,959,355 bytes in the real artifact
+ * and a Manchester viewport spans several, so a map request decoded twenty-odd megabytes before
+ * its first check ran — and Cloudflare's 1102 arrived before the second. Reading two first and
+ * sizing the rest from what they actually cost is the difference between a budget that is
+ * enforced and one that is merely declared.
+ */
+describe("a reader that finds out how big tiles are before asking for more", () => {
+  it("does not open more than a handful before the first check", async () => {
+    const ordinary = network();
+    const store = new InMemoryObjectStore();
+    await publishNetworkShards(store, ordinary, { version: "v1" });
+
+    // Every read is recorded, in order, so the shape of the first round trip is visible.
+    const asked: string[] = [];
+    const watched = {
+      get: async (key: string) => {
+        asked.push(key);
+        return store.get(key);
+      },
+      put: store.put.bind(store),
+      list: store.list.bind(store),
+      listDetailed: store.listDetailed.bind(store),
+      delete: store.delete.bind(store),
+    };
+
+    /*
+     * Tiles the publish actually wrote, taken from the index.
+     *
+     * Asking for invented tile ids proves nothing: the reader filters to what exists, so an
+     * imaginary list means zero reads and any assertion about batching passes for the wrong
+     * reason. This asks for the real ones — and there must be more of them than an opening batch,
+     * or the test cannot tell the two behaviours apart.
+     */
+    const index = await new NetworkReader(store).networkIndex();
+    const realTiles = index!.stopTiles;
+    expect(realTiles.length).toBeGreaterThan(2);
+
+    // A budget so small that nothing beyond the opening batch can be afforded.
+    const starved = new NetworkReader(watched as unknown as typeof store, 15 * 60 * 1000, 1);
+    const ledger = new ReadLedger(60_000);
+    await starved.stopsInTiles(realTiles, Date.now(), ledger);
+
+    const tileReads = asked.filter((key) => key.includes("stops-tile"));
+    expect(tileReads.length).toBeLessThanOrEqual(2);
+  });
+
+  it("still reads everything when the budget can afford it", async () => {
+    const ordinary = network();
+    const store = new InMemoryObjectStore();
+    await publishNetworkShards(store, ordinary, { version: "v1" });
+
+    const reader = new NetworkReader(store);
+    const ledger = new ReadLedger(60_000);
+    const all = await reader.stopsInTiles(
+      stopTilesForBoundingBox({ west: -2, east: 0, south: 53, north: 54 }),
+      Date.now(),
+      ledger,
+    );
+
+    expect(all.truncated).toBe(false);
+    expect(all.stops.length).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * The stage that was actually taking `/v1/routes/:id` past the isolate's limit.
+ *
+ * The route-pattern index made the pattern read one object, it was measured, and route detail
+ * still answered Cloudflare error 1102 in run 42's repeated verification loop. The unmeasured
+ * stage was stop resolution: `stopsByKeys` reads a locator bucket per key, the keys are hashed
+ * across 256 buckets, and a route with a few hundred stops therefore asked for almost all of them
+ * in a single `Promise.all` — hundreds of objects in one round trip, to learn the names of about
+ * three tiles the route's own shape already knew.
+ */
+describe("a route's stops", () => {
+  async function publishedSprawl(spread: "local" | "national" = "local") {
+    const at = (i: number) =>
+      spread === "local"
+        ? { lat: 53.7 + (i % 40) / 400, lon: -1.6 + (i % 40) / 400 }
+        : { lat: 51 + (i % 50) / 20, lon: -4 + (i % 40) / 10 };
+    const sprawling = network();
+    const seed = sprawling.stops[0]!;
+    const pattern = sprawling.patterns[0]!;
+    const stopIds = [...pattern.stopSequence];
+
+    for (let i = 0; i < 400; i++) {
+      const id = `sprawl-${i}`;
+      sprawling.stops.push({
+        ...seed,
+        id,
+        atcoCode: `SPR${String(i).padStart(5, "0")}`,
+        name: `Sprawl ${i}`,
+        locationCoordinate: at(i),
+      });
+      stopIds.push(id);
+    }
+    sprawling.patterns[0] = { ...pattern, stopSequence: stopIds };
+    sprawling.shapes.set(
+      pattern.shapeRef,
+      Array.from({ length: 400 }, (_, i) => at(i)),
+    );
+
+    const recording = recordingStore();
+    await publishNetworkShards(recording.store, sprawling, { version: "v1" });
+    return {
+      reader: new NetworkReader(recording.store),
+      reads: recording.reads,
+      serviceId: pattern.serviceRouteId,
+      store: recording.store,
+    };
+  }
+
+  /*
+   * Run 46 ruled out memory as the cause of the 1102s on route detail: residency was flat and the
+   * request the platform killed began against the lowest figure in the trail. What is left is the
+   * work, and turning every record in a tile into an object to keep the route's own hundred is
+   * the largest piece of it that buys nothing.
+   */
+  it("builds only the stops the route calls at, not every stop in the tile", async () => {
+    const { reader, serviceId } = await publishedSprawl();
+    const patterns = await reader.patternsForService(serviceId);
+    const wanted = new Set(
+      patterns.geometries.flatMap((geometry) => geometry.pattern.stopSequence),
+    );
+
+    const ledger = new ReadLedger(5_000);
+    const result = await reader.stopsForGeometries(patterns.geometries, Date.now(), ledger);
+
+    // Every stop the route calls at came back.
+    expect(result.resolved).toBe(result.requested);
+
+    const stops = ledger.toJSON().families.stops!;
+    // And no more records than the route asked for were ever built, though the tiles hold more.
+    expect(stops.records).toBeLessThanOrEqual(wanted.size);
+    // The bytes still arrive - R2 serves objects, not queries - so this is about the parse.
+    expect(stops.chars).toBeGreaterThan(0);
+  });
+
+  it("finds a record whose keys sit in a different order, and stops at the record's end", async () => {
+    /*
+     * The filter reads inside the tile's body rather than inside a finished line, so its window
+     * has to be the record's own. Without the bound, a record missing `atcoCode` finds the next
+     * record's — and the sequence would quietly acquire a stop that is not on the route.
+     */
+    const { reader, serviceId } = await publishedSprawl();
+    const patterns = await reader.patternsForService(serviceId);
+    const sequence = patterns.geometries[0]!.pattern.stopSequence;
+    // One stop in the middle, so there are records either side of it to be confused with.
+    const one = sequence[Math.floor(sequence.length / 2)]!;
+    const narrowed = patterns.geometries.map((geometry) => ({
+      ...geometry,
+      pattern: { ...geometry.pattern, stopSequence: [one] },
+    }));
+
+    const result = await reader.stopsForGeometries(narrowed);
+    expect(result.resolved).toBe(1);
+    expect([...result.stopsById.keys()]).toEqual([one]);
+  });
+
+  it("does not poison the shared cache with one request's filtered slice", async () => {
+    /*
+     * The cache is shared by every request in the isolate. An entry holding one route's stops
+     * would answer the next viewport's question with a tile missing almost all of it - a wrong
+     * answer rather than a slow one, and the worst kind of caching bug because it looks exactly
+     * like missing data.
+     *
+     * So the same viewport is asked twice over the same published store: once through a reader
+     * that has just done a filtered route read, and once through one that has not. They have to
+     * agree.
+     */
+    const { reader, serviceId, store } = await publishedSprawl();
+    const patterns = await reader.patternsForService(serviceId);
+    // A route that wants only two of the tile's stops, so a poisoned entry would be obvious.
+    const narrowed = patterns.geometries.map((geometry) => ({
+      ...geometry,
+      pattern: { ...geometry.pattern, stopSequence: geometry.pattern.stopSequence.slice(0, 2) },
+    }));
+    const routeStops = await reader.stopsForGeometries(narrowed);
+    expect(routeStops.resolved).toBe(2);
+
+    const box = { west: -1.7, south: 53.6, east: -1.4, north: 53.9 };
+    const afterFiltering = await reader.stopsInBoundingBox(box, Date.now());
+    const untouched = await new NetworkReader(store).stopsInBoundingBox(box, Date.now());
+
+    expect(afterFiltering.stops.length).toBe(untouched.stops.length);
+    expect(afterFiltering.stops.length).toBeGreaterThan(2);
+  });
+
+  it("are read from the tiles the route runs through, never from the locator index", async () => {
+    const { reader, reads, serviceId } = await publishedSprawl();
+    const patterns = await reader.patternsForService(serviceId);
+    expect(patterns.geometries.length).toBeGreaterThan(0);
+
+    reads.length = 0;
+    const resolved = await reader.stopsForGeometries(patterns.geometries);
+
+    expect(resolved.resolved).toBeGreaterThan(400);
+    expect(resolved.truncated).toBe(false);
+    // The point of the change: not one locator bucket was opened.
+    expect(reads.filter((key) => key.includes(SHARDED.stopLocator))).toEqual([]);
+    // And the tiles it did open are the handful the route runs through, not the country's.
+    expect(reads.filter((key) => key.includes(SHARDED.stopTile)).length).toBeLessThan(6);
+  });
+
+  /*
+   * The whole point of the change, measured rather than asserted by shape.
+   *
+   * Run 64's per-family accounting named this: a Leeds route spent 4.56 MiB of its 4.83 MiB
+   * resolving stops, reading general tiles of full `Stop` records — provenance, quality flags,
+   * amenities, accessibility — to print a name, an ATCO code and a coordinate. The projection
+   * holds exactly those at about a quarter the size.
+   */
+  it("reads the projection rather than the general tiles, and far fewer bytes of it", async () => {
+    const { reader, reads, serviceId } = await publishedSprawl();
+    const patterns = await reader.patternsForService(serviceId);
+
+    reads.length = 0;
+    const ledger = new ReadLedger(1800);
+    const resolved = await reader.stopsForGeometries(patterns.geometries, Date.now(), ledger);
+
+    expect(resolved.resolved).toBeGreaterThan(400);
+    // Not one general stop tile was opened; the map projection answered instead.
+    expect(reads.filter((key) => key.includes(SHARDED.stopTile))).toEqual([]);
+    expect(reads.filter((key) => key.includes(MAP_STOPS_PREFIX)).length).toBeGreaterThan(0);
+
+    // Every field the route page draws is present on what came back.
+    const stop = [...resolved.stopsById.values()][0]!;
+    expect(stop.id.length).toBeGreaterThan(0);
+    expect(stop.atcoCode.length).toBeGreaterThan(0);
+    expect(stop.name.length).toBeGreaterThan(0);
+    expect(Number.isFinite(stop.locationCoordinate.lat)).toBe(true);
+  });
+
+  it("costs far fewer objects than resolving the same stops by key", async () => {
+    const { reader, reads, serviceId } = await publishedSprawl();
+    const patterns = await reader.patternsForService(serviceId);
+    const keys = [...new Set(patterns.geometries.flatMap((g) => g.pattern.stopSequence))];
+
+    reads.length = 0;
+    await reader.stopsByKeys(keys);
+    const byKey = reads.length;
+
+    const fresh = await publishedSprawl();
+    const freshPatterns = await fresh.reader.patternsForService(fresh.serviceId);
+    fresh.reads.length = 0;
+    await fresh.reader.stopsForGeometries(freshPatterns.geometries);
+    const byShape = fresh.reads.length;
+
+    expect(byShape).toBeLessThan(byKey);
+    // Not a marginal saving: the locator path is an object per bucket the keys hash into.
+    expect(byKey).toBeGreaterThan(byShape * 5);
+  });
+
+  it("books what it read on the caller's ledger, and reports a capped read as incomplete", async () => {
+    const { reader, serviceId } = await publishedSprawl("national");
+    const patterns = await reader.patternsForService(serviceId);
+
+    const whole = await reader.stopsForGeometries(patterns.geometries);
+    expect(whole.truncated).toBe(false);
+    expect(whole.tilesRequested).toBeGreaterThan(4);
+
+    /*
+     * The same route through a reader that cannot afford it. A budget that stops the read must
+     * surface as `truncated`, because the route page turns that into "this is not all of it" —
+     * a route drawn with its far half missing and presented as the route is the wrong answer
+     * this flag exists to prevent.
+     */
+    const ledger = new ReadLedger(60_000);
+    const fresh = await publishedSprawl("national");
+    const freshPatterns = await fresh.reader.patternsForService(fresh.serviceId);
+    const capped = await fresh.reader.stopsForGeometries(
+      freshPatterns.geometries,
+      Date.now(),
+      ledger,
+      100,
+    );
+
+    expect(capped.truncated).toBe(true);
+    expect(capped.resolved).toBeLessThan(whole.resolved);
+    expect(ledger.toJSON().families.stops?.read).toBeGreaterThan(0);
+    expect(ledger.reason).toBeNull();
+  });
+});
+
+/**
+ * Names a passenger reads, cleaned once, where they are read.
+ *
+ * Deployed screenshots showed `White_Rose_Shopping_Centre`, `Gledhow_Lidgett_Lane`,
+ * `Whinmoor_Shopping_Centre` and `Easterly_Road_Hollin_Park_Mount` on the map, the board and the
+ * route page. Cleaning at each of those four is how three of them come to disagree, and cleaning
+ * in the published artifact would mean a national rebuild to fix a display bug — so it happens at
+ * the read boundary, and the canonical identifiers are left exactly as filed.
+ */
+describe("passenger-facing names", () => {
+  async function readerWithName(name: string) {
+    const built = network();
+    const seed = built.stops[0]!;
+    built.stops.push({
+      ...seed,
+      id: "underscored-stop",
+      atcoCode: "450019999",
+      name,
+      locationCoordinate: { lat: 53.7996, lon: -1.56 },
+    });
+    const store = new InMemoryObjectStore();
+    await publishNetworkShards(store, built, { version: "v1" });
+    return new NetworkReader(store);
+  }
+
+  it("replaces a feed's separators without touching the identifiers", async () => {
+    const reader = await readerWithName("White_Rose_Shopping_Centre");
+    const found = await reader.stopByKey("underscored-stop");
+
+    expect(found?.name).toBe("White Rose Shopping Centre");
+    // What links are built from is exactly what was published.
+    expect(found?.id).toBe("underscored-stop");
+    expect(found?.atcoCode).toBe("450019999");
+  });
+
+  it("cleans the same name whichever read path found the stop", async () => {
+    const reader = await readerWithName("Easterly_Road_Hollin_Park_Mount");
+    const viewport = await reader.stopsInBoundingBox(
+      { west: -1.7, south: 53.7, east: -1.4, north: 53.9 },
+      400,
+    );
+    const inViewport = viewport.stops.find((stop) => stop.atcoCode === "450019999");
+    expect(inViewport?.name).toBe("Easterly Road Hollin Park Mount");
+  });
+
+  it("leaves punctuation that belongs in a place name alone", async () => {
+    const reader = await readerWithName("King's Cross & Park-and-Ride");
+    const found = await reader.stopByKey("underscored-stop");
+    expect(found?.name).toBe("King's Cross & Park-and-Ride");
+  });
+
+  it("cleans what a search result shows without changing what it navigates by", async () => {
+    const reader = await readerWithName("Whinmoor_Shopping_Centre");
+    const found = await reader.search("Whinmoor", { limit: 5 });
+
+    const hit = found?.hits.find((entry) => entry.entry.codes.includes("450019999"));
+    expect(hit).toBeDefined();
+    expect(hit!.entry.title).toBe("Whinmoor Shopping Centre");
+    expect(hit!.entry.id).toBe("underscored-stop");
+  });
+});
+
+/**
+ * Places, and the one thing they must not become.
+ *
+ * Search could find a stop, a route or an operator, so "York Minster" matched nothing — and the
+ * fix for that is a gazetteer rather than a special case for York Minster. The gazetteer is held
+ * whole, like operators and services, because the landmarks people search by name are in the
+ * thousands rather than the hundreds of thousands. What is guarded here is that it stays that
+ * shape: one object, read once, and never a second national index arriving through a new door.
+ */
+describe("places in search", () => {
+  async function readerWithPlaces(places: unknown[]) {
+    const recording = recordingStore();
+    await publishNetworkShards(recording.store, network(), { version: "v1" });
+    const artifacts = new ArtifactStore(recording.store);
+    await artifacts.publish({
+      dataset: PLACES_DATASET,
+      version: "v1",
+      records: places,
+      schemaVersion: "1.0.0",
+      sources: ["osm"],
+    });
+    return { reader: new NetworkReader(recording.store), reads: recording.reads };
+  }
+
+  const minster = {
+    id: "00000000-0000-5000-8000-0000000000aa",
+    name: "York Minster",
+    kind: "attraction" as const,
+    coordinate: { lat: 53.962, lon: -1.082 },
+    subtitle: "Landmark · York",
+    prominence: 8,
+    osmId: "way/1",
+  };
+
+  it("finds a landmark that is not a bus stop", async () => {
+    const { reader } = await readerWithPlaces([minster]);
+    const found = await reader.search("York Minster", { limit: 10 });
+
+    const hit = found?.hits.find((entry) => entry.entry.id === minster.id);
+    expect(hit).toBeDefined();
+    expect(hit!.entry.kind).toBe("place");
+    expect(hit!.entry.coordinate).toEqual(minster.coordinate);
+  });
+
+  it("never presents a place as something with buses of its own", async () => {
+    const { reader } = await readerWithPlaces([minster]);
+    const found = await reader.search("York Minster", { limit: 10 });
+    const hit = found!.hits.find((entry) => entry.entry.id === minster.id)!;
+    expect(hit.entry.hasLiveCoverage).toBe(false);
+    expect(hit.entry.codes).toEqual([]);
+  });
+
+  it("reads the gazetteer once per isolate, not once per search", async () => {
+    const { reader, reads } = await readerWithPlaces([minster]);
+    await reader.search("York", { limit: 10 });
+    reads.length = 0;
+    await reader.search("Minster", { limit: 10 });
+    await reader.search("York Minster", { limit: 10 });
+    expect(reads.filter((key) => key.includes("places/gazetteer"))).toEqual([]);
+  });
+
+  it("still answers when no gazetteer has been published", async () => {
+    const { reader } = await publishedReader();
+    const found = await reader.search("Armley", { limit: 10 });
+    expect(found).not.toBeNull();
+    expect(found!.hits.length).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * The two families that took geometry out of two questions that were never about geometry.
+ *
+ * The map asks "what routes call at this stop" and the planner asks "what stops does this pattern
+ * call at". Both were answered by reading pattern tiles, which carry route shapes and reach
+ * 3,935,975 bytes each — so both hit the three-mebibyte pattern cap, and capping the bytes turned
+ * an expensive read into permanent degradation. Run 43: `0 of the returned stops carry a service`
+ * on every dense viewport, and Leeds to Leeds Bradford Airport refused outright.
+ */
+describe("answering without reading geometry", () => {
+  it("publishes the route names a stop has on it, and the index says which tiles have them", async () => {
+    const store = new InMemoryObjectStore();
+    const result = await publishNetworkShards(store, network(), { version: "v1" });
+
+    expect(result.index?.stopRouteTiles?.length).toBeGreaterThan(0);
+    expect(result.index?.patternIndexBuckets).toBeGreaterThan(0);
+    expect(result.index?.patternIndexShards?.length).toBeGreaterThan(0);
+  });
+
+  it("labels a viewport's stops without opening a single pattern tile", async () => {
+    const { reader, reads } = await publishedReader();
+    reads.length = 0;
+
+    const named = await reader.routeNamesForStopTiles(
+      stopTilesForBoundingBox({ west: -1.7, south: 53.7, east: -1.4, north: 53.9 }),
+    );
+
+    expect(named.available).toBe(true);
+    expect(named.complete).toBe(true);
+    expect(named.byStopId.size).toBeGreaterThan(0);
+    for (const names of named.byStopId.values()) expect(names.length).toBeGreaterThan(0);
+    // The whole point: not one pattern tile, which is what the cap kept truncating.
+    expect(reads.filter((key) => key.includes(SHARDED.patternTile))).toEqual([]);
+  });
+
+  it("labels only the stops it was asked about, and gives the same answer for them", async () => {
+    const { reader } = await publishedReader();
+    const tiles = stopTilesForBoundingBox({ west: -1.7, south: 53.7, east: -1.4, north: 53.9 });
+
+    const everything = await reader.routeNamesForStopTiles(tiles);
+    expect(everything.byStopId.size).toBeGreaterThan(0);
+
+    /*
+     * One row per stop in the tile, and a map answers with four hundred of them. Asking for a
+     * subset must build that subset and give it exactly the names the whole-tile read did.
+     */
+    const [wantedId] = [...everything.byStopId.keys()];
+
+    /*
+     * A fresh reader, because `readShardSized` deliberately uses a whole-tile cache entry when one
+     * is already there — the memory is spent either way by then, and re-reading would be pure
+     * cost. The saving this is about happens on the parse, so it has to be a parse.
+     */
+    const fresh = await publishedReader();
+    const subset = await fresh.reader.routeNamesForStopTiles(
+      tiles,
+      Date.now(),
+      undefined,
+      undefined,
+      new Set([wantedId!]),
+    );
+
+    expect([...subset.byStopId.keys()]).toEqual([wantedId]);
+    expect(subset.byStopId.get(wantedId!)).toEqual(everything.byStopId.get(wantedId!));
+    expect(subset.available).toBe(true);
+    expect(subset.complete).toBe(true);
+
+    // An empty set means "no filter", not "no stops": a caller with nothing to ask about would
+    // otherwise silently get an empty answer that reads like a network with no services on it.
+    const unfiltered = await (
+      await publishedReader()
+    ).reader.routeNamesForStopTiles(tiles, Date.now(), undefined, undefined, new Set<string>());
+    expect(unfiltered.byStopId.size).toBe(everything.byStopId.size);
+  });
+
+  /*
+   * `publishNetworkShards` writes the sharded families; the national services object is published
+   * separately by the daily run, so a reader built from shards alone has no services table at all.
+   * These tests are about the national object, so they publish one.
+   */
+  async function readerWithNationalServices() {
+    const recording = recordingStore();
+    const built = network();
+    await publishNetworkShards(recording.store, built, { version: "v1" });
+    await new ArtifactStore(recording.store).publish({
+      dataset: DATASETS.services,
+      version: "v1",
+      records: built.services,
+      schemaVersion: "1.0.0",
+      sources: ["bods"],
+    });
+    return { reader: new NetworkReader(recording.store), reads: recording.reads };
+  }
+
+  it("names a few services without parsing all 13,593 of them", async () => {
+    const { reader } = await readerWithNationalServices();
+    const everything = await (await readerWithNationalServices()).reader.services();
+    expect(everything.size).toBeGreaterThan(0);
+
+    const [wantedId] = [...everything.keys()];
+    const some = await reader.servicesByIds(new Set([wantedId!]));
+
+    expect([...some.keys()]).toEqual([wantedId]);
+    expect(some.get(wantedId!)).toEqual(everything.get(wantedId!));
+    /*
+     * And the national map was never built. `services()` hashes the whole object and parses every
+     * record before a caller sees one; that is the cost this exists to avoid, so a filtered read
+     * that quietly populated the same cache would have saved nothing.
+     */
+    expect(reader.residency().services).toBe(0);
+  });
+
+  it("asks for nothing and reads nothing", async () => {
+    const { reader, reads } = await readerWithNationalServices();
+    reads.length = 0;
+    expect((await reader.servicesByIds(new Set())).size).toBe(0);
+    expect(reads).toEqual([]);
+  });
+
+  it("gives an operator its own services, and agrees with the whole table", async () => {
+    const { reader } = await readerWithNationalServices();
+    const everything = await (await readerWithNationalServices()).reader.services();
+    const [anyService] = [...everything.values()];
+    const operatorId = anyService!.operatorId;
+
+    const mine = await reader.servicesForOperator(operatorId);
+    const expected = [...everything.values()]
+      .filter((service) => service.operatorId === operatorId)
+      .map((service) => service.id)
+      .sort();
+
+    expect([...mine.keys()].sort()).toEqual(expected);
+    expect(mine.size).toBeGreaterThan(0);
+    expect(reader.residency().services).toBe(0);
+  });
+
+  it("uses the national table when some other request has already paid for it", async () => {
+    const { reader } = await readerWithNationalServices();
+    const everything = await reader.services();
+    const [wantedId] = [...everything.keys()];
+
+    // Already parsed, already resident: re-scanning the text would be spending twice.
+    const some = await reader.servicesByIds(new Set([wantedId!]));
+    expect(some.get(wantedId!)).toEqual(everything.get(wantedId!));
+  });
+
+  it("answers eight hundred metres with the entries inside eight hundred metres", async () => {
+    const { reader } = await publishedReader();
+    const here = { lat: 53.7996, lon: -1.56 };
+
+    const close = new ReadLedger(5_000);
+    const near = await reader.nearby(here, { radiusMetres: 300, limit: 25 }, Date.now(), close);
+    expect(near?.hits.length).toBeGreaterThan(0);
+
+    /*
+     * `records` counts what the parse built. A byte cap bounds what is read and not what is
+     * decoded out of it, so before the box was handed to the parse this was the whole tile
+     * however small the radius was.
+     */
+    const parsed = close.toJSON().families.search?.records ?? 0;
+    expect(parsed).toBeGreaterThan(0);
+
+    const wide = new ReadLedger(5_000);
+    await reader.nearby(here, { radiusMetres: 40_000, limit: 25 }, Date.now(), wide);
+    const parsedWide = wide.toJSON().families.search?.records ?? 0;
+
+    // A bigger radius legitimately costs more; the point is that a small one does not cost the same.
+    expect(parsed).toBeLessThan(parsedWide);
+  });
+
+  it("draws a viewport from one projected family instead of two general ones", async () => {
+    const { reader, reads } = await publishedReader();
+    const bbox = { west: -1.7, south: 53.7, east: -1.4, north: 53.9 };
+
+    const general = await reader.stopsInBoundingBox(bbox, 400);
+    reads.length = 0;
+
+    const fresh = await publishedReader();
+    const projected = await fresh.reader.mapStopsInBoundingBox(bbox, 400);
+    expect(projected).not.toBeNull();
+
+    // The same stops, by identity, however they were read.
+    expect(projected!.stops.map((stop) => stop.id).sort()).toEqual(
+      general.stops.map((stop) => stop.id).sort(),
+    );
+
+    // And their route names, which used to be a second family entirely.
+    const named = await reader.routeNamesForStopTiles(stopTilesForBoundingBox(bbox));
+    for (const stop of projected!.stops) {
+      expect(stop.routePublicNames).toEqual(named.byStopId.get(stop.id) ?? []);
+    }
+
+    // Not one stop-routes object opened: the projection carries the names.
+    expect(fresh.reads.filter((key) => key.includes("stop-routes"))).toEqual([]);
+  });
+
+  it("is smaller than the two families it replaces", async () => {
+    const store = new InMemoryObjectStore();
+    const result = await publishNetworkShards(store, network(), { version: "v1" });
+    expect(result.index?.mapStopTiles?.length).toBeGreaterThan(0);
+
+    const sizeOf = async (prefix: string) => {
+      let total = 0;
+      for (const key of await store.list("")) {
+        if (key.includes(prefix)) total += ((await store.get(key)) ?? "").length;
+      }
+      return total;
+    };
+
+    const projection = await sizeOf("map-stops");
+    const replaced = (await sizeOf("network/stops-tile/")) + (await sizeOf("network/stop-routes/"));
+    expect(projection).toBeGreaterThan(0);
+    /*
+     * The whole point of the family. A published `Stop` carries provenance, quality flags,
+     * ingestion time, locality, amenities and NaPTAN status; a marker draws none of them.
+     */
+    expect(projection).toBeLessThan(replaced);
+  });
+
+  it("falls back rather than describing an empty country", async () => {
+    /*
+     * An artifact published before this family existed has no projection tiles on its index.
+     * Republished properly rather than edited in place: the index carries a checksum, and rewriting
+     * the object under it makes the reader refuse to serve a corrupted artifact — which is the
+     * integrity check working, not the case this test is about.
+     */
+    const store = new InMemoryObjectStore();
+    const published = await publishNetworkShards(store, network(), { version: "v1" });
+    const { mapStopTiles: _dropped, ...withoutProjection } = published.index!;
+    await new ArtifactStore(store).publish({
+      dataset: SHARDED.index,
+      version: "v1",
+      records: [withoutProjection],
+      schemaVersion: "1.0.0",
+      sources: ["bods"],
+    });
+
+    const reader = new NetworkReader(store);
+    expect(
+      await reader.mapStopsInBoundingBox({ west: -1.7, south: 53.7, east: -1.4, north: 53.9 }, 400),
+    ).toBeNull();
+  });
+
+  it("resolves a stop from one small bucket instead of a city's tile", async () => {
+    const { reader } = await publishedReader();
+    const wide = await reader.stopsInBoundingBox(
+      { west: -2, south: 53.5, east: -1.2, north: 54 },
+      400,
+    );
+    const target = wide.stops[0]!;
+
+    const fresh = await publishedReader();
+    fresh.reads.length = 0;
+    const found = await fresh.reader.stopByKey(target.id);
+
+    expect(found?.id).toBe(target.id);
+    expect(found?.name).toBe(target.name);
+    // Not one stop tile, and not the locator either: the detail bucket answers on its own.
+    expect(fresh.reads.filter((key) => key.includes("network/stops-tile/"))).toEqual([]);
+    expect(fresh.reads.filter((key) => key.includes("network/stop-locator/"))).toEqual([]);
+    expect(fresh.reads.some((key) => key.includes("network/stop-detail/"))).toBe(true);
+  });
+
+  it("resolves the same stop by its ATCO code, through the alias", async () => {
+    const { reader } = await publishedReader();
+    const wide = await reader.stopsInBoundingBox(
+      { west: -2, south: 53.5, east: -1.2, north: 54 },
+      400,
+    );
+    const target = wide.stops.find((stop) => stop.atcoCode !== stop.id)!;
+    expect(target).toBeDefined();
+
+    const fresh = await publishedReader();
+    const found = await fresh.reader.stopByKey(target.atcoCode);
+    expect(found?.id).toBe(target.id);
+  });
+
+  it("falls back to the tiles when the artifact has no detail buckets", async () => {
+    const store = new InMemoryObjectStore();
+    const published = await publishNetworkShards(store, network(), { version: "v1" });
+    const { stopDetailBuckets: _dropped, ...older } = published.index!;
+    await new ArtifactStore(store).publish({
+      dataset: SHARDED.index,
+      version: "v1",
+      records: [older],
+      schemaVersion: "1.0.0",
+      sources: ["bods"],
+    });
+
+    const reader = new NetworkReader(store);
+    const wide = await reader.stopsInBoundingBox(
+      { west: -2, south: 53.5, east: -1.2, north: 54 },
+      400,
+    );
+    // The old path still answers, which is what keeps a deployment working across the republish.
+    expect(await reader.stopByKey(wide.stops[0]!.id)).not.toBeNull();
+  });
+
+  it("finds a pattern by its id, from one bucket rather than a geographic scan", async () => {
+    const { reader, reads } = await publishedReader();
+    const built = network();
+    const wanted = built.patterns.slice(0, 3).map((pattern) => pattern.id);
+
+    reads.length = 0;
+    const found = await reader.patternsByIds(wanted);
+
+    expect(found.available).toBe(true);
+    expect(found.complete).toBe(true);
+    expect(found.patterns.size).toBe(wanted.length);
+    for (const id of wanted) {
+      expect(found.patterns.get(id)?.stopSequence.length).toBeGreaterThan(0);
+    }
+    expect(reads.filter((key) => key.includes(SHARDED.patternTile))).toEqual([]);
+    // One object per bucket the wanted patterns hash into, never one per pattern and never a
+    // bucket the publish did not write.
+    const bucketReads = reads.filter((key) => key.includes("network/pattern-index/"));
+    expect(bucketReads.length).toBeGreaterThan(0);
+    expect(bucketReads.length).toBeLessThanOrEqual(wanted.length);
+  });
+
+  it("says a pattern index is unavailable rather than reporting a network with no routes", async () => {
+    // An artifact published before this family existed. The caller has to be able to tell that
+    // apart from "these patterns do not exist", which is the opposite fact.
+    const store = new InMemoryObjectStore();
+    const built = network();
+    const published = await publishNetworkShards(store, built, { version: "v1" });
+    const index = { ...published.index!, patternIndexBuckets: 0, patternIndexShards: [] };
+    await new ArtifactStore(store).publish({
+      dataset: SHARDED.index,
+      version: "v2",
+      records: [{ ...index, version: "v2" }],
+      schemaVersion: "1.0.0",
+      sources: ["naptan"],
+    });
+
+    const reader = new NetworkReader(store);
+    const found = await reader.patternsByIds([built.patterns[0]!.id]);
+    expect(found.available).toBe(false);
+    expect(found.patterns.size).toBe(0);
+  });
+});
+
+/**
+ * The viewport parses what it returns, not the tile it came from.
+ *
+ * Run 54 measured one `/v1/map` request decoding 7.00 MiB into 23,806 stop records and answering
+ * with 400 of them, on an isolate that the platform then killed at its second request. The box
+ * filter ran over finished objects, so the other 23,406 were allocated and discarded. These
+ * assert the two things that matter about moving it into the parse: that the records stop being
+ * built, and that the answer does not change.
+ */
+describe("a viewport allocates the stops it keeps", () => {
+  it("builds far fewer records than the tile holds, for a box inside one tile", async () => {
+    const { reader } = await publishedReader();
+
+    // The whole tile, which is what the reader used to build whatever the box asked for.
+    const wide = await reader.stopsInBoundingBox(
+      { west: -3, south: 53, east: -1, north: 54.5 },
+      400,
+    );
+    expect(wide.stops.length).toBeGreaterThan(0);
+
+    const ledger = new ReadLedger(5_000);
+    const narrow = await reader.stopsInBoundingBox(
+      { west: -1.5605, south: 53.7994, east: -1.5595, north: 53.7998 },
+      400,
+      Date.now(),
+      ledger,
+    );
+
+    // Armley Road is in that pinhole; nothing else published here is.
+    expect(narrow.stops.map((stop) => stop.name)).toContain("Armley Road");
+    expect(narrow.stops.length).toBeLessThan(wide.stops.length);
+
+    /*
+     * The measurement the fix is for. `records` counts what the parse built, so a filter applied
+     * after the parse would leave this at the tile's full count however small the box was.
+     */
+    const parsed = ledger.toJSON().families.stops?.records ?? null;
+    expect(parsed).not.toBeNull();
+    expect(parsed).toBe(narrow.stops.length);
+  });
+
+  it("returns the same stops whether or not the filter ran", async () => {
+    const { reader } = await publishedReader();
+    const bbox = { west: -1.7, south: 53.7, east: -1.4, north: 53.9 };
+
+    const viaFilter = await reader.stopsInBoundingBox(bbox, 400);
+    // The unfiltered path, filtered afterwards, is the answer the filter must reproduce exactly.
+    const all = await reader.stopsInTiles(stopTilesForBoundingBox(bbox));
+    const expected = all.stops
+      .filter((stop) => {
+        const { lat, lon } = stop.locationCoordinate;
+        return lat >= bbox.south && lat <= bbox.north && lon >= bbox.west && lon <= bbox.east;
+      })
+      .map((stop) => stop.id)
+      .sort();
+
+    expect(viaFilter.stops.map((stop) => stop.id).sort()).toEqual(expected);
+  });
+
+  it("does not cache a filtered parse as though it were the whole tile", async () => {
+    const { reader } = await publishedReader();
+    const pinhole = { west: -1.5605, south: 53.7994, east: -1.5595, north: 53.7998 };
+
+    await reader.stopsInBoundingBox(pinhole, 400);
+    // A wide box over the same tile must still see everything in it: if the pinhole's parse had
+    // been cached, the tile would now "be" one stop and the rest of the city would vanish.
+    const wide = await reader.stopsInBoundingBox(
+      { west: -3, south: 53, east: -1, north: 54.5 },
+      400,
+    );
+    expect(wide.stops.length).toBeGreaterThan(1);
   });
 });

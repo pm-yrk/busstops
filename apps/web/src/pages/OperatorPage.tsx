@@ -9,9 +9,12 @@ import {
   RouteBadge,
   ServiceBanner,
 } from "../components/primitives.js";
+import { PixelVista } from "../components/pixel/PixelVista.js";
 import { apiClient } from "../lib/api.js";
 import { useFetch } from "../lib/use-fetch.js";
 import "./OperatorPage.css";
+import { TicketHandoff } from "../components/TicketHandoff.js";
+import { PixelSectionHeading } from "../components/pixel/PixelSectionHeading.js";
 
 /**
  * Operator page (docs/03_SITE_MAP_AND_UX.md "Operator/network").
@@ -53,26 +56,81 @@ export function OperatorPage() {
     );
   }
 
-  const { operator, routes, metrics, rankingEligible, rankingIneligibleReason, coverageCaveats } =
-    response.data;
+  const {
+    operator,
+    routes,
+    metrics,
+    rankingEligible,
+    rankingIneligibleReason,
+    coverageCaveats,
+    incidents,
+  } = response.data;
+  const undescribed = routes.filter((route) => !route.description).length;
 
   return (
     <article className="page operator-page">
       <ServiceBanner meta={response.meta} />
 
-      <header className="operator-page__header">
-        <h1>{operator.name}</h1>
-        {operator.contactUrl ? (
-          <p>
-            <a href={operator.contactUrl} rel="noreferrer noopener" target="_blank">
+      <PixelVista
+        title={operator.name}
+        /*
+         * `https` only. `contactUrl` is `agency_url` from the operator's own feed, so it is feed
+         * text, and the pipeline accepts `http` — a passenger should not be sent from here to a
+         * plaintext page. The ticket hand-off below applies the same rule and says where the
+         * link goes; this one is just the name of the thing.
+         */
+        standfirst={
+          operator.contactUrl && /^https:\/\//i.test(operator.contactUrl) ? (
+            <a href={operator.contactUrl} rel="noreferrer noopener external" target="_blank">
               Operator website
             </a>
-          </p>
-        ) : null}
-      </header>
+          ) : undefined
+        }
+        vista="depot"
+      />
+
+      {/*
+        Where a passenger who followed an operator link actually wanted to end up.
+ 
+        Both the stop board and "Bus not come?" offer the operator as the way to buy a ticket or
+        ask a question, and this page answered with a name and a performance grid. The hand-off
+        decides between a verified seller and the operator's own published address, and renders
+        nothing at all when it has neither — so there is never a dead button here.
+      */}
+      <TicketHandoff operator={operator} headingLevel={2} />
+
+      {/*
+        What this operator is, in the fields the endpoint actually returns.
+ 
+        The page went straight from a name into a performance grid that is mostly suppressed and
+        then into a list of routes. None of that answers "how big is this operator and is anything
+        wrong with it", which is the question somebody arriving from a bus has.
+      */}
+      <section className="operator-summary" aria-label="About this operator">
+        <dl className="operator-summary__facts">
+          <div>
+            <dt>Routes published</dt>
+            <dd>{routes.length}</dd>
+          </div>
+          <div>
+            <dt>Disruption</dt>
+            <dd>{incidents.length > 0 ? `${incidents.length} reported` : "none reported"}</dd>
+          </div>
+          <div>
+            <dt>Comparable</dt>
+            {/*
+              Whether this operator's sample supports comparison at all, said once at the top
+              rather than discovered by reading a grid of dashes.
+            */}
+            <dd>{rankingEligible ? "yes" : "not yet"}</dd>
+          </div>
+        </dl>
+      </section>
 
       <section aria-labelledby="operator-metrics-heading" className="operator-page__section">
-        <h2 id="operator-metrics-heading">Performance</h2>
+        <PixelSectionHeading mark="chart" id="operator-metrics-heading">
+          Performance
+        </PixelSectionHeading>
 
         {!rankingEligible && rankingIneligibleReason ? (
           <p className="operator-page__ranking-note">{rankingIneligibleReason}</p>
@@ -98,14 +156,25 @@ export function OperatorPage() {
       </section>
 
       <section aria-labelledby="operator-routes-heading" className="operator-page__section">
-        <h2 id="operator-routes-heading">Routes</h2>
+        <PixelSectionHeading mark="route" id="operator-routes-heading">
+          Routes
+        </PixelSectionHeading>
         {routes.length > 0 ? (
           <ul className="operator-page__routes">
             {routes.map((route) => (
               <li key={route.id}>
                 <Link to={`/routes/${route.id}`}>
                   <RouteBadge name={route.publicName} />
-                  <span>{route.description ?? "No description published"}</span>
+                  {/*
+                    Nothing where there is nothing.
+ 
+                    Every route without a published description printed "No description
+                    published", so an operator with forty routes printed that sentence forty
+                    times — a wall of the same absence, which reads as a broken page rather than
+                    as a gap in the data. The badge is the route's name and is enough on its own;
+                    the count of how many lack a description is stated once, below.
+                  */}
+                  {route.description ? <span>{route.description}</span> : null}
                 </Link>
               </li>
             ))}
@@ -116,10 +185,20 @@ export function OperatorPage() {
             description="No routes for this operator appear in the published timetable data."
           />
         )}
+        {/* The absence, counted once, instead of printed once per route. */}
+        {undescribed > 0 ? (
+          <p className="muted small">
+            {undescribed === routes.length
+              ? "None of these routes has a description in the published data, so each is shown by its number."
+              : `${undescribed} of these routes have no description in the published data.`}
+          </p>
+        ) : null}
       </section>
 
       <section aria-labelledby="operator-coverage-heading" className="operator-page__section">
-        <h2 id="operator-coverage-heading">What we can and cannot see</h2>
+        <PixelSectionHeading mark="warning" id="operator-coverage-heading">
+          What we can and cannot see
+        </PixelSectionHeading>
         <ul className="operator-page__caveats">
           {coverageCaveats.map((caveat) => (
             <li key={caveat}>{caveat}</li>

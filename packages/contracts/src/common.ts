@@ -28,6 +28,7 @@ export const DataSourceNameSchema = z.enum([
   "webtris",
   "street_manager",
   "osm",
+  "os_code_point",
   "open_meteo",
   "environment_agency",
   "derived",
