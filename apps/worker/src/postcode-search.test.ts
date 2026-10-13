@@ -22,6 +22,9 @@ const LS1 = [
 ];
 const M1 = [{ id: "M1 1AE", coordinate: { lat: 53.48347, lon: -2.23118 } }];
 
+/** Not "v1": the postcode family's version must never be assumed to be the network's. */
+const POSTCODE_VERSION = "2026-10-13T09:07:01.363Z";
+
 function recordingStore() {
   const inner = new InMemoryObjectStore();
   const reads: string[] = [];
@@ -60,18 +63,27 @@ async function published(options: { postcodes: boolean }) {
     schemaVersion: "1.0.0",
   });
   if (options.postcodes) {
-    await artifacts.publish({
-      dataset: postcodeBucketDataset("LS1"),
-      version: "v1",
-      records: LS1,
-      schemaVersion: "1.0.0",
-    });
-    await artifacts.publish({
-      dataset: postcodeBucketDataset("M1"),
-      version: "v1",
-      records: M1,
-      schemaVersion: "1.0.0",
-    });
+    /*
+     * Published at its own version, deliberately unlike the network index's.
+     *
+     * Code-Point Open is a quarterly product with nothing to do with a timetable build, so the two
+     * families are on separate timelines and in production their versions differ. These tests used
+     * to publish both at "v1", which made them coincide — and that hid a reader composing postcode
+     * keys out of the *network* version, so every read missed and search answered nothing for
+     * every postcode in England. The deployed probe found it; this is the version of the fixture
+     * that would have.
+     */
+    for (const [outward, records] of [
+      ["LS1", LS1],
+      ["M1", M1],
+    ] as const) {
+      await artifacts.publish({
+        dataset: postcodeBucketDataset(outward),
+        version: POSTCODE_VERSION,
+        records,
+        schemaVersion: "1.0.0",
+      });
+    }
   }
   return { reader: new NetworkReader(recording.store), reads: recording.reads };
 }
@@ -104,7 +116,13 @@ describe("finding a postcode", () => {
 
     await reader.postcodeMatches("LS1 4DY");
 
-    const opened = reads.filter((key) => key.includes("search/postcodes/"));
+    /*
+     * Objects, not manifests. Each candidate costs a small manifest read as well — the family is on
+     * its own version timeline, so the version has to be asked for rather than assumed.
+     */
+    const opened = reads.filter(
+      (key) => key.startsWith("data/") && key.includes("search/postcodes/"),
+    );
     expect(opened, "one postcode object, not two").toHaveLength(1);
     expect(opened[0]).toContain("search/postcodes/LS1");
     // And emphatically not the district next door.
@@ -146,7 +164,9 @@ describe("finding a postcode", () => {
       "LS1 4AP",
       "LS1 4DY",
     ]);
-    expect(reads.filter((key) => key.includes("search/postcodes/"))).toHaveLength(1);
+    expect(
+      reads.filter((key) => key.startsWith("data/") && key.includes("search/postcodes/")),
+    ).toHaveLength(1);
 
     // Without one, LS14 is tried and has nothing, so LS1 answers.
     reads.length = 0;
@@ -155,7 +175,7 @@ describe("finding a postcode", () => {
       "LS1 4DY",
     ]);
     expect(
-      reads.filter((key) => key.includes("search/postcodes/")).length,
+      reads.filter((key) => key.startsWith("data/") && key.includes("search/postcodes/")).length,
       "the ambiguity costs one extra small read and only when it is ambiguous",
     ).toBeLessThanOrEqual(2);
   });

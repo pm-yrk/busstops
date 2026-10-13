@@ -2429,7 +2429,6 @@ export class NetworkReader {
     }
     if (outwardCandidates.length === 0) return [];
 
-    const index = await this.networkIndex(Date.now());
     const canonical = normalisePostcode(query);
     /*
      * The text to match against. A whole postcode is compared to its canonical form; a prefix is
@@ -2442,10 +2441,24 @@ export class NetworkReader {
     let records: Array<{ id: string; coordinate: Coordinate }> = [];
     let chars = 0;
 
+    const artifacts = new ArtifactStore(this.store);
     for (const candidate of outwardCandidates) {
+      /*
+       * This family's own version, from its own manifest.
+       *
+       * It used to be handed the *network index's* version, and the deployed probe is what found
+       * that: the index is published on its own timeline — Code-Point Open is a quarterly product
+       * that has nothing to do with a timetable build — so the key it composed named a version
+       * that had never existed for a postcode object, every read missed, and search answered
+       * nothing for every postcode in England. The unit tests passed because they published both
+       * families at "v1", which made the two versions coincide and the fault invisible.
+       */
+      const dataset = postcodeBucketDataset(candidate);
+      const manifest = await artifacts.readManifest(dataset);
+      if (manifest === null) continue;
       const read = await this.readShardSized<{ id: string; coordinate: Coordinate }>(
-        postcodeBucketDataset(candidate),
-        index?.version ?? "",
+        dataset,
+        manifest.version,
         Date.now(),
         ledger ? { ledger, family: "postcodes", budgetReason: "postcode_read" } : undefined,
         (body, start, end) => {
@@ -2512,7 +2525,22 @@ export class NetworkReader {
   private serviceNamesCache: Map<string, string> | null = null;
 
   async serviceNames(ledger?: ReadLedger): Promise<Map<string, string> | null> {
-    if (this.serviceNamesCache) return this.serviceNamesCache;
+    /*
+     * Noted on every call, not only on the one that reads.
+     *
+     * The first version recorded its cost after the fetch and returned early from the cache above
+     * it, so thirty measured map requests against a warm isolate produced no note at all — and an
+     * absent note reads exactly like "the projection was never used". The note is a map write; the
+     * read it describes is the expensive part, and saying which request paid for it is worth more
+     * than the write costs.
+     */
+    if (this.serviceNamesCache) {
+      ledger?.artifactNote({
+        serviceNamesRecords: this.serviceNamesCache.size,
+        serviceNamesResident: true,
+      });
+      return this.serviceNamesCache;
+    }
     const artifacts = new ArtifactStore(this.store);
     try {
       const manifest = await artifacts.readManifest(SERVICE_NAMES_DATASET);
@@ -2530,15 +2558,20 @@ export class NetworkReader {
       ledger?.artifactNote({
         serviceNamesChars: raw.length,
         serviceNamesRecords: names.size,
+        serviceNamesResident: false,
       });
       this.serviceNamesCache = names;
       return names;
-    } catch {
+    } catch (error) {
       /*
        * A projection that cannot be read is not a reason to answer nothing. The caller has a
        * complete path through the services themselves, and taking it is strictly better than a
-       * map with no route numbers on it.
+       * map with no route numbers on it — but it is said out loud, because a silent fallback to a
+       * 4.7 MiB read is the kind of regression that hides for weeks.
        */
+      ledger?.artifactNote({
+        serviceNamesFailed: error instanceof Error ? error.name : "unknown",
+      });
       return null;
     }
   }
