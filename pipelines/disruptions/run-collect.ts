@@ -98,7 +98,27 @@ main()
   .then((code) => {
     process.exitCode = code;
   })
+  /*
+   * A crash has to leave something readable behind.
+   *
+   * This run failed from `main` with "Process completed with exit code 1" and nothing else: the
+   * only deliberate failure path writes a report and annotates it, so a bare exit code means the
+   * collector threw and this handler swallowed the reason. Job logs are not reachable from the
+   * build container, so an un-annotated crash is a failure that cannot be diagnosed without
+   * running it again and hoping.
+   */
   .catch((error: unknown) => {
-    console.error(error instanceof Error ? `${error.name}: ${error.message}` : String(error));
+    const described = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+    console.error(described);
+    const crash: Record<string, unknown> = { outcome: "threw", error: described };
+    if (error instanceof Error && error.stack) {
+      // The first few frames only: enough to name the module, short enough for an annotation.
+      crash.stack = error.stack.split("\n").slice(1, 5).join(" | ");
+    }
+    try {
+      writeReport(crash);
+    } catch {
+      // A report that cannot be written must not replace the exit code with its own failure.
+    }
     process.exitCode = 1;
   });

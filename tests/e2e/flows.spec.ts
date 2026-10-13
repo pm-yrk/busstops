@@ -1,5 +1,12 @@
 import { expect, test, type Page } from "@playwright/test";
-import { ROUTE_ID, STOP_ID, ROUTE_DETAIL, STOP_RESPONSE, mockApi } from "./fixtures.js";
+import {
+  ROUTE_ID,
+  STOP_ID,
+  ROUTE_DETAIL,
+  STOP_RESPONSE,
+  POSTCODE_SEARCH_RESULTS,
+  mockApi,
+} from "./fixtures.js";
 
 /**
  * The joins between pages, which is where a passenger actually lives.
@@ -389,6 +396,47 @@ test.describe("the walk a passenger takes", () => {
    * out of the journey — into the route, which is also where the ticket hand-off lives, and into
    * the boarding stop's own board.
    */
+  /*
+   * A postcode is how a lot of people would start, and it matched nothing at all.
+   *
+   * The index holds stops, routes, operators and landmarks; a postcode is none of those, so
+   * "LS1 4DY" returned an empty page. What somebody who types their postcode wants is not a
+   * journey plan to it — they are standing there — it is the stops within a few streets, so the
+   * result opens the map around the position rather than the planner.
+   */
+  test("a postcode finds its position and opens the map around it", async ({ page }) => {
+    await mockApi(page, { "/v1/search": POSTCODE_SEARCH_RESULTS });
+    await page.goto("/search?q=LS1%204DY");
+
+    const result = page.getByRole("link", { name: /LS1 4DY/ }).first();
+    await expect(result).toBeVisible();
+
+    // Labelled as what it is, and not warned about as though it were a stop with no live data.
+    await expect(page.getByText("Postcode").first()).toBeVisible();
+    await expect(page.getByText("Timetable only")).toHaveCount(0);
+
+    /*
+     * The link carries the position, which is the thing that makes it useful. Asserted before the
+     * click because a bbox is what the map reads, and a result that linked to the right page with
+     * the wrong box would look identical.
+     */
+    const href = (await result.getAttribute("href")) ?? "";
+    expect(href, href).toContain("/live?bbox=");
+    const bbox = decodeURIComponent(href.split("bbox=")[1] ?? "")
+      .split(",")
+      .map(Number);
+    expect(bbox).toHaveLength(4);
+    const [west, south, east, north] = bbox as [number, number, number, number];
+    expect(west).toBeLessThan(-1.54666);
+    expect(east).toBeGreaterThan(-1.54666);
+    expect(south).toBeLessThan(53.79513);
+    expect(north).toBeGreaterThan(53.79513);
+
+    await result.click();
+    await expect(page).toHaveURL(/\/live\?bbox=/);
+    await expect(page.locator("h1")).toBeVisible();
+  });
+
   test("a journey leads on to the route it recommends and the stop it starts from", async ({
     page,
   }) => {

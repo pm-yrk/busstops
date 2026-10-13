@@ -146,11 +146,23 @@ const PAGES = [
  */
 
 /**
- * Clicks a stop where the renderer actually drew one.
+ * Clicks a stop where the renderer actually drew one, and where the click can land.
  *
  * There is no element to click any more: stops are a symbol layer. This asks the map for a stop
  * feature on screen, converts its position back to the page, and clicks there — which is what a
  * person does, and the only way the map's own click handler can be exercised.
+ *
+ * It takes the first *reachable* feature rather than the first one, which is the fix the bus click
+ * already had and this one did not. `desktop/live opens the arrival board when a stop is clicked`
+ * failed three runs running with "no board opened" while `phone/live` passed the same check and
+ * read four real departures off the panel. A check that fails at one width and passes at another
+ * is describing the geometry of the page, not the handler: four hundred stops in a city centre
+ * overlap, and on a desktop the side panel claims the right third of the map, so the first painted
+ * feature can easily be under it. A click there lands on the panel and opens nothing.
+ *
+ * `elementFromPoint` is the browser's own answer to "what would this click hit", so a stop under
+ * something else is skipped for the next one. If every painted stop is covered, that is still a
+ * failure and the message names what covered them — it does not quietly pass.
  */
 async function clickPaintedStop(page, sink) {
   await waitForPaintedFeatures(page, ["stop-pips", "stop-flags", "stop-clusters"]);
@@ -158,17 +170,46 @@ async function clickPaintedStop(page, sink) {
     const map = globalThis.__busstopsMap;
     if (!map) return null;
     const features = map.queryRenderedFeatures({ layers: ["stop-flags", "stop-pips"] });
-    const feature = features[0];
-    if (!feature) return null;
-    const projected = map.project(feature.geometry.coordinates);
-    const box = map.getCanvas().getBoundingClientRect();
-    return { x: box.left + projected.x, y: box.top + projected.y };
+    if (features.length === 0) return null;
+
+    const canvas = map.getCanvas();
+    const box = canvas.getBoundingClientRect();
+    let covered = 0;
+    let offscreen = 0;
+    const blockers = [];
+    for (const feature of features) {
+      const projected = map.project(feature.geometry.coordinates);
+      const x = box.left + projected.x;
+      const y = box.top + projected.y;
+      if (x < 0 || y < 0 || x > globalThis.innerWidth || y > globalThis.innerHeight) {
+        offscreen += 1;
+        continue;
+      }
+      const hit = document.elementFromPoint(x, y);
+      if (hit === canvas || canvas.contains(hit)) {
+        return { x, y, covered, offscreen, of: features.length };
+      }
+      covered += 1;
+      if (blockers.length < 3 && hit) {
+        blockers.push(
+          `${hit.tagName.toLowerCase()}${hit.className ? `.${String(hit.className).split(/\s+/).slice(0, 2).join(".")}` : ""}`,
+        );
+      }
+    }
+    return { blocked: covered, offscreen, of: features.length, blockers };
   });
   if (!point) {
     throw new Error(
       `no stop was painted, so none could be clicked — ${describeVehicleLayers(
         await vehicleLayerState(page),
       )}${describeConsole(sink)}`,
+    );
+  }
+  if (point.x === undefined) {
+    throw new Error(
+      `none of the ${point.of} painted stop(s) could be clicked: ${point.blocked} under ` +
+        `${point.blockers.join(", ") || "something unidentifiable"}, ${point.offscreen} off-screen` +
+        describeConsole(sink),
     );
   }
   await page.mouse.click(point.x, point.y);
@@ -562,6 +603,9 @@ function watch(page, sink) {
  * measured the hero, the basemap and six pages reported only a stack trace about a click. A
  * failure is a failed check with a one-line reason, which is what the rest of this file does.
  */
+/** Widths that ran to the end, so a short run cannot be read as a clean one. */
+const completedWidths = [];
+
 for (const size of WIDTHS) {
   console.log(`\n${size.name} (${size.width}×${size.height})`);
   const context = await browser.newContext({
@@ -2001,13 +2045,32 @@ for (const size of WIDTHS) {
   await walker.close();
 
   await context.close();
+  completedWidths.push(size.name);
 }
 
 await browser.close();
 
+/*
+ * Which widths actually got all the way through, recorded as a check of its own.
+ *
+ * "337 of 348 passed" reads better than "447 of 454" and covered *less*: the phone width did not
+ * finish that run, so a hundred checks were never attempted and the total silently shrank with
+ * them. A sweep that stops early and reports only a ratio invites exactly the comparison this
+ * project has already been wrong about once — a smaller denominator is not a better result.
+ */
+record(
+  "the sweep reached every width",
+  completedWidths.length === WIDTHS.length,
+  `${completedWidths.join(", ") || "none"} of ${WIDTHS.map((width) => width.name).join(", ")}` +
+    (completedWidths.length === WIDTHS.length
+      ? ""
+      : " — the totals below cover fewer pages than a full run and must not be compared to one"),
+);
+
 const failures = results.filter((result) => !result.ok);
 console.log(
-  `\nVisual QA: ${results.length - failures.length} of ${results.length} checks passed against ${baseUrl}.`,
+  `\nVisual QA: ${results.length - failures.length} of ${results.length} checks passed against ${baseUrl}` +
+    ` (${completedWidths.length} of ${WIDTHS.length} width(s) completed).`,
 );
 /*
  * As annotations too. The sweep's own screenshots are uploaded as an artifact, which is exactly

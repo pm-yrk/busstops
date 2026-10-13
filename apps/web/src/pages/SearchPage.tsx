@@ -31,6 +31,23 @@ function resultHref(result: SearchResult): string {
       return `/routes/${encodeURIComponent(result.id)}`;
     case "operator":
       return `/operators/${encodeURIComponent(result.id)}`;
+    case "postcode": {
+      /*
+       * A postcode is a position, so what it opens is the map around it.
+       *
+       * Not the journey planner, which is where a place goes: somebody who types their postcode is
+       * asking "what can I catch near me", and the answer is the stops within a few streets. The
+       * box is about six hundred metres across, which at this latitude is roughly this much
+       * longitude and this much latitude, and is wide enough to hold the stops either side of a
+       * road without burying them in a city's worth of others.
+       */
+      if (!result.coordinate) return `/search?q=${encodeURIComponent(result.title)}`;
+      const { lat, lon } = result.coordinate;
+      const bbox = [lon - 0.0045, lat - 0.0027, lon + 0.0045, lat + 0.0027]
+        .map((value) => value.toFixed(5))
+        .join(",");
+      return `/live?bbox=${encodeURIComponent(bbox)}`;
+    }
     default: {
       /*
        * A place is somewhere to go, not a departure board.
@@ -62,6 +79,8 @@ function kindLabel(kind: SearchResult["kind"]): string {
       return "Operator";
     case "place":
       return "Place";
+    case "postcode":
+      return "Postcode";
     default:
       return "Area";
   }
@@ -230,7 +249,12 @@ export function SearchPage() {
                     {result.distanceMetres !== undefined && (
                       <span className="muted small">{distanceLabel(result.distanceMetres)}</span>
                     )}
-                    {result.hasLiveCoverage === false && (
+                    {result.hasLiveCoverage === false && result.kind !== "postcode" && (
+                      /*
+                       * "Timetable only" is a statement about a stop or a route. A postcode has no
+                       * services to have live coverage of, so the warning said nothing true about
+                       * it — it just made a correct result look degraded.
+                       */
                       <StateLozenge tone="warning">Timetable only</StateLozenge>
                     )}
                   </span>

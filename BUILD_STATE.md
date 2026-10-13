@@ -121,6 +121,90 @@ date and covered it completely (512 departure shards, 1,289 pattern-trip shards,
 `datesShortOfFullCoverage: []`). One BODS dataset answered 400 during the download and the refresh
 completed around it.
 
+### 13 October: main carries the schedules, and England's postcodes are published
+
+**The branch is merged.** Pull request 3 went into `main` at 55526d1 once its checks were green.
+Its own CI had been failing while the branch's passed, which is only possible when the difference
+is the merge: `main` had moved on with README assets and an asset publisher, and
+`publish-readme-assets.yml` is not Prettier-formatted, so `format:check` failed on the merge commit
+and skipped every step behind it. One `prettier --write` fixed the pull request.
+
+The merge also accepted `main`'s deletion of `CLAUDE.md` and `FIRST_PROMPT_FOR_CLAUDE.md`, removed
+there deliberately on 4 September ("Remove internal build contract from portfolio surface").
+Restoring them here would re-add to `main`, on the next merge, exactly what was taken off the
+public surface on purpose.
+
+**All four verifications, checked rather than assumed.**
+
+1. `preview-departures-refresh.yml` (cron 37 4 \* \* \*) and `prove-horizon.yml` (cron 12 6 \* \* \*)
+   are now **registered and active** — along with `weather.yml`, `disruptions.yml` and
+   `prune-artifacts.yml`, none of which GitHub had ever registered because a schedule and a
+   `workflow_dispatch` are only read from the default branch.
+2. The preview jobs point only at `busstops-artifacts-preview`, hard-coded: weather every thirty
+   minutes, disruptions every ten.
+3. The production jobs are untouched and still read
+   `${{ vars.R2_BUCKET_ARTIFACTS || 'busstops-artifacts' }}`. _One thing this container cannot
+   check:_ the proxy refuses the repository-variables endpoint, so whether `R2_BUCKET_ARTIFACTS` is
+   set — and to what — is not readable from here. If it were ever set to the preview bucket, the
+   production schedules would write into it.
+4. **No deployment could have been triggered.** `deploy.yml` is `workflow_dispatch` only, by
+   design ("a merge that passes CI is not the same event as a decision to put something in front
+   of the public"). The only push-triggered workflows are `ci.yml` and `evidence.yml`.
+
+**And they were dispatched from `main`, not left as "the workflow exists".** `prove-horizon`
+succeeded and reported the real horizon — 13, 14 and 15 October fully covered at 512 departure
+shards each, with 16 October empty and allowed for by slack. `weather` succeeded. `disruptions`
+failed with a bare exit code and nothing else, which was itself a defect: its one deliberate
+failure path writes and annotates a report, so a bare code meant it threw and the handler swallowed
+the reason. That handler now reports.
+
+**The scheduler itself has still not fired.** Twelve scheduled runs are retained and the most
+recent is 2026-09-04T07:58. `publish-readme-assets.yml` has carried a `*/5 * * * *` schedule on
+`main` since well after that date, is registered, is `active`, and has never run. So the merge was
+necessary and is not sufficient: whatever stops scheduled events here is account- or
+repository-level, not a property of which branch the files were on. The repository is public, so
+Actions minutes are not the constraint and £0 is not at risk either way.
+
+**England's postcodes are published.** 2,232 objects, 123,221,585 bytes, zero failures:
+
+    rowsRead 1,749,111   englandPostcodes 1,495,007   notEngland 254,104
+    unparseable 0   offGrid 0   shortRow 0   imputed 849   md5Matches true
+    outwardCodes 2,232   meanBucketBytes 55,207   largest 2,791   smallest 1
+    LS1 4DY → LS1 (526 in bucket): 53.79513, -1.54666
+    M1 1AE  → M1  (548 in bucket): 53.48347, -2.23118
+    SW1A 1AA → SW1A (145 in bucket): 51.50101, -0.14159
+
+Zero unparseable rows and zero off-grid references out of 1.7 million is the parser's own evidence,
+and the coordinates agree with an independent source to within metres — postcodes.io puts LS1 4DY
+at 53.79515, -1.546669 against this index's 53.79513, -1.54666.
+
+Storage with it included: **9,680,360,893 bytes of R2's 10,737,418,240** across 33,045 objects. The
+index is a tenth of the remaining headroom.
+
+### 13 October: I attributed the map's cost to the wrong number, and the instrument now says so
+
+Recorded because it is the same mistake as the harness score, in a new place.
+
+The map was the one endpoint still failing under a page's worth of parallel requests, and the
+endpoint instrument reported `map (Manchester): 2,182,908 chars decoded over 4 objects`. I read
+that as the services object and built a smaller projection — `network/service-names`, id and
+public name only — to replace it. The projection is right and worth having. The attribution was
+wrong: `charsDecoded` counts _tracked shard reads_, which for the map are the stop and pattern
+tiles, and the whole-object services read reports itself through the ledger's artifact notes
+instead. So after the projection shipped the figure came back **byte-for-byte identical**,
+2,182,908 over 4 objects, which is exactly what it should do if that number never included the
+read I changed.
+
+The real figure for the read the projection replaces comes from the bucket proof, which reads the
+object out of R2: `sourceBytes: 4,669,134`. The projection is about 700 KiB of the same answer.
+That is still a sixfold reduction in bytes fetched, decoded and parsed on the map path — it is
+just not something the endpoint instrument had measured, and saying it had was wrong.
+
+The instrument now surfaces the artifact notes per endpoint, so the next run states which
+representation each endpoint used and what it cost, and a claim like this one can be checked
+rather than inferred. The in-code comments that cited the tile figure have been corrected in
+place, because a load-bearing comment carrying the wrong number is worse than no comment.
+
 ### 13 October: Code-Point Open needs no key, and that settles the postcode source
 
 The earlier table in this file said Code-Point Open required an OS Data Hub key. **It does not.**

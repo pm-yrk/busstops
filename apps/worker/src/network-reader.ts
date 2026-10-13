@@ -32,6 +32,8 @@ import {
   searchPrefixDataset,
   serviceBucketDataset,
   serviceBucketFor,
+  SERVICE_NAMES_DATASET,
+  type ServiceName,
   searchPrefixesForWord,
   searchTileDataset,
   searchTilesForBoundingBox,
@@ -59,6 +61,12 @@ import {
   routePatternsDataset,
 } from "@busstops/pipeline-static-network";
 import { PLACES_DATASET, placeAsSearchEntry, type PlaceRecord } from "@busstops/pipeline-places";
+import {
+  looksLikePostcode,
+  normalisePostcode,
+  outwardCode,
+  postcodeBucketDataset,
+} from "@busstops/pipeline-postcodes";
 import type { PatternGeometry } from "@busstops/matching";
 import type { ArtifactFamily, ReadLedger } from "./read-ledger.js";
 
@@ -113,14 +121,23 @@ export interface ReadTrack {
 const MAX_CACHED_SHARDS = 16;
 
 /**
- * How many service buckets one request may read before the whole object is cheaper.
+ * How many service buckets one request may read. **A subrequest budget, not a byte trade-off** —
+ * getting that backwards is what made it too small twice.
  *
- * A board knows two or three service ids, so this is a bound on the worst case rather than an
- * expected path. Eight buckets at about 19 KiB is 152 KiB against the 4.7 MiB the whole object
- * costs; beyond that the arithmetic turns and a request asking for fifty service ids is not a
- * board anyway.
+ * In bytes the buckets always win: 256 buckets at the measured 18 KiB each *is* the 4,669,134-byte
+ * object, so any number below 256 reads fewer bytes than the whole of it. What genuinely bounds
+ * this is Cloudflare's fifty subrequests per invocation, which a board also spends on the index,
+ * its stop, its departure shards, its operators, and its live and disruption reads.
+ *
+ * Eight was a guess. Twenty-four came from measuring Tombland in Norwich at twenty-five services
+ * on one board — and the next run measured that same board at twenty-six, so it fell back again.
+ * Setting the cap at the busiest board yet seen is how it keeps being exceeded by the busiest board
+ * next seen, so thirty-two sits clear of it with about eighteen subrequests left for the rest.
+ *
+ * A request wanting more than this is not a board. It is the map, which wants every name and has
+ * `network/service-names` to read instead.
  */
-const MAX_SERVICE_BUCKETS_PER_REQUEST = 8;
+const MAX_SERVICE_BUCKETS_PER_REQUEST = 32;
 /*
  * Twenty-four mebibytes, up from three, and the reason is the same CPU the old number was defending.
  *
@@ -2350,6 +2367,183 @@ export class NetworkReader {
   }
 
   /**
+   * The postcodes a query could mean, from the one object whose name the query contains.
+   *
+   * "LS1 4DY" matched nothing at all before this: the search index holds stops, routes, operators
+   * and landmarks, and a postcode is none of them. The index is partitioned by outward code, which
+   * is the part the query already carries — so `LS1 4DY` names `search/postcodes/LS1`, about
+   * 55 KiB, and an absent object is a complete answer rather than a reason to look elsewhere.
+   *
+   * Filtered on the id before anything is parsed, like every other read here: a district holds a
+   * few hundred to a few thousand postcodes and a query wants one of them, or the handful sharing
+   * a half-typed sector. The exact match sorts first, because somebody who typed a whole postcode
+   * means that one.
+   *
+   * Empty is the normal answer in three different cases — not a postcode, a district with no
+   * object, a prefix nothing starts with — and search then finds stops and places exactly as it
+   * did before.
+   */
+  async postcodeMatches(
+    query: string,
+    limit = 5,
+    ledger?: ReadLedger,
+  ): Promise<SearchIndexEntry[]> {
+    if (!looksLikePostcode(query)) return [];
+    const bare = query.toUpperCase().replace(/[\s-]+/g, "");
+
+    /*
+     * Which object to open, which a half-typed postcode does not always say.
+     *
+     * A whole postcode is unambiguous: `normalisePostcode` knows that `LS14DY` is `LS1 4DY` and
+     * not district LS14, because the inward code is always three characters. A prefix is not.
+     * `LS14` is district LS14 in Leeds *and* the first four characters of `LS1 4DY`, and nothing
+     * in the text decides between them.
+     *
+     * So: if the query has a separator in it, the person has already said which — `LS1 4` means
+     * district LS1. Without one, the longer reading is tried first and the shorter second, which
+     * costs a second small read only for an ambiguous prefix that the longer reading does not
+     * answer.
+     */
+    const separated = /[\s-]/.test(query.trim());
+    const outwardCandidates: string[] = [];
+    const push = (candidate: string | null | undefined) => {
+      if (
+        candidate &&
+        /^[A-Z]{1,2}\d[A-Z\d]?$/.test(candidate) &&
+        !outwardCandidates.includes(candidate)
+      ) {
+        outwardCandidates.push(candidate);
+      }
+    };
+    if (separated) {
+      push(
+        query
+          .trim()
+          .toUpperCase()
+          .split(/[\s-]+/)[0],
+      );
+    } else {
+      push(outwardCode(query));
+      push(bare.match(/^[A-Z]{1,2}\d[A-Z\d]?/)?.[0]);
+      push(bare.match(/^[A-Z]{1,2}\d/)?.[0]);
+    }
+    if (outwardCandidates.length === 0) return [];
+
+    const index = await this.networkIndex(Date.now());
+    const canonical = normalisePostcode(query);
+    /*
+     * The text to match against. A whole postcode is compared to its canonical form; a prefix is
+     * compared without its space, because `LS1 4` and `LS14` are the same thing half-typed and the
+     * stored id has a space in it.
+     */
+    const wantedBare = bare;
+
+    let outward = outwardCandidates[0]!;
+    let records: Array<{ id: string; coordinate: Coordinate }> = [];
+    let chars = 0;
+
+    for (const candidate of outwardCandidates) {
+      const read = await this.readShardSized<{ id: string; coordinate: Coordinate }>(
+        postcodeBucketDataset(candidate),
+        index?.version ?? "",
+        Date.now(),
+        ledger ? { ledger, family: "postcodes", budgetReason: "postcode_read" } : undefined,
+        (body, start, end) => {
+          const id = valueAt(body, start, end, "id");
+          if (id === null) return false;
+          return id.replace(" ", "").startsWith(wantedBare);
+        },
+      );
+      chars += read.chars;
+      if (read.records.length > 0) {
+        outward = candidate;
+        records = read.records;
+        break;
+      }
+    }
+
+    ledger?.artifactNote({
+      postcodeOutward: outward,
+      postcodeChars: chars,
+      postcodeMatches: records.length,
+    });
+
+    const matches = records
+      .filter((record) => typeof record.id === "string" && record.coordinate)
+      .sort((a, b) => (a.id === canonical ? -1 : b.id === canonical ? 1 : a.id.localeCompare(b.id)))
+      .slice(0, limit);
+
+    return matches.map((record) => ({
+      kind: "postcode" as const,
+      id: record.id,
+      title: record.id,
+      // The action, not the kind: the lozenge beside it already says "Postcode".
+      subtitle: "Stops nearby",
+      coordinate: record.coordinate,
+      tokens: [],
+      codes: [record.id],
+      hasLiveCoverage: false,
+      prominence: 0,
+    }));
+  }
+
+  /**
+   * Every service's id and the number on its front, which is all the map ever reads.
+   *
+   * The buckets fixed the board, which wants three services, and cannot fix the map, which wants
+   * hundreds: a city viewport names a few hundred distinct services, those hash across nearly all
+   * 256 buckets, and a Workers Free invocation gets fifty subrequests. So the map correctly falls
+   * through to the whole services object, which the bucket proof measures at 4,669,134 bytes. It
+   * is not counted in the endpoint instrument's `charsDecoded` — that is tracked shard reads, the
+   * tiles — which is why this records its own cost in the artifact notes below.
+   *
+   * It is not the records the map needs, though. Every use of a resolved service in `/v1/map` is
+   * `service.id` or `service.publicName`; the operator, the licence ids, the provenance and the
+   * direction descriptions are all fetched, decoded and parsed to read two strings off each
+   * record. This reads the projection instead: the same answer for about a sixth of the bytes.
+   *
+   * Null when the family is not published at this version, which is what a deployment reading an
+   * older artifact sees, and the caller falls back to the services themselves.
+   *
+   * The manifest and the object directly rather than `readCurrent`, for the reason `placeLines`
+   * does the same: `readCurrent` runs an FNV-1a hash over the whole object before anything is
+   * parsed, and the hash is pure computation in the one budget this product is short of.
+   */
+  private serviceNamesCache: Map<string, string> | null = null;
+
+  async serviceNames(ledger?: ReadLedger): Promise<Map<string, string> | null> {
+    if (this.serviceNamesCache) return this.serviceNamesCache;
+    const artifacts = new ArtifactStore(this.store);
+    try {
+      const manifest = await artifacts.readManifest(SERVICE_NAMES_DATASET);
+      if (manifest === null) return null;
+      const raw = await this.store.get(manifest.objectKey);
+      if (raw === null) return null;
+      const names = new Map<string, string>();
+      for (const line of raw.split("\n")) {
+        if (line.length === 0) continue;
+        const record = JSON.parse(line) as ServiceName;
+        if (typeof record?.id === "string" && typeof record.publicName === "string") {
+          names.set(record.id, record.publicName);
+        }
+      }
+      ledger?.artifactNote({
+        serviceNamesChars: raw.length,
+        serviceNamesRecords: names.size,
+      });
+      this.serviceNamesCache = names;
+      return names;
+    } catch {
+      /*
+       * A projection that cannot be read is not a reason to answer nothing. The caller has a
+       * complete path through the services themselves, and taking it is strictly better than a
+       * map with no route numbers on it.
+       */
+      return null;
+    }
+  }
+
+  /**
    * The national services text, held without being parsed.
    *
    * `readCurrent` does two expensive things before a caller sees a record: it runs an FNV-1a hash
@@ -2405,19 +2599,37 @@ export class NetworkReader {
     let bucketsPresent = 0;
     let chars = 0;
 
-    for (const [bucket, wanted] of byBucket) {
-      const want = new Set(wanted);
-      const read = await this.readShardSized<ServiceRoute>(
-        serviceBucketDataset(bucket),
-        index.version,
-        Date.now(),
-        ledger ? { ledger, family: "services", budgetReason: "service_bucket_read" } : undefined,
-        // Tested as text before anything is built, like every other filtered read here.
-        (body, start, end) => {
-          const id = valueAt(body, start, end, "id");
-          return id !== null && want.has(id);
-        },
-      );
+    /*
+     * All the buckets at once, because the saving here is bytes and CPU, not round trips.
+     *
+     * Measured on the deployment: a Manchester board wanting two services read two buckets —
+     * 40,844 characters against the whole object's 4,669,154 — and took 576 ms, while a Norwich
+     * board that fell back to the whole object took 787 ms. Reading a hundredth of the bytes had
+     * not made the board quicker, because the reads were sequential and each R2 round trip costs
+     * more wall clock than the decode it avoids.
+     *
+     * Sequentially, the cap on buckets was also a cap on latency, which is the wrong thing for it
+     * to be: it exists to stop a request reading two hundred objects, not to keep a four-service
+     * board under a deadline. In parallel the wall clock is one round trip regardless of how many
+     * buckets a board's departures happen to span.
+     */
+    const reads = await Promise.all(
+      [...byBucket].map(async ([bucket, wanted]) => {
+        const want = new Set(wanted);
+        return this.readShardSized<ServiceRoute>(
+          serviceBucketDataset(bucket),
+          index.version,
+          Date.now(),
+          ledger ? { ledger, family: "services", budgetReason: "service_bucket_read" } : undefined,
+          // Tested as text before anything is built, like every other filtered read here.
+          (body, start, end) => {
+            const id = valueAt(body, start, end, "id");
+            return id !== null && want.has(id);
+          },
+        );
+      }),
+    );
+    for (const read of reads) {
       if (read.chars > 0) bucketsPresent += 1;
       chars += read.chars;
       for (const service of read.records) found.set(service.id, service);

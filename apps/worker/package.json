@@ -19,7 +19,8 @@
     "@busstops/pipeline-static-network": "*",
     "@busstops/pipeline-weather": "*",
     "zod": "^3.24.1",
-    "@busstops/pipeline-places": "*"
+    "@busstops/pipeline-places": "*",
+    "@busstops/pipeline-postcodes": "*"
   },
   "devDependencies": {
     "typescript": "^5.7.2"

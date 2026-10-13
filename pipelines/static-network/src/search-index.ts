@@ -17,7 +17,14 @@ export interface SearchIndexEntry {
    * and what a passenger wants from one is a journey to it. Merging the two would send somebody
    * searching "York Minster" to a departure board for a cathedral.
    */
-  kind: "stop" | "route" | "operator" | "area" | "place";
+  /**
+   * `postcode` is a position somebody typed, not a thing in the network.
+   *
+   * It has no departures and no routes; what a passenger wants from "LS1 4DY" is the stops around
+   * it. It is a separate kind for the same reason `place` is: merging it into `stop` would send
+   * someone to a departure board for a postcode, and the UI needs to offer the right action.
+   */
+  kind: "stop" | "route" | "operator" | "area" | "place" | "postcode";
   id: string;
   title: string;
   subtitle?: string;

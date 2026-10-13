@@ -568,7 +568,11 @@ export const JourneyPlanResponseSchema = apiEnvelope(
 export type JourneyPlanResponse = z.infer<typeof JourneyPlanResponseSchema>;
 
 export const SearchResultSchema = z.object({
-  kind: z.enum(["stop", "route", "operator", "area", "place"]),
+  /*
+   * `postcode` is a position somebody typed. It carries a coordinate and nothing else — no
+   * departures, no routes — because what a passenger wants from "LS1 4DY" is the stops around it.
+   */
+  kind: z.enum(["stop", "route", "operator", "area", "place", "postcode"]),
   id: z.string(),
   title: z.string(),
   subtitle: z.string().optional(),

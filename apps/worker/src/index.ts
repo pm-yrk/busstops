@@ -814,14 +814,49 @@ router.get("/v1/map", async (_request, { env, url }) => {
    * The same substitution that fixed the stop board in 8828ff8 and route detail in cb610bc. The
    * geometries name their services; asking for those is one bounded scan of the text.
    */
-  const services =
+  /*
+   * And now the names only, because that is all three of the uses below read.
+   *
+   * The buckets cannot help here. A city viewport names a few hundred distinct services, which
+   * hash across nearly all 256 buckets, and reading two hundred objects is worse than reading one
+   * when an invocation gets fifty subrequests — so this path fell through to the whole services
+   * object, which the bucket proof measures at 4,669,134 bytes — fetched, decoded and parsed on
+   * the one endpoint that still answers Cloudflare's error page when a browser opens a page's
+   * worth of requests at once. (Not the endpoint instrument's 2,182,908 characters: that counts
+   * tracked shard reads, the tiles, and this read reports itself in the artifact notes instead.)
+   *
+   * Every use of a resolved service below is `id` or `publicName`, so the projection answers the
+   * same question for about a sixth of the bytes. Absent — a version published before the family
+   * existed — and this falls back to the services themselves, unchanged.
+   */
+  const serviceNameById =
     network && geometries.length > 0
+      ? await ledger.stage("service-names", () => network!.serviceNames(ledger))
+      : null;
+
+  const services =
+    serviceNameById === null && network && geometries.length > 0
       ? await ledger.stage("services", () =>
           network!.servicesByIds(
             new Set(geometries.map((geometry) => geometry.pattern.serviceRouteId)),
           ),
         )
       : new Map<string, ServiceRoute>();
+
+  /*
+   * One lookup over whichever of the two is present.
+   *
+   * Not a converted copy of the projection: building 13,000 `{ id, publicName }` objects to read a
+   * few hundred of them would hand back most of what the smaller object just saved. This allocates
+   * one per service actually used, which is the few hundred on the screen.
+   */
+  const serviceFor = (id: string): { id: string; publicName: string } | undefined => {
+    if (serviceNameById !== null) {
+      const publicName = serviceNameById.get(id);
+      return publicName === undefined ? undefined : { id, publicName };
+    }
+    return services.get(id);
+  };
 
   /*
    * Which services call at each stop on screen.
@@ -843,7 +878,7 @@ router.get("/v1/map", async (_request, { env, url }) => {
     // The legacy path, kept so the map still labels stops between a deploy and the next national
     // rebuild. Labelled as legacy rather than left to look like the intended route.
     for (const geometry of geometries) {
-      const service = services.get(geometry.pattern.serviceRouteId);
+      const service = serviceFor(geometry.pattern.serviceRouteId);
       if (!service) continue;
       for (const stopId of geometry.pattern.stopSequence) {
         const names = routeNamesByStopId.get(stopId);
@@ -881,7 +916,7 @@ router.get("/v1/map", async (_request, { env, url }) => {
      */
     const serviceIdByName = new Map<string, string | null>();
     for (const geometry of geometries) {
-      const service = services.get(geometry.pattern.serviceRouteId);
+      const service = serviceFor(geometry.pattern.serviceRouteId);
       if (!service) continue;
       const name = routeBadgeName(service.publicName);
       const existing = serviceIdByName.get(name);
@@ -906,7 +941,7 @@ router.get("/v1/map", async (_request, { env, url }) => {
       if (!match.best || match.confidence.level === "low") return summary;
 
       const pattern = patternsById.get(match.best.patternId);
-      const service = pattern ? services.get(pattern.serviceRouteId) : undefined;
+      const service = pattern ? serviceFor(pattern.serviceRouteId) : undefined;
       /*
        * A matched vehicle is the one case where the identity is known exactly: the match names the
        * pattern, the pattern names the service. Both travel with it so the marker can open the
@@ -2465,15 +2500,45 @@ router.get("/v1/search", async (_request, { env, url }) => {
   }
   const hits = found.hits;
 
-  const results: SearchResult[] = hits.map((hit) => ({
-    kind: hit.entry.kind,
-    id: hit.entry.id,
-    title: hit.entry.title,
-    ...(hit.entry.subtitle === undefined ? {} : { subtitle: hit.entry.subtitle }),
-    ...(hit.entry.coordinate === undefined ? {} : { coordinate: hit.entry.coordinate }),
-    ...(hit.distanceMetres === undefined ? {} : { distanceMetres: hit.distanceMetres }),
-    hasLiveCoverage: hit.entry.hasLiveCoverage,
-  }));
+  /*
+   * And the postcodes, which the index cannot hold.
+   *
+   * "LS1 4DY" matched nothing at all: stops, routes, operators and landmarks are what the index
+   * carries, and a postcode is none of them. It costs one small object and only when the query
+   * looks like a postcode, so an ordinary search for a place name reads nothing extra — the test
+   * is a regular expression over what was typed, not a lookup.
+   *
+   * First in the list, because somebody who types a postcode means that postcode; the name matches
+   * follow it rather than being replaced by it.
+   */
+  const postcodes = network
+    ? await searchLedger.stage("postcodes", () => network!.postcodeMatches(query, 5, searchLedger))
+    : [];
+
+  const results: SearchResult[] = [...postcodes, ...hits.map((hit) => hit.entry)]
+    .slice(0, 20)
+    .map((entry) => ({
+      kind: entry.kind,
+      id: entry.id,
+      title: entry.title,
+      ...(entry.subtitle === undefined ? {} : { subtitle: entry.subtitle }),
+      ...(entry.coordinate === undefined ? {} : { coordinate: entry.coordinate }),
+      hasLiveCoverage: entry.hasLiveCoverage,
+    }));
+
+  /*
+   * The distance a near-query produced, which only the ranked hits have. Reattached by id rather
+   * than by position, because the postcodes were put in front of them.
+   */
+  const distanceById = new Map(
+    hits
+      .filter((hit) => hit.distanceMetres !== undefined)
+      .map((hit) => [hit.entry.id, hit.distanceMetres!]),
+  );
+  for (const result of results) {
+    const distance = distanceById.get(result.id);
+    if (distance !== undefined) result.distanceMetres = distance;
+  }
 
   return json(
     {

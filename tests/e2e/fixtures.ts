@@ -715,6 +715,29 @@ export const VEHICLE_DETAIL = {
  * `ROUTE_DETAIL`'s route. A fixture world that contradicts itself would let a flow test pass on
  * links that go nowhere in the real product.
  */
+/**
+ * What a postcode search answers with.
+ *
+ * Separate from `SEARCH_RESULTS` because the two queries are different questions: a place name
+ * returns stops, routes and landmarks, and a postcode returns a position. The position is the real
+ * one for LS1 4DY, so the link this produces can be read and checked against a map.
+ */
+export const POSTCODE_SEARCH_RESULTS = {
+  meta: META,
+  data: {
+    results: [
+      {
+        kind: "postcode",
+        id: "LS1 4DY",
+        title: "LS1 4DY",
+        subtitle: "Stops nearby",
+        coordinate: { lat: 53.79513, lon: -1.54666 },
+        hasLiveCoverage: false,
+      },
+    ],
+  },
+};
+
 export const SEARCH_RESULTS = {
   meta: META,
   data: {

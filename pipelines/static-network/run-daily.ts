@@ -31,6 +31,7 @@ import { MAX_PUBLISH_BYTES, publishNetworkShards } from "./src/publish-shards.js
 import { serviceDateHorizonFromEnv } from "./src/service-dates.js";
 import { earliestServiceDateToKeep, pruneExpiredServiceDates } from "./src/prune-service-dates.js";
 import { bucketServices } from "./src/service-buckets.js";
+import { SERVICE_NAMES_DATASET, serviceNames } from "./src/service-names.js";
 import { SHARDED } from "./src/shards.js";
 import { fetchStaticSources } from "./src/sources.js";
 
@@ -511,6 +512,49 @@ async function main(): Promise<number> {
     }
   }
 
+  if (departuresOnly) {
+    /*
+     * And the names-only projection, which is what the map actually reads.
+     *
+     * The buckets fixed the board and cannot fix the map: a city viewport names a few hundred
+     * distinct services, those hash across nearly every bucket, and reading two hundred small
+     * objects is worse than reading one large one when an invocation gets fifty subrequests. So
+     * the map falls back to the whole services object, which the bucket proof measures at
+     * 4,669,134 bytes — fetched, decoded and parsed on the one endpoint still answering
+     * Cloudflare's error page when a browser opens a page's worth of requests at once.
+     *
+     * Every use of a resolved service in `/v1/map` is `id` or `publicName`. This publishes those
+     * two fields and nothing else: about 700 KiB against 4.7 MiB, the same answer for a sixth of
+     * the bytes. Additive and reversible in the same way the buckets are — an absent object means
+     * the map reads the services as it always did.
+     */
+    try {
+      const manifest = await artifacts.publish({
+        dataset: SERVICE_NAMES_DATASET,
+        version,
+        records: serviceNames(network.services),
+        schemaVersion: "1.0.0",
+        sources: ["bods"],
+        partialCoverage: false,
+        notes: "Service ids and public names only, for callers that need every name at once.",
+      });
+      report.serviceNames = {
+        records: manifest.recordCount,
+        bytes: manifest.sizeBytes,
+        bytesPerRecord: Math.round(manifest.sizeBytes / Math.max(1, manifest.recordCount)),
+      };
+      console.log(
+        `Published ${manifest.recordCount} service name(s) at ${version}: ` +
+          `${Math.round(manifest.sizeBytes / 1024)} KiB.`,
+      );
+    } catch (error) {
+      report.serviceNames = {
+        failed: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+      };
+      console.error("Service names could not be published; the timetable refresh still stands.");
+    }
+  }
+
   /*
    * Journey tiles are not published any more.
    *
@@ -768,6 +812,17 @@ function writeReport(report: Record<string, unknown>): void {
     refreshedVersion: report.refreshedVersion,
     serviceDates: report.serviceDates,
     republishedOperators: report.republishedOperators,
+    /*
+     * The three derived families a refresh now republishes, each a line in the digest.
+     *
+     * Left out, and the run that published them could not be told from the run that did not: the
+     * bucket proof reads the bucket and says the family is there, but nothing said whether *this*
+     * refresh wrote it, and the names projection has no proof step of its own at all. A publish
+     * that silently stopped happening is the failure this names.
+     */
+    republishedServices: report.republishedServices,
+    serviceBuckets: report.serviceBuckets,
+    serviceNames: report.serviceNames,
     prunedServiceDates: report.prunedServiceDates,
     publishedDatasets: Array.isArray(report.published) ? report.published.length : undefined,
     failed: report.failed,
