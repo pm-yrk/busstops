@@ -285,13 +285,23 @@ async function main(): Promise<number> {
 
   /*
    * The departure horizon, because "no useful departures" has to be measured rather than assumed.
-   * A dated shard key carries its service date, so the dates present are readable from the keys.
+   *
+   * Only the two date-keyed families, matched on the key shape the pruner itself uses:
+   * `data/network/departures/<date>/<shard>/<version>.jsonl`. Searching the whole key for anything
+   * date-shaped, which is what this did first, reads a *version* timestamp as a service date —
+   * `data/network/operators/2026-09-26T07:48:07.333Z.jsonl` became "service date 2026-09-26", and
+   * the rollback artifact's 2.03 GB and the live artifact's 2.29 GB were reported as two expired
+   * service dates that retention had failed to remove. Four phantom dates and 4.34 GB of phantom
+   * waste, which is exactly the kind of wrong number that gets something deleted.
    */
+  const DATED_PREFIXES = ["data/network/departures/", "data/network/pattern-trips/"];
   const datedByDate = new Map<string, { objects: number; bytes: number }>();
   for (const object of objects) {
-    const match = /(\d{4}-\d{2}-\d{2})/.exec(object.key);
-    if (!match || !object.key.startsWith("data/")) continue;
-    const date = match[1]!;
+    const prefix = DATED_PREFIXES.find((candidate) => object.key.startsWith(candidate));
+    if (prefix === undefined) continue;
+    const segment = object.key.slice(prefix.length).split("/")[0] ?? "";
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(segment)) continue;
+    const date = segment;
     const entry = datedByDate.get(date) ?? { objects: 0, bytes: 0 };
     entry.objects += 1;
     entry.bytes += object.sizeBytes ?? 0;
