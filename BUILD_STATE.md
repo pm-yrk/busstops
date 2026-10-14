@@ -1,6 +1,6 @@
 # Bus Stops. Build State
 
-Last updated: 2026-10-13 (services read by bucket; Code-Point Open needs no credential)
+Last updated: 2026-10-14 (the schedules run from main; boards read buckets at every size)
 
 ## Current status
 
@@ -120,6 +120,109 @@ allowance. Four dated partitions remain at 1.26 GB each; the refresh was asked f
 date and covered it completely (512 departure shards, 1,289 pattern-trip shards,
 `datesShortOfFullCoverage: []`). One BODS dataset answered 400 during the download and the refresh
 completed around it.
+
+### 14 October: boards measured across every size, and the map classified rather than redesigned
+
+**The bucketed index, on real boards spanning the sizes a passenger meets.** Four passes each, on
+the deployment, named stops so each row can be checked by hand:
+
+    Hathersage Avenue    village        1 route    1 bucket    19,358 chars   579 ms
+    Leeds City Bus Stn   interchange    3 routes   3 buckets   55,914 chars   385 ms
+    Blackman Lane        urban Leeds    5 routes   5 buckets  104,293 chars   804 ms
+    Lamb Street          urban Bristol 14 routes  13 buckets  245,095 chars   682 ms
+    Tombland             high service  29 routes  28 buckets  529,022 chars   715 ms
+
+`wholeObjectCharsAcrossBoards: null` — **not one board fell back.** Against the whole-object read
+the proof measures at 4,669,134 bytes, that is forty-five times less for an ordinary urban board and
+nearly nine times less for the worst stop measured, and every board between 385 and 804 ms. Tombland
+came in at 715 ms here against 1,132 ms the day before with the same 28 reads, so that figure was
+variance rather than the cost of the reads. The directive's acceptance test — ordinary boards
+comfortably fast, only extremes near a second — is met, so the scheme stands as it is.
+
+Two stops in that set show **0 departures and 0 routes**: Piccadilly Gardens in Manchester and
+Birmingham Coach Station. That is coverage, not performance — the build takes 60 of the 945 BODS
+timetable datasets — and it is the honest shape of the cap rather than a fault in the index.
+
+**The names projection is correct and is not demonstrated on a hot path.** `network/service-names`
+publishes at 848,199 bytes against the services object's 4,702,273, and the reader prefers it. But
+the endpoint instrument's artifact notes show the map reading no services at all on the sampled
+viewport — its `geometries` are empty when no buses are in frame, and that is the only path that
+resolves services. So the 4.7 MiB read the projection replaces was not happening on that request
+either. It is kept because it is additive, 848 KB, and strictly cheaper whenever that path is taken;
+it is not claimed as a measured improvement.
+
+**The map, classified.** The paced instrument: map 30/30, nearby 30/30, search 30/30, zero platform
+errors, medians 191/89/88 ms — twice in a row. The unpaced harness, which fires twenty-six checks
+back to back: 16 of 26, with every failure a 1102 on `/v1/map` or `/v1/nearby`. Its own
+browser-shaped check is the one worth quoting — _3 of 16 requests across 4 page loads were answered
+by the platform_, the map each time, with one load of the four entirely clean.
+
+So: **LOAD / RESILIENCE BACKLOG**, with the cause named rather than left as a mystery. `/v1/map`
+decodes 2,182,908 characters per request — stop tiles and stop-detail buckets, not services — and is
+the first endpoint to exceed a 10 ms CPU budget once an isolate is already busy. Single requests and
+paced browsing are consistently green. The next honest step, if it is ever promoted, is to reduce
+what a map viewport decodes; it is not a cache, a gate, or a rewrite.
+
+### 14 October: the schedules are alive — I was wrong — and the first real day found four faults
+
+**Correction first.** The entry below says the scheduler is dead account-wide. It is not, and the
+reasoning that reached that conclusion was bad: I watched a thirteen-minute window at 12:00 UTC on
+13 October, saw nothing fire, and treated `publish-readme-assets.yml` as a control that settled the
+question. GitHub had simply not started honouring the newly registered schedules yet. By the
+following morning there were **39 scheduled runs** — collection, the analytics batch, weather,
+disruptions, the daily brief, the README publisher and the preview departures refresh. The merge
+fixed it. The watch was too early, and a thirteen-minute window was never enough to say otherwise.
+
+**The departures refresh is genuinely self-sustaining.** Its 09:41 scheduled run, from `main`, with
+nothing dispatched by hand:
+
+    serviceDates          2026-10-14, 15, 16, 17   512 departure shards each, outcome: covered
+    republishedOperators  567 (all with a NOC)
+    republishedServices   13,120 records / 4,702,273 bytes
+    serviceBuckets        256/256 published, complete: true
+    serviceNames          13,120 records / 848,199 bytes
+    prunedServiceDates    1,804 keys deleted — 2026-10-12
+
+One service date in, one out. That is the loop the product needed.
+
+**Four faults the first day of scheduling exposed.**
+
+1. **Disruptions failed every other run.** Three of five with `ArtifactValidationError: Artifact
+disruptions/notices shrank by 27.2% versus version 2026-10-14T05-16-23-389Z`. The shrink guard
+   is right for a national timetable and wrong for live notices, where the size _is_ the news — a
+   road reopens and its notice goes away. The deployment was therefore serving notices hours older
+   than the ones just collected: the guard was causing the staleness it exists to prevent. The
+   protection that matters is upstream of it, where a run in which every attempted source failed
+   returns before publishing and leaves the previous version live. _This was found in one read
+   because the crash handler added the day before annotates its reason; before that it was
+   "Process completed with exit code 1"._
+2. **The production rebuild could never finish.** `static-network-daily` ran for the first time in
+   six weeks and was killed by its own 30-minute cap inside the rebuild step. The BODS catalogue
+   changes daily, so the fingerprint check always decides to rebuild, and a national build takes
+   about forty-five minutes: thirty minutes a day of downloading England, guillotined, every day.
+   Finishing it is not the fix — see the storage note below. Both rebuild schedules are now
+   dispatch-only.
+3. **Live collection was accumulating in the wrong bucket.** Collection, the analytics batch and
+   the brief all defaulted to `busstops-artifacts` while the deployment reads
+   `busstops-artifacts-preview`. Pro could never have shown the observations those runs were
+   gathering, and the writes grew the production bucket. All three now name the preview bucket.
+4. **Once a day was not reliable.** The refresh's 04:37 cron fired at 09:41 — five hours late — and
+   `prove-horizon`'s 06:12 cron did not fire at all. GitHub delays scheduled events under load and
+   drops them. A once-daily job holding England's departure horizon open therefore had one point of
+   failure per day, so both now have three chances at odd minutes off the hour.
+
+**Storage, and a figure I reported wrongly.** R2's 10 GB free allowance is account-wide and I had
+been quoting the preview bucket alone:
+
+    preview     10,786,090,732 bytes   34,933 objects
+    production   3,273,116,490 bytes    4,947 objects
+    allowance   10,737,418,240 bytes
+
+About 14 GB against 10.74. The horizon drops from four service dates to three, which brings preview
+to roughly 9.56 GB. The production bucket is the rest, and what it holds is a 4 September artifact
+whose departure horizon ran out weeks ago — `coverage 2026-10-14: 0 departures, 2026-10-15: 0
+departures`. Nothing serves it. Reclaiming it is a deletion of somebody else's production data and
+is recorded here as a decision rather than taken.
 
 ### 13 October: the scheduler is dead account-wide, and the merge proved it rather than fixing it
 
