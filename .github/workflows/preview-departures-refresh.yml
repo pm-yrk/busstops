@@ -36,7 +36,15 @@ on:
       horizon_days:
         description: "Service dates to publish, counting today (max 8)"
         type: string
-        default: "4"
+        # Three. One number, and the contract test `horizon-days.test.ts` fails if any workflow
+        # disagrees with it.
+        #
+        # Five places carried this and three carried a different value: `prove-horizon` asked for
+        # four service dates on its schedule while the refresh published three, so the fourth was
+        # always absent and the scheduled proof always reported `covered_using_slack` — a warning
+        # that fires on every run is a warning nobody reads. Two workflows' dispatch defaults said
+        # four as well, which would have published a date the horizon no longer covers.
+        default: "3"
       offset_days:
         description: "Days to skip before the first one, for extending a horizon in a second pass"
         type: string

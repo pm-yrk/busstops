@@ -11,3 +11,8 @@ build/
 coverage/
 package-lock.json
 .wrangler/
+
+# Written by a runner, not by a person. The evidence workflow commits these back onto the branch,
+# and `format:check` is a CI gate — so unformatted machine output here failed the format step and
+# skipped lint, types, tests and build behind it. A healthy evidence run must not turn CI red.
+evidence/

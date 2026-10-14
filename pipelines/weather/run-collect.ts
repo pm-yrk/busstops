@@ -12,7 +12,7 @@
  */
 
 import { writeFileSync } from "node:fs";
-import { r2StoreFromEnv, positiveNumberFromEnv } from "@busstops/pipeline-core";
+import { r2StoreFromEnv, positiveNumberFromEnv, annotateReport } from "@busstops/pipeline-core";
 import { collectStopWeather } from "./src/index.js";
 
 /** Must match the workflow's cron. Passed in so the budget check is against the real interval. */
@@ -70,13 +70,39 @@ async function main(): Promise<number> {
 function writeReport(report: Record<string, unknown>): void {
   report.finishedAt = new Date().toISOString();
   writeFileSync("weather-report.json", JSON.stringify(report, null, 2));
+  /*
+   * And through the one channel that is readable from outside the runner, like every other
+   * pipeline here. The uploaded artifact is served from a host this project's container cannot
+   * reach, and the step summary is not exposed by the API at all, so an annotation is the whole
+   * difference between a diagnosable failure and "Process completed with exit code 1".
+   */
+  annotateReport("stop weather", report);
 }
 
 main()
   .then((code) => {
     process.exitCode = code;
   })
+  /*
+   * A crash has to leave something readable behind.
+   *
+   * Three scheduled runs failed on 13 and 14 October with nothing but an exit code, and they can
+   * be told apart from the deliberate failure paths by what they did not leave: every path that
+   * returns a code writes `weather-report.json`, and those three runs uploaded no artifact at
+   * all. So the collector threw and this handler printed the reason into a log nobody can read.
+   */
   .catch((error: unknown) => {
-    console.error(error instanceof Error ? `${error.name}: ${error.message}` : String(error));
+    const described = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+    console.error(described);
+    const crash: Record<string, unknown> = { outcome: "threw", error: described };
+    if (error instanceof Error && error.stack) {
+      // The first few frames only: enough to name the module, short enough for an annotation.
+      crash.stack = error.stack.split("\n").slice(1, 5).join(" | ");
+    }
+    try {
+      writeReport(crash);
+    } catch {
+      // A report that cannot be written must not replace the exit code with its own failure.
+    }
     process.exitCode = 1;
   });

@@ -8,7 +8,12 @@
  * path, not a place to keep results permanently — `evidence/` is a scratch record of what a
  * runner saw and when, overwritten by the next run.
  *
- * It rebases before pushing, because two evidence jobs can finish close together.
+ * One pusher, by design. Two jobs used to call this — the probe and the GTFS measurement — and
+ * both rewrote `evidence/README.md` with their own label and timestamp. The second one's rebase
+ * therefore hit a content conflict in that file, every retry found a rebase already in progress,
+ * and a run whose measurements had all succeeded reported a failure. The measurement jobs now hand
+ * their files over as artifacts and a single `publish` job calls this once, so there is nothing to
+ * race. The retry below is for a transient push, not for a second writer.
  *
  *   node scripts/commit-evidence.mjs <label> [note]
  */

@@ -114,10 +114,18 @@ jobs:
           npx tsx scripts/diagnose-upstreams.ts \
             --json evidence/upstream-diagnosis.json 2>&1 | tee evidence/upstreams.log
 
-      - name: Commit what it saw
+      # Handed to the publish job rather than committed here. Two jobs committing to one branch
+      # is what made a healthy evidence run go red: both rewrote `evidence/README.md`, so the
+      # second job's rebase hit a content conflict in that file and all four retries failed on
+      # the rebase that was already in progress.
+      - name: Hand the probe's output to the publish job
         if: always()
-        run: |
-          node scripts/commit-evidence.mjs probe "Worker: ${{ steps.worker.outputs.url }}"
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidence-probe
+          path: evidence
+          retention-days: 1
+          if-no-files-found: ignore
 
       - name: Summarise
         if: always()
@@ -164,9 +172,14 @@ jobs:
             --regions all,yorkshire,north_west \
             --json evidence/gtfs-measurement.json 2>&1 | tee evidence/gtfs.log
 
-      - name: Commit what it measured
+      - name: Hand the measurement to the publish job
         if: always()
-        run: node scripts/commit-evidence.mjs gtfs "GTFS timetable measurement"
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidence-gtfs
+          path: evidence
+          retention-days: 1
+          if-no-files-found: ignore
 
       - name: Summarise
         if: always()
@@ -178,3 +191,39 @@ jobs:
             sed -n '1,200p' evidence/gtfs.log
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # One commit, after both measurements, whatever either of them did.
+  #
+  # Each measurement job hands its files over as an artifact and this job is the only thing that
+  # writes to the branch, so there is no second pusher to race and no shared file written twice.
+  # `if: always()` because a failed measurement is itself evidence — the point is to get back what
+  # the runner saw, and a job that fell over has usually written the most interesting part of it.
+  publish:
+    name: Commit what the runners saw
+    if: always() && contains(github.event.head_commit.message, '[evidence]')
+    needs: [probe, gtfs]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # Both into `evidence/`, and neither job writes a file the other does, so the merge is
+      # flat and order does not matter.
+      # Tolerant, because "no artifact at all" is a real outcome: a probe that died before its
+      # first write uploads nothing, and this job must still finish rather than report a failure
+      # of its own on top of the one that matters.
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: evidence-*
+          merge-multiple: true
+          path: evidence
+
+      - name: Commit it
+        run: |
+          ls -la evidence || true
+          node scripts/commit-evidence.mjs run \
+            "probe: ${{ needs.probe.result }} · gtfs: ${{ needs.gtfs.result }}"

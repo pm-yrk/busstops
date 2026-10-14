@@ -57,7 +57,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           R2_BUCKET_ARTIFACTS: ${{ inputs.bucket || 'busstops-artifacts-preview' }}
-          SERVICE_DATE_HORIZON_DAYS: ${{ inputs.horizon_days || '4' }}
+          SERVICE_DATE_HORIZON_DAYS: ${{ inputs.horizon_days || '3' }}
         run: npx tsx pipelines/static-network/prove-horizon.ts
       - name: Repeat the answer where the log can reach it
         if: always()

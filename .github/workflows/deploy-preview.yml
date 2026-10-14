@@ -38,7 +38,15 @@ on:
       horizon_days:
         description: "Service dates to publish, counting today (max 8)"
         type: string
-        default: "4"
+        # Three. One number, and the contract test `horizon-days.test.ts` fails if any workflow
+        # disagrees with it.
+        #
+        # Five places carried this and three carried a different value: `prove-horizon` asked for
+        # four service dates on its schedule while the refresh published three, so the fourth was
+        # always absent and the scheduled proof always reported `covered_using_slack` — a warning
+        # that fires on every run is a warning nobody reads. Two workflows' dispatch defaults said
+        # four as well, which would have published a date the horizon no longer covers.
+        default: "3"
       prune_artifacts:
         description: "Network artifact retention: report | apply | skip"
         type: choice
@@ -609,7 +617,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           FORCE_REBUILD: "true"
           PRUNE_SERVICE_DATES: "true"
-          SERVICE_DATE_HORIZON_DAYS: ${{ inputs.horizon_days || '4' }}
+          SERVICE_DATE_HORIZON_DAYS: ${{ inputs.horizon_days || '3' }}
           # Headroom for the indexes the streamed build holds — stops, routes, the calendar and
           # the trips inside the horizon — not for file contents: the GTFS archive is read as a
           # stream and the journeys spill to disk. Node's default heap is a fraction of the
@@ -670,7 +678,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           DEPARTURES_ONLY: "true"
           PRUNE_SERVICE_DATES: "true"
-          SERVICE_DATE_HORIZON_DAYS: ${{ inputs.horizon_days || '4' }}
+          SERVICE_DATE_HORIZON_DAYS: ${{ inputs.horizon_days || '3' }}
           NODE_OPTIONS: "--max-old-space-size=12288"
         run: |
           set -o pipefail
@@ -709,7 +717,7 @@ jobs:
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          SERVICE_DATE_HORIZON_DAYS: ${{ inputs.horizon_days || '4' }}
+          SERVICE_DATE_HORIZON_DAYS: ${{ inputs.horizon_days || '3' }}
         run: npx tsx pipelines/static-network/prove-horizon.ts
 
       - name: Upload the horizon report
