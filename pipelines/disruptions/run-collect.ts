@@ -76,6 +76,21 @@ async function main(): Promise<number> {
     schemaVersion: SCHEMA_VERSION,
     sources: result.sources.map((source) => source.source),
     allowEmpty: true,
+    /*
+     * No shrink guard, because here the size *is* the news.
+     *
+     * The default refuses a publish that is more than a quarter smaller than the last one, which
+     * is right for a national timetable and wrong for live disruption notices: a road reopens and
+     * its notice goes away. Three of the five scheduled runs since the schedules came back failed
+     * with `ArtifactValidationError: Artifact disruptions/notices shrank by 27.2% versus version
+     * 2026-10-14T05-16-23-389Z`, so the deployment served notices hours older than the ones that
+     * had just been collected — the guard was causing the staleness it exists to prevent.
+     *
+     * What actually protects this dataset is above: if every source that was attempted failed and
+     * nothing came back, the collector returns before this line and the previous publish stays
+     * live. That is the case worth refusing. "Fewer roads are closed than this morning" is not.
+     */
+    maximumShrinkFraction: 1,
     notes: JSON.stringify({ sources: result.sources, dropped: result.dropped }),
   });
 

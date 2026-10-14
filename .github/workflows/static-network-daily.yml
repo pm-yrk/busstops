@@ -5,9 +5,22 @@ name: Static network — daily change check
 # distinguishable from "the job did not run".
 
 on:
-  schedule:
-    # 03:15 UTC, outside peak upstream load. Times are UTC year-round.
-    - cron: "15 3 * * *"
+  # No schedule. Dispatch only, until there is a production deployment to rebuild *for*.
+  #
+  # This fired for the first time in six weeks on 14 October and was killed by its own 30-minute
+  # cap inside "Check fingerprints and rebuild if changed" — which is not bad luck. The BODS
+  # catalogue changes daily, so the fingerprint check always decides to rebuild, and a national
+  # build takes about forty-five minutes. The job could therefore never finish: it would spend
+  # thirty minutes a day downloading England and be guillotined, every day, with whatever it had
+  # written left behind.
+  #
+  # Nor is finishing it the fix. The production bucket holds a 4 September artifact of 3.27 GB
+  # whose departure horizon ran out weeks ago — `coverage 2026-10-14: 0 departures` — and R2's
+  # 10 GB free allowance is account-wide, with the preview bucket already at 9.68 GB. A completed
+  # rebuild would add roughly another 3 GB to an account that is already over. So the honest state
+  # is: nothing serves this bucket, and rebuilding it daily costs money and reclaims nothing.
+  #
+  # Restoring the schedule is one line, and the thing to decide first is what production is for.
   workflow_dispatch:
     inputs:
       force_rebuild:
