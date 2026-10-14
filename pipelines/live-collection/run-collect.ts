@@ -10,7 +10,13 @@
 
 import { writeFileSync } from "node:fs";
 import { BODS_MINIMUM_REQUEST_INTERVAL_MS } from "@busstops/contracts";
-import { ArtifactStore, annotateReport, r2StoreFromEnv } from "@busstops/pipeline-core";
+import {
+  ArtifactStore,
+  annotateReport,
+  r2StoreFromEnv,
+  numberFromEnv,
+  positiveNumberFromEnv,
+} from "@busstops/pipeline-core";
 import { classify } from "@busstops/governor";
 import {
   RollingObservationWindow,
@@ -43,7 +49,7 @@ async function main(): Promise<number> {
 
   // The governor state is read from the environment because the job cannot itself measure
   // Cloudflare usage; the worker publishes it and the schedule passes it in.
-  const utilization = Number(process.env.BUDGET_UTILIZATION ?? "0");
+  const utilization = numberFromEnv(process.env.BUDGET_UTILIZATION, 0);
   const governorState = classify(utilization, utilization);
   report.governorState = governorState;
 
@@ -62,22 +68,22 @@ async function main(): Promise<number> {
       // is the useful floor for congestion analysis without spending the budget on duplicates.
       sourceUpdateIntervalSeconds: 10,
       baseIntervalSeconds: 60,
-      maxRequestsPerRun: Number(process.env.MAX_PARTITIONS_PER_RUN ?? "12"),
+      maxRequestsPerRun: positiveNumberFromEnv(process.env.MAX_PARTITIONS_PER_RUN, 12),
       /*
        * Derived from the published interval rather than invented: one request every five seconds
        * is 17,280 a day at most, and the registry's self-imposed half of that is the default.
        * BODS publishes no daily quota, so a larger number here would be a number nobody stated.
        */
-      dailyRequestBudget: Number(process.env.BODS_DAILY_REQUEST_BUDGET ?? "8640"),
+      dailyRequestBudget: positiveNumberFromEnv(process.env.BODS_DAILY_REQUEST_BUDGET, 8640),
     },
     governorState,
     fetchPartition: collector.fetchPartition,
     window,
-    budgetMs: Number(process.env.COLLECTION_BUDGET_MS ?? "240000"),
+    budgetMs: positiveNumberFromEnv(process.env.COLLECTION_BUDGET_MS, 240000),
     // The publisher's stated interval, honoured at the point of request rather than assumed.
     minimumRequestIntervalMs: BODS_MINIMUM_REQUEST_INTERVAL_MS,
     // Several snapshots per run: one position per vehicle cannot yield a traversal or a speed.
-    passes: Number(process.env.COLLECTION_PASSES ?? "3"),
+    passes: positiveNumberFromEnv(process.env.COLLECTION_PASSES, 3),
     health: collector.health,
   });
 

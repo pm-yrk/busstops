@@ -10,7 +10,13 @@
 import { randomUUID } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import type { DailyBriefSendRecord, Incident, Recipient } from "@busstops/contracts";
-import { ArtifactStore, r2StoreFromEnv, londonParts, serviceDate } from "@busstops/pipeline-core";
+import {
+  ArtifactStore,
+  r2StoreFromEnv,
+  londonParts,
+  serviceDate,
+  numberFromEnv,
+} from "@busstops/pipeline-core";
 import { classify } from "@busstops/governor";
 import { buildSnapshot } from "@busstops/daily-brief";
 import { providerFromEnv } from "./src/email-provider.js";
@@ -114,7 +120,7 @@ async function main(): Promise<number> {
     record.attemptedAt.startsWith(today),
   );
 
-  const utilization = Number(process.env.BUDGET_UTILIZATION ?? "0");
+  const utilization = numberFromEnv(process.env.BUDGET_UTILIZATION, 0);
 
   const result = await runDailyBriefSend({
     snapshot,
