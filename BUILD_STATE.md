@@ -4,6 +4,68 @@ Last updated: 2026-10-14 (the schedules run from main; boards read buckets at ev
 
 ## Current status
 
+### 14 October: the production bucket is reclaimed — 3.27 GB proved dead, then deleted
+
+Two runs, both read-only before either deleted anything, and the proof is the interesting part:
+age was never allowed to be the argument.
+
+**What was proved first.** `scripts/prove-production-dead.ts` writes nothing and has no delete
+path. It lists every object, reads every manifest, and computes reachability at the level the
+reader actually resolves — a sharded family has no manifest per shard, so an object is reachable
+iff _its version_ appears in some manifest. Then it asks Cloudflare, at run time, who reads the
+bucket:
+
+    workers       busstops-api-preview   ARTIFACTS → busstops-artifacts-preview
+    pages         busstops               latestEnvironment: preview
+                  copycat                latestEnvironment: preview
+    unreachable   0 objects, 0 bytes
+
+Exactly one Worker exists in the account and it binds the _preview_ bucket. `wrangler.toml`
+declares `busstops-api` against `busstops-artifacts`; it has never been deployed. So nothing read
+`busstops-artifacts` — and, importantly, **nothing in it was unreachable either**. The 4 September
+artifact was its live version, pointed at by a manifest. It was dead because no deployment existed
+to serve it, not because it had been superseded.
+
+That distinction is why the ordinary prune could only take part of it.
+
+**Phase A — the prune, as designed, at `keep_versions=1`** (run 38603048833). Deleted the partial
+rebuild that the pipeline's own 30-minute cap guillotined on 14 October: **567 objects,
+1,401,572,495 bytes**, 0 failures, 37.61 deletes/sec, `remainingAfterRun: 0`. Production fell
+3,273,114,245 → 1,871,541,750 bytes. Then it stopped, correctly: every other path in `run-prune.ts`
+keeps the live version by construction.
+
+**Phase B — `--retire-live-version`** (dry run 38603283476, applied in run 38603612430). The one
+mode that deletes a live version, for the one case that is not "delete what has been superseded".
+Four guards, in an order that matters — a preview-looking bucket name refuses unconditionally and
+first; the version must be named on the command line and equal the live manifest's; no deployed
+Worker may bind the bucket, asked of Cloudflare at run time, with an API that will not answer
+treated as a refusal rather than a "no"; and `--apply`. Eight contract tests assert the refusals
+exist and stay in order.
+
+    outcome              retired
+    retiredVersion       2026-09-04T07:59:01.455Z
+    readersBindingBucket []
+    objects              4,445 → 8
+    bytes                1,871,566,821 → 25,071
+    deleted              4,437  (4,378 data objects + 59 manifests)
+    deletionFailures     []
+
+The 8 survivors are not an oversight. The guard is version-specific, so the daily brief and the
+intelligence batch — which point at `2026-10-13-2026-10-14T10:36:33.722Z` and
+`2026-10-14T07:34:09.281Z` — were preserved with their six manifests. Manifests pointing at the
+retired version went with it: a pointer to an object that has gone is worse than no pointer.
+
+**What was never touched.** `busstops-artifacts-preview` — the bucket the deployment actually
+reads — was outside the deletion set by three independent mechanisms: it was never named as the
+target, the retire mode refuses a preview-looking bucket name before it checks anything else, and
+the version named on the command line exists only in production.
+
+**Noted, not fixed.** 4 of Phase A's 567 objects were manifest-named: operators and services that
+the killed 14 October run had already republished before it was cut off. Production has therefore
+been internally inconsistent since that run — index saying September, two datasets saying October.
+It is moot now that the bucket holds 8 objects, and it is recorded because the window existed, not
+because anything remains to tidy.
+
 ### 3 October, run 89 deployed: the route stop sequence is real, on five cities
 
 This is the headline. `/v1/routes/:id` answers with the ordered stops the timetable itself
