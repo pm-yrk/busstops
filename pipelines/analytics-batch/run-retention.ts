@@ -60,6 +60,17 @@ async function main(): Promise<number> {
       records: rolled.buckets,
       schemaVersion: "1.0.0",
       sources: ["bods"],
+      /*
+       * Same reason as `intelligence/observations`: this count is how many road segments had
+       * traffic to measure, which is a fact about the evening rather than about the read.
+       *
+       * The default 25% guard exists to stop a half-read upstream replacing a good artifact. It
+       * cannot tell that apart from a quiet Wednesday night, and when it fires it throws out of
+       * the retention run — which is the run that also prunes, so a refused publish would stop the
+       * pruning that keeps this account inside its storage allowance. Found by audit after the
+       * 20:04 collection threw on exactly this, 57% down from the afternoon.
+       */
+      maximumShrinkFraction: 1,
     });
   }
 
