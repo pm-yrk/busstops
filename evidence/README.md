@@ -7,6 +7,6 @@ it cannot dispatch a workflow or read a run's logs. Writing the reports here is 
 results get back to somewhere readable. Files are overwritten by each run — this is the
 latest measurement, not an archive.
 
-Last written: 2026-10-14T19:39:05.890Z (run)
+Last written: 2026-10-14T22:04:21.697Z (run)
 
 probe: success · gtfs: success
