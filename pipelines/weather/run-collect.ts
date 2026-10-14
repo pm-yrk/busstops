@@ -61,10 +61,22 @@ async function main(): Promise<number> {
   writeReport(report);
 
   /*
-   * "Published" and "the network is not there yet" are both fine. Everything else means this run
-   * spent upstream requests and has nothing to show for it, which should be visible as a failure.
+   * Which outcomes are this project's problem.
+   *
+   * "Published" and "the network is not there yet" were always fine. `upstream_refused` joins them
+   * because it is not a defect: Open-Meteo's free tier is strict per moment and a GitHub runner
+   * shares its egress address with everyone else asking at the same time, so a run that asked
+   * politely, was turned away on every batch, published nothing and left the previous good shards
+   * alone has behaved correctly. The schedule runs every thirty minutes and recovers by itself;
+   * three such runs on 13 and 14 October were red for doing exactly the right thing, and a red
+   * run that means nothing teaches whoever is watching to ignore the colour.
+   *
+   * Everything else is still a failure, and deliberately so: `no_answer` means a batch answered
+   * and this code could not use it, `publish_failed` means the weather arrived and no square could
+   * be written, and the two configuration outcomes mean the schedule does not fit its allowance.
    */
-  return result.outcome === "published" || result.outcome === "network_not_published" ? 0 : 1;
+  const notOurFault = ["published", "network_not_published", "upstream_refused"];
+  return notOurFault.includes(result.outcome) ? 0 : 1;
 }
 
 function writeReport(report: Record<string, unknown>): void {
