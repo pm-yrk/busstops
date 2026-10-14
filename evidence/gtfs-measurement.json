@@ -1,0 +1,416 @@
+{
+  "measuredAt": "2026-10-14T19:38:55.819Z",
+  "regions": [
+    {
+      "region": "all",
+      "url": "https://data.bus-data.dft.gov.uk/timetable/download/gtfs-file/all/",
+      "downloadBytes": 1843595186,
+      "downloadMs": 41110,
+      "entries": [
+        {
+          "name": "agency.txt",
+          "compressed": 10883,
+          "uncompressed": 47607
+        },
+        {
+          "name": "stops.txt",
+          "compressed": 9840018,
+          "uncompressed": 20409704
+        },
+        {
+          "name": "routes.txt",
+          "compressed": 102439,
+          "uncompressed": 313711
+        },
+        {
+          "name": "calendar.txt",
+          "compressed": 15725,
+          "uncompressed": 83367
+        },
+        {
+          "name": "calendar_dates.txt",
+          "compressed": 741190,
+          "uncompressed": 4042711
+        },
+        {
+          "name": "trips.txt",
+          "compressed": 56647022,
+          "uncompressed": 214143176
+        },
+        {
+          "name": "shapes.txt",
+          "compressed": 821348795,
+          "uncompressed": 5517332668
+        },
+        {
+          "name": "frequencies.txt",
+          "compressed": 2622,
+          "uncompressed": 5671
+        },
+        {
+          "name": "feed_info.txt",
+          "compressed": 142,
+          "uncompressed": 191
+        },
+        {
+          "name": "stop_times.txt",
+          "compressed": 954885096,
+          "uncompressed": 5510053444
+        }
+      ],
+      "activeServiceIds": {
+        "today": 1203,
+        "tomorrow": 1247
+      },
+      "agency": {
+        "rows": 567,
+        "columns": [
+          "agency_id",
+          "agency_name",
+          "agency_url",
+          "agency_timezone",
+          "agency_lang",
+          "agency_phone",
+          "agency_noc"
+        ],
+        "withAgencyId": 567,
+        "sampleIds": [
+          "OP10",
+          "OP101",
+          "OP102",
+          "OP10232",
+          "OP1024",
+          "OP103",
+          "OP10363",
+          "OP104",
+          "OP105",
+          "OP10594",
+          "OP10792",
+          "OP108"
+        ],
+        "sampleNames": [
+          "M & H Coaches",
+          "Select Bus Services",
+          "LandFlight",
+          "Solus Coaches",
+          "Orkney Travel",
+          "National Express Coventry"
+        ],
+        "nocShapedSampleIds": 1
+      },
+      "routeKeys": {
+        "sampleRouteIds": [
+          "8",
+          "25",
+          "30",
+          "46",
+          "58",
+          "68",
+          "77",
+          "89",
+          "92",
+          "100"
+        ],
+        "sampleShortNames": [
+          "4",
+          "C9",
+          "4S",
+          "14",
+          "025",
+          "76",
+          "10",
+          "444",
+          "11",
+          "007"
+        ]
+      },
+      "tripsOnHorizon": 430524,
+      "stopTimesTotal": 64725383,
+      "stopTimesOnHorizon": 16805407,
+      "stopTimesMs": 178871,
+      "counts": {
+        "calendar.txt": 2207,
+        "calendar_dates.txt": 241445,
+        "agency.txt": 567,
+        "routes.txt": 13216,
+        "stops.txt": 304898,
+        "feed_info.txt": 1,
+        "frequencies.txt": 83,
+        "shapes.txt": 90214621,
+        "trips.txt": 1655424,
+        "stop_times.txt": 64725383
+      },
+      "peakRssMib": 609
+    },
+    {
+      "region": "yorkshire",
+      "url": "https://data.bus-data.dft.gov.uk/timetable/download/gtfs-file/yorkshire/",
+      "downloadBytes": 253089471,
+      "downloadMs": 6633,
+      "entries": [
+        {
+          "name": "agency.txt",
+          "compressed": 1199,
+          "uncompressed": 4731
+        },
+        {
+          "name": "stops.txt",
+          "compressed": 1080322,
+          "uncompressed": 2475916
+        },
+        {
+          "name": "routes.txt",
+          "compressed": 9479,
+          "uncompressed": 28763
+        },
+        {
+          "name": "calendar.txt",
+          "compressed": 2069,
+          "uncompressed": 9918
+        },
+        {
+          "name": "calendar_dates.txt",
+          "compressed": 104426,
+          "uncompressed": 351738
+        },
+        {
+          "name": "trips.txt",
+          "compressed": 7079286,
+          "uncompressed": 24990503
+        },
+        {
+          "name": "shapes.txt",
+          "compressed": 145102578,
+          "uncompressed": 1009291927
+        },
+        {
+          "name": "feed_info.txt",
+          "compressed": 142,
+          "uncompressed": 191
+        },
+        {
+          "name": "stop_times.txt",
+          "compressed": 99708910,
+          "uncompressed": 656779084
+        }
+      ],
+      "activeServiceIds": {
+        "today": 129,
+        "tomorrow": 130
+      },
+      "agency": {
+        "rows": 57,
+        "columns": [
+          "agency_id",
+          "agency_name",
+          "agency_url",
+          "agency_timezone",
+          "agency_lang",
+          "agency_phone",
+          "agency_noc"
+        ],
+        "withAgencyId": 57,
+        "sampleIds": [
+          "OP10924",
+          "OP11950",
+          "OP11955",
+          "OP12112",
+          "OP12574",
+          "OP130",
+          "OP139",
+          "OP14184",
+          "OP152",
+          "OP153",
+          "OP1554",
+          "OP18078"
+        ],
+        "sampleNames": [
+          "Bee Network",
+          "Coopers Tours",
+          "Sweyne Coaches",
+          "Stagecoach East Midlands",
+          "21 Transport",
+          "Hulleys of Baslow"
+        ],
+        "nocShapedSampleIds": 0
+      },
+      "routeKeys": {
+        "sampleRouteIds": [
+          "765",
+          "1359",
+          "1456",
+          "1677",
+          "2986",
+          "2990",
+          "3029",
+          "3032",
+          "3033",
+          "3046"
+        ],
+        "sampleShortNames": [
+          "252",
+          "X27",
+          "X79",
+          "581",
+          "12A",
+          "75H",
+          "219A",
+          "718",
+          "798",
+          "30A"
+        ]
+      },
+      "tripsOnHorizon": 31607,
+      "stopTimesTotal": 7780056,
+      "stopTimesOnHorizon": 1413386,
+      "stopTimesMs": 20253,
+      "counts": {
+        "calendar.txt": 263,
+        "calendar_dates.txt": 21099,
+        "agency.txt": 57,
+        "routes.txt": 1210,
+        "stops.txt": 32131,
+        "feed_info.txt": 1,
+        "shapes.txt": 16487424,
+        "trips.txt": 170288,
+        "stop_times.txt": 7780056
+      },
+      "peakRssMib": 599
+    },
+    {
+      "region": "north_west",
+      "url": "https://data.bus-data.dft.gov.uk/timetable/download/gtfs-file/north_west/",
+      "downloadBytes": 158936899,
+      "downloadMs": 58517,
+      "entries": [
+        {
+          "name": "agency.txt",
+          "compressed": 1304,
+          "uncompressed": 5863
+        },
+        {
+          "name": "stops.txt",
+          "compressed": 1088172,
+          "uncompressed": 2427464
+        },
+        {
+          "name": "routes.txt",
+          "compressed": 13341,
+          "uncompressed": 42251
+        },
+        {
+          "name": "calendar.txt",
+          "compressed": 2108,
+          "uncompressed": 10521
+        },
+        {
+          "name": "calendar_dates.txt",
+          "compressed": 219299,
+          "uncompressed": 734917
+        },
+        {
+          "name": "trips.txt",
+          "compressed": 4698442,
+          "uncompressed": 16350022
+        },
+        {
+          "name": "shapes.txt",
+          "compressed": 75903009,
+          "uncompressed": 510137618
+        },
+        {
+          "name": "feed_info.txt",
+          "compressed": 142,
+          "uncompressed": 191
+        },
+        {
+          "name": "stop_times.txt",
+          "compressed": 77010022,
+          "uncompressed": 470102936
+        }
+      ],
+      "activeServiceIds": {
+        "today": 274,
+        "tomorrow": 281
+      },
+      "agency": {
+        "rows": 71,
+        "columns": [
+          "agency_id",
+          "agency_name",
+          "agency_url",
+          "agency_timezone",
+          "agency_lang",
+          "agency_phone",
+          "agency_noc"
+        ],
+        "withAgencyId": 71,
+        "sampleIds": [
+          "OP10",
+          "OP10924",
+          "OP11023",
+          "OP11056",
+          "OP11122",
+          "OP12376",
+          "OP132",
+          "OP13829",
+          "OP1389",
+          "OP14131",
+          "OP14137",
+          "OP212"
+        ],
+        "sampleNames": [
+          "M & H Coaches",
+          "Bee Network",
+          "Bee Network",
+          "Bee Network",
+          "Bee Network",
+          "Bee Network"
+        ],
+        "nocShapedSampleIds": 1
+      },
+      "routeKeys": {
+        "sampleRouteIds": [
+          "8",
+          "30",
+          "46",
+          "77",
+          "92",
+          "753",
+          "754",
+          "950",
+          "1511",
+          "1512"
+        ],
+        "sampleShortNames": [
+          "4",
+          "4S",
+          "14",
+          "10",
+          "11",
+          "220",
+          "221",
+          "643",
+          "316",
+          "317"
+        ]
+      },
+      "tripsOnHorizon": 42283,
+      "stopTimesTotal": 5481275,
+      "stopTimesOnHorizon": 1849579,
+      "stopTimesMs": 14497,
+      "counts": {
+        "calendar.txt": 279,
+        "calendar_dates.txt": 43833,
+        "agency.txt": 71,
+        "routes.txt": 1733,
+        "stops.txt": 36715,
+        "feed_info.txt": 1,
+        "shapes.txt": 8391745,
+        "trips.txt": 135347,
+        "stop_times.txt": 5481275
+      },
+      "peakRssMib": 602
+    }
+  ]
+}
