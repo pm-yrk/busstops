@@ -12,7 +12,7 @@
  */
 
 import { writeFileSync } from "node:fs";
-import { r2StoreFromEnv, positiveNumberFromEnv } from "@busstops/pipeline-core";
+import { r2StoreFromEnv, positiveNumberFromEnv, annotateReport } from "@busstops/pipeline-core";
 import { collectStopWeather } from "./src/index.js";
 
 /** Must match the workflow's cron. Passed in so the budget check is against the real interval. */
@@ -61,22 +61,60 @@ async function main(): Promise<number> {
   writeReport(report);
 
   /*
-   * "Published" and "the network is not there yet" are both fine. Everything else means this run
-   * spent upstream requests and has nothing to show for it, which should be visible as a failure.
+   * Which outcomes are this project's problem.
+   *
+   * "Published" and "the network is not there yet" were always fine. `upstream_refused` joins them
+   * because it is not a defect: Open-Meteo's free tier is strict per moment and a GitHub runner
+   * shares its egress address with everyone else asking at the same time, so a run that asked
+   * politely, was turned away on every batch, published nothing and left the previous good shards
+   * alone has behaved correctly. The schedule runs every thirty minutes and recovers by itself;
+   * three such runs on 13 and 14 October were red for doing exactly the right thing, and a red
+   * run that means nothing teaches whoever is watching to ignore the colour.
+   *
+   * Everything else is still a failure, and deliberately so: `no_answer` means a batch answered
+   * and this code could not use it, `publish_failed` means the weather arrived and no square could
+   * be written, and the two configuration outcomes mean the schedule does not fit its allowance.
    */
-  return result.outcome === "published" || result.outcome === "network_not_published" ? 0 : 1;
+  const notOurFault = ["published", "network_not_published", "upstream_refused"];
+  return notOurFault.includes(result.outcome) ? 0 : 1;
 }
 
 function writeReport(report: Record<string, unknown>): void {
   report.finishedAt = new Date().toISOString();
   writeFileSync("weather-report.json", JSON.stringify(report, null, 2));
+  /*
+   * And through the one channel that is readable from outside the runner, like every other
+   * pipeline here. The uploaded artifact is served from a host this project's container cannot
+   * reach, and the step summary is not exposed by the API at all, so an annotation is the whole
+   * difference between a diagnosable failure and "Process completed with exit code 1".
+   */
+  annotateReport("stop weather", report);
 }
 
 main()
   .then((code) => {
     process.exitCode = code;
   })
+  /*
+   * A crash has to leave something readable behind.
+   *
+   * Three scheduled runs failed on 13 and 14 October with nothing but an exit code, and they can
+   * be told apart from the deliberate failure paths by what they did not leave: every path that
+   * returns a code writes `weather-report.json`, and those three runs uploaded no artifact at
+   * all. So the collector threw and this handler printed the reason into a log nobody can read.
+   */
   .catch((error: unknown) => {
-    console.error(error instanceof Error ? `${error.name}: ${error.message}` : String(error));
+    const described = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+    console.error(described);
+    const crash: Record<string, unknown> = { outcome: "threw", error: described };
+    if (error instanceof Error && error.stack) {
+      // The first few frames only: enough to name the module, short enough for an annotation.
+      crash.stack = error.stack.split("\n").slice(1, 5).join(" | ");
+    }
+    try {
+      writeReport(crash);
+    } catch {
+      // A report that cannot be written must not replace the exit code with its own failure.
+    }
     process.exitCode = 1;
   });

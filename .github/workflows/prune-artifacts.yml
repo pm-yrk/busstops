@@ -14,6 +14,15 @@ name: Prune Network Artifacts
 on:
   workflow_dispatch:
     inputs:
+      bucket:
+        description: "Which bucket to inventory and prune"
+        type: choice
+        # Preview first in the list and as the default, so production is never the accident of
+        # leaving a dropdown alone. Production is named deliberately or not at all.
+        options:
+          - busstops-artifacts-preview
+          - busstops-artifacts
+        default: busstops-artifacts-preview
       apply:
         description: "Actually delete the superseded versions (otherwise report only)"
         type: boolean
@@ -31,7 +40,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  R2_BUCKET_ARTIFACTS: busstops-artifacts-preview
+  R2_BUCKET_ARTIFACTS: ${{ inputs.bucket || 'busstops-artifacts-preview' }}
 
 jobs:
   prune:
@@ -45,6 +54,19 @@ jobs:
           node-version: "22"
           cache: npm
       - run: npm ci --no-audit --no-fund
+
+      # What is actually in the bucket, and who reads it, before anything is planned against it.
+      #
+      # Read-only, and it runs first on purpose: "old" is not "dead". This lists every object,
+      # reads every manifest, works out which objects no manifest points at, reads the service
+      # dates out of the dated keys, and asks Cloudflare which Workers and Pages projects exist and
+      # which R2 buckets they are actually bound to — because `wrangler.toml` declaring a
+      # production Worker is not the same as one being deployed.
+      - name: Inventory the bucket and find out who reads it
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: npx tsx scripts/prove-production-dead.ts --bucket "$R2_BUCKET_ARTIFACTS"
 
       - name: Plan, and apply only on request
         env:

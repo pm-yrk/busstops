@@ -4,6 +4,213 @@ Last updated: 2026-10-14 (the schedules run from main; boards read buckets at ev
 
 ## Current status
 
+### 14 October: three operational faults, and one claim of mine that was wrong
+
+**The departure horizon was one number in five places, and three disagreed.** The refresh publishes
+three service dates. `prove-horizon` asked about four on its schedule; `deploy-preview` asked about
+four in three separate steps; and two dispatch defaults said four as well, which is the worse half —
+a manual run would publish a fourth service date at about 1.22 GB on an account with 10 GB in
+total. All five now say three, and `tests/contract/horizon-days.test.ts` fails if any workflow
+disagrees. It checks both halves, because a scheduled run uses the `|| 'N'` fallback and a
+dispatched run uses the input's `default:`; they are separate paths and they diverged separately.
+
+**And the symptom I claimed was not the symptom.** I wrote that the fourth date would be "simply
+absent" and the proof would report `covered_using_slack`. The scheduled proof at 18:03 — from main,
+with the four still in place — reported `covered` with 512 of 512 shards on all four dates,
+2026-10-17 included, because the 09:41 refresh had still been running the four-date horizon when it
+wrote them. So the mismatch had not yet produced a wrong answer; it was a divergence waiting for the
+first three-date refresh to make the fourth date obsolete. Still worth fixing, and fixed before that
+happened rather than after — but the failure mode was a prediction out of the code's own comment, not
+something I had observed, and I reported it as though it were.
+
+**Weather had two faults wearing one exit code, and the first thing to fix was that nobody could
+tell.** Three scheduled runs failed on 13 and 14 October with nothing but "Process completed with
+exit code 1". The logs are served from a host this container cannot reach, the check-run API returns
+`output.summary: null`, and weather was the one pipeline here without the annotation path every other
+one has. What the API could still establish: every code path that returns writes
+`weather-report.json`, the successful runs uploaded that artifact, and all three failures uploaded
+none — so the collector threw and the crash handler printed the reason somewhere unreadable. It now
+annotates its report, and a crash annotates the error and its first stack frames.
+
+The dispatch that followed named the cause:
+
+    outcome       no_answer      requested 870   answered 0
+    batch 1       UpstreamError: open_meteo timed out after 20000ms   (88,168ms)
+    batch 2       UpstreamError: open_meteo rate limited
+    batch 3       UpstreamError: open_meteo network error
+    batches 4-5   UpstreamError: open_meteo server error 503
+    batches 6-9   UpstreamError: Circuit open for open_meteo
+    budget        9 per refresh, 432 a day of 10,000, withinAllowance true
+
+Not the arithmetic, then. Open-Meteo's free tier is generous per day and strict per moment, and a
+GitHub runner shares its egress address with everyone else asking the same question — which this
+code already records happening, as runs 59 and 60. So:
+
+1. **A refusal was reported as our failure.** `no_answer` splits into `upstream_refused` — asked
+   politely, turned away on every batch, published nothing, previous shards left alone, retrying in
+   thirty minutes — and `no_answer`, which keeps its meaning of a batch that answered and could not
+   be used. A new `publish_failed` covers weather that arrived and could not be written. Only the
+   last two fail the run.
+2. **A partial answer threw, which is what the three silent runs were.** `publish` refuses a 25%
+   shrink, to stop a half-read upstream replacing a good national artifact. A weather shard is one
+   degree square holding a handful of 0.10° cells, so one cell lost to a refused batch is often more
+   than a quarter of it — and `excessive_shrink` was thrown out of the publish loop, killing the run
+   before the other squares were written and before any report existed. Weather now publishes with
+   `maximumShrinkFraction: 1`, and a square that still will not write is recorded on the shard
+   rather than thrown. The guard's purpose does not apply: nobody reads a weather shard expecting
+   national coverage, every cell carries its own timestamp, and a cell this run missed keeps the
+   answer it had.
+
+The verification run exercised the fix rather than avoiding it. Batch 7 of 9 was rate limited, 100
+of 870 cells were lost — the exact partial case that killed the earlier runs — and all 13 degree
+squares published anyway: `outcome: published`, 770 answered, 51 seconds, green. Coverage is
+untouched: same cells, same grid, same nine variables, same half-hourly schedule, same two-second
+spacing.
+
+**The evidence workflow raced itself, and reddened CI twice over.** Its probe and GTFS jobs both
+called `commit-evidence.mjs`, and both rewrote `evidence/README.md` with their own label and
+timestamp — so the second one's rebase hit a content conflict in that file, all four retries found a
+rebase already in progress, and a run whose measurements had all succeeded reported a failure. Each
+job now hands its files over as an artifact and a single `publish` job, waiting on both and running
+whatever they did, commits once. And the same workflow commits machine-written JSON while
+`format:check` is a CI gate, so unformatted output there failed the format step and skipped lint,
+types, tests and build behind it — the branch head was red for exactly that, which is the real reason
+a healthy evidence run looked broken. `evidence/` is now in `.prettierignore`.
+
+**What is deliberately not here.** The `--retire-live-version` mode that reclaimed the production
+bucket stays on the build branch. It was right for one exceptional cleanup and it is the only path in
+`run-prune.ts` that deletes a live version; it does not belong in the default branch merely because
+it exists. What is here from that work is the part that is generally useful and cannot delete
+anything: the read-only inventory, which lists every object, computes version-level reachability and
+asks Cloudflare which Workers and Pages projects are actually bound to the bucket.
+
+### 14 October: the production bucket is reclaimed — 3.27 GB proved dead, then deleted
+
+Two runs, both read-only before either deleted anything, and the proof is the interesting part:
+age was never allowed to be the argument.
+
+**What was proved first.** `scripts/prove-production-dead.ts` writes nothing and has no delete
+path. It lists every object, reads every manifest, and computes reachability at the level the
+reader actually resolves — a sharded family has no manifest per shard, so an object is reachable
+iff _its version_ appears in some manifest. Then it asks Cloudflare, at run time, who reads the
+bucket:
+
+    workers       busstops-api-preview   ARTIFACTS → busstops-artifacts-preview
+    pages         busstops               latestEnvironment: preview
+                  copycat                latestEnvironment: preview
+    unreachable   0 objects, 0 bytes
+
+Exactly one Worker exists in the account and it binds the _preview_ bucket. `wrangler.toml`
+declares `busstops-api` against `busstops-artifacts`; it has never been deployed. So nothing read
+`busstops-artifacts` — and, importantly, **nothing in it was unreachable either**. The 4 September
+artifact was its live version, pointed at by a manifest. It was dead because no deployment existed
+to serve it, not because it had been superseded.
+
+That distinction is why the ordinary prune could only take part of it.
+
+**Phase A — the prune, as designed, at `keep_versions=1`** (run 38603048833). Deleted the partial
+rebuild that the pipeline's own 30-minute cap guillotined on 14 October: **567 objects,
+1,401,572,495 bytes**, 0 failures, 37.61 deletes/sec, `remainingAfterRun: 0`. Production fell
+3,273,114,245 → 1,871,541,750 bytes. Then it stopped, correctly: every other path in `run-prune.ts`
+keeps the live version by construction.
+
+**Phase B — `--retire-live-version`** (dry run 38603283476, applied in run 38603612430). The one
+mode that deletes a live version, for the one case that is not "delete what has been superseded".
+Four guards, in an order that matters — a preview-looking bucket name refuses unconditionally and
+first; the version must be named on the command line and equal the live manifest's; no deployed
+Worker may bind the bucket, asked of Cloudflare at run time, with an API that will not answer
+treated as a refusal rather than a "no"; and `--apply`. Eight contract tests assert the refusals
+exist and stay in order.
+
+    outcome              retired
+    retiredVersion       2026-09-04T07:59:01.455Z
+    readersBindingBucket []
+    objects              4,445 → 8
+    bytes                1,871,566,821 → 25,071
+    deleted              4,437  (4,378 data objects + 59 manifests)
+    deletionFailures     []
+
+The 8 survivors are not an oversight. The guard is version-specific, so the daily brief and the
+intelligence batch — which point at `2026-10-13-2026-10-14T10:36:33.722Z` and
+`2026-10-14T07:34:09.281Z` — were preserved with their six manifests. Manifests pointing at the
+retired version went with it: a pointer to an object that has gone is worse than no pointer.
+
+**What was never touched.** `busstops-artifacts-preview` — the bucket the deployment actually
+reads — was outside the deletion set by three independent mechanisms: it was never named as the
+target, the retire mode refuses a preview-looking bucket name before it checks anything else, and
+the version named on the command line exists only in production.
+
+**Verified afterwards, by re-listing rather than by subtraction.** Four runs, none of which
+deletes anything.
+
+    production (busstops-artifacts)        objects          bytes
+      before the operation                   4,947    3,273,116,490
+      after phase A (prune, keep=1)          4,445    1,871,566,821
+      after phase B (retire)                     8            4,409
+      deletion failures                          0
+      remaining removable                        0   (unreachable: 0 objects)
+
+    preview (busstops-artifacts-preview)   objects          bytes
+      17:24:47, after the operation         38,311   10,667,471,330
+      departure shards, 11:50 → 17:24        9,052    6,124,980,881   unchanged, both readings
+      remaining removable                      257       35,016,172   superseded disruption snapshots
+
+    account total                           38,319   10,667,475,739
+    free allowance                                   10,737,418,240
+    headroom                                             69,942,501   (66.7 MiB)
+
+Before the operation the same arithmetic gave 14,059,207,222 bytes — **3,321,788,982 over**. The
+account is inside the free allowance.
+
+**A number I reported wrongly, again in the same shape as the others.** The retire run printed
+`bytesAfter: 25,071`, computed as `bytesBefore - bytesRetired`. Re-listing the bucket afterwards
+found **4,409**. The 20,662-byte difference is the 59 manifests it deleted: `bytesRetired` summed
+`atVersion` — the data objects — and the manifests went to the delete list without being counted.
+`bytesRetired` is now summed over every doomed key, with a contract test that fails if it is
+narrowed back to the data objects. The authoritative figure above is the fresh listing, not the
+subtraction, and the general rule this keeps teaching is that a figure derived from what a tool
+believed is not evidence about what the bucket holds.
+
+**Three instruments, three object counts, and they do reconcile.** `prove-horizon` said 34,928
+objects; the inventory said 38,311; the prune's plan said 32,392. The first counts `data/` objects
+only — 38,311 − 3,383 manifests = 34,928, and the byte gap is exactly the manifests' 1,811,816. The
+third counts only what the static-network family owns, which is the only thing that path may
+delete. The inventory's figure is the account's.
+
+**Preview is not byte-identical and I am not going to claim it is.** It fell 5 objects and
+120,431,218 bytes between 11:50 and 17:24, and none of that is this operation's: the dated
+departure shards are identical in both readings, and preview's own schedules ran five times in the
+window (collection 12:18/12:48/15:55, batch and retention 12:23/12:40/13:08/13:40, disruptions
+15:13), republishing undated families and version-pruning the superseded ones. The bucket was never
+named as a target; the retire guard refuses a preview-looking name before it checks anything else;
+and no object in it carries the version the command named.
+
+**The product, after the deletion** (probe run 38606509402, committed as `cbe1cbc`):
+
+    failures: []   notes: []
+
+    postcode walk   LS1 4DY → 25 stops nearby → Station B → 13 departures, 4 routes
+    postcodes       LS1 4DY 2 · M1 1AE 20 · BS1 4DJ 6 · NR1 3DY 1 · ls1 4dy 2 · M11AE 1 · ZZ99 9ZZ 0
+    boards          Leeds, Manchester, Birmingham, Bristol, York — 4 stops each
+    pro             dataMode live; 284 buses observed, 0 abnormal disruptions, 0 road segments
+                    measured (calculated), three indices still labelled illustrative
+
+And the horizon (run 38606332305), counted after the deletion: 512 of 512 expected departure
+shards on 2026-10-14, 2026-10-15 and 2026-10-16, `datesShortOfFullCoverage: []`.
+
+**The headroom is thin on purpose, and widens without intervention.** 66.7 MiB is 0.65% of the
+allowance. Preview still holds five dated partitions at roughly 1.22 GB each — 2026-10-13 is in the
+past and 2026-10-17 is beyond the three-date horizon, together about 2.49 GB — because the horizon
+change reached main after they were written. The refresh's own retention removes them at the next
+scheduled run. Nothing here forces that, because forcing it would mean touching the bucket the
+product reads, which this operation was told not to do.
+
+**Noted, not fixed.** 4 of Phase A's 567 objects were manifest-named: operators and services that
+the killed 14 October run had already republished before it was cut off. Production has therefore
+been internally inconsistent since that run — index saying September, two datasets saying October.
+It is moot now that the bucket holds 8 objects, and it is recorded because the window existed, not
+because anything remains to tidy.
+
 ### 3 October, run 89 deployed: the route stop sequence is real, on five cities
 
 This is the headline. `/v1/routes/:id` answers with the ordered stops the timetable itself

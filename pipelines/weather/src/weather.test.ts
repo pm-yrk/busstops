@@ -237,7 +237,67 @@ describe("collecting the weather", () => {
     expect(records).toHaveLength(4);
   });
 
-  it("publishes nothing when no source answered, so the last real reading stays live", async () => {
+  /*
+   * A square that shrank must still publish, and that is specific to weather.
+   *
+   * `ArtifactStore.publish` refuses a 25% shrink, to stop a half-read upstream replacing a good
+   * national artifact. A weather shard is one degree square holding a handful of 0.10° cells, so
+   * one cell lost to a refused batch is often more than a quarter of it — and the guard threw
+   * `excessive_shrink` out of the publish loop, killing the run before the other squares were
+   * written and before any report existed. That is what the three failures on 13 and 14 October
+   * were: every code path writes `weather-report.json`, and all three uploaded no artifact at all.
+   */
+  it("publishes a square that came back smaller rather than abandoning the run", async () => {
+    const store = await storeWithTiles(["215_-7"]);
+    const artifacts = new ArtifactStore(store);
+
+    // A full reading first, so there is a previous version for the guard to compare against.
+    const full = await collectStopWeather({
+      store,
+      refreshMinutes: 30,
+      now: new Date("2026-09-05T09:30:00.000Z"),
+      sleep: async () => {},
+      fetchImpl: async (input) => {
+        const count = new URL(String(input)).searchParams.get("latitude")!.split(",").length;
+        return new Response(
+          JSON.stringify(Array.from({ length: count }, () => location(53.75, -1.55, HOURS))),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      },
+    });
+    expect(full.outcome).toBe("published");
+    const before = await artifacts.readCurrent<StopWeather>("weather/cells/53_-2");
+    expect(before.records.length).toBeGreaterThan(4);
+
+    // Then a run that gets back one answer out of nine — an 88% shrink on that square.
+    const partial = await collectStopWeather({
+      store,
+      refreshMinutes: 30,
+      now: new Date("2026-09-05T10:00:00.000Z"),
+      sleep: async () => {},
+      fetchImpl: async () =>
+        new Response(JSON.stringify([location(53.75, -1.55, HOURS)]), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    });
+
+    expect(partial.outcome).toBe("published");
+    expect(partial.shards.every((shard) => shard.error === undefined)).toBe(true);
+    const after = await artifacts.readCurrent<StopWeather>("weather/cells/53_-2");
+    expect(after.records).toHaveLength(1);
+  });
+
+  /*
+   * Being turned away is not a defect, and the outcome has to say which of the two it is.
+   *
+   * Open-Meteo's free tier is generous per day and strict per moment, and a GitHub runner shares
+   * its egress address with everyone else asking the same question. Three scheduled runs on 13 and
+   * 14 October were red for asking politely, being refused, publishing nothing and leaving the
+   * previous good shards alone — which is exactly the behaviour this pipeline is designed for, on a
+   * schedule that retries in thirty minutes.
+   */
+  it("reports an upstream that refused every batch as refusal, not as its own failure", async () => {
     const store = await storeWithTiles(["215_-7"]);
 
     const result = await collectStopWeather({
@@ -248,11 +308,33 @@ describe("collecting the weather", () => {
       fetchImpl: async () => new Response("upstream is down", { status: 503 }),
     });
 
-    expect(result.outcome).toBe("no_answer");
+    expect(result.outcome).toBe("upstream_refused");
     expect(result.missing).toBe(9);
     expect(await store.get("manifests/weather/cells/53_-2/current.json")).toBeNull();
     // The failure class is reported; the coordinates it was asking about are not.
     expect(result.batches[0]!.error).toBeDefined();
+    expect(result.batches.every((batch) => batch.error !== undefined)).toBe(true);
+  });
+
+  /* The other half of that distinction: accepted, answered, and still unusable, which is ours. */
+  it("reports an answer it could not use as its own failure", async () => {
+    const store = await storeWithTiles(["215_-7"]);
+
+    const result = await collectStopWeather({
+      store,
+      refreshMinutes: 30,
+      now: new Date("2026-09-05T09:30:00.000Z"),
+      sleep: async () => {},
+      // A 200 carrying nothing this code can read: no location came back at all.
+      fetchImpl: async () =>
+        new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    });
+
+    expect(result.outcome).toBe("no_answer");
+    expect(result.batches.some((batch) => batch.error === undefined)).toBe(true);
   });
 
   it("asks nothing at all when the network has not been published", async () => {
