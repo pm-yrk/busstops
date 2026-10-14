@@ -60,6 +60,71 @@ reads — was outside the deletion set by three independent mechanisms: it was n
 target, the retire mode refuses a preview-looking bucket name before it checks anything else, and
 the version named on the command line exists only in production.
 
+**Verified afterwards, by re-listing rather than by subtraction.** Four runs, none of which
+deletes anything.
+
+    production (busstops-artifacts)        objects          bytes
+      before the operation                   4,947    3,273,116,490
+      after phase A (prune, keep=1)          4,445    1,871,566,821
+      after phase B (retire)                     8            4,409
+      deletion failures                          0
+      remaining removable                        0   (unreachable: 0 objects)
+
+    preview (busstops-artifacts-preview)   objects          bytes
+      17:24:47, after the operation         38,311   10,667,471,330
+      departure shards, 11:50 → 17:24        9,052    6,124,980,881   unchanged, both readings
+      remaining removable                      257       35,016,172   superseded disruption snapshots
+
+    account total                           38,319   10,667,475,739
+    free allowance                                   10,737,418,240
+    headroom                                             69,942,501   (66.7 MiB)
+
+Before the operation the same arithmetic gave 14,059,207,222 bytes — **3,321,788,982 over**. The
+account is inside the free allowance.
+
+**A number I reported wrongly, again in the same shape as the others.** The retire run printed
+`bytesAfter: 25,071`, computed as `bytesBefore - bytesRetired`. Re-listing the bucket afterwards
+found **4,409**. The 20,662-byte difference is the 59 manifests it deleted: `bytesRetired` summed
+`atVersion` — the data objects — and the manifests went to the delete list without being counted.
+`bytesRetired` is now summed over every doomed key, with a contract test that fails if it is
+narrowed back to the data objects. The authoritative figure above is the fresh listing, not the
+subtraction, and the general rule this keeps teaching is that a figure derived from what a tool
+believed is not evidence about what the bucket holds.
+
+**Three instruments, three object counts, and they do reconcile.** `prove-horizon` said 34,928
+objects; the inventory said 38,311; the prune's plan said 32,392. The first counts `data/` objects
+only — 38,311 − 3,383 manifests = 34,928, and the byte gap is exactly the manifests' 1,811,816. The
+third counts only what the static-network family owns, which is the only thing that path may
+delete. The inventory's figure is the account's.
+
+**Preview is not byte-identical and I am not going to claim it is.** It fell 5 objects and
+120,431,218 bytes between 11:50 and 17:24, and none of that is this operation's: the dated
+departure shards are identical in both readings, and preview's own schedules ran five times in the
+window (collection 12:18/12:48/15:55, batch and retention 12:23/12:40/13:08/13:40, disruptions
+15:13), republishing undated families and version-pruning the superseded ones. The bucket was never
+named as a target; the retire guard refuses a preview-looking name before it checks anything else;
+and no object in it carries the version the command named.
+
+**The product, after the deletion** (probe run 38606509402, committed as `cbe1cbc`):
+
+    failures: []   notes: []
+
+    postcode walk   LS1 4DY → 25 stops nearby → Station B → 13 departures, 4 routes
+    postcodes       LS1 4DY 2 · M1 1AE 20 · BS1 4DJ 6 · NR1 3DY 1 · ls1 4dy 2 · M11AE 1 · ZZ99 9ZZ 0
+    boards          Leeds, Manchester, Birmingham, Bristol, York — 4 stops each
+    pro             dataMode live; 284 buses observed, 0 abnormal disruptions, 0 road segments
+                    measured (calculated), three indices still labelled illustrative
+
+And the horizon (run 38606332305), counted after the deletion: 512 of 512 expected departure
+shards on 2026-10-14, 2026-10-15 and 2026-10-16, `datesShortOfFullCoverage: []`.
+
+**The headroom is thin on purpose, and widens without intervention.** 66.7 MiB is 0.65% of the
+allowance. Preview still holds five dated partitions at roughly 1.22 GB each — 2026-10-13 is in the
+past and 2026-10-17 is beyond the three-date horizon, together about 2.49 GB — because the horizon
+change reached main after they were written. The refresh's own retention removes them at the next
+scheduled run. Nothing here forces that, because forcing it would mean touching the bucket the
+product reads, which this operation was told not to do.
+
 **Noted, not fixed.** 4 of Phase A's 567 objects were manifest-named: operators and services that
 the killed 14 October run had already republished before it was cut off. Production has therefore
 been internally inconsistent since that run — index saying September, two datasets saying October.

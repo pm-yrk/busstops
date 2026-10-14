@@ -322,7 +322,20 @@ async function main(): Promise<number> {
 
     const doomedKeys = [...atVersion.map((object) => object.key), ...danglingManifests];
     const bytesBefore = all.reduce((sum, object) => sum + object.sizeBytes, 0);
-    const bytesRetired = atVersion.reduce((sum, object) => sum + object.sizeBytes, 0);
+    /*
+     * Over every doomed key, manifests included, because `bytesAfter` is derived from this.
+     *
+     * Summing `atVersion` alone under-reported the 14 October retirement by 20,662 bytes — the 59
+     * manifests that went with it — so the run claimed 25,071 bytes remained where re-listing the
+     * bucket afterwards found 4,409. A reported figure that is not what a fresh listing would say
+     * is worse than no figure on a tool that deletes things, because it is the number the next
+     * operator checks the deletion against.
+     */
+    const doomed = new Set(doomedKeys);
+    const bytesRetired = all.reduce(
+      (sum, object) => (doomed.has(object.key) ? sum + object.sizeBytes : sum),
+      0,
+    );
 
     const retireSummary: Record<string, unknown> = {
       outcome: APPLY ? "retired" : "retire_dry_run",

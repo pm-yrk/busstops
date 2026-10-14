@@ -77,6 +77,19 @@ describe("retiring a live version", () => {
     expect(SOURCE).toMatch(/pointer\?\.version === RETIRE_VERSION/);
   });
 
+  /*
+   * `bytesAfter` is `bytesBefore - bytesRetired`, so a `bytesRetired` that misses the manifests
+   * reports a bucket emptier than it is. The 14 October retirement said 25,071 bytes remained;
+   * re-listing the bucket found 4,409. The sum has to be over every doomed key.
+   */
+  it("counts the manifests it deletes in the bytes it claims to have reclaimed", () => {
+    expect(SOURCE).toMatch(/const doomed = new Set\(doomedKeys\)/);
+    expect(SOURCE).toMatch(/bytesRetired = all\.reduce\(/);
+    expect(SOURCE, "bytesRetired must not be summed over the data objects alone").not.toMatch(
+      /bytesRetired = atVersion\.reduce\(/,
+    );
+  });
+
   it("still requires a complete listing, like every other path here", () => {
     expect(SOURCE.match(/inventory_incomplete/g)?.length ?? 0).toBeGreaterThanOrEqual(2);
   });
