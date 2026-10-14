@@ -121,6 +121,57 @@ date and covered it completely (512 departure shards, 1,289 pattern-trip shards,
 `datesShortOfFullCoverage: []`). One BODS dataset answered 400 during the download and the refresh
 completed around it.
 
+### 14 October: Pro had no data because an unset GitHub variable is "", and `Number("")` is 0
+
+The best find of the day, and it had been hiding behind something that looked like a decision.
+
+Scheduled collection ran, succeeded, and collected nothing:
+
+    plan: { intervalSeconds: 60, partitions: 0, skipped: 24, projectedDailyRequests: 0 }
+    notes: "24 lower-density partitions are not collected because the per-run cap is 0 requests"
+    totals: { fetched: 0, accepted: 0 }
+    outcome: "suspended"
+
+and the analytics batch an hour later: `outcome: no_input`, `versionsAvailable: 0`. Read quickly,
+that is the quota governor doing its job. It was not. `intelligence-collection.yml` passes its
+tuning as optional repository variables:
+
+    MAX_PARTITIONS_PER_RUN: ${{ vars.MAX_PARTITIONS_PER_RUN }}
+
+GitHub Actions does not omit an environment variable whose repository variable is unset — it sets
+it to the **empty string**. `process.env.X ?? "12"` therefore keeps `""`, because `??` falls back
+only on null and undefined, and `Number("")` is `0`. Five numbers went that way the moment the
+schedules started firing: the per-run cap, the daily request budget, the pass count, and the
+collection and batch time budgets. Every one became zero, and a zero budget is indistinguishable
+from a deliberate pause.
+
+Fixed in one place — `numberFromEnv` and `positiveNumberFromEnv` in `@busstops/pipeline-core`,
+twelve call sites across five pipelines, six tests. Absent, blank or unparseable means use the
+default; an explicit zero is still honoured where zero is a real reading, and only an accidental
+one falls back.
+
+**Proven on a real run of the same workflow**, dispatched against the fixed config:
+
+    before (scheduled)   partitions  0   fetched      0   outcome: suspended
+    after  (dispatched)  partitions 12   fetched 38,634   accepted 36,114   outcome: collected
+                         coverage 1   acceptanceRate 1   health: healthy
+                         "12 partitions every 120s is about 8640 requests a day against a budget of 8640"
+
+36,114 accepted vehicle observations where there had been none, with the governor sitting exactly
+on its budget rather than bypassed. Two faults had to be fixed for Pro to see any of it: this, and
+the bucket — collection, the batch and the brief were all writing to `busstops-artifacts` while the
+deployment reads `busstops-artifacts-preview`.
+
+The batch, run straight afterwards, now **sees** them:
+
+    versionsAvailable 13   versionsRead 1   recordsRead 36,114   recordsInClosedWindow 0
+    "every one of the 36114 observations read is newer than the settle horizon; nothing has
+     been observed long enough for its bucket to close"
+
+which is the fifteen-minute settle doing exactly what it is for, two minutes after collection
+finished, rather than a fault. The chain is connected where yesterday it read
+`versionsAvailable: 0`.
+
 ### 14 October: boards measured across every size, and the map classified rather than redesigned
 
 **The bucketed index, on real boards spanning the sizes a passenger meets.** Four passes each, on
