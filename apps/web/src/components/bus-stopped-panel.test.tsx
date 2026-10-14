@@ -47,6 +47,49 @@ function renderPanel(props: Partial<Parameters<typeof BusStoppedPanel>[0]> = {})
   );
 }
 
+describe("giving up on the bus", () => {
+  /*
+   * The one thing this panel could not do. It offered a neighbouring stop, walking directions and
+   * a phone number, and no way to find another way home — while the stop page's own help has
+   * offered exactly that for a while.
+   */
+  const alternative = {
+    id: "450010002",
+    name: "Boar Lane",
+    walkingMinutes: 4,
+    lat: 53.7958,
+    lon: -1.5432,
+  };
+
+  it("offers to replan from the stop it is already pointing at", () => {
+    renderPanel({ alternativeStop: alternative, contextState: "ready" });
+
+    const link = screen.getByRole("link", { name: /Plan a different journey from Boar Lane/ });
+    const href = link.getAttribute("href") ?? "";
+    /*
+     * The coordinate, not the stop id. `/journey` reads fromLat/fromLon/fromLabel and nothing
+     * else, so a link carrying an id would look right and arrive at an empty form.
+     */
+    expect(href).toContain("fromLat=53.79580");
+    expect(href).toContain("fromLon=-1.54320");
+    expect(href).toContain("fromLabel=Boar%20Lane");
+  });
+
+  it("offers nothing when there is no stop to start from", () => {
+    renderPanel({ alternativeStop: null, contextState: "ready" });
+    expect(screen.queryByRole("link", { name: /Plan a different journey/ })).toBeNull();
+  });
+
+  /*
+   * An unfinished lookup is not an alternative stop, and this panel's whole discipline is that a
+   * statement about the world waits for the facts.
+   */
+  it("offers nothing while the lookup is still running", () => {
+    renderPanel({ alternativeStop: alternative, contextState: "loading" });
+    expect(screen.queryByRole("link", { name: /Plan a different journey/ })).toBeNull();
+  });
+});
+
 function officialIncident(): Incident {
   return {
     id: "00000000-0000-5000-8000-00000000dddd",

@@ -450,6 +450,8 @@ export function VehiclePage() {
                     id: context.alternative.id,
                     name: context.alternative.name,
                     walkingMinutes: context.alternative.walkingMinutes,
+                    lat: context.alternative.lat,
+                    lon: context.alternative.lon,
                   }
                 : null
             }

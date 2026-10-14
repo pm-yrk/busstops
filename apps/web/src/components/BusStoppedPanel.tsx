@@ -41,7 +41,20 @@ export interface BusStoppedPanelProps extends BusStoppedInput {
     expectedTime: string;
     live: boolean;
   }>;
-  alternativeStop: { id: string; name: string; walkingMinutes: number } | null;
+  /**
+   * The coordinate is carried as well as the name, because the planner takes a position.
+   *
+   * `/journey` reads `fromLat`/`fromLon`/`fromLabel` and nothing else — a stop id in the query
+   * does nothing — so a replanning link without these would look right and arrive at an empty
+   * form, which is the kind of dead end this panel exists to avoid.
+   */
+  alternativeStop: {
+    id: string;
+    name: string;
+    walkingMinutes: number;
+    lat: number;
+    lon: number;
+  } | null;
   walkingUrl: string | null;
   operatorContactUrl: string | null;
   operatorName: string | null;
@@ -204,6 +217,31 @@ export function BusStoppedPanel(props: BusStoppedPanelProps) {
             <a href={props.operatorContactUrl} rel="noreferrer noopener" target="_blank">
               {props.operatorName} travel information
             </a>
+          </p>
+        ) : null}
+
+        {/*
+          Last, and the one thing this panel could not do: give up on the bus.
+          <br />
+          The stop page's own help has offered "plan a different journey from this stop" for a
+          while; this panel, which is the page somebody reaches by tapping a bus that is not
+          moving, offered a board, a neighbour and a phone number but no way to find another way
+          home. The planner needs a starting point and the alternative stop is the best one we
+          have — it is a real stop, it is walkable, and the passenger is being pointed at it
+          anyway. Where there is no alternative stop there is nothing honest to put in the link,
+          so it is not shown.
+        */}
+        {contextKnown && props.alternativeStop ? (
+          <p>
+            <Link
+              to={
+                `/journey?fromLat=${props.alternativeStop.lat.toFixed(5)}` +
+                `&fromLon=${props.alternativeStop.lon.toFixed(5)}` +
+                `&fromLabel=${encodeURIComponent(props.alternativeStop.name)}`
+              }
+            >
+              Plan a different journey from {props.alternativeStop.name}
+            </Link>
           </p>
         ) : null}
       </div>
