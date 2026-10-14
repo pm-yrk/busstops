@@ -20,7 +20,13 @@ on:
       horizon_days:
         description: "Service dates to ask about, counting today"
         type: string
-        default: "4"
+        # Three, matching what the refresh publishes.
+        #
+        # Asking about four while the refresh writes three means the fourth is always absent, the
+        # proof always reports `covered_using_slack`, and a warning that fires on every run is a
+        # warning nobody reads. The two numbers have to move together, and this is the one that is
+        # cheap to move: the refresh's horizon is bounded by R2's account-wide allowance.
+        default: "3"
   schedule:
     # After each refresh, so a refresh that silently did nothing is visible rather than inferred.
     #
