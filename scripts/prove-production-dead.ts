@@ -134,7 +134,7 @@ async function main(): Promise<number> {
     return 1;
   }
 
-  const totalBytes = objects.reduce((sum, object) => sum + (object.size ?? 0), 0);
+  const totalBytes = objects.reduce((sum, object) => sum + (object.sizeBytes ?? 0), 0);
   report.inventory = { objects: objects.length, totalBytes };
 
   /*
@@ -147,6 +147,21 @@ async function main(): Promise<number> {
     .filter((key) => key.startsWith("manifests/") && key.endsWith("/current.json"));
 
   const referenced = new Set<string>();
+  /*
+   * The versions any manifest names, which is the set that actually decides reachability.
+   *
+   * A manifest naming an object key is only half the story, and taking it for the whole story is
+   * how this script first reported 4,878 of 5,012 production objects as unreferenced — including
+   * the entire live September artifact. Sharded families are not resolved through a manifest per
+   * shard: the reader takes the version from the index and composes
+   * `data/<dataset>/<version>.jsonl` directly, so **every** object at a version a manifest names
+   * is reachable, whether or not anything points at that individual key.
+   *
+   * So an object is unreachable only when its version appears in no manifest at all. That is
+   * conservative — it keeps a shard at a live version belonging to a dataset the index no longer
+   * lists — and conservative is the only acceptable direction here.
+   */
+  const reachableVersions = new Set<string>();
   const pointers: Array<Record<string, unknown>> = [];
   const unreadable: string[] = [];
 
@@ -160,11 +175,15 @@ async function main(): Promise<number> {
       }
       referenced.add(key);
       referenced.add(manifest.objectKey);
+      reachableVersions.add(manifest.version);
       const rollback =
         manifest.previousVersion === null || manifest.previousVersion === undefined
           ? null
           : objectKeyFor(dataset, manifest.previousVersion);
-      if (rollback !== null) referenced.add(rollback);
+      if (rollback !== null) {
+        referenced.add(rollback);
+        reachableVersions.add(manifest.previousVersion!);
+      }
       pointers.push({
         dataset,
         version: manifest.version,
@@ -200,7 +219,7 @@ async function main(): Promise<number> {
     const version = match[2]!;
     const entry = versionsSeen.get(version) ?? { objects: 0, bytes: 0, referenced: 0 };
     entry.objects += 1;
-    entry.bytes += object.size ?? 0;
+    entry.bytes += object.sizeBytes ?? 0;
     if (referenced.has(object.key)) entry.referenced += 1;
     versionsSeen.set(version, entry);
   }
@@ -214,17 +233,42 @@ async function main(): Promise<number> {
       pointedAtByAManifest: entry.referenced > 0,
     }));
 
-  const orphans = objects.filter(
+  /** The version in a data key, or null for anything that is not a versioned data object. */
+  const versionOf = (key: string): string | null => {
+    const match = /^data\/(.+)\/([^/]+)\.jsonl$/.exec(key);
+    return match === null ? null : match[2]!;
+  };
+
+  const unreachable = objects.filter((object) => {
+    if (object.key.startsWith("manifests/")) return false;
+    const version = versionOf(object.key);
+    // Anything that is not a versioned data object is left alone: unrecognised is not unreachable.
+    if (version === null) return false;
+    return !reachableVersions.has(version);
+  });
+  const unreachableBytes = unreachable.reduce((sum, object) => sum + (object.sizeBytes ?? 0), 0);
+
+  /*
+   * And the narrow reading, kept only so the two can be compared. A key no manifest names is
+   * *not* evidence of anything on its own, for the reason above.
+   */
+  const unnamedByAnyManifest = objects.filter(
     (object) => !referenced.has(object.key) && !object.key.startsWith("manifests/"),
   );
-  const orphanBytes = orphans.reduce((sum, object) => sum + (object.size ?? 0), 0);
-  const referencedBytes = totalBytes - orphanBytes;
 
-  report.referenced = { objects: referenced.size, bytes: referencedBytes };
-  report.unreferenced = {
-    objects: orphans.length,
-    bytes: orphanBytes,
-    sample: orphans.slice(0, 8).map((object) => object.key),
+  report.reachableVersions = [...reachableVersions].sort();
+  report.reachable = {
+    objects: objects.length - unreachable.length,
+    bytes: totalBytes - unreachableBytes,
+  };
+  report.unreachable = {
+    objects: unreachable.length,
+    bytes: unreachableBytes,
+    sample: unreachable.slice(0, 8).map((object) => object.key),
+  };
+  report.notNamedByAnyManifest = {
+    objects: unnamedByAnyManifest.length,
+    note: "not a deletion basis — sharded families are resolved by version, not by a manifest per shard",
   };
 
   /* Any manifest keys not matched above — a pointer file that is not a `current.json`. */
@@ -250,7 +294,7 @@ async function main(): Promise<number> {
     const date = match[1]!;
     const entry = datedByDate.get(date) ?? { objects: 0, bytes: 0 };
     entry.objects += 1;
-    entry.bytes += object.size ?? 0;
+    entry.bytes += object.sizeBytes ?? 0;
     datedByDate.set(date, entry);
   }
   const today = new Date().toISOString().slice(0, 10);
@@ -264,8 +308,8 @@ async function main(): Promise<number> {
   report.outcome = "inventoried";
   console.log(
     `${BUCKET}: ${objects.length} object(s), ${totalBytes} bytes; ` +
-      `${pointers.length} readable manifest(s) referencing ${referenced.size} key(s) ` +
-      `(${referencedBytes} bytes); ${orphans.length} unreferenced object(s) (${orphanBytes} bytes).`,
+      `${pointers.length} readable manifest(s) naming ${reachableVersions.size} version(s); ` +
+      `${unreachable.length} object(s) at no named version (${unreachableBytes} bytes).`,
   );
   annotateReport("production inventory", report);
   return 0;
