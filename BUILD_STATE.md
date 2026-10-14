@@ -4,6 +4,61 @@ Last updated: 2026-10-14 (the schedules run from main; boards read buckets at ev
 
 ## Current status
 
+### 14 October: the acceptance pass, measured from main
+
+Both PRs merged — #7 (the three operational fixes and the read-only inventory) at `426efc8`, #8 (the
+shrink guard for the live datasets) at `1c9b2d0` — and each claim re-checked against `origin/main`
+rather than inferred from the merge:
+
+    prove-horizon scheduled fallback '3'           1    deploy-preview fallback '4' remaining   0
+    refresh dispatch default '4' remaining         0    weather maximumShrinkFraction: 1        1
+    weather upstream_refused outcome               2    weather annotateReport                  2
+    evidence publish job                           1    evidence/ in .prettierignore            1
+    read-only inventory script               present    retire-live-version capability          0
+
+The last line is the one that matters as much as the rest: the mode that deleted a live version is
+not in the default branch.
+
+**Weather, from main, exercised rather than merely green.** Two of nine batches were refused —
+`open_meteo rate limited`, 200 of 870 cells lost — and all thirteen degree squares published anyway:
+`outcome: published`, 670 answered, 65 seconds. Under the old code `excessive_shrink` would have
+thrown out of the publish loop at the first square that lost cells and taken the run with it,
+leaving no report at all. And the annotation naming the outcome is itself the proof that the
+instrumentation is live, because it did not exist before the merge.
+
+**Live collection, from main, with the shrink measured rather than assumed.**
+
+    15:55   published 38,715 observations     (the live manifest at the moment of failure)
+    20:01   THREW — "shrank by 57.0%", published nothing
+    21:52   published 13,028 observations     outcome: collected, green
+
+A 66.3% shrink accepted, a larger drop than the 57% that threw four hours earlier, against the same
+previous version — because the 20:01 failure never replaced it. `coverage: 1`,
+`acceptanceRate: 1`, `governorState: green`, bods healthy at `ageSeconds: 0.009`.
+
+**Storage, measured read-only after the day's work.**
+
+    preview      34,957 data objects   10,652,669,812 bytes
+                 + 3,383 manifests          1,811,816
+    production        8 objects                  4,409
+    account                            ~10,654,486,037 of 10,737,418,240
+    headroom                               ~82,932,203   (~79 MiB)
+
+    retained dates   2026-10-14, 2026-10-15, 2026-10-16   512/512 shards each
+    still present    2026-10-13 (~1.38 GB)   2026-10-17 (~1.11 GB)
+
+Both of those leave by normal retention rather than by hand, and the dates are worth stating because
+they are not what I first assumed: `expiredDatedKeys` deletes only dates _before yesterday_, so a
+future-but-obsolete date is never pruned as obsolete. 2026-10-13 goes on the first refresh from 15
+October; 2026-10-17 goes on the first refresh from 18 October, when it becomes past. That is correct
+scoping, not a gap.
+
+**And the scheduled path that was asked for is already proven.** The 04:37 window arrived at 09:41,
+published the horizon, and ran normal retention — deleting service date 2026-10-12 in full, 1,804
+keys, zero failures. One real scheduled departures-and-retention path, end to end, with no manual
+dispatch involved. The read-only measurements above were dispatched by hand and are evidence about
+bytes, not about scheduling.
+
 ### 14 October: the schedule is throttled to one firing per workflow per five-hour wave
 
 Counted rather than watched, after the 18:53 refresh failed to appear. Every scheduled workflow in
@@ -50,14 +105,85 @@ rather than 144. Neither is broken and neither is over its upstream allowance �
 running far less often than the crons state, and any figure derived from "runs per day" in this
 repository should be read against the four-per-wave reality rather than the cron.
 
-**A correction to the horizon entry on the operational-fixes branch.** I wrote that the four-date
-mismatch meant the fourth date was "simply absent" and the proof reported `covered_using_slack`. The
-scheduled proof at 18:03, with the four still in place, reported `covered` with 512 of 512 shards on
-all four dates, 2026-10-17 included — because the 09:41 refresh had still been running the four-date
-horizon when it wrote them. The mismatch had not yet produced a wrong answer; it was a divergence
-waiting for the first three-date refresh to make the fourth date obsolete. Worth fixing, and fixed
-before that happened, but the failure mode I gave was a prediction out of the code's own comment
-rather than something observed.
+### 14 October: three operational faults, and one claim of mine that was wrong
+
+**The departure horizon was one number in five places, and three disagreed.** The refresh publishes
+three service dates. `prove-horizon` asked about four on its schedule; `deploy-preview` asked about
+four in three separate steps; and two dispatch defaults said four as well, which is the worse half —
+a manual run would publish a fourth service date at about 1.22 GB on an account with 10 GB in
+total. All five now say three, and `tests/contract/horizon-days.test.ts` fails if any workflow
+disagrees. It checks both halves, because a scheduled run uses the `|| 'N'` fallback and a
+dispatched run uses the input's `default:`; they are separate paths and they diverged separately.
+
+**And the symptom I claimed was not the symptom.** I wrote that the fourth date would be "simply
+absent" and the proof would report `covered_using_slack`. The scheduled proof at 18:03 — from main,
+with the four still in place — reported `covered` with 512 of 512 shards on all four dates,
+2026-10-17 included, because the 09:41 refresh had still been running the four-date horizon when it
+wrote them. So the mismatch had not yet produced a wrong answer; it was a divergence waiting for the
+first three-date refresh to make the fourth date obsolete. Still worth fixing, and fixed before that
+happened rather than after — but the failure mode was a prediction out of the code's own comment, not
+something I had observed, and I reported it as though it were.
+
+**Weather had two faults wearing one exit code, and the first thing to fix was that nobody could
+tell.** Three scheduled runs failed on 13 and 14 October with nothing but "Process completed with
+exit code 1". The logs are served from a host this container cannot reach, the check-run API returns
+`output.summary: null`, and weather was the one pipeline here without the annotation path every other
+one has. What the API could still establish: every code path that returns writes
+`weather-report.json`, the successful runs uploaded that artifact, and all three failures uploaded
+none — so the collector threw and the crash handler printed the reason somewhere unreadable. It now
+annotates its report, and a crash annotates the error and its first stack frames.
+
+The dispatch that followed named the cause:
+
+    outcome       no_answer      requested 870   answered 0
+    batch 1       UpstreamError: open_meteo timed out after 20000ms   (88,168ms)
+    batch 2       UpstreamError: open_meteo rate limited
+    batch 3       UpstreamError: open_meteo network error
+    batches 4-5   UpstreamError: open_meteo server error 503
+    batches 6-9   UpstreamError: Circuit open for open_meteo
+    budget        9 per refresh, 432 a day of 10,000, withinAllowance true
+
+Not the arithmetic, then. Open-Meteo's free tier is generous per day and strict per moment, and a
+GitHub runner shares its egress address with everyone else asking the same question — which this
+code already records happening, as runs 59 and 60. So:
+
+1. **A refusal was reported as our failure.** `no_answer` splits into `upstream_refused` — asked
+   politely, turned away on every batch, published nothing, previous shards left alone, retrying in
+   thirty minutes — and `no_answer`, which keeps its meaning of a batch that answered and could not
+   be used. A new `publish_failed` covers weather that arrived and could not be written. Only the
+   last two fail the run.
+2. **A partial answer threw, which is what the three silent runs were.** `publish` refuses a 25%
+   shrink, to stop a half-read upstream replacing a good national artifact. A weather shard is one
+   degree square holding a handful of 0.10° cells, so one cell lost to a refused batch is often more
+   than a quarter of it — and `excessive_shrink` was thrown out of the publish loop, killing the run
+   before the other squares were written and before any report existed. Weather now publishes with
+   `maximumShrinkFraction: 1`, and a square that still will not write is recorded on the shard
+   rather than thrown. The guard's purpose does not apply: nobody reads a weather shard expecting
+   national coverage, every cell carries its own timestamp, and a cell this run missed keeps the
+   answer it had.
+
+The verification run exercised the fix rather than avoiding it. Batch 7 of 9 was rate limited, 100
+of 870 cells were lost — the exact partial case that killed the earlier runs — and all 13 degree
+squares published anyway: `outcome: published`, 770 answered, 51 seconds, green. Coverage is
+untouched: same cells, same grid, same nine variables, same half-hourly schedule, same two-second
+spacing.
+
+**The evidence workflow raced itself, and reddened CI twice over.** Its probe and GTFS jobs both
+called `commit-evidence.mjs`, and both rewrote `evidence/README.md` with their own label and
+timestamp — so the second one's rebase hit a content conflict in that file, all four retries found a
+rebase already in progress, and a run whose measurements had all succeeded reported a failure. Each
+job now hands its files over as an artifact and a single `publish` job, waiting on both and running
+whatever they did, commits once. And the same workflow commits machine-written JSON while
+`format:check` is a CI gate, so unformatted output there failed the format step and skipped lint,
+types, tests and build behind it — the branch head was red for exactly that, which is the real reason
+a healthy evidence run looked broken. `evidence/` is now in `.prettierignore`.
+
+**What is deliberately not here.** The `--retire-live-version` mode that reclaimed the production
+bucket stays on the build branch. It was right for one exceptional cleanup and it is the only path in
+`run-prune.ts` that deletes a live version; it does not belong in the default branch merely because
+it exists. What is here from that work is the part that is generally useful and cannot delete
+anything: the read-only inventory, which lists every object, computes version-level reachability and
+asks Cloudflare which Workers and Pages projects are actually bound to the bucket.
 
 ### 14 October: the production bucket is reclaimed — 3.27 GB proved dead, then deleted
 
