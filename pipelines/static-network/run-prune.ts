@@ -64,7 +64,8 @@ const MAX_DELETES_PER_RUN = positiveNumberFromEnv(process.env.PRUNE_MAX_DELETES,
  *
  * Under the step's 45 minutes, so the script always wins the race.
  */
-const TIME_BUDGET_MS = Number(process.env.PRUNE_TIME_BUDGET_MS ?? String(35 * 60 * 1000));
+// Same shape as the retention limit: a blank variable must not become a zero-millisecond budget.
+const TIME_BUDGET_MS = positiveNumberFromEnv(process.env.PRUNE_TIME_BUDGET_MS, 35 * 60 * 1000);
 
 function report(body: Record<string, unknown>): void {
   body.finishedAt = new Date().toISOString();
