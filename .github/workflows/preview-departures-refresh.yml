@@ -16,8 +16,21 @@ name: Preview departures — daily refresh
 
 on:
   schedule:
-    # 04:37 UTC. Deliberately not on the hour: scheduled runs bunch up at :00 and get delayed.
+    # Three times a day, because once was not reliable.
+    #
+    # Measured on 14 October, the first day the schedules worked: this job's 04:37 cron fired at
+    # 09:41 — five hours late — and `prove-horizon`'s 06:12 cron did not fire at all. GitHub delays
+    # scheduled events under load and drops them outright, and it says so. A once-daily job that
+    # keeps the departure horizon alive therefore has a single point of failure per day, and a
+    # dropped firing costs England a day of departures.
+    #
+    # Three chances cost nothing and fix that. The refresh republishes the same service dates at
+    # the version already live, so running it again is idempotent — no new objects, no storage
+    # growth — and Actions minutes are free on a public repository. Minutes are deliberately odd
+    # and off the hour, which is where the delays bunch.
     - cron: "37 4 * * *"
+    - cron: "43 11 * * *"
+    - cron: "53 18 * * *"
   workflow_dispatch:
     inputs:
       horizon_days:
@@ -53,7 +66,18 @@ jobs:
     timeout-minutes: 150
     env:
       R2_BUCKET_ARTIFACTS: ${{ inputs.bucket || 'busstops-artifacts-preview' }}
-      SERVICE_DATE_HORIZON_DAYS: ${{ inputs.horizon_days || '4' }}
+      # Three service dates, not four, because the allowance is account-wide and we are over it.
+      #
+      # Measured 14 October: the preview bucket holds 10,786,090,732 bytes against R2's
+      # 10,737,418,240 free allowance, and the production bucket adds 3,273,116,490 on top. Each
+      # service date is about 1.22 GB, and the refresh keeps yesterday as well as the horizon, so
+      # four published dates means five stored. Three brings the bucket to roughly 9.56 GB, which
+      # is inside the allowance once production's stale artifact is reclaimed.
+      #
+      # Three dates is not a reduction in usefulness: a passenger asks about today, and the horizon
+      # exists so that a day's refresh failing does not blank the boards. Two spare days of slack
+      # against three refreshes a day is ample.
+      SERVICE_DATE_HORIZON_DAYS: ${{ inputs.horizon_days || '3' }}
       SERVICE_DATE_OFFSET_DAYS: ${{ inputs.offset_days || '0' }}
     steps:
       - uses: actions/checkout@v4

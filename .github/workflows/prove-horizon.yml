@@ -22,8 +22,15 @@ on:
         type: string
         default: "4"
   schedule:
-    # 06:12 UTC, after the daily refresh, so a refresh that silently did nothing is visible by morning.
+    # After each refresh, so a refresh that silently did nothing is visible rather than inferred.
+    #
+    # The 06:12 firing did not happen at all on 14 October — GitHub drops scheduled events under
+    # load — and a proof that does not run is indistinguishable from a horizon that is fine. Each
+    # of these sits roughly an hour after one of the refresh's three crons. It writes nothing, so
+    # running it three times is free in every sense that matters.
     - cron: "12 6 * * *"
+    - cron: "21 13 * * *"
+    - cron: "31 20 * * *"
 
 permissions:
   contents: read

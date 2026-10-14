@@ -404,6 +404,40 @@ test.describe("the walk a passenger takes", () => {
    * journey plan to it — they are standing there — it is the stops within a few streets, so the
    * result opens the map around the position rather than the planner.
    */
+  /*
+   * A real stop that nothing in our data serves, which the deployed measurement found: Piccadilly
+   * Gardens in Manchester and Birmingham Coach Station both answer with zero departures *and* zero
+   * routes on a timetable that read perfectly well. "No departures in the next hour" is wrong
+   * there — it says buses call here and none is due — and a passenger standing at it needs
+   * somewhere else to look rather than a reassurance that their bus is late.
+   */
+  test("a stop no service is known to call at says so, and offers a way out", async ({ page }) => {
+    await mockApi(page, {
+      [`/v1/stops/${STOP_ID}`]: {
+        ...STOP_RESPONSE,
+        data: {
+          ...STOP_RESPONSE.data,
+          departures: [],
+          routes: [],
+          // Read successfully: this is not our staleness, it is the coverage cap.
+          timetableCoverage: { read: 4, missing: 0, serviceDates: ["2026-10-14"] },
+        },
+      },
+    });
+    await page.goto(`/stops/${STOP_ID}`);
+
+    await expect(page.getByText(/No services known at this stop/i).first()).toBeVisible();
+    // And emphatically not the claim about the buses.
+    await expect(page.getByText(/no departures from this stop in the next hour/i)).toHaveCount(0);
+
+    // The way out: the map around this stop, so the stops across the road are in view.
+    const out = page.getByRole("link", { name: /See stops around here/i }).first();
+    await expect(out).toBeVisible();
+    expect((await out.getAttribute("href")) ?? "").toContain("/live?bbox=");
+    await out.click();
+    await expect(page).toHaveURL(/\/live\?bbox=/);
+  });
+
   test("a postcode finds its position and opens the map around it", async ({ page }) => {
     await mockApi(page, { "/v1/search": POSTCODE_SEARCH_RESULTS });
     await page.goto("/search?q=LS1%204DY");

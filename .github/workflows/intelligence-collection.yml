@@ -52,7 +52,18 @@ jobs:
           VEHICLE_SALT_SECRET: ${{ secrets.VEHICLE_SALT_SECRET }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          R2_BUCKET_ARTIFACTS: ${{ vars.R2_BUCKET_ARTIFACTS || 'busstops-artifacts' }}
+          # Deliberately the preview bucket, which is the one the deployed Worker reads.
+          #
+          # These jobs fired for the first time on 14 October, when the schedules came back, and every
+          # one of them wrote into `busstops-artifacts` — while the deployment serves from
+          # `busstops-artifacts-preview`. So live collection was accumulating where nothing reads it:
+          # Pro could never show the observations, and the production bucket grew against an allowance
+          # that is account-wide and already over. Weather and disruptions already name this bucket
+          # outright, for the same reason; these three were the ones still defaulting the other way.
+          #
+          # `vars.R2_BUCKET_ARTIFACTS` is still honoured, so one repository variable moves them all back
+          # the day a production deployment exists to move them for.
+          R2_BUCKET_ARTIFACTS: ${{ vars.R2_BUCKET_ARTIFACTS || 'busstops-artifacts-preview' }}
           BUDGET_UTILIZATION: ${{ vars.BUDGET_UTILIZATION || '0' }}
           MAX_PARTITIONS_PER_RUN: ${{ vars.MAX_PARTITIONS_PER_RUN }}
           BODS_DAILY_REQUEST_BUDGET: ${{ vars.BODS_DAILY_REQUEST_BUDGET }}

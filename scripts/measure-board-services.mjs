@@ -39,12 +39,28 @@ const flag = (name, fallback) => {
 const PASSES = flag("passes", 4);
 const PACE_MS = flag("pace", 500);
 
-/** Four places with dense boards, spread across the country and across operators. */
+/**
+ * Stops chosen to span the sizes a passenger actually meets, because the question is not "is the
+ * index cheaper" — it plainly is — but "is it cheaper without making an ordinary board unpleasant".
+ *
+ * A village stop with one or two services, ordinary urban stops, a dense city centre, a major
+ * interchange, and Tombland in Norwich, which is the known high-service case that forced the
+ * bucket cap up twice. Each is found by searching for its name so the row can be checked by hand
+ * afterwards, with a coordinate fallback for the ones a name may not resolve.
+ */
 const PLACES = [
-  { name: "Manchester", lat: 53.4808, lon: -2.2426 },
-  { name: "Leeds", lat: 53.79648, lon: -1.54785 },
-  { name: "Bristol", lat: 51.4545, lon: -2.5879 },
-  { name: "Norwich", lat: 52.6309, lon: 1.2974 },
+  { name: "village (Hathersage)", search: "Hathersage", lat: 53.3281, lon: -1.6567 },
+  { name: "urban (Leeds)", search: "Blackman Lane", lat: 53.79648, lon: -1.54785 },
+  { name: "urban (Bristol)", search: "Lamb Street", lat: 51.4545, lon: -2.5879 },
+  { name: "city centre (Manchester)", search: "Piccadilly Gardens", lat: 53.4808, lon: -2.2426 },
+  { name: "interchange (Leeds)", search: "Leeds City Bus Station", lat: 53.7965, lon: -1.5379 },
+  {
+    name: "interchange (Birmingham)",
+    search: "Birmingham Coach Station",
+    lat: 52.4765,
+    lon: -1.8936,
+  },
+  { name: "high-service (Norwich Tombland)", search: "Tombland", lat: 52.6309, lon: 1.2974 },
 ];
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -72,19 +88,34 @@ async function get(path) {
   }
 }
 
-/** One stop per place, named, so a reported figure can be checked by hand afterwards. */
+/**
+ * One stop per place, by name where a name resolves and by position where it does not.
+ *
+ * By name first because the sizes are the point: "the first stop near this coordinate" was how
+ * this picked before, and it returned whatever happened to be nearest, which made the rows
+ * incomparable between runs and said nothing about whether a *big* stop was being measured.
+ */
 async function findStops() {
   const stops = [];
   for (const place of PLACES) {
-    const near = await get(`/v1/nearby?lat=${place.lat}&lon=${place.lon}&radius=600`);
-    const results = Array.isArray(near.body?.data?.results) ? near.body.data.results : [];
-    const stop = results.find((result) => result.kind === "stop" && typeof result.id === "string");
+    let stop = null;
+    if (place.search) {
+      const found = await get(`/v1/search?q=${encodeURIComponent(place.search)}`);
+      const results = Array.isArray(found.body?.data?.results) ? found.body.data.results : [];
+      stop = results.find((result) => result.kind === "stop" && typeof result.id === "string");
+      await sleep(PACE_MS);
+    }
+    if (!stop) {
+      const near = await get(`/v1/nearby?lat=${place.lat}&lon=${place.lon}&radius=600`);
+      const results = Array.isArray(near.body?.data?.results) ? near.body.data.results : [];
+      stop = results.find((result) => result.kind === "stop" && typeof result.id === "string");
+      await sleep(PACE_MS);
+    }
     if (stop) {
       stops.push({ place: place.name, id: stop.id, title: stop.title ?? "(unnamed)" });
     } else {
-      console.log(`${place.name}: nothing near it answered, HTTP ${near.status}`);
+      console.log(`${place.name}: neither its name nor its position found a stop`);
     }
-    await sleep(PACE_MS);
   }
   return stops;
 }
@@ -154,6 +185,8 @@ async function main() {
       samples: samples.length,
       statuses: [...new Set(samples.filter((s) => !s.ok).map((s) => s.status))],
       departures: summarise(ok.map((s) => s.departures).filter((n) => typeof n === "number")),
+      // How many routes the board actually named, which is what the service read was *for*.
+      routesNamed: summarise(ok.map((s) => s.routes).filter((n) => typeof n === "number")),
       msMedian: summarise(ok.map((s) => s.ms))?.median ?? null,
       viaBuckets: viaBuckets.length,
       viaWholeObject: viaWhole.length,
@@ -182,7 +215,8 @@ async function main() {
 
     const kib = (n) => (n === null ? "?" : `${(n / 1024).toFixed(1)} KiB`);
     lines.push(
-      `${row.stop}: ${row.ok}/${row.samples} ok, ${row.viaBuckets} via buckets / ` +
+      `${row.stop}: ${row.ok}/${row.samples} ok, ${row.routesNamed?.median ?? "?"} route(s) named, ` +
+        `${row.msMedian ?? "?"}ms median, ${row.viaBuckets} via buckets / ` +
         `${row.viaWholeObject} via whole object / ${row.noServiceRead} already resident; ` +
         `wanted ${row.servicesWanted?.median ?? "?"} service(s), read ` +
         `${row.bucketsRead?.median ?? "?"} bucket(s) = ${kib(row.bucketChars?.median ?? null)} ` +

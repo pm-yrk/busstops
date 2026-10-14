@@ -5,8 +5,9 @@ name: Static network — weekly reconciliation
 # network is rebuilt and compared, producing a Network Changes report.
 
 on:
-  schedule:
-    - cron: "30 2 * * 0"
+  # No schedule, for the reason the daily job has none: both rebuild the national artifact into a
+  # production bucket that nothing serves, on an account already over R2's 10 GB free allowance.
+  # Dispatch it deliberately when there is something to rebuild for.
   workflow_dispatch:
 
 permissions:

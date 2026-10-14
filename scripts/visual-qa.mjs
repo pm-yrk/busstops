@@ -166,6 +166,27 @@ const PAGES = [
  */
 async function clickPaintedStop(page, sink) {
   await waitForPaintedFeatures(page, ["stop-pips", "stop-flags", "stop-clusters"]);
+
+  /*
+   * Scroll the map into view first, which is what a person does before clicking it.
+   *
+   * Without this the check reported "none of the 187 painted stop(s) could be clicked: 187 under
+   * button.button-quiet, h1.live-map__title, header.app__header" — read as a product defect, and
+   * it is not one. The header is `position: sticky; top: 0`, so a page left scrolled from the
+   * previous step puts the map's visible band behind the chrome, and every projected point lands
+   * on the header instead of the canvas. Nobody clicks a map they cannot see.
+   *
+   * The bus click already re-centres for the same reason. This is the cheaper half of that fix:
+   * put the canvas on screen, then ask what is on top of each stop.
+   */
+  await page
+    .evaluate(() => {
+      const canvas = globalThis.__busstopsMap?.getCanvas?.();
+      canvas?.scrollIntoView({ block: "center", inline: "center" });
+    })
+    .catch(() => undefined);
+  await page.waitForTimeout(300);
+
   const point = await page.evaluate(() => {
     const map = globalThis.__busstopsMap;
     if (!map) return null;

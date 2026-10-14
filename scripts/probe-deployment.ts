@@ -465,6 +465,28 @@ async function main(): Promise<void> {
         `Route ${asText(at(page.json, "data", "route", "publicName"))} in ${area.name}: the stop sequence is not in travel order.`,
       );
     }
+
+    /*
+     * Whether the page can say anything about the route beyond its code.
+     *
+     * Some feeds publish a `route_short_name` that is an internal designation — `UK002` — with no
+     * `route_long_name` beside it, and a heading of "Route UK002" tells a passenger nothing. The
+     * answer is not to invent a name: it is to use what the timetable already knows, which is
+     * where the service starts and ends. So the check is that at least one of the two exists, a
+     * published description or an origin and destination from the pattern itself. Both missing is
+     * a page that can only repeat the code back.
+     */
+    const described = asText(at(page.json, "data", "route", "description"));
+    const firstStop = names[0] ?? "";
+    const lastStop = names[names.length - 1] ?? "";
+    const canSayWhereItGoes = firstStop.length > 0 && lastStop.length > 0 && firstStop !== lastStop;
+    if (described.length === 0 && !canSayWhereItGoes) {
+      notes.push(
+        `Route ${asText(at(page.json, "data", "route", "publicName"))} in ${area.name} has no ` +
+          `description and no distinct origin and destination, so its page can only say ` +
+          `"Route ${asText(at(page.json, "data", "route", "publicName"))}".`,
+      );
+    }
     routePages.push({
       area: area.name,
       route: asText(at(page.json, "data", "route", "publicName")),
@@ -554,77 +576,157 @@ async function main(): Promise<void> {
   }
 
   /*
-   * A postcode, which is how a great many people would start.
+   * A postcode, which is how a great many people would start, walked the whole way.
    *
    * It matched nothing at all before the index existed: stops, routes, operators and landmarks are
-   * what search held, and a postcode is none of them. Three real ones from three regions, each
-   * asserted to come back with a coordinate — a postcode result without a position is a row that
-   * cannot open anything, which is the failure mode worth catching rather than "no results".
+   * what search held, and a postcode is none of them. The first deployed attempt then matched
+   * nothing for a different reason — the reader composed its keys from the network index's
+   * version rather than the postcode family's own — which is why this does not stop at "a result
+   * came back".
    *
-   * A whole district is asked for too, because half-typing is the normal case.
+   * Four real postcodes from four regions; the ways people actually type them (lower case, and
+   * without the space); one that cannot exist, which must come back empty rather than wrong; and
+   * then the rest of the journey from the first one that resolved — its coordinate into `/v1/nearby`,
+   * the nearest stop opened, and that stop's board read. A postcode that resolves to a position
+   * nobody can catch a bus from is not a feature.
    */
-  const postcodeSearches: Array<{
-    postcode: string;
-    results: number;
-    postcodes: number;
-    first: string;
-    positioned: boolean;
-  }> = [];
-  for (const postcode of ["LS1 4DY", "M1 1AE", "BS1 4DJ", "NR1"]) {
-    const search = await ask(`/v1/search?q=${encodeURIComponent(postcode)}`);
+  const postcodeSearches: Array<Record<string, unknown>> = [];
+  const postcodeQueries = [
+    { q: "LS1 4DY", expect: "LS1 4DY" },
+    { q: "M1 1AE", expect: "M1 1AE" },
+    { q: "BS1 4DJ", expect: "BS1 4DJ" },
+    { q: "NR1 3DY", expect: "NR1 3DY" },
+    // The same postcode in the two other forms people type it in.
+    { q: "ls1 4dy", expect: "LS1 4DY" },
+    { q: "M11AE", expect: "M1 1AE" },
+    // Not a postcode that exists. An empty answer is correct; a confident wrong one is not.
+    { q: "ZZ99 9ZZ", expect: null },
+  ];
+
+  let firstResolved: { postcode: string; lat: number; lon: number } | null = null;
+
+  for (const { q, expect } of postcodeQueries) {
+    const search = await ask(`/v1/search?q=${encodeURIComponent(q)}`);
     const results = asArray(at(search.json, "data", "results"));
     const hits = results.filter((result) => at(result, "kind") === "postcode");
     const first = hits[0];
     const coordinate = first === undefined ? undefined : at(first, "coordinate");
+    const lat = coordinate === undefined ? undefined : Number(at(coordinate, "lat"));
+    const lon = coordinate === undefined ? undefined : Number(at(coordinate, "lon"));
+    const title = first ? asText(at(first, "title")) : "";
+
     console.log(
-      `GET /v1/search?q=${postcode.padEnd(9)}: HTTP ${search.status} · ${results.length} results · ` +
+      `GET /v1/search?q=${q.padEnd(9)}: HTTP ${search.status} · ${results.length} result(s) · ` +
         `${hits.length} postcode(s)` +
-        (first ? ` · first "${asText(at(first, "title"))}"` : "") +
-        (coordinate === undefined
-          ? ""
-          : ` at ${asText(at(coordinate, "lat"))}, ${asText(at(coordinate, "lon"))}`),
+        (title ? ` · "${title}"` : "") +
+        (lat === undefined ? "" : ` at ${lat.toFixed(5)}, ${lon!.toFixed(5)}`),
     );
+
     postcodeSearches.push({
-      postcode,
+      asked: q,
+      expected: expect,
+      status: search.status,
       results: results.length,
       postcodes: hits.length,
-      first: first ? asText(at(first, "title")) : "",
-      positioned: coordinate !== undefined,
+      led: title,
+      ...(lat === undefined ? {} : { lat, lon }),
     });
-  }
-  report.postcodeSearches = postcodeSearches;
 
-  const foundPostcodes = postcodeSearches.filter((entry) => entry.postcodes > 0);
-  if (foundPostcodes.length === 0) {
-    /*
-     * A note rather than a failure, deliberately: the index is published separately from the
-     * Worker, so a deployment that has the reader and not the artifact is a real and recoverable
-     * state, and it must not turn the passenger gate red for every other check that passed.
-     */
-    notes.push(
-      `Search: no postcode matched any of ${postcodeSearches.length} tried ` +
-        `(${postcodeSearches.map((entry) => entry.postcode).join(", ")}). Either the index is not ` +
-        `published at this version or the reader is not reaching it.`,
-    );
-  } else {
-    const unpositioned = foundPostcodes.filter((entry) => !entry.positioned);
-    if (unpositioned.length > 0) {
-      failures.push(
-        `Search: ${unpositioned.map((entry) => entry.postcode).join(", ")} returned a postcode ` +
-          `result with no coordinate. A postcode row with no position cannot open anything.`,
-      );
+    if (expect === null) {
+      if (hits.length > 0) {
+        failures.push(
+          `Search: "${q}" is not a real postcode and the index answered with "${title}". An ` +
+            `invented match is worse than no match.`,
+        );
+      }
+      continue;
     }
-    const wrongTitle = foundPostcodes.filter(
-      (entry) => entry.postcode.includes(" ") && entry.first !== entry.postcode,
-    );
-    if (wrongTitle.length > 0) {
+
+    if (hits.length === 0) {
+      /*
+       * A note rather than a failure: the index is published separately from the Worker, so "the
+       * reader is deployed and the artifact is not" is a real and recoverable sequencing state and
+       * must not turn the gate red for every other check that passed.
+       */
+      notes.push(`Search: "${q}" matched no postcode, so the index may not be published here.`);
+      continue;
+    }
+    if (lat === undefined || !Number.isFinite(lat)) {
       failures.push(
-        `Search: ${wrongTitle
-          .map((entry) => `asked for ${entry.postcode}, led with "${entry.first}"`)
-          .join("; ")}. A whole postcode must lead with itself.`,
+        `Search: "${q}" returned a postcode with no coordinate. A postcode row with no position ` +
+          `cannot open anything.`,
+      );
+      continue;
+    }
+    if (title !== expect) {
+      failures.push(`Search: asked for "${q}", led with "${title}" rather than "${expect}".`);
+      continue;
+    }
+    if (firstResolved === null) firstResolved = { postcode: title, lat, lon: lon! };
+  }
+
+  /*
+   * And the rest of the walk. A position is only useful if something can be caught from it, so
+   * this follows the first resolved postcode out to its stops and reads one of their boards.
+   */
+  if (firstResolved !== null) {
+    const near = await ask(
+      `/v1/nearby?lat=${firstResolved.lat.toFixed(5)}&lon=${firstResolved.lon.toFixed(5)}&radius=600`,
+    );
+    const nearbyStops = asArray(at(near.json, "data", "results")).filter(
+      (result) => at(result, "kind") === "stop",
+    );
+    const chosen = nearbyStops[0];
+    const stopId = chosen === undefined ? "" : asText(at(chosen, "id"));
+    const board = stopId ? await ask(`/v1/stops/${encodeURIComponent(stopId)}`) : null;
+    const departures = asArray(at(board?.json, "data", "departures"));
+    const boardRoutes = asArray(at(board?.json, "data", "routes"));
+
+    const walk = {
+      from: firstResolved.postcode,
+      nearbyStatus: near.status,
+      stopsNearby: nearbyStops.length,
+      openedStop: chosen === undefined ? "" : asText(at(chosen, "title")),
+      boardStatus: board?.status ?? 0,
+      departures: departures.length,
+      routes: boardRoutes.length,
+    };
+    report.postcodeWalk = walk;
+    console.log(
+      `  ${walk.from} → ${walk.stopsNearby} stop(s) nearby → "${walk.openedStop}" ` +
+        `board HTTP ${walk.boardStatus}, ${walk.departures} due, ${walk.routes} route(s)`,
+    );
+
+    if (nearbyStops.length === 0) {
+      failures.push(
+        `Search: ${firstResolved.postcode} resolved but no stop is within 600 m of it, so the ` +
+          `result leads nowhere a passenger can catch a bus.`,
+      );
+    } else if (walk.boardStatus !== 200) {
+      failures.push(
+        `Search: ${firstResolved.postcode} → "${walk.openedStop}" answered HTTP ` +
+          `${walk.boardStatus}; the stop a postcode leads to must open.`,
+      );
+    } else if (walk.departures === 0 && walk.routes === 0) {
+      // Not a failure: a stop can legitimately have nothing due. Worth saying, not worth failing.
+      notes.push(
+        `Search: ${firstResolved.postcode} → "${walk.openedStop}" opened with nothing due and no ` +
+          `routes listed.`,
       );
     }
   }
+
+  report.postcodeSearches = postcodeSearches;
+  /*
+   * Its own annotation, because GitHub keeps ten per level per step and the probe's full payload
+   * runs to hundreds of parts — the postcode rows fell outside the ten that were kept, so the
+   * evidence existed and could not be read. A short second annotation is the whole fix.
+   */
+  annotate(
+    "notice",
+    "postcode search",
+    JSON.stringify({ searches: postcodeSearches, walk: report.postcodeWalk ?? null }, null, 1),
+  );
 
   // Leeds city centre to Leeds Bradford Airport: two points a passenger would actually pick.
   const journey = await ask(

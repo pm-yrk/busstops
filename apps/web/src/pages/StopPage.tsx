@@ -189,6 +189,19 @@ export function StopPage() {
   const coverage = response.data.timetableCoverage;
   const noTimetablePublished =
     coverage !== undefined && coverage.read === 0 && coverage.missing > 0;
+  /*
+   * A fourth state, and the one the deployed measurement found.
+   *
+   * Piccadilly Gardens in Manchester and Birmingham Coach Station both answer with zero departures
+   * *and* zero routes, on a timetable that read perfectly well. "There are no departures from this
+   * stop in the next hour" is wrong there in a way that matters: it says buses call here and none
+   * is due soon, when what is true is that no operator in our data publishes a service calling
+   * here at all. The build takes 60 of the 945 timetable datasets BODS publishes, so this is the
+   * honest shape of that cap rather than a fault — and a passenger standing there needs somewhere
+   * else to look, not a reassurance that their bus is merely late.
+   */
+  const noServicesKnown =
+    !noTimetablePublished && coverage !== undefined && response.data.routes.length === 0;
   return (
     <div className="page stop-page">
       <ServiceBanner meta={response.meta} />
@@ -316,13 +329,45 @@ export function StopPage() {
            */
           <EmptyState
             art="bus"
-            title={noTimetablePublished ? "No timetable for today" : "No departures to show"}
+            title={
+              noTimetablePublished
+                ? "No timetable for today"
+                : noServicesKnown
+                  ? "No services known at this stop"
+                  : "No departures to show"
+            }
             description={
               noTimetablePublished
                 ? "We have no timetable published for today at this stop, so we cannot say what is due. That is a gap on our side, not a statement that nothing runs."
-                : response.meta.degradation === "scheduled_only"
-                  ? "Live tracking is unavailable for this stop right now, and we have no timetabled departures in the next hour."
-                  : "There are no departures from this stop in the next hour."
+                : noServicesKnown
+                  ? "No operator in our data publishes a service calling here, so there is nothing to show — not even a timetable. Buses may still stop here; we cannot see them."
+                  : response.meta.degradation === "scheduled_only"
+                    ? "Live tracking is unavailable for this stop right now, and we have no timetabled departures in the next hour."
+                    : "There are no departures from this stop in the next hour."
+            }
+            action={
+              noServicesKnown ? (
+                /*
+                 * A way out rather than a dead end. The map opens on this stop's own position, so
+                 * the stops across the road and around the corner — which usually are served — are
+                 * the first thing in view.
+                 */
+                <Link
+                  className="button-primary"
+                  to={`/live?bbox=${encodeURIComponent(
+                    [
+                      stop.locationCoordinate.lon - 0.0045,
+                      stop.locationCoordinate.lat - 0.0027,
+                      stop.locationCoordinate.lon + 0.0045,
+                      stop.locationCoordinate.lat + 0.0027,
+                    ]
+                      .map((value) => value.toFixed(5))
+                      .join(","),
+                  )}`}
+                >
+                  See stops around here
+                </Link>
+              ) : undefined
             }
           />
         ) : (

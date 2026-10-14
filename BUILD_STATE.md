@@ -1,6 +1,6 @@
 # Bus Stops. Build State
 
-Last updated: 2026-10-13 (services read by bucket; Code-Point Open needs no credential)
+Last updated: 2026-10-14 (the schedules run from main; boards read buckets at every size)
 
 ## Current status
 
@@ -120,6 +120,193 @@ allowance. Four dated partitions remain at 1.26 GB each; the refresh was asked f
 date and covered it completely (512 departure shards, 1,289 pattern-trip shards,
 `datesShortOfFullCoverage: []`). One BODS dataset answered 400 during the download and the refresh
 completed around it.
+
+### 14 October: Pro had no data because an unset GitHub variable is "", and `Number("")` is 0
+
+The best find of the day, and it had been hiding behind something that looked like a decision.
+
+Scheduled collection ran, succeeded, and collected nothing:
+
+    plan: { intervalSeconds: 60, partitions: 0, skipped: 24, projectedDailyRequests: 0 }
+    notes: "24 lower-density partitions are not collected because the per-run cap is 0 requests"
+    totals: { fetched: 0, accepted: 0 }
+    outcome: "suspended"
+
+and the analytics batch an hour later: `outcome: no_input`, `versionsAvailable: 0`. Read quickly,
+that is the quota governor doing its job. It was not. `intelligence-collection.yml` passes its
+tuning as optional repository variables:
+
+    MAX_PARTITIONS_PER_RUN: ${{ vars.MAX_PARTITIONS_PER_RUN }}
+
+GitHub Actions does not omit an environment variable whose repository variable is unset — it sets
+it to the **empty string**. `process.env.X ?? "12"` therefore keeps `""`, because `??` falls back
+only on null and undefined, and `Number("")` is `0`. Five numbers went that way the moment the
+schedules started firing: the per-run cap, the daily request budget, the pass count, and the
+collection and batch time budgets. Every one became zero, and a zero budget is indistinguishable
+from a deliberate pause.
+
+Fixed in one place — `numberFromEnv` and `positiveNumberFromEnv` in `@busstops/pipeline-core`,
+twelve call sites across five pipelines, six tests. Absent, blank or unparseable means use the
+default; an explicit zero is still honoured where zero is a real reading, and only an accidental
+one falls back.
+
+**Proven on a real run of the same workflow**, dispatched against the fixed config:
+
+    before (scheduled)   partitions  0   fetched      0   outcome: suspended
+    after  (dispatched)  partitions 12   fetched 38,634   accepted 36,114   outcome: collected
+                         coverage 1   acceptanceRate 1   health: healthy
+                         "12 partitions every 120s is about 8640 requests a day against a budget of 8640"
+
+36,114 accepted vehicle observations where there had been none, with the governor sitting exactly
+on its budget rather than bypassed. Two faults had to be fixed for Pro to see any of it: this, and
+the bucket — collection, the batch and the brief were all writing to `busstops-artifacts` while the
+deployment reads `busstops-artifacts-preview`.
+
+The batch, run straight afterwards, now **sees** them:
+
+    versionsAvailable 13   versionsRead 1   recordsRead 36,114   recordsInClosedWindow 0
+    "every one of the 36114 observations read is newer than the settle horizon; nothing has
+     been observed long enough for its bucket to close"
+
+which is the fifteen-minute settle doing exactly what it is for, two minutes after collection
+finished, rather than a fault. The chain is connected where yesterday it read
+`versionsAvailable: 0`.
+
+### 14 October: boards measured across every size, and the map classified rather than redesigned
+
+**The bucketed index, on real boards spanning the sizes a passenger meets.** Four passes each, on
+the deployment, named stops so each row can be checked by hand:
+
+    Hathersage Avenue    village        1 route    1 bucket    19,358 chars   579 ms
+    Leeds City Bus Stn   interchange    3 routes   3 buckets   55,914 chars   385 ms
+    Blackman Lane        urban Leeds    5 routes   5 buckets  104,293 chars   804 ms
+    Lamb Street          urban Bristol 14 routes  13 buckets  245,095 chars   682 ms
+    Tombland             high service  29 routes  28 buckets  529,022 chars   715 ms
+
+`wholeObjectCharsAcrossBoards: null` — **not one board fell back.** Against the whole-object read
+the proof measures at 4,669,134 bytes, that is forty-five times less for an ordinary urban board and
+nearly nine times less for the worst stop measured, and every board between 385 and 804 ms. Tombland
+came in at 715 ms here against 1,132 ms the day before with the same 28 reads, so that figure was
+variance rather than the cost of the reads. The directive's acceptance test — ordinary boards
+comfortably fast, only extremes near a second — is met, so the scheme stands as it is.
+
+Two stops in that set show **0 departures and 0 routes**: Piccadilly Gardens in Manchester and
+Birmingham Coach Station. That is coverage, not performance — the build takes 60 of the 945 BODS
+timetable datasets — and it is the honest shape of the cap rather than a fault in the index.
+
+**The names projection is correct and is not demonstrated on a hot path.** `network/service-names`
+publishes at 848,199 bytes against the services object's 4,702,273, and the reader prefers it. But
+the endpoint instrument's artifact notes show the map reading no services at all on the sampled
+viewport — its `geometries` are empty when no buses are in frame, and that is the only path that
+resolves services. So the 4.7 MiB read the projection replaces was not happening on that request
+either. It is kept because it is additive, 848 KB, and strictly cheaper whenever that path is taken;
+it is not claimed as a measured improvement.
+
+**The map, classified.** The paced instrument: map 30/30, nearby 30/30, search 30/30, zero platform
+errors, medians 191/89/88 ms — twice in a row. The unpaced harness, which fires twenty-six checks
+back to back: 16 of 26, with every failure a 1102 on `/v1/map` or `/v1/nearby`. Its own
+browser-shaped check is the one worth quoting — _3 of 16 requests across 4 page loads were answered
+by the platform_, the map each time, with one load of the four entirely clean.
+
+So: **LOAD / RESILIENCE BACKLOG**, with the cause named rather than left as a mystery. `/v1/map`
+decodes 2,182,908 characters per request — stop tiles and stop-detail buckets, not services — and is
+the first endpoint to exceed a 10 ms CPU budget once an isolate is already busy. Single requests and
+paced browsing are consistently green. The next honest step, if it is ever promoted, is to reduce
+what a map viewport decodes; it is not a cache, a gate, or a rewrite.
+
+### 14 October: the schedules are alive — I was wrong — and the first real day found four faults
+
+**Correction first.** The entry below says the scheduler is dead account-wide. It is not, and the
+reasoning that reached that conclusion was bad: I watched a thirteen-minute window at 12:00 UTC on
+13 October, saw nothing fire, and treated `publish-readme-assets.yml` as a control that settled the
+question. GitHub had simply not started honouring the newly registered schedules yet. By the
+following morning there were **39 scheduled runs** — collection, the analytics batch, weather,
+disruptions, the daily brief, the README publisher and the preview departures refresh. The merge
+fixed it. The watch was too early, and a thirteen-minute window was never enough to say otherwise.
+
+**The departures refresh is genuinely self-sustaining.** Its 09:41 scheduled run, from `main`, with
+nothing dispatched by hand:
+
+    serviceDates          2026-10-14, 15, 16, 17   512 departure shards each, outcome: covered
+    republishedOperators  567 (all with a NOC)
+    republishedServices   13,120 records / 4,702,273 bytes
+    serviceBuckets        256/256 published, complete: true
+    serviceNames          13,120 records / 848,199 bytes
+    prunedServiceDates    1,804 keys deleted — 2026-10-12
+
+One service date in, one out. That is the loop the product needed.
+
+**Four faults the first day of scheduling exposed.**
+
+1. **Disruptions failed every other run.** Three of five with `ArtifactValidationError: Artifact
+disruptions/notices shrank by 27.2% versus version 2026-10-14T05-16-23-389Z`. The shrink guard
+   is right for a national timetable and wrong for live notices, where the size _is_ the news — a
+   road reopens and its notice goes away. The deployment was therefore serving notices hours older
+   than the ones just collected: the guard was causing the staleness it exists to prevent. The
+   protection that matters is upstream of it, where a run in which every attempted source failed
+   returns before publishing and leaves the previous version live. _This was found in one read
+   because the crash handler added the day before annotates its reason; before that it was
+   "Process completed with exit code 1"._
+2. **The production rebuild could never finish.** `static-network-daily` ran for the first time in
+   six weeks and was killed by its own 30-minute cap inside the rebuild step. The BODS catalogue
+   changes daily, so the fingerprint check always decides to rebuild, and a national build takes
+   about forty-five minutes: thirty minutes a day of downloading England, guillotined, every day.
+   Finishing it is not the fix — see the storage note below. Both rebuild schedules are now
+   dispatch-only.
+3. **Live collection was accumulating in the wrong bucket.** Collection, the analytics batch and
+   the brief all defaulted to `busstops-artifacts` while the deployment reads
+   `busstops-artifacts-preview`. Pro could never have shown the observations those runs were
+   gathering, and the writes grew the production bucket. All three now name the preview bucket.
+4. **Once a day was not reliable.** The refresh's 04:37 cron fired at 09:41 — five hours late — and
+   `prove-horizon`'s 06:12 cron did not fire at all. GitHub delays scheduled events under load and
+   drops them. A once-daily job holding England's departure horizon open therefore had one point of
+   failure per day, so both now have three chances at odd minutes off the hour.
+
+**Storage, and a figure I reported wrongly.** R2's 10 GB free allowance is account-wide and I had
+been quoting the preview bucket alone:
+
+    preview     10,786,090,732 bytes   34,933 objects
+    production   3,273,116,490 bytes    4,947 objects
+    allowance   10,737,418,240 bytes
+
+About 14 GB against 10.74. The horizon drops from four service dates to three, which brings preview
+to roughly 9.56 GB. The production bucket is the rest, and what it holds is a 4 September artifact
+whose departure horizon ran out weeks ago — `coverage 2026-10-14: 0 departures, 2026-10-15: 0
+departures`. Nothing serves it. Reclaiming it is a deletion of somebody else's production data and
+is recorded here as a decision rather than taken.
+
+### 13 October: the scheduler is dead account-wide, and the merge proved it rather than fixing it
+
+Established by watching for it rather than inferred. Three crons were registered and `active` on
+`main` — `publish-readme-assets.yml` at `*/5`, `disruptions.yml` at `*/10`, `weather.yml` at
+`*/30` — and a watcher sat on the scheduled-run list across the 12:00 and 12:10 UTC slots. Nothing
+fired. The most recent scheduled run in the repository is still **2026-09-04T07:58**, thirty-nine
+days ago.
+
+What this rules out, each checked rather than assumed:
+
+- **Not which branch the files were on.** That was the real defect and it is fixed: five workflows
+  — the two departure ones, weather, disruptions and retention — did not exist on `main` before
+  today and GitHub reads a schedule only from the default branch, so they could never have fired.
+  They are registered now. `publish-readme-assets.yml` is the control: it has been on `main` with a
+  `*/5` cron since well after 4 September, is registered, is `active`, and has never run.
+- **Not Actions being disabled.** `workflow_dispatch` works — `prove-horizon`, `weather` and
+  `disruptions` were all dispatched from `main` this morning and two of the three succeeded.
+- **Not inactivity.** GitHub's sixty-day rule sets a workflow's state to `disabled_inactivity`;
+  every one of the eighteen reads `active`. The repository was pushed to minutes ago.
+- **Not a fork, archived or disabled repository**, and not a billing constraint on minutes: it is
+  public, so Actions minutes are free and the £0 rule is not at risk either way.
+
+So whatever stops scheduled events is account- or repository-level and not visible from here: this
+session's proxy refuses `actions/permissions`, `actions/permissions/workflow` and the OIDC
+endpoints alike. **The one action that cannot be done from this container:** open the repository's
+Actions tab and look for GitHub's "scheduled workflows have been disabled" banner, which carries
+its own enable button; failing that, check the account's billing page, because scheduled runs are
+the first thing GitHub stops when an Actions payment or spending limit is in trouble.
+
+Until then departures stay on manual life support — a dispatched `Deploy Preview` with
+`refresh_departures` — and that is now the only manual requirement left, rather than one of
+several.
 
 ### 13 October: main carries the schedules, and England's postcodes are published
 

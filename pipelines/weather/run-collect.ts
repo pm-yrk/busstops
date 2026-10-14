@@ -12,11 +12,11 @@
  */
 
 import { writeFileSync } from "node:fs";
-import { r2StoreFromEnv } from "@busstops/pipeline-core";
+import { r2StoreFromEnv, positiveNumberFromEnv } from "@busstops/pipeline-core";
 import { collectStopWeather } from "./src/index.js";
 
 /** Must match the workflow's cron. Passed in so the budget check is against the real interval. */
-const REFRESH_MINUTES = Number(process.env.WEATHER_REFRESH_MINUTES ?? "30");
+const REFRESH_MINUTES = positiveNumberFromEnv(process.env.WEATHER_REFRESH_MINUTES, 30);
 
 async function main(): Promise<number> {
   const startedAt = new Date();

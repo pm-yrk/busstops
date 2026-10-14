@@ -5,6 +5,7 @@ import {
   mapWithConcurrency,
   r2StoreFromEnv,
   type StoredObject,
+  positiveNumberFromEnv,
 } from "@busstops/pipeline-core";
 import { SHARDED, type NetworkIndexRecord } from "./src/shards.js";
 import { keysToRemove, planNetworkPrune } from "./src/prune-versions.js";
@@ -31,7 +32,7 @@ const APPLY = process.argv.includes("--apply");
 const PREFIX = "data/network/";
 
 /** How many published versions to keep, including the live one. */
-const KEEP_VERSIONS = Number(process.env.KEEP_NETWORK_VERSIONS ?? "2");
+const KEEP_VERSIONS = positiveNumberFromEnv(process.env.KEEP_NETWORK_VERSIONS, 2);
 
 /** R2's free storage allowance, which is the number this exists to stay under. */
 const FREE_STORAGE_BYTES = 10 * 1024 * 1024 * 1024;
@@ -49,8 +50,8 @@ const FREE_STORAGE_BYTES = 10 * 1024 * 1024 * 1024;
  * one job, so a run does what it can, says what is left, and the next run continues. Deleting
  * oldest version first is what makes that safe to interrupt.
  */
-const DELETE_CONCURRENCY = Number(process.env.PRUNE_DELETE_CONCURRENCY ?? "16");
-const MAX_DELETES_PER_RUN = Number(process.env.PRUNE_MAX_DELETES ?? "20000");
+const DELETE_CONCURRENCY = positiveNumberFromEnv(process.env.PRUNE_DELETE_CONCURRENCY, 16);
+const MAX_DELETES_PER_RUN = positiveNumberFromEnv(process.env.PRUNE_MAX_DELETES, 20000);
 
 /**
  * How long a run will spend deleting before it stops and writes its report.

@@ -254,6 +254,39 @@ async function main(): Promise<number> {
     );
   }
 
+  /*
+   * Delete the versions this publish superseded, because nothing else will.
+   *
+   * The network retention job walks `data/network/` only, and this family lives under
+   * `data/search/postcodes/`, so a republish would add another 123 MB that no scheduled prune ever
+   * reclaims — against a 10.74 GB allowance that is already at 9.68. Found by checking the prune's
+   * prefix rather than by watching the bucket grow.
+   *
+   * `pruneOldVersions` always protects the live version and the one before it, so rollback is
+   * untouched and the family settles at two editions rather than growing by one every quarter. It
+   * is per dataset, which is why it runs here beside each publish rather than as a second pass.
+   */
+  let supersededDeleted = 0;
+  const pruneFailures: string[] = [];
+  for (let at = 0; at < entries.length; at += PUBLISH_CONCURRENCY) {
+    const slice = entries.slice(at, at + PUBLISH_CONCURRENCY);
+    await Promise.all(
+      slice.map(async ([dataset]) => {
+        try {
+          supersededDeleted += (await artifacts.pruneOldVersions(dataset, 2)).length;
+        } catch (error) {
+          if (pruneFailures.length < 5) {
+            pruneFailures.push(
+              `${dataset}: ${error instanceof Error ? error.message : String(error)}`.slice(0, 120),
+            );
+          }
+        }
+      }),
+    );
+  }
+  report.supersededObjectsDeleted = supersededDeleted;
+  if (pruneFailures.length > 0) report.pruneFailures = pruneFailures;
+
   report.version = version;
   report.publishedBuckets = published;
   report.publishedBytes = writtenBytes;

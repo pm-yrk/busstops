@@ -9,7 +9,13 @@
 
 import { writeFileSync } from "node:fs";
 import type { Operator, ServiceRoute, VehicleObservation } from "@busstops/contracts";
-import { ArtifactStore, annotateReport, r2StoreFromEnv } from "@busstops/pipeline-core";
+import {
+  ArtifactStore,
+  annotateReport,
+  r2StoreFromEnv,
+  numberFromEnv,
+  positiveNumberFromEnv,
+} from "@busstops/pipeline-core";
 import { classify } from "@busstops/governor";
 import { runAnalyticsBatch } from "./src/run.js";
 import type { RoadSegment } from "./src/segments.js";
@@ -170,7 +176,7 @@ async function main(): Promise<number> {
       `against ${operators.records.length} operator(s) and ${services.records.length} service(s)`,
   );
 
-  const utilization = Number(process.env.BUDGET_UTILIZATION ?? "0");
+  const utilization = numberFromEnv(process.env.BUDGET_UTILIZATION, 0);
   const result = await runAnalyticsBatch(
     {
       runId: startedAt.toISOString(),
@@ -195,7 +201,7 @@ async function main(): Promise<number> {
     },
     {
       store,
-      budgetMs: Number(process.env.BATCH_BUDGET_MS ?? "300000"),
+      budgetMs: positiveNumberFromEnv(process.env.BATCH_BUDGET_MS, 300000),
       version: startedAt.toISOString(),
     },
   );
