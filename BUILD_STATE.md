@@ -4,6 +4,61 @@ Last updated: 2026-10-14 (the schedules run from main; boards read buckets at ev
 
 ## Current status
 
+### 14 October: the schedule is throttled to one firing per workflow per five-hour wave
+
+Counted rather than watched, after the 18:53 refresh failed to appear. Every scheduled workflow in
+this repository fired **four or five times today**, in clusters about five hours apart, regardless of
+what its cron says:
+
+    workflow                       cron      due by 19:13   fired
+    publish-readme-assets.yml      */5         ~230            5
+    disruptions.yml                */10        ~115            4
+    weather.yml                    */30          ~38           4
+    intelligence-collection.yml    */30          ~38           4
+    intelligence-batch.yml         hourly          19          4
+    preview-departures-refresh.yml 3/day            2          1
+    prove-horizon.yml              3/day            2          2
+    daily-brief.yml                1/day            1          1
+
+    waves   00:23-00:55   05:05-05:53   10:03-11:50   15:00-15:55   19:13-
+
+GitHub is delivering one firing per workflow per wave and coalescing the rest. That single fact
+explains the whole history this file has been recording as separate mysteries:
+
+- The refresh's 04:37 cron "firing at 09:41, five hours late" was not a delay. It was the 10:0x
+  wave picking it up.
+- The 11:43 cron "not firing at all" fell inside that same wave, which had already spent the
+  refresh's one firing.
+- `prove-horizon`'s 06:12 cron likewise.
+- The refresh workflow has run **exactly once, ever**: `total_count: 1`.
+
+**What this does and does not change.** Three crons buy the refresh about one firing a day rather
+than three, and adding a fourth would buy nothing, because the limit is per workflow per wave and not
+per cron. One firing a day is still sufficient for the departure horizon by construction — a refresh
+publishes today and the two days after it, so one a day keeps three dates live, and today's 09:41 run
+did exactly that. What is no longer true is the comment in `preview-departures-refresh.yml` claiming
+three chances a day: there is one chance a day, taken at whatever hour the wave arrives.
+
+So this is an operational characteristic to plan around, not a defect to engineer against. The thing
+that would actually make the horizon independent of GitHub's scheduler is a different trigger
+mechanism, and that is a decision rather than a fix — recorded here, not taken.
+
+**What it costs the other pipelines.** Live collection at `*/30` is getting 4 runs a day rather than
+48, which is why Pro's sample counts are what they are: the observations are real and the schedule is
+honest, but it is collecting at a twelfth of the declared rate. Disruptions at `*/10` is getting 4
+rather than 144. Neither is broken and neither is over its upstream allowance — they are simply
+running far less often than the crons state, and any figure derived from "runs per day" in this
+repository should be read against the four-per-wave reality rather than the cron.
+
+**A correction to the horizon entry on the operational-fixes branch.** I wrote that the four-date
+mismatch meant the fourth date was "simply absent" and the proof reported `covered_using_slack`. The
+scheduled proof at 18:03, with the four still in place, reported `covered` with 512 of 512 shards on
+all four dates, 2026-10-17 included — because the 09:41 refresh had still been running the four-date
+horizon when it wrote them. The mismatch had not yet produced a wrong answer; it was a divergence
+waiting for the first three-date refresh to make the fourth date obsolete. Worth fixing, and fixed
+before that happened, but the failure mode I gave was a prediction out of the code's own comment
+rather than something observed.
+
 ### 14 October: the production bucket is reclaimed — 3.27 GB proved dead, then deleted
 
 Two runs, both read-only before either deleted anything, and the proof is the interesting part:
