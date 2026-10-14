@@ -31,6 +31,36 @@ import { keysToRemove, planNetworkPrune } from "./src/prune-versions.js";
 const APPLY = process.argv.includes("--apply");
 const PREFIX = "data/network/";
 
+/**
+ * Retiring a bucket's *live* version — a different and more serious act than pruning.
+ *
+ * Everything else in this file keeps the live version by construction, because the usual job is
+ * "delete what has been superseded". This mode exists for the one case that is not that: a bucket
+ * whose live artifact nothing reads. Production held a 4 September artifact of 1.87 GB whose
+ * departure horizon expired weeks ago, and Cloudflare's own answer was that exactly one Worker
+ * exists — `busstops-api-preview`, bound only to the preview bucket — with the `busstops` Pages
+ * project's latest deployment in the preview environment. `wrangler.toml` declares a production
+ * Worker; it has never been deployed. So the data was reachable by manifest and unread by
+ * anything, and R2's 10 GB allowance is account-wide.
+ *
+ * Four guards, because the usual invariant is deliberately inverted here:
+ *
+ *   1. the version must be named on the command line and must equal the live manifest's version,
+ *      so this cannot retire "whatever happens to be live";
+ *   2. the bucket name must not look like a preview bucket, refused unconditionally and first;
+ *   3. no deployed Worker may bind the bucket — asked of Cloudflare at run time, so the claim the
+ *      whole act rests on is enforced by the code rather than by a human having checked earlier;
+ *   4. `--apply` as well, as everywhere else here.
+ *
+ * Manifests pointing at the retired version go too. Leaving them would leave pointers to objects
+ * that no longer exist, and an absent manifest is a state every reader here already handles.
+ */
+const RETIRE_FLAG = "--retire-live-version";
+const RETIRE_VERSION = (() => {
+  const at = process.argv.indexOf(RETIRE_FLAG);
+  return at >= 0 ? process.argv[at + 1] : undefined;
+})();
+
 /** How many published versions to keep, including the live one. */
 const KEEP_VERSIONS = positiveNumberFromEnv(process.env.KEEP_NETWORK_VERSIONS, 2);
 
@@ -92,6 +122,50 @@ function report(body: Record<string, unknown>): void {
 
 function gib(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GiB`;
+}
+
+/**
+ * Which deployed Workers bind this bucket, asked of Cloudflare. Null when the question could not
+ * be answered, which is treated as a refusal rather than as a "no".
+ */
+async function workersBindingBucket(bucket: string): Promise<string[] | null> {
+  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
+  const apiToken = process.env.CLOUDFLARE_API_TOKEN;
+  if (!accountId || !apiToken) return null;
+  const base = `https://api.cloudflare.com/client/v4/accounts/${accountId}`;
+  const headers = { authorization: `Bearer ${apiToken}` };
+
+  try {
+    const listed = await fetch(`${base}/workers/scripts`, {
+      headers,
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!listed.ok) return null;
+    const scripts = ((await listed.json()) as { result?: Array<{ id?: string }> }).result;
+    if (!Array.isArray(scripts)) return null;
+
+    const binding: string[] = [];
+    for (const script of scripts) {
+      if (!script.id) continue;
+      const detail = await fetch(`${base}/workers/scripts/${script.id}/bindings`, {
+        headers,
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (!detail.ok) return null;
+      const bindings = (
+        (await detail.json()) as {
+          result?: Array<{ type?: string; bucket_name?: string }>;
+        }
+      ).result;
+      if (!Array.isArray(bindings)) return null;
+      if (bindings.some((b) => b.type === "r2_bucket" && b.bucket_name === bucket)) {
+        binding.push(script.id);
+      }
+    }
+    return binding;
+  } catch {
+    return null;
+  }
 }
 
 async function main(): Promise<number> {
@@ -159,6 +233,143 @@ async function main(): Promise<number> {
         `bucket to delete from until that is understood.`,
     );
     return 1;
+  }
+
+  /*
+   * The retire path. Everything above it still applies: the manifest and the index record must
+   * agree, or this job has no business deleting anything from this bucket.
+   */
+  if (RETIRE_VERSION !== undefined) {
+    const bucket = process.env.R2_BUCKET_ARTIFACTS ?? "";
+
+    /* Guard 2 first, because it is the one that must never depend on anything else being right. */
+    if (/preview/i.test(bucket)) {
+      report({ outcome: "refused_preview_bucket", bucket, deleted: 0 });
+      console.error(
+        `::error::Refusing to retire a live version from ${bucket}: the name looks like a preview ` +
+          `bucket, and this mode exists only for a bucket nothing reads.`,
+      );
+      return 1;
+    }
+
+    /* Guard 1: the caller must name the version, and it must be the one that is actually live. */
+    if (RETIRE_VERSION !== manifest.version) {
+      report({
+        outcome: "refused_version_mismatch",
+        bucket,
+        askedToRetire: RETIRE_VERSION,
+        liveVersion: manifest.version,
+        deleted: 0,
+      });
+      console.error(
+        `::error::Asked to retire ${RETIRE_VERSION} but the live version is ${manifest.version}. ` +
+          `Name the live version explicitly or do nothing.`,
+      );
+      return 1;
+    }
+
+    /*
+     * Guard 3: no deployed Worker may bind this bucket. Asked of Cloudflare now rather than
+     * trusted from earlier, because "nothing reads it" is the entire justification for this mode
+     * and a deployment could have happened since anybody last looked.
+     */
+    const readers = await workersBindingBucket(bucket);
+    if (readers === null) {
+      report({ outcome: "refused_readers_unknown", bucket, deleted: 0 });
+      console.error(
+        `::error::Could not ask Cloudflare which Workers bind ${bucket}. Without that answer this ` +
+          `mode has no justification, so nothing is deleted.`,
+      );
+      return 1;
+    }
+    if (readers.length > 0) {
+      report({ outcome: "refused_bucket_has_readers", bucket, readers, deleted: 0 });
+      console.error(
+        `::error::${readers.join(", ")} bind ${bucket}. A bucket with a deployed reader is not a ` +
+          `bucket to retire a live version from.`,
+      );
+      return 1;
+    }
+
+    let all: StoredObject[];
+    try {
+      all = await store.listDetailed!("");
+    } catch (error) {
+      report({
+        outcome: "inventory_incomplete",
+        reason: error instanceof Error ? error.message : String(error),
+        deleted: 0,
+      });
+      console.error("::error::The bucket could not be listed completely, so nothing is deleted.");
+      return 1;
+    }
+
+    const atVersion = all.filter(
+      (object) => object.key.startsWith("data/") && object.key.endsWith(`/${RETIRE_VERSION}.jsonl`),
+    );
+    /*
+     * And the pointers at it, so nothing is left naming an object that has gone. Read rather than
+     * assumed: a manifest for a different version must survive.
+     */
+    const artifactsStore = new ArtifactStore(store);
+    const danglingManifests: string[] = [];
+    for (const object of all) {
+      if (!object.key.startsWith("manifests/") || !object.key.endsWith("/current.json")) continue;
+      const dataset = object.key.slice("manifests/".length, -"/current.json".length);
+      const pointer = await artifactsStore.readManifest(dataset);
+      if (pointer?.version === RETIRE_VERSION) danglingManifests.push(object.key);
+    }
+
+    const doomedKeys = [...atVersion.map((object) => object.key), ...danglingManifests];
+    const bytesBefore = all.reduce((sum, object) => sum + object.sizeBytes, 0);
+    const bytesRetired = atVersion.reduce((sum, object) => sum + object.sizeBytes, 0);
+
+    const retireSummary: Record<string, unknown> = {
+      outcome: APPLY ? "retired" : "retire_dry_run",
+      bucket,
+      retiredVersion: RETIRE_VERSION,
+      readersBindingBucket: readers,
+      objectsBefore: all.length,
+      objectsToDelete: doomedKeys.length,
+      dataObjects: atVersion.length,
+      manifestsRemoved: danglingManifests.length,
+      bytesBefore,
+      bytesRetired,
+      bytesAfter: bytesBefore - bytesRetired,
+      freeStorageBytes: FREE_STORAGE_BYTES,
+      deleted: 0,
+      deletionFailures: [] as string[],
+    };
+
+    console.log(
+      `${bucket}: retiring ${RETIRE_VERSION} — ${atVersion.length} data object(s) and ` +
+        `${danglingManifests.length} manifest(s), ${gib(bytesRetired)} of ${gib(bytesBefore)}.`,
+    );
+
+    if (!APPLY) {
+      console.log(`${doomedKeys.length} object(s) would be deleted. Re-run with --apply to do it.`);
+      report(retireSummary);
+      return 0;
+    }
+
+    const retireFailures: string[] = [];
+    let retired = 0;
+    await mapWithConcurrency(doomedKeys, DELETE_CONCURRENCY, async (key) => {
+      try {
+        await store.delete(key);
+        retired += 1;
+      } catch (error) {
+        retireFailures.push(`${key}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    });
+
+    retireSummary.deleted = retired;
+    retireSummary.deletionFailures = retireFailures.slice(0, 10);
+    retireSummary.deletionFailureCount = retireFailures.length;
+    retireSummary.objectsAfter = all.length - retired;
+    report(retireSummary);
+    console.log(`Retired ${retired} of ${doomedKeys.length} object(s).`);
+    return retireFailures.length === 0 ? 0 : 1;
   }
 
   /*

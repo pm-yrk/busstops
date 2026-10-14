@@ -27,6 +27,15 @@ on:
         description: "Actually delete the superseded versions (otherwise report only)"
         type: boolean
         default: false
+      retire_live_version:
+        description: "Retire a bucket's LIVE version — name it exactly, or leave blank"
+        type: string
+        # Blank, and a free-text field rather than a toggle, on purpose. Everything else here
+        # keeps the live version by construction; this does the opposite, for a bucket nothing
+        # reads. Having to type the version string out is the point, and the job refuses unless it
+        # matches the live manifest, refuses any bucket whose name looks like preview, and refuses
+        # if Cloudflare says a deployed Worker binds the bucket.
+        default: ""
       keep_versions:
         description: "How many published versions to keep, including the live one"
         type: string
@@ -76,10 +85,15 @@ jobs:
         run: |
           # The job's own exit code is what decides the run, but the report is written either way
           # and is the only description of what was in the bucket.
+          RETIRE="${{ inputs.retire_live_version }}"
+          ARGS=""
+          if [ -n "$RETIRE" ]; then
+            ARGS="--retire-live-version $RETIRE"
+          fi
           if [ "${{ inputs.apply }}" = "true" ]; then
-            npx tsx pipelines/static-network/run-prune.ts --apply
+            npx tsx pipelines/static-network/run-prune.ts $ARGS --apply
           else
-            npx tsx pipelines/static-network/run-prune.ts
+            npx tsx pipelines/static-network/run-prune.ts $ARGS
           fi
 
       - name: Upload the prune report
