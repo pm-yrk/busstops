@@ -229,7 +229,20 @@ const SERVICE_HOURS = inServiceHours();
  * pace itself and is labelled as the stress test it is. Nothing is skipped and nothing is
  * forgiven: the script still exits non-zero if any check fails, stress included.
  */
-const CHECK_PACE_MS = Number(process.env.VERIFY_PACE_MS ?? "400");
+/*
+ * Blank counts as absent, which `??` does not do.
+ *
+ * An unset GitHub repository variable arrives as the empty string, `??` only falls back on null
+ * and undefined, and `Number("")` is 0 — a pace of zero here would turn a paced walk into the
+ * burst it exists to be distinguished from. The same mistake zeroed the collection budget and the
+ * retention limit, so this reads the same way they now do. Scripts cannot import the pipelines'
+ * helper, so the rule is written out.
+ */
+const CHECK_PACE_MS = (() => {
+  const raw = (process.env.VERIFY_PACE_MS ?? "").trim();
+  const value = raw.length > 0 ? Number(raw) : Number.NaN;
+  return Number.isFinite(value) && value > 0 ? value : 400;
+})();
 
 /** Checks that are deliberately a burst, and must not be paced. */
 const STRESS_CHECKS = new Set(["the pattern-heavy endpoints survive dense cities, repeatedly"]);

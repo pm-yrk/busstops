@@ -676,20 +676,40 @@ async function main(): Promise<void> {
     const nearbyStops = asArray(at(near.json, "data", "results")).filter(
       (result) => at(result, "kind") === "stop",
     );
-    const chosen = nearbyStops[0];
-    const stopId = chosen === undefined ? "" : asText(at(chosen, "id"));
-    const board = stopId ? await ask(`/v1/stops/${encodeURIComponent(stopId)}`) : null;
-    const departures = asArray(at(board?.json, "data", "departures"));
-    const boardRoutes = asArray(at(board?.json, "data", "routes"));
 
+    /*
+     * The first three, not the first.
+     *
+     * Taking `results[0]` found "Station A" near LS1 4DY: a real stop whose board opens and which
+     * no service in our data calls at — 0 departures, 0 routes. That is a weaker test than the
+     * product, because a postcode result opens the *map* around the position and a passenger sees
+     * all twenty-five stops, not just the nearest. So this asks a few of them, reports each, and
+     * judges on whether any of them is somewhere a bus actually goes.
+     */
+    const tried: Array<{ stop: string; status: number; departures: number; routes: number }> = [];
+    for (const candidate of nearbyStops.slice(0, 3)) {
+      const stopId = asText(at(candidate, "id"));
+      if (!stopId) continue;
+      const attempt = await ask(`/v1/stops/${encodeURIComponent(stopId)}`);
+      tried.push({
+        stop: asText(at(candidate, "title")),
+        status: attempt.status,
+        departures: asArray(at(attempt.json, "data", "departures")).length,
+        routes: asArray(at(attempt.json, "data", "routes")).length,
+      });
+    }
+
+    const opened = tried.filter((entry) => entry.status === 200);
+    const useful = opened.find((entry) => entry.departures > 0 || entry.routes > 0);
     const walk = {
       from: firstResolved.postcode,
       nearbyStatus: near.status,
       stopsNearby: nearbyStops.length,
-      openedStop: chosen === undefined ? "" : asText(at(chosen, "title")),
-      boardStatus: board?.status ?? 0,
-      departures: departures.length,
-      routes: boardRoutes.length,
+      tried,
+      openedStop: useful?.stop ?? opened[0]?.stop ?? "",
+      boardStatus: opened[0]?.status ?? 0,
+      departures: useful?.departures ?? 0,
+      routes: useful?.routes ?? 0,
     };
     report.postcodeWalk = walk;
     console.log(
@@ -702,16 +722,21 @@ async function main(): Promise<void> {
         `Search: ${firstResolved.postcode} resolved but no stop is within 600 m of it, so the ` +
           `result leads nowhere a passenger can catch a bus.`,
       );
-    } else if (walk.boardStatus !== 200) {
+    } else if (opened.length === 0) {
       failures.push(
-        `Search: ${firstResolved.postcode} → "${walk.openedStop}" answered HTTP ` +
-          `${walk.boardStatus}; the stop a postcode leads to must open.`,
+        `Search: none of the ${tried.length} stop(s) tried near ${firstResolved.postcode} opened ` +
+          `(${tried.map((entry) => `${entry.stop} HTTP ${entry.status}`).join("; ")}). The stops a ` +
+          `postcode leads to must open.`,
       );
-    } else if (walk.departures === 0 && walk.routes === 0) {
-      // Not a failure: a stop can legitimately have nothing due. Worth saying, not worth failing.
+    } else if (useful === undefined) {
+      /*
+       * Not a failure. A stop can legitimately have nothing due, and the coverage cap means some
+       * real stops have no service in our data at all — which the stop page now says outright
+       * rather than claiming nothing is due in the next hour.
+       */
       notes.push(
-        `Search: ${firstResolved.postcode} → "${walk.openedStop}" opened with nothing due and no ` +
-          `routes listed.`,
+        `Search: the ${opened.length} stop(s) tried near ${firstResolved.postcode} all opened with ` +
+          `nothing due and no routes (${opened.map((entry) => entry.stop).join("; ")}).`,
       );
     }
   }

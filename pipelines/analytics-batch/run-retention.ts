@@ -11,7 +11,12 @@
  */
 
 import { writeFileSync } from "node:fs";
-import { ArtifactStore, r2StoreFromEnv, RETENTION_CLASSES } from "@busstops/pipeline-core";
+import {
+  ArtifactStore,
+  r2StoreFromEnv,
+  RETENTION_CLASSES,
+  positiveNumberFromEnv,
+} from "@busstops/pipeline-core";
 import { rollUpBuckets, planPruning, type PruneCandidate } from "./src/rollup.js";
 import { takeInventory, projectStorage, type StorageClassInventory } from "./src/inventory.js";
 import type { SegmentIntervalBucket } from "./src/aggregates.js";
@@ -129,7 +134,17 @@ async function main(): Promise<number> {
   const inventory = takeInventory([...byClass.values()], now);
   const history = await artifacts.readCurrent<typeof inventory>(INVENTORY_DATASET);
   const projection = projectStorage(inventory, {
-    limitBytes: Number(process.env.R2_STORAGE_LIMIT_BYTES ?? String(10 * 1024 * 1024 * 1024)),
+    /*
+     * A zero limit is not a limit, it is an instruction to delete everything.
+     *
+     * `R2_STORAGE_LIMIT_BYTES: ${{ vars.R2_STORAGE_LIMIT_BYTES }}` with the variable unset passes
+     * the empty string, `??` does not catch it, and `Number("")` is 0 — so this job believed the
+     * allowance was zero bytes, concluded it was infinitely over, and pruned as hard as it could.
+     * It deleted all 13 observation versions, 36,114 records, between one batch run at 12:23 and
+     * the next at 12:40: the first saw them, the second reported `versionsAvailable: 0`. That is
+     * why Pro never accumulated anything even on the days collection worked.
+     */
+    limitBytes: positiveNumberFromEnv(process.env.R2_STORAGE_LIMIT_BYTES, 10 * 1024 * 1024 * 1024),
     history: history.records,
     daysRemainingInPeriod: daysRemainingInMonth(now),
   });
