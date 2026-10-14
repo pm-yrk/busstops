@@ -227,11 +227,49 @@ async function clickPaintedStop(page, sink) {
     );
   }
   if (point.x === undefined) {
-    throw new Error(
-      `none of the ${point.of} painted stop(s) could be clicked: ${point.blocked} under ` +
-        `${point.blockers.join(", ") || "something unidentifiable"}, ${point.offscreen} off-screen` +
-        describeConsole(sink),
-    );
+    /*
+     * Re-centre on a stop before calling it a defect, which is what the bus click does.
+     *
+     * Scrolling the canvas into view was not enough: the check still reported all 187 painted
+     * stops under `button.button-quiet` and `h1.live-map__title`. Wherever the stops happen to sit
+     * in the viewport, the centre of the canvas is the part no overlay claims — so the map is
+     * moved to put a stop there. If a stop at the centre of the map still cannot be clicked, that
+     * is the product defect this check is looking for, and the message says which case it is.
+     */
+    const recentred = await page.evaluate(async () => {
+      const map = globalThis.__busstopsMap;
+      if (!map) return null;
+      const features = map.queryRenderedFeatures({ layers: ["stop-flags", "stop-pips"] });
+      const first = features[0];
+      if (!first) return null;
+
+      map.jumpTo({ center: first.geometry.coordinates });
+      await new Promise((resolve) => globalThis.requestAnimationFrame(() => resolve(undefined)));
+
+      const canvas = map.getCanvas();
+      const box = canvas.getBoundingClientRect();
+      const x = box.left + box.width / 2;
+      const y = box.top + box.height / 2;
+      const hit = document.elementFromPoint(x, y);
+      if (hit === canvas || canvas.contains(hit)) return { x, y };
+      return {
+        blockedAtCentre: hit
+          ? `${hit.tagName.toLowerCase()}${hit.className ? `.${String(hit.className).split(/\s+/)[0]}` : ""}`
+          : "nothing identifiable",
+      };
+    });
+
+    if (recentred?.x === undefined) {
+      throw new Error(
+        `none of the ${point.of} painted stop(s) could be clicked: ${point.blocked} under ` +
+          `${point.blockers.join(", ") || "something unidentifiable"}, ${point.offscreen} ` +
+          `off-screen; and with the map re-centred on one, the centre of the canvas is ` +
+          `${recentred?.blockedAtCentre ?? "unreachable too"}` +
+          describeConsole(sink),
+      );
+    }
+    await page.mouse.click(recentred.x, recentred.y);
+    return;
   }
   await page.mouse.click(point.x, point.y);
 }

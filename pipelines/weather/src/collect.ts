@@ -124,7 +124,16 @@ export function stopTileNamesFromKeys(keys: readonly string[]): string[] {
 const BETWEEN_BATCHES_MS = 2_000;
 
 export type CollectWeatherOutcome =
-  "published" | "network_not_published" | "budget_exceeded" | "too_many_cells" | "no_answer";
+  | "published"
+  | "network_not_published"
+  | "budget_exceeded"
+  | "too_many_cells"
+  /** Every batch was refused by the upstream. Nothing was asked wrongly and nothing is broken. */
+  | "upstream_refused"
+  /** Batches answered and still produced no weather, which means this code is at fault. */
+  | "no_answer"
+  /** Weather was obtained and no square could be written, which is storage or validation. */
+  | "publish_failed";
 
 export interface WeatherBatchOutcome {
   cells: number;
@@ -142,8 +151,8 @@ export interface CollectStopWeatherResult {
   /** Cells it did not, which are published as nothing rather than as fair weather. */
   missing: number;
   batches: WeatherBatchOutcome[];
-  /** Shards written, with how many cells each carries. */
-  shards: Array<{ tile: string; cells: number }>;
+  /** Shards written, with how many cells each carries, and why one was not. */
+  shards: Array<{ tile: string; cells: number; error?: string }>;
   budget: ReturnType<typeof weatherRequestBudget>;
   retrievedAt: string;
 }
@@ -263,8 +272,29 @@ export async function collectStopWeather(
     }
   }
 
+  /*
+   * Two different things look identical from here, and only one of them is a defect.
+   *
+   * Open-Meteo's free tier is generous per day and strict per moment, and a GitHub runner shares
+   * its egress address with everyone else asking the same question at the same time. Run 59 lost
+   * three of nine batches to `429`; run 60 lost all nine; the 18:46 run on 14 October lost the
+   * first to a timeout and then watched the circuit open on the rest. The run did the right thing
+   * each time — asked, was refused, published nothing, left the previous good shards alone — and a
+   * schedule that runs every thirty minutes recovers by itself. Calling that a build failure
+   * teaches whoever is watching to ignore the colour.
+   *
+   * A batch that answered and still produced no weather is the other thing entirely: the request
+   * was accepted and this code could not make sense of the reply.
+   */
   if (answers.length === 0) {
-    return { ...base, outcome: "no_answer", missing, batches };
+    const everyBatchRefused =
+      batches.length > 0 && batches.every((batch) => batch.error !== undefined);
+    return {
+      ...base,
+      outcome: everyBatchRefused ? "upstream_refused" : "no_answer",
+      missing,
+      batches,
+    };
   }
 
   const byShard = new Map<string, StopWeather[]>();
@@ -275,26 +305,53 @@ export async function collectStopWeather(
     else byShard.set(tile, [answer]);
   }
 
-  const shards: Array<{ tile: string; cells: number }> = [];
+  const shards: Array<{ tile: string; cells: number; error?: string }> = [];
   if (options.publish !== false) {
     const artifacts = new ArtifactStore(options.store);
     const version = retrievedAt.replace(/[:.]/g, "-");
     for (const [tile, records] of [...byShard].sort(([a], [b]) => a.localeCompare(b))) {
-      await artifacts.publish({
-        dataset: weatherShardDataset(tile),
-        version,
-        records,
-        schemaVersion: WEATHER_SCHEMA_VERSION,
-        sources: [OPEN_METEO_ATTRIBUTION],
+      try {
+        await artifacts.publish({
+          dataset: weatherShardDataset(tile),
+          version,
+          records,
+          schemaVersion: WEATHER_SCHEMA_VERSION,
+          sources: [OPEN_METEO_ATTRIBUTION],
+          /*
+           * Each shard stands alone. A degree square that failed this run keeps its previous
+           * answer, which the stop page shows with its own timestamp, rather than the whole
+           * country waiting for the worst tile. There is no cross-shard consistency to preserve:
+           * weather is not a graph.
+           */
+          allowEmpty: false,
+          /*
+           * A smaller shard is an observation, not corruption — which is why the default guard is
+           * wrong here specifically.
+           *
+           * `publish` refuses a 25% shrink to stop a half-read upstream replacing a good national
+           * artifact. A weather shard is one degree square holding a handful of 0.10° cells, so
+           * losing a single cell to a refused batch is often more than a quarter of it, and the
+           * guard then throws `excessive_shrink` out of this loop — killing the run before the
+           * remaining squares are written and leaving no report at all, which is what the three
+           * failures on 13 and 14 October were. The thing the guard exists to protect does not
+           * apply: nobody reads a weather shard expecting national coverage, each cell carries its
+           * own timestamp, and a cell this run did not get keeps the answer it had.
+           */
+          maximumShrinkFraction: 1,
+        });
+        shards.push({ tile, cells: records.length });
+      } catch (error) {
         /*
-         * Each shard stands alone. A degree square that failed this run keeps its previous
-         * answer, which the stop page shows with its own timestamp, rather than the whole country
-         * waiting for the worst tile. There is no cross-shard consistency to preserve: weather is
-         * not a graph.
+         * And one square that still will not publish must not cost the others. Recorded on the
+         * shard rather than thrown, so the report names which square and why.
          */
-        allowEmpty: false,
-      });
-      shards.push({ tile, cells: records.length });
+        shards.push({
+          tile,
+          cells: records.length,
+          error:
+            error instanceof Error ? `${error.name}: ${error.message.slice(0, 160)}` : "failed",
+        });
+      }
     }
   } else {
     for (const [tile, records] of byShard) shards.push({ tile, cells: records.length });
@@ -302,7 +359,12 @@ export async function collectStopWeather(
 
   return {
     ...base,
-    outcome: "published",
+    /*
+     * "Published" even if a square was refused, as long as one was written. The alternative marks
+     * the schedule red for a square that kept its previous good answer, which is the state the
+     * stop page is designed for — and the refusals are named in `shards` either way.
+     */
+    outcome: shards.some((shard) => shard.error === undefined) ? "published" : "publish_failed",
     answered: answers.length,
     missing,
     batches,
