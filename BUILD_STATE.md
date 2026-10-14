@@ -121,6 +121,34 @@ date and covered it completely (512 departure shards, 1,289 pattern-trip shards,
 `datesShortOfFullCoverage: []`). One BODS dataset answered 400 during the download and the refresh
 completed around it.
 
+### 14 October: retention was deleting everything collected, for the same reason
+
+The second half of the same bug, and the half that explains why Pro never accumulated anything
+even on a day when collection worked.
+
+    limitBytes: Number(process.env.R2_STORAGE_LIMIT_BYTES ?? String(10 * 1024 * 1024 * 1024))
+
+`R2_STORAGE_LIMIT_BYTES: ${{ vars.R2_STORAGE_LIMIT_BYTES }}`, variable unset, arrives as the empty
+string; `??` does not catch it; `Number("")` is 0. So the retention job believed the storage
+allowance was **zero bytes**, concluded it was infinitely over, and pruned as hard as it could.
+Watched happening within twenty minutes:
+
+    12:23  batch   versionsAvailable 13   recordsRead 36,114
+           retention runs with limitBytes = 0
+    12:40  batch   versionsAvailable  0   recordsRead      0
+
+I missed it on the first sweep because it is written `?? String(...)` rather than with a string
+literal, and the regex I swept with only matched the obvious form. So the rule is a **contract
+test** now instead of a grep run once: nothing under `pipelines`, `packages`, `apps/worker` or
+`scripts` may read a number from the environment through `Number(`, `parseInt(` or `parseFloat(`
+over `process.env`, and the six variables that have already caused an outage are asserted by name
+against the line that actually reads them. That test immediately found a third instance —
+`VERIFY_PACE_MS` in `verify-deployment.mjs`, where a zero pace would have turned the paced walk
+into the burst it exists to be distinguished from.
+
+Three instances of one mistake, two of them load-bearing: one stopped the collector, one deleted
+what it collected, and both looked like a budget being respected.
+
 ### 14 October: Pro had no data because an unset GitHub variable is "", and `Number("")` is 0
 
 The best find of the day, and it had been hiding behind something that looked like a decision.
@@ -171,6 +199,43 @@ The batch, run straight afterwards, now **sees** them:
 which is the fifteen-minute settle doing exactly what it is for, two minutes after collection
 finished, rather than a fault. The chain is connected where yesterday it read
 `versionsAvailable: 0`.
+
+### 14 October, acceptance evidence: postcodes proven on the preview, boards measured twice
+
+**Postcode search, on the deployment, in its own annotation** — the probe's full payload runs to
+495 parts and GitHub keeps ten, so the rows had been unreadable:
+
+    LS1 4DY  → "LS1 4DY"  53.79513, -1.54666      ls1 4dy  → "LS1 4DY"   (lower case)
+    M1 1AE   → "M1 1AE"   53.48347, -2.23118      M11AE    → "M1 1AE"    (no space)
+    BS1 4DJ  → "BS1 4DJ"  51.45173, -2.59686      ZZ99 9ZZ → 0 results, 0 postcodes
+    NR1 3DY  → "NR1 3DY"  52.62775,  1.29859
+    walk: LS1 4DY → 25 stops nearby → board HTTP 200
+
+Every form a person types resolves to the right position, and the one that cannot exist invents
+nothing. The walk initially landed on "Station A" — a real stop with no service in our data, which
+is a weaker test than the product, because a postcode result opens the _map_ and a passenger sees
+all twenty-five stops. It now tries three and judges on whether any is somewhere a bus goes.
+
+**Boards, measured twice at the same commit**, which is the repeated evidence the directive asks
+for rather than one draw:
+
+    Hathersage Avenue    1 route    19,358 chars    579 ms / 624 ms
+    Leeds City Bus Stn   3 routes   55,914/53,025   385 ms / 518 ms
+    Blackman Lane        5 routes  104,293 chars    804 ms / 508 ms
+    Lamb Street         14 routes  245,095 chars    682 ms / 747 ms
+    Tombland            26-29 rt   529,022/482,083  715 ms / 1,003 ms
+
+Bytes are identical for the same route count; latency varies between 385 ms and 1,003 ms; neither
+run saw a single board fall back to the whole object. Ordinary boards comfortably under a second
+and only the extreme stop approaching one is exactly the acceptance line, so the scheme stands.
+
+**The sweep reached 448 of 454**, all three widths, and the desktop stop-click failure is gone. All
+six remaining failures are on the width that runs _last_ — phone this time, tablet the run before —
+and are "still loading when photographed" or a map drawing no stops. Failures that migrate to
+whichever width goes last are accumulated load, not a width-specific defect.
+
+**The instrument, third consecutive run:** map 30/30, nearby 30/30, search 30/30, zero platform
+errors, medians 253/115/110 ms.
 
 ### 14 October: boards measured across every size, and the map classified rather than redesigned
 
