@@ -131,6 +131,23 @@ async function main(): Promise<number> {
     sources: ["bods"],
     partialCoverage: result.coverage < 1,
     notes: result.notes.slice(0, 5).join("; "),
+    /*
+     * This artifact's record count is a measurement of the world, not a proxy for how well the
+     * feed was read — so the default shrink guard is measuring the wrong thing.
+     *
+     * `publish` refuses a 25% shrink to stop a half-read upstream replacing a good artifact. A
+     * snapshot of buses currently on the road legitimately collapses in the evening: the 20:04 run
+     * on 14 October threw `ArtifactValidationError: intelligence/observations shrank by 57.0%
+     * versus version 2026-10-14T15:55:22.997Z`, which is not a bad read — it is a Wednesday at
+     * nine in the evening having fewer buses out than four in the afternoon. The run collected its
+     * observations, could not publish them, and exited 1.
+     *
+     * Refusing it is also the worse outcome for the product, not the safer one. The previous good
+     * version is kept, so Pro would keep presenting an afternoon snapshot as the current picture —
+     * a fuller number that is no longer true. Thin real data beats fake precision, and
+     * `partialCoverage` already carries the honest signal when the feed itself was incomplete.
+     */
+    maximumShrinkFraction: 1,
   });
 
   report.outcome = "collected";
