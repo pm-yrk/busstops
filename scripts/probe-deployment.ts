@@ -753,6 +753,57 @@ async function main(): Promise<void> {
     JSON.stringify({ searches: postcodeSearches, walk: report.postcodeWalk ?? null }, null, 1),
   );
 
+  /*
+   * Pro, because "the analytics published" and "Pro shows it" are different claims.
+   *
+   * The batch publishes an intelligence artifact and the Worker reads it; nothing in this probe
+   * had ever asked whether the two meet. What is checked is not that the numbers are large — thin
+   * real data is the honest state while the road network covers a few areas — but that they are
+   * *present and labelled*: a figure Pro calls observed must come from the artifact, and a
+   * demonstration snapshot must say so rather than passing as measurement.
+   */
+  const pro = await ask("/v1/pro/control-tower?window=60");
+  /* `data.provenance.dataMode` and `data.headline` — the names the contract actually uses. */
+  const proMode = asText(at(pro.json, "data", "provenance", "dataMode"));
+  const headline = asArray(at(pro.json, "data", "headline"));
+  const proFigures = headline.slice(0, 8).map((metric) => ({
+    label: asText(at(metric, "label")),
+    value: asText(at(metric, "value")),
+    basis: asText(at(metric, "basis")) || "(unstated)",
+  }));
+  report.pro = { status: pro.status, dataMode: proMode, metrics: proFigures };
+  console.log(
+    `GET /v1/pro/control-tower  : HTTP ${pro.status} · dataMode "${proMode || "(none)"}" · ` +
+      `${headline.length} headline metric(s)`,
+  );
+  for (const figure of proFigures) {
+    console.log(`  ${figure.label}: ${figure.value} [${figure.basis}]`);
+  }
+  annotate("notice", "pro figures", JSON.stringify(report.pro, null, 1));
+
+  if (pro.status !== 200) {
+    failures.push(`Pro: /v1/pro/control-tower answered HTTP ${pro.status}.`);
+  } else if (headline.length === 0) {
+    failures.push(`Pro: the control tower answered with no headline metrics at all.`);
+  } else {
+    /*
+     * The one thing that would be dishonest rather than thin: a demonstration snapshot served
+     * without saying it is one. The contract carries `dataMode` for exactly this.
+     */
+    const unlabelled = proFigures.filter((figure) => figure.basis === "(unstated)");
+    if (proMode === "demo_snapshot") {
+      notes.push(
+        `Pro: serving the labelled demonstration snapshot rather than measured analytics, which ` +
+          `means no intelligence artifact has been published to this bucket.`,
+      );
+    } else if (unlabelled.length === headline.length) {
+      notes.push(
+        `Pro: none of the ${headline.length} headline metrics states a basis, so a reader cannot ` +
+          `tell measured figures from calculated ones.`,
+      );
+    }
+  }
+
   // Leeds city centre to Leeds Bradford Airport: two points a passenger would actually pick.
   const journey = await ask(
     `/v1/journeys?fromLat=53.79648&fromLon=-1.54785&toLat=53.86590&toLon=-1.66030`,
