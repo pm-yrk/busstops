@@ -3,7 +3,14 @@ import { Link, useParams, useSearchParams } from "react-router-dom";
 import { MAP_QUERY_LIMITS, type MapResponse } from "@busstops/contracts";
 import { apiClient, ApiError } from "../lib/api.js";
 import { useFetch, useTicker } from "../lib/use-fetch.js";
-import { boundsFromParam, clampBoundsToMaxArea, vehicleHref, type Bounds } from "../lib/geo.js";
+import {
+  boundsAroundMe,
+  boundsFromParam,
+  clampBoundsToMaxArea,
+  vehicleHref,
+  type Bounds,
+} from "../lib/geo.js";
+import { useCurrentLocation, type CurrentLocation } from "../lib/use-current-location.js";
 import { delayLabel, distanceLabel, freshnessLabel } from "../lib/format.js";
 import { LoadingBus } from "../components/LoadingBus.js";
 import { MapView } from "../components/MapView.js";
@@ -34,12 +41,25 @@ import { PixelSectionHeading } from "../components/pixel/PixelSectionHeading.js"
  *
  * This is a camera position, not data. Whatever is in frame is whatever is really there.
  */
+/**
+ * Where the map opens when it cannot open around the passenger.
+ *
+ * A **fallback**, not the default view. `/live` asks the browser where we are and opens there; this
+ * is what a refusal, a timeout, a browser without geolocation, or a deliberate `?bbox` link gets
+ * instead. Leeds rather than London because a non-London fallback is the quickest way to show the
+ * product is not a London app, and nothing in the page is keyed to this city.
+ *
+ * This is a camera position, not data. Whatever is in frame is whatever is really there.
+ */
 const DEFAULT_VIEW: Bounds = {
   west: -1.6,
   south: 53.775,
   east: -1.49,
   north: 53.825,
 };
+
+/** Street-level without being nose-to-the-pavement: the zoom a map opens at when it knows where you are. */
+const AROUND_ME_ZOOM = 15;
 
 const REFRESH_INTERVAL_MS = 20_000;
 
@@ -89,8 +109,25 @@ export function LiveMapPage() {
   const [selectedVehicle, setSelectedVehicle] = useState<string | null>(null);
   const [zoom, setZoom] = useState(15);
   const [layers, setLayers] = useState<Record<LayerKey, boolean>>({ stops: true, vehicles: true });
-  const [locating, setLocating] = useState(false);
-  const [locationDenied, setLocationDenied] = useState(false);
+
+  /*
+   * Whether this page may ask the browser where we are, decided once, from the URL the person
+   * arrived on.
+   *
+   * An explicit navigation intent wins: a shared `?bbox` link and `/live/stops/:stopId` both name
+   * a place, and asking for location there would either move the camera off the thing somebody was
+   * sent to look at, or — worse — show them their own street for a moment first and then jump. So
+   * those two never auto-locate at all, which makes the "no brief jump" requirement a property of
+   * the code rather than a race it has to win. The location button still works on those pages; it
+   * is being *asked* that changes.
+   *
+   * `useState` with an initialiser rather than a `useMemo`: this must be the value from the first
+   * render and must never change afterwards, even if the search params object is replaced.
+   */
+  const [mayAutoLocate] = useState(
+    () => deepLinkedStop === undefined && boundsFromParam(searchParams.get("bbox")) === null,
+  );
+
   /*
    * The camera follows a deep-linked stop exactly once.
    *
@@ -105,6 +142,30 @@ export function LiveMapPage() {
    * fight the person moving it. This only changes when the page deliberately moves the view.
    */
   const [focus, setFocus] = useState<{ bounds: Bounds; nonce: number } | null>(null);
+
+  /*
+   * The camera follows the passenger only when the hook says to: once on the first fix, and once
+   * per press of the location button. Never on a position update in between — that is the rule
+   * that stops the map dragging itself out from under somebody reading it, and it lives in the
+   * hook so neither this page nor the map can get it wrong.
+   *
+   * Both halves are set: `bounds` is what the next request asks for, `focus` is what the camera is
+   * told to do. They are separate because the map reports its own viewport back on every pan, so a
+   * camera that simply followed `bounds` would fight the person moving it.
+   */
+  const {
+    status: locationStatus,
+    location,
+    request,
+    recentre,
+  } = useCurrentLocation({
+    onCameraMove: useCallback((here: CurrentLocation) => {
+      const around = boundsAroundMe(here.coordinate);
+      setBounds(around);
+      setFocus({ bounds: around, nonce: Date.now() });
+      setZoom(AROUND_ME_ZOOM);
+    }, []),
+  });
 
   // The viewport is clamped before the request, so panning out shrinks the query rather than
   // producing a rejected one.
@@ -161,33 +222,16 @@ export function LiveMapPage() {
 
   const now = useTicker();
 
-  const locate = () => {
-    if (!globalThis.navigator?.geolocation) {
-      setLocationDenied(true);
-      return;
-    }
-    setLocating(true);
-    globalThis.navigator.geolocation.getCurrentPosition(
-      (position) => {
-        const { latitude, longitude } = position.coords;
-        const here = {
-          west: longitude - 0.02,
-          east: longitude + 0.02,
-          south: latitude - 0.01,
-          north: latitude + 0.01,
-        };
-        setBounds(here);
-        setFocus({ bounds: here, nonce: Date.now() });
-        setZoom(15);
-        setLocating(false);
-      },
-      () => {
-        setLocationDenied(true);
-        setLocating(false);
-      },
-      { enableHighAccuracy: false, timeout: 8000, maximumAge: 60_000 },
-    );
-  };
+  /*
+   * Ask on arrival, once.
+   *
+   * This is the whole "location-first" behaviour: a passenger opening `/live` should see where they
+   * are, not a city they may never have been to. The prompt is the browser's own — nothing here
+   * pre-empts it with a dialogue of our own, and a refusal is final for the visit.
+   */
+  useEffect(() => {
+    if (mayAutoLocate) request();
+  }, [mayAutoLocate, request]);
 
   const observedAgeSeconds = useMemo(() => {
     if (!response?.meta.observedAt) return null;
@@ -203,9 +247,28 @@ export function LiveMapPage() {
         <h1 className="live-map__title">Live map</h1>
 
         <div className="live-map__control-row">
-          <button type="button" onClick={locate} className="button-quiet" disabled={locating}>
-            {locating ? "Locating…" : "Use my location"}
-          </button>
+          {/*
+           * One control, two jobs, and the label says which one it is doing.
+           *
+           * Before a fix it is an invitation; afterwards it is a recentre, which is what a
+           * passenger who has panned across town actually wants from it. Disabled only while the
+           * first request is outstanding — once a position is known, a press is instant, so
+           * disabling it during the background refresh would make it feel broken.
+           */}
+          {locationStatus !== "unsupported" && (
+            <button
+              type="button"
+              onClick={recentre}
+              className="button-quiet"
+              disabled={locationStatus === "requesting"}
+            >
+              {locationStatus === "requesting"
+                ? "Finding you…"
+                : location
+                  ? "Centre on me"
+                  : "Use my location"}
+            </button>
+          )}
           <Link to="/search" className="live-map__link">
             Search instead
           </Link>
@@ -227,9 +290,29 @@ export function LiveMapPage() {
           ))}
         </fieldset>
 
-        {locationDenied && (
+        {/*
+         * What happened, in the passenger's terms, and never instead of the map.
+         *
+         * Three outcomes that are genuinely different to somebody standing at a bus stop: they
+         * said no, the device could not say, or this browser cannot. All three keep the map, the
+         * layers and the search link exactly as they were — the only thing missing is the dot.
+         */}
+        {locationStatus === "denied" && (
           <p className="muted small" role="status">
-            Location is unavailable, so the map is showing a default area. Search works without it.
+            Location permission is not available, so the map is showing a default area. You can
+            still search for a place, and pan the map anywhere.
+          </p>
+        )}
+        {locationStatus === "unavailable" && (
+          <p className="muted small" role="status">
+            Your device could not work out where you are just now, so the map is showing a default
+            area. Try the location button again, or search for a place.
+          </p>
+        )}
+        {locationStatus === "unsupported" && (
+          <p className="muted small" role="status">
+            This browser cannot share your location, so the map is showing a default area. Search
+            works without it.
           </p>
         )}
 
@@ -296,6 +379,7 @@ export function LiveMapPage() {
                 }
                 showStops={layers.stops}
                 showVehicles={layers.vehicles}
+                userLocation={location}
                 onSelectStop={(code) => {
                   setSelectedVehicle(null);
                   setSelectedStop(code);
@@ -310,10 +394,42 @@ export function LiveMapPage() {
                 }}
               />
 
+              {/*
+               * The same action, within reach of the map.
+               *
+               * The sidebar button is scrolled off the top of a phone by the time the canvas is
+               * what somebody is looking at, so the recentre lives over the map as well — which is
+               * where every map application puts it. A real `<button>` in the DOM, so it is in the
+               * tab order and reads as a button, rather than a MapLibre control built out of divs.
+               *
+               * Bottom right, because MapLibre's zoom buttons are top left and the boards come in
+               * from the right above it.
+               */}
+              {locationStatus !== "unsupported" && (
+                <button
+                  type="button"
+                  className="live-map__recentre"
+                  onClick={recentre}
+                  disabled={locationStatus === "requesting"}
+                  aria-label={location ? "Centre the map on your location" : "Use my location"}
+                >
+                  <span aria-hidden="true" className="live-map__recentre-mark" />
+                </button>
+              )}
+
               {selectedStop && (
                 <SelectedStopBoard
                   key={selectedStop}
                   atcoCode={selectedStop}
+                  /*
+                   * Proximity, and nothing more.
+                   *
+                   * The board already fetches the stop, so it already knows where the stop is;
+                   * handing it the passenger's coordinate lets it say "200 m from you" with one
+                   * subtraction and no request. It says how far away the stop is — not which bus
+                   * somebody wants, not which bus they are on, and not whether a bus is theirs.
+                   */
+                  userCoordinate={location?.coordinate ?? null}
                   onClose={() => setSelectedStop(null)}
                   onResolved={({ coordinate }) => {
                     if (followedDeepLink) return;

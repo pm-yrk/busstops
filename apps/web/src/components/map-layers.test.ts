@@ -1,12 +1,16 @@
 import { describe, expect, it } from "vitest";
 import type { MapStopSummary, MapVehicleSummary } from "@busstops/contracts";
 import {
+  CLICKABLE_LAYERS,
+  USER_LAYERS,
   ZOOM,
   describeEmptyVehicles,
+  describeUserLocation,
   describeView,
   emptyVehicleReason,
   scaleForZoom,
   stopFeatures,
+  userFeatures,
   vehicleFeatures,
 } from "./mapLayers.js";
 import { basemapFontStack } from "./MapView.js";
@@ -257,5 +261,101 @@ describe("the font the map draws its text with", () => {
         ]),
       ),
     ).toEqual(["Open Sans Regular"]);
+  });
+});
+
+/*
+ * "You are here", as the two features that draw it.
+ *
+ * Asserted here rather than through the renderer for the same reason the stop and bus builders are:
+ * jsdom has no WebGL, so a component test of the canvas proves nothing — and what matters about
+ * this marker is not that a dot appeared but that the halo tells the truth about accuracy and
+ * disappears when it cannot.
+ */
+describe("the passenger's own position on the map", () => {
+  const here = { lat: 53.7965, lon: -1.5478 };
+
+  it("draws nothing at all when there is no position", () => {
+    // Not asked, refused, unsupported, timed out: one state on the map, which is no dot.
+    expect(userFeatures(null).features).toEqual([]);
+  });
+
+  it("draws the dot where the browser says we are", () => {
+    const { features } = userFeatures({ coordinate: here, accuracyMetres: null });
+    const dot = features.find((feature) => feature.properties.kind === "dot");
+    expect(dot).toBeDefined();
+    expect(dot!.geometry).toEqual({ type: "Point", coordinates: [-1.5478, 53.7965] });
+  });
+
+  it("omits the halo when the browser gave no accuracy", () => {
+    const { features } = userFeatures({ coordinate: here, accuracyMetres: null });
+    expect(features.map((feature) => feature.properties.kind)).toEqual(["dot"]);
+  });
+
+  it("draws a halo on the ground, not in pixels, when accuracy is known", () => {
+    const { features } = userFeatures({ coordinate: here, accuracyMetres: 40 });
+    const halo = features.find((feature) => feature.properties.kind === "accuracy");
+    expect(halo).toBeDefined();
+    expect(halo!.geometry.type).toBe("Polygon");
+
+    const ring = (halo!.geometry as { coordinates: [number, number][][] }).coordinates[0]!;
+    // A linear ring is explicitly closed, or MapLibre will not fill it.
+    expect(ring[0]).toEqual(ring[ring.length - 1]);
+    // Forty metres, in degrees of latitude, is small and non-zero — the halo is a circle on the
+    // ground rather than a fixed blob, which is the whole reason it is a polygon.
+    const northmost = Math.max(...ring.map(([, lat]) => lat));
+    expect(northmost - here.lat).toBeGreaterThan(0.0002);
+    expect(northmost - here.lat).toBeLessThan(0.0007);
+  });
+
+  /*
+   * A browser that has fallen back to an IP lookup reports tens of kilometres. Drawn honestly that
+   * is a blue tint over the whole screen, which says nothing except that the map has broken.
+   */
+  it("omits the halo rather than tinting the screen when accuracy is hopeless", () => {
+    const { features } = userFeatures({ coordinate: here, accuracyMetres: 45_000 });
+    expect(features.map((feature) => feature.properties.kind)).toEqual(["dot"]);
+  });
+
+  it.each([
+    ["zero", 0],
+    ["negative", -5],
+    ["not a number", Number.NaN],
+    ["infinite", Number.POSITIVE_INFINITY],
+  ])("omits the halo when accuracy is %s", (_why, accuracyMetres) => {
+    const { features } = userFeatures({ coordinate: here, accuracyMetres });
+    expect(features.map((feature) => feature.properties.kind)).toEqual(["dot"]);
+  });
+
+  /* The dot is drawn after the halo, so it is never under its own translucent disc. */
+  it("puts the dot after the halo", () => {
+    const { features } = userFeatures({ coordinate: here, accuracyMetres: 40 });
+    expect(features.map((feature) => feature.properties.kind)).toEqual(["accuracy", "dot"]);
+  });
+
+  it("is announced when it is known, and silent when it is not", () => {
+    expect(describeUserLocation(true)).toContain("Your location");
+    expect(describeUserLocation(false)).toBe("");
+  });
+
+  /*
+   * Not a bus and not a stop.
+   *
+   * A tap on the dot must fall through to whatever is underneath rather than opening a panel about
+   * the passenger, and MapLibre only reaches layers a handler was registered for — so the
+   * invariant is that these ids appear in no clickable list.
+   */
+  it("is not clickable as though it were a bus or a stop", () => {
+    const clickable = Object.values(CLICKABLE_LAYERS).flat();
+    for (const layer of USER_LAYERS) {
+      expect(clickable).not.toContain(layer);
+    }
+  });
+
+  it("is drawn by its own layers, distinct from every clickable one", () => {
+    // Distinct ids as well as distinct colours: the halo and the dot share nothing with the
+    // stop and vehicle layers, so a change to either cannot silently restyle the other.
+    expect(new Set(USER_LAYERS).size).toBe(USER_LAYERS.length);
+    expect(Object.values(CLICKABLE_LAYERS).flat()).not.toContain("user-dot");
   });
 });

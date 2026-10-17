@@ -1,8 +1,82 @@
 # Bus Stops. Build State
 
-Last updated: 2026-10-14 (the schedules run from main; boards read buckets at every size)
+Last updated: 2026-10-17 (the live map opens around the passenger; location stays on the device)
 
 ## Current status
+
+### 17 October: the live map opens where the passenger is
+
+`/live` asked the browser where you are and opened there. Before this it opened on a hard-coded
+Leeds viewport with a "Use my location" button beside it, which is a map that knows about location
+rather than a map that behaves as though it does — and `docs/09_BUS_STOPS_LIVE.md` has said
+"default to current location after permission, otherwise a national overview/search" since the
+specification was written. This closes that gap rather than changing the requirement.
+
+**What a passenger sees.** The browser's own permission prompt, then the map around them at street
+zoom with the stops and buses of that viewport already loading, and a blue dot where they are with a
+halo for the accuracy the device reported. Panning is theirs: the camera moves on the first fix and
+when they press the location button, and at no other time. The button over the canvas reads "Use my
+location" until there is a position and "Centre on me" after, because by then that is what it does.
+
+**Explicit intents win by never asking.** A shared `?bbox=` link and `/live/stops/:stopId` both name
+a place, so the page does not request location on those at all. That makes "a shared link must not
+briefly show the passenger's own street first" a property of the code rather than a race it has to
+win: there is no fix to arrive late and move the camera. The location button still works there; it
+is being _asked_ that changes.
+
+**The three failures are three different sentences.** Refused, could not say, and this browser
+cannot — because they mean different things to somebody standing at a stop, and only one of them is
+worth offering to retry. All three keep the map, the layers, the list and the search link exactly as
+they were; the only thing missing is the dot. Nothing replaces the canvas with an error, and a
+refusal is final for the visit: the hook will not ask again however many times the button is pressed,
+which browsers enforce anyway by suppressing the prompt.
+
+**Where location lives.** In React state in the tab, and nowhere else. Not in `localStorage`,
+`sessionStorage`, a cookie, the URL or any request body. The only thing derived from it that leaves
+the device is a viewport — the same four `?bbox` numbers any panned map sends, a rectangle about two
+kilometres across rather than a position — and the page's own request path is the one that sends it,
+unchanged. The watcher is cleared on unmount, because a watcher on an unmounted page is the
+definition of background location tracking. Two tests assert the negative directly: no storage
+setter is called, and a fresh hook after an unmount knows nothing.
+
+**Three design decisions worth recording.**
+
+- _Blue, not red._ `--colour-blue` is the design system's information blue. Red is a bus and red
+  is a warning here, so a red dot among red buses is a bus.
+- _The halo is a polygon, not a pixel circle._ MapLibre's `circle-radius` is in screen pixels, so
+  a halo drawn that way means a different distance at every zoom — the one thing an accuracy
+  reading must not do. `accuracyRing` builds a ring on the ground, and returns null when there is
+  nothing honest to draw: no accuracy, a non-finite one, or more than two kilometres of it, which
+  is a browser that has fallen back to an IP lookup and would otherwise tint the whole screen.
+- _The camera rule lives in the hook._ `useCurrentLocation` decides when the camera may move and
+  calls back; the page cannot move it on its own and `MapView` never asks a browser for anything.
+  Signalling it through a nonce the page watched meant answering it from an effect — three
+  `setState` calls in an effect body, which React's own lint rule objects to and which is exactly
+  the cascading render it warns about.
+
+**Proximity, and nothing more.** The selected-stop board already fetches the stop, so it already
+knows where the stop is; given the passenger's coordinate it says "230 m from you · about 3 min
+walk" with one subtraction and no request. Suppressed beyond two kilometres, where the arithmetic
+stops being help. It does not infer which bus somebody wants, which bus they are on, or whether a
+bus near them is theirs — and a test asserts the hint contains none of those words.
+
+**What the deployed renderer actually painted.** Seven cases at four widths through Chromium's own
+geolocation emulation, which emulates the _device_ rather than the product: the camera within a
+kilometre of the emulated fix, `user-dot` painting exactly one feature, stops and buses painting
+alongside it, a 400-pixel pan surviving, the recentre bringing the camera back from it, a York
+`?bbox` opening in York with no dot at all, and a refusal keeping a usable map.
+
+**A test of mine that was wrong before the product was.** The refusal case asserted stops painted at
+phone width and read zero. Not a map that had stopped drawing: the fallback viewport fitted into 375
+pixels is a lower zoom, so every stop was in `stop-clusters` and the query was looking at
+`stop-flags` and `stop-pips`. `map-paints.spec.ts` had already learned to sum the clusters; this is
+the same sum. It failed loudly, which is the good version of that mistake.
+
+**Not done, deliberately.** The other three geolocation call sites — search, journey planning and
+"Will I make it?" — are untouched. What they share with this is an options object and a
+"no-geolocation means unavailable" guard; what differs is the state shape and what each does with a
+position. Unifying them would mean rewriting three working state machines to save a four-line
+constant, so the duplication stays and this hook is the map's.
 
 ### 14 October: the acceptance pass, measured from main
 

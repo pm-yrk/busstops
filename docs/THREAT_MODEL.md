@@ -96,7 +96,13 @@ _Controls:_ geolocation is processed client-side wherever possible; the journey 
 coordinates only for the requested plan and never persists them; request fingerprints are hashed
 without raw coordinates; logs exclude location; favourites are local-first; vehicle identifiers
 are opaque and may be rotated; speed anomalies are never presented as evidence about an individual.
-_Tested by:_ logging redaction tests, journey fingerprint tests.
+The live map opens around the passenger when the browser grants permission, and the coordinate
+exists only in page state for the life of the tab: it is not written to any storage, cookie or URL,
+and the only thing derived from it that reaches the API is a viewport — the same four `?bbox`
+numbers any panned map sends, a rectangle about two kilometres across rather than a position. A
+refusal is final for the visit, and the position watcher is cleared when the map unmounts.
+_Tested by:_ logging redaction tests, journey fingerprint tests, `use-current-location.test.ts`
+(no storage written, nothing surviving unmount).
 
 ## Residual risks
 

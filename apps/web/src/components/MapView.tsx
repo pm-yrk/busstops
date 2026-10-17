@@ -1,13 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import maplibregl, { type Map as MapLibreMap, type StyleSpecification } from "maplibre-gl";
 import type { MapStopSummary, MapVehicleSummary } from "@busstops/contracts";
-import type { Bounds } from "../lib/geo.js";
+import type { Bounds, LatLon } from "../lib/geo.js";
 import { MAP_ICONS, rasterise } from "./pixel/mapIcons.js";
 import {
+  CLICKABLE_LAYERS,
   ZOOM,
+  describeUserLocation,
   describeView,
   scaleForZoom,
   stopFeatures,
+  userFeatures,
   vehicleFeatures,
   type MapIntent,
   type MapScale,
@@ -35,7 +38,11 @@ import "./MapView.css";
  * neighbourhood, and the buses themselves with their route numbers over a street.
  */
 
-const SOURCES = { stops: "busstops-stops", vehicles: "busstops-vehicles" } as const;
+const SOURCES = {
+  stops: "busstops-stops",
+  vehicles: "busstops-vehicles",
+  user: "busstops-user",
+} as const;
 
 export interface MapViewProps {
   bounds: Bounds;
@@ -65,6 +72,17 @@ export interface MapViewProps {
   intent?: MapIntent;
   /** True when the API said some stops are missing their route names. */
   degraded?: boolean;
+  /**
+   * Where the passenger is, when they have said we may know.
+   *
+   * Handed in rather than asked for: this component never calls `navigator.geolocation`. The
+   * permission prompt is something that happens to a person and it belongs with the page that
+   * knows why it is being asked for — see `useCurrentLocation`. All this does is draw a dot.
+   *
+   * Null covers every case where there is nothing to draw: not asked, refused, unsupported, or
+   * asked and not answered. The map is identical in all of them.
+   */
+  userLocation?: { coordinate: LatLon; accuracyMetres: number | null } | null;
 }
 
 /**
@@ -102,6 +120,7 @@ export function MapView({
   showVehicles,
   intent = { kind: "explore" },
   degraded = false,
+  userLocation = null,
 }: MapViewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
@@ -136,6 +155,12 @@ export function MapView({
     () => vehicleFeatures(showVehicles ? vehicles : [], intent, selectedVehicleRef ?? null),
     [vehicles, showVehicles, intent, selectedVehicleRef],
   );
+  /*
+   * The passenger's own position, as the two features that draw it. Built in `mapLayers.ts`
+   * beside the stop and vehicle builders, for the same reason they are there: what the map draws
+   * is worth being able to assert without a renderer.
+   */
+  const userData = useMemo(() => userFeatures(userLocation), [userLocation]);
 
   useEffect(() => {
     if (!containerRef.current || !styleUrl || mapRef.current) return;
@@ -206,7 +231,7 @@ export function MapView({
     });
 
     // A stop is chosen by clicking the thing that represents it, at whatever scale that is.
-    for (const layer of ["stop-flags", "stop-pips"]) {
+    for (const layer of CLICKABLE_LAYERS.stops) {
       map.on("click", layer, (event) => {
         const code = event.features?.[0]?.properties?.atcoCode;
         if (typeof code === "string") selectRef.current?.(code);
@@ -223,7 +248,7 @@ export function MapView({
      * directional mark over a neighbourhood — because which one is on screen is a fact about the
      * camera, not about whether the bus is selectable.
      */
-    for (const layer of ["vehicle-buses", "vehicle-pips"]) {
+    for (const layer of CLICKABLE_LAYERS.vehicles) {
       map.on("click", layer, (event) => {
         const ref = event.features?.[0]?.properties?.vehicleRef;
         if (typeof ref === "string") selectVehicleRef.current?.(ref);
@@ -233,7 +258,7 @@ export function MapView({
     }
 
     // Clicking a cluster zooms into it, which is what a count is an invitation to do.
-    for (const layer of ["stop-clusters", "vehicle-clusters"]) {
+    for (const layer of CLICKABLE_LAYERS.clusters) {
       map.on("click", layer, (event) => {
         const feature = event.features?.[0];
         if (!feature) return;
@@ -290,7 +315,8 @@ export function MapView({
     if (!map || !ready) return;
     (map.getSource(SOURCES.stops) as maplibregl.GeoJSONSource | undefined)?.setData(stopData);
     (map.getSource(SOURCES.vehicles) as maplibregl.GeoJSONSource | undefined)?.setData(vehicleData);
-  }, [ready, stopData, vehicleData]);
+    (map.getSource(SOURCES.user) as maplibregl.GeoJSONSource | undefined)?.setData(userData);
+  }, [ready, stopData, vehicleData, userData]);
 
   if (!styleUrl) {
     return (
@@ -319,6 +345,7 @@ export function MapView({
       <p className="visually-hidden" role="status">
         {describeView(scale, stopData.features.length, vehicleData.features.length, degraded)} The
         same items are listed below this map.
+        {describeUserLocation(userLocation !== null)}
       </p>
       {degraded && (
         <p className="map-view__degraded small" role="status">
@@ -454,6 +481,38 @@ function addSourcesAndLayers(map: MapLibreMap): void {
     cluster: true,
     clusterMaxZoom: ZOOM.neighbourhood - 1,
     clusterRadius: 56,
+  });
+  /*
+   * Never clustered: there is one of them, and it is not traffic.
+   *
+   * It is also the only source here that is not data from the API — the coordinate came from the
+   * browser and goes no further than this layer.
+   */
+  map.addSource(SOURCES.user, { type: "geojson", data: empty });
+
+  /*
+   * ---- the passenger ----------------------------------------------------
+   *
+   * The halo first, so it is beneath every stop and bus: it is ground, not a marker, and a
+   * translucent disc painted over the stops would tint the things somebody is trying to read. The
+   * dot itself is added last, at the very end of this function, because "you are here" has to
+   * survive a street full of buses drawn on top of it.
+   *
+   * Blue, not red. Red is a bus and red is a warning in this design system, and a red dot in the
+   * middle of a map full of red buses is a bus. `--colour-blue` is the system's information blue;
+   * MapLibre paint cannot read a CSS variable, so the hex is named here and the token is the
+   * comment — the one place in the app where that trade is unavoidable.
+   */
+  map.addLayer({
+    id: "user-accuracy",
+    type: "fill",
+    source: SOURCES.user,
+    filter: ["==", ["get", "kind"], "accuracy"],
+    paint: {
+      "fill-color": USER_BLUE,
+      "fill-opacity": 0.12,
+      "fill-outline-color": USER_BLUE,
+    },
   });
 
   // ---- city: how much is here, and where is it busy ----------------------
@@ -641,7 +700,32 @@ function addSourcesAndLayers(map: MapLibreMap): void {
       "text-opacity": ["case", ["==", ["get", "emphasis"], 1], 1, 0.4],
     },
   });
+
+  /*
+   * And the dot, over everything, with a white collar so it reads on a dark basemap as well as a
+   * pale one.
+   *
+   * In pixels rather than metres, unlike the halo: this one is a marker and it should be the same
+   * size whatever the zoom, exactly as it is in every map application a passenger has used. No
+   * click handler is registered for it anywhere — it is not a thing to open, and `queryRenderedFeatures`
+   * only reaches layers that asked for it, so a tap here falls through to whatever is underneath.
+   */
+  map.addLayer({
+    id: "user-dot",
+    type: "circle",
+    source: SOURCES.user,
+    filter: ["==", ["get", "kind"], "dot"],
+    paint: {
+      "circle-radius": 7,
+      "circle-color": USER_BLUE,
+      "circle-stroke-color": "#ffffff",
+      "circle-stroke-width": 3,
+    },
+  });
 }
+
+/** `--colour-blue` from the design tokens. Paint expressions cannot read a CSS variable. */
+const USER_BLUE = "#1557ff";
 
 function prefersReducedMotion(): boolean {
   return globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;

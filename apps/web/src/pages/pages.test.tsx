@@ -781,6 +781,193 @@ describe("the live map's deep link", () => {
 });
 
 /*
+ * Where the live map opens, now that it opens around the passenger.
+ *
+ * The observable is the viewport the page asks `/v1/map` for: that is the only thing which says
+ * where the camera actually went, and in jsdom there is no renderer to ask instead. jsdom also has
+ * no `navigator.geolocation`, so each test installs the browser it wants to describe — including
+ * the absent one, which is what keeps the Leeds fallback honest.
+ */
+describe("the live map opening around the passenger", () => {
+  function requestedBoxes(): Array<{ west: number; south: number; east: number; north: number }> {
+    return vi
+      .mocked(apiClient.map)
+      .mock.calls.map(
+        (call) => call[0] as { west: number; south: number; east: number; north: number },
+      );
+  }
+
+  function installGeolocation(
+    behaviour: (
+      ok: (p: globalThis.GeolocationPosition) => void,
+      fail: (e: unknown) => void,
+    ) => void,
+  ) {
+    const getCurrentPosition = vi.fn(behaviour);
+    Object.defineProperty(globalThis.navigator, "geolocation", {
+      configurable: true,
+      value: { getCurrentPosition, watchPosition: vi.fn(() => 1), clearWatch: vi.fn() },
+    });
+    return getCurrentPosition;
+  }
+
+  /** Leeds: the camera a refusal, a timeout or an explicit link gets. */
+  const FALLBACK = "-1.6,53.775,-1.49,53.825";
+
+  function boxLabel(box: { west: number; south: number; east: number; north: number }): string {
+    return [box.west, box.south, box.east, box.north].join(",");
+  }
+
+  function renderLive(path: string, pattern = "/live") {
+    vi.spyOn(apiClient, "map").mockImplementation(
+      () => new Promise(() => {}) as ReturnType<typeof apiClient.map>,
+    );
+    return renderAt(path, pattern, <LiveMapPage />);
+  }
+
+  afterEach(() => {
+    Reflect.deleteProperty(globalThis.navigator, "geolocation");
+  });
+
+  it("asks the browser where we are when nothing else says where to look", () => {
+    const ask = installGeolocation(() => {});
+    renderLive("/live");
+    expect(ask).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens around the passenger once the browser answers", async () => {
+    installGeolocation((ok) =>
+      ok({
+        coords: { latitude: 52.6277, longitude: 1.2985, accuracy: 30 },
+      } as globalThis.GeolocationPosition),
+    );
+    renderLive("/live");
+
+    // Norwich, which the Leeds fallback does not contain: the camera moved to the passenger.
+    await waitFor(() => {
+      const latest = requestedBoxes().at(-1)!;
+      expect(latest.south).toBeLessThan(52.6277);
+      expect(latest.north).toBeGreaterThan(52.6277);
+      expect(latest.west).toBeLessThan(1.2985);
+      expect(latest.east).toBeGreaterThan(1.2985);
+    });
+  });
+
+  /*
+   * An explicit intent wins, and it wins by never asking at all.
+   *
+   * That is what makes "a shared link must not briefly show the passenger's own street first" a
+   * property of the code rather than a race it has to win: there is no fix to arrive late.
+   */
+  it("does not ask when the URL names a viewport", () => {
+    const ask = installGeolocation((ok) =>
+      ok({
+        coords: { latitude: 52.6277, longitude: 1.2985, accuracy: 30 },
+      } as globalThis.GeolocationPosition),
+    );
+    renderLive("/live?bbox=-1.12,53.94,-1.03,53.99");
+
+    expect(ask).not.toHaveBeenCalled();
+    expect(requestedBoxes().map(boxLabel)).toEqual(["-1.12,53.94,-1.03,53.99"]);
+  });
+
+  it("does not ask when the URL names a stop", () => {
+    const ask = installGeolocation((ok) =>
+      ok({
+        coords: { latitude: 52.6277, longitude: 1.2985, accuracy: 30 },
+      } as globalThis.GeolocationPosition),
+    );
+    vi.spyOn(apiClient, "stop").mockImplementation(
+      () => new Promise(() => {}) as ReturnType<typeof apiClient.stop>,
+    );
+    renderLive("/live/stops/450012652", "/live/stops/:stopId");
+
+    expect(ask).not.toHaveBeenCalled();
+    // And it stays where the deep link put it rather than moving to the passenger.
+    expect(requestedBoxes().every((box) => boxLabel(box) === FALLBACK)).toBe(true);
+  });
+
+  it("keeps the fallback camera and the search link when permission is refused", async () => {
+    installGeolocation((_ok, fail) => fail({ code: 1, PERMISSION_DENIED: 1 }));
+    renderLive("/live");
+
+    await waitFor(() => {
+      expect(screen.getByText(/location permission is not available/i)).toBeTruthy();
+    });
+    expect(requestedBoxes().map(boxLabel)).toEqual([FALLBACK]);
+    // The map and the way out of it both survive a refusal.
+    expect(screen.getByRole("link", { name: /search instead/i })).toBeTruthy();
+  });
+
+  it("keeps the map usable when the device cannot say where it is", async () => {
+    installGeolocation((_ok, fail) => fail({ code: 3, PERMISSION_DENIED: 1, TIMEOUT: 3 }));
+    const { container } = renderLive("/live");
+
+    await waitFor(() => {
+      expect(screen.getByText(/could not work out where you are/i)).toBeTruthy();
+    });
+    expect(container.querySelector(".live-map__canvas")).not.toBeNull();
+    expect(requestedBoxes().map(boxLabel)).toEqual([FALLBACK]);
+  });
+
+  it("says so, without a broken map, when the browser has no geolocation at all", async () => {
+    const { container } = renderLive("/live");
+
+    await waitFor(() => {
+      expect(screen.getByText(/cannot share your location/i)).toBeTruthy();
+    });
+    expect(container.querySelector(".live-map__canvas")).not.toBeNull();
+    expect(requestedBoxes().map(boxLabel)).toEqual([FALLBACK]);
+  });
+
+  /* Asking again after "no" is both rude and futile; browsers suppress the prompt anyway. */
+  it("does not re-prompt somebody who has refused, however often they press", async () => {
+    const ask = installGeolocation((_ok, fail) => fail({ code: 1, PERMISSION_DENIED: 1 }));
+    renderLive("/live");
+
+    await waitFor(() => {
+      expect(screen.getByText(/location permission is not available/i)).toBeTruthy();
+    });
+
+    /*
+     * Both of them: the sidebar control and the one over the canvas are the same action, and
+     * neither may re-prompt. Pressing each twice is four presses against one browser call.
+     */
+    const buttons = screen.getAllByRole("button", { name: /use my location/i });
+    expect(buttons.length).toBe(2);
+    for (const button of buttons) {
+      await userEvent.click(button);
+      await userEvent.click(button);
+    }
+
+    expect(ask).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers a recentre over the map once it knows where you are", async () => {
+    installGeolocation((ok) =>
+      ok({
+        coords: { latitude: 52.6277, longitude: 1.2985, accuracy: 30 },
+      } as globalThis.GeolocationPosition),
+    );
+    renderLive("/live");
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /centre the map on your location/i })).toBeTruthy();
+    });
+  });
+
+  /* The control over the canvas is a real button, so it is reachable by keyboard and by tap. */
+  it("keeps the recentre reachable when location has not been granted", async () => {
+    installGeolocation((_ok, fail) => fail({ code: 1, PERMISSION_DENIED: 1 }));
+    renderLive("/live");
+
+    await waitFor(() => {
+      expect(screen.getAllByRole("button", { name: /use my location/i }).length).toBeGreaterThan(0);
+    });
+  });
+});
+
+/*
  * The map survives the platform refusing it.
  *
  * `/v1/map` is the request error 1102 lands on, and because Cloudflare's error page carries no CORS

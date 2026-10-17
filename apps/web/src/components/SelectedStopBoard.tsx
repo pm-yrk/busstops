@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import type { StopDeparturesResponse } from "@busstops/contracts";
 import { apiClient, ApiError } from "../lib/api.js";
+import { haversineMetresBrowser, type LatLon } from "../lib/geo.js";
+import { distanceLabel, walkingMinutes } from "../lib/format.js";
 import { useTicker } from "../lib/use-fetch.js";
 import { ArrivalBoard } from "./ArrivalBoard.js";
 import { LoadingBus } from "./LoadingBus.js";
@@ -32,6 +34,18 @@ export interface SelectedStopBoardProps {
    * the coordinate, and the page uses it to move the map there — once, on arrival.
    */
   onResolved?: (stop: { atcoCode: string; coordinate: { lat: number; lon: number } }) => void;
+  /**
+   * Where the passenger is, when the map knows.
+   *
+   * Only to say how far away this stop is. The board already fetches the stop, so it already has
+   * the other coordinate, and the answer is one subtraction on the device — no request, and
+   * nothing sent anywhere. Null whenever location is unknown, refused or unsupported, and then the
+   * hint is simply absent.
+   *
+   * Deliberately proximity only. It does not guess which bus somebody wants, which bus they are
+   * on, or whether a bus that happens to be near them is theirs.
+   */
+  userCoordinate?: LatLon | null;
 }
 
 /**
@@ -97,7 +111,12 @@ function StopFacts({
   );
 }
 
-export function SelectedStopBoard({ atcoCode, onClose, onResolved }: SelectedStopBoardProps) {
+export function SelectedStopBoard({
+  atcoCode,
+  onClose,
+  onResolved,
+  userCoordinate = null,
+}: SelectedStopBoardProps) {
   const [response, setResponse] = useState<StopDeparturesResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -146,6 +165,24 @@ export function SelectedStopBoard({ atcoCode, onClose, onResolved }: SelectedSto
     ? Math.max(0, Math.round((now.getTime() - Date.parse(response.meta.generatedAt)) / 1000))
     : null;
 
+  /*
+   * How far, and roughly how long to walk it.
+   *
+   * Both from `format.ts`, which already rounds a distance the way a person would say it and
+   * already walks at a deliberately unhurried 1.3 m/s. Suppressed beyond two kilometres: "2.4 km
+   * from you" at a stop somebody tapped across the city is arithmetic, not help, and a thirty-one
+   * minute walk is not an option they were considering.
+   */
+  const stopCoordinate = response?.data.stop.locationCoordinate ?? null;
+  const metresFromUser =
+    userCoordinate && stopCoordinate
+      ? haversineMetresBrowser(userCoordinate, stopCoordinate)
+      : null;
+  const proximity =
+    metresFromUser !== null && metresFromUser <= 2_000
+      ? `${distanceLabel(metresFromUser)} from you · about ${walkingMinutes(metresFromUser)} min walk`
+      : null;
+
   return (
     <aside className="selected-stop" aria-live="polite">
       <button
@@ -183,6 +220,8 @@ export function SelectedStopBoard({ atcoCode, onClose, onResolved }: SelectedSto
             phone. The panel is a board; the picture belongs on the full stop page, which is what
             the link below promises and where there is room to be generous with it.
           */}
+
+          {proximity && <p className="selected-stop__proximity small muted">{proximity}</p>}
 
           <StopFacts stop={response.data.stop} routes={response.data.routes} />
 

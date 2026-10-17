@@ -159,3 +159,14 @@
   width: 100%;
   font-weight: 600;
 }
+
+/*
+ * How far this stop is from the passenger.
+ *
+ * Between the board and the stop's facts, because it answers "should I walk to this one" and that
+ * question sits after "when is the bus" and before "what is this stop like". Quiet type: it is a
+ * hint, not a headline, and it is absent entirely when location is unknown.
+ */
+.selected-stop__proximity {
+  margin: var(--space-sm) 0 0;
+}

@@ -108,3 +108,80 @@ export function boundsFromParam(raw: string | null): Bounds | null {
   if (Math.abs(south) > 90 || Math.abs(north) > 90) return null;
   return { west, south, east, north };
 }
+
+/**
+ * How much ground the map shows when it opens around the passenger.
+ *
+ * A neighbourhood rather than a street or a county: wide enough that the stops either side of a
+ * junction are both on screen and a bus two minutes away is visible coming, tight enough that the
+ * dot is recognisably *here* rather than somewhere in this city. About 2.2 km across and 1.1 km
+ * top to bottom at England's latitudes, which is the same order as the box "Use my location"
+ * already used and an order of magnitude inside the API's maximum query area.
+ *
+ * Longitude and latitude get different numbers on purpose: a degree of longitude at 53°N is about
+ * 0.6 of a degree of latitude, so equal numbers would frame a tall thin box on a wide screen.
+ */
+const AROUND_ME_HALF_WIDTH_DEGREES = 0.017;
+const AROUND_ME_HALF_HEIGHT_DEGREES = 0.005;
+
+export function boundsAroundMe(coordinate: LatLon): Bounds {
+  return {
+    west: coordinate.lon - AROUND_ME_HALF_WIDTH_DEGREES,
+    east: coordinate.lon + AROUND_ME_HALF_WIDTH_DEGREES,
+    south: coordinate.lat - AROUND_ME_HALF_HEIGHT_DEGREES,
+    north: coordinate.lat + AROUND_ME_HALF_HEIGHT_DEGREES,
+  };
+}
+
+/**
+ * The widest accuracy halo worth drawing.
+ *
+ * A browser that has fallen back to an IP lookup reports accuracy in the tens of kilometres, and
+ * drawing that honestly fills the screen with a translucent disc — which tells the passenger
+ * nothing except that the map has gone blue. Beyond this the halo is omitted and the dot stands
+ * alone: still "roughly here", without pretending to a precision the device does not have and
+ * without covering the stops it is meant to sit among.
+ */
+export const MAX_ACCURACY_HALO_METRES = 2_000;
+
+/**
+ * A circle on the ground, as a GeoJSON ring.
+ *
+ * MapLibre's `circle-radius` is in screen pixels, so a circle drawn that way is a fixed-size blob
+ * that means a different distance at every zoom — the one thing an accuracy halo must not be. A
+ * polygon is in real coordinates, so it grows and shrinks with the map exactly as the ground does.
+ *
+ * Returns null where there is nothing honest to draw: no accuracy from the browser, a
+ * non-finite or non-positive number, or a radius so large that the halo would be a tint over the
+ * whole screen rather than information.
+ */
+export function accuracyRing(
+  centre: LatLon,
+  radiusMetres: number | null | undefined,
+  steps = 48,
+): [number, number][] | null {
+  if (radiusMetres === null || radiusMetres === undefined) return null;
+  if (!Number.isFinite(radiusMetres) || radiusMetres <= 0) return null;
+  if (radiusMetres > MAX_ACCURACY_HALO_METRES) return null;
+
+  const latitudeDegrees = radiusMetres / EARTH_RADIUS_METRES / DEG_TO_RAD;
+  /*
+   * Longitude degrees shrink with the cosine of latitude, so the same radius is more degrees of
+   * longitude the further north you are. Clamped away from zero because at a pole the division is
+   * unbounded, and a halo of infinite width is worse than a slightly wrong one nobody will ever
+   * see.
+   */
+  const longitudeDegrees = latitudeDegrees / Math.max(0.01, Math.cos(centre.lat * DEG_TO_RAD));
+
+  const ring: [number, number][] = [];
+  for (let step = 0; step < steps; step += 1) {
+    const angle = (step / steps) * 2 * Math.PI;
+    ring.push([
+      centre.lon + Math.cos(angle) * longitudeDegrees,
+      centre.lat + Math.sin(angle) * latitudeDegrees,
+    ]);
+  }
+  // A GeoJSON linear ring is explicitly closed: the last position repeats the first.
+  ring.push(ring[0]!);
+  return ring;
+}

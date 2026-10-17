@@ -1,4 +1,5 @@
 import type { MapStopSummary, MapVehicleSummary } from "@busstops/contracts";
+import { accuracyRing, type LatLon } from "../lib/geo.js";
 
 /**
  * What the live map shows at each zoom, and what it is for.
@@ -262,4 +263,97 @@ export function describeEmptyVehicles(reason: EmptyVehicleReason): string {
     case "none_reported":
       return "There are no live buses in this area at the moment. Try panning, or check the stops below.";
   }
+}
+
+/* ---- the passenger's own position ---------------------------------------- */
+
+/**
+ * Where a tap can land.
+ *
+ * Named here rather than written into the loops in `MapView`, so "which layers are things you can
+ * open" is a list one can read and assert against. The user's own dot is deliberately not in any
+ * of them: it is not a bus and not a stop, and a tap on it should fall through to whatever is
+ * underneath rather than opening a panel about the passenger.
+ */
+export const CLICKABLE_LAYERS = {
+  stops: ["stop-flags", "stop-pips"],
+  vehicles: ["vehicle-buses", "vehicle-pips"],
+  clusters: ["stop-clusters", "vehicle-clusters"],
+} as const;
+
+/** The layers that draw the passenger. Never clickable, never clustered, never red. */
+export const USER_LAYERS = ["user-accuracy", "user-dot"] as const;
+
+export interface UserFeatureProperties {
+  kind: "dot" | "accuracy";
+}
+
+/**
+ * Its own feature and collection types rather than the `FeatureCollection<P>` above, because this
+ * is the one source here that is not all points: the halo is a polygon, and widening the shared
+ * type to admit polygons would let a stop be published as one.
+ */
+export type UserFeature = {
+  type: "Feature";
+  properties: UserFeatureProperties;
+  geometry:
+    | { type: "Point"; coordinates: [number, number] }
+    | { type: "Polygon"; coordinates: [number, number][][] };
+};
+
+export interface UserFeatureCollection {
+  type: "FeatureCollection";
+  features: UserFeature[];
+}
+
+/**
+ * The dot, and the ground the browser thinks we might be on.
+ *
+ * Two features from one position, in one source, so a position update is a single `setData`. The
+ * halo is a polygon rather than a pixel circle because an accuracy of forty metres has to still
+ * mean forty metres after a zoom — see `accuracyRing`, which also decides when there is nothing
+ * honest to draw and returns null.
+ *
+ * Empty when there is no position, which is every case where location is unknown: not asked,
+ * refused, unsupported, or asked and unanswered. The map is identical in all of them.
+ */
+export function userFeatures(
+  location: { coordinate: LatLon; accuracyMetres: number | null } | null,
+): UserFeatureCollection {
+  const features: UserFeature[] = [];
+  if (location) {
+    const ring = accuracyRing(location.coordinate, location.accuracyMetres);
+    if (ring) {
+      features.push({
+        type: "Feature",
+        properties: { kind: "accuracy" },
+        geometry: { type: "Polygon", coordinates: [ring] },
+      });
+    }
+    features.push({
+      type: "Feature",
+      properties: { kind: "dot" },
+      geometry: {
+        type: "Point",
+        coordinates: [location.coordinate.lon, location.coordinate.lat],
+      },
+    });
+  }
+  return { type: "FeatureCollection", features };
+}
+
+/**
+ * The dot's accessible label.
+ *
+ * It is painted on a canvas, so there is no element to hang an `aria-label` on and this sentence
+ * is the whole of its accessible representation. Phrased as a fact about the map rather than as a
+ * marker name, because that is what it is useful to hear: not "there is a blue dot" but "the map
+ * knows where you are, and the things listed below are around you".
+ *
+ * Empty string, not a sentence saying location is unknown: a screen reader user who has refused
+ * permission does not need the map to mention it every time the viewport changes, and the page
+ * says it once in its own notice.
+ */
+export function describeUserLocation(hasLocation: boolean): string {
+  return hasLocation ? " Your location is shown on the map." : "";
 }

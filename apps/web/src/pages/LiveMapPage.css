@@ -152,3 +152,74 @@
 .live-map__notice {
   margin: 0 0 var(--space-sm);
 }
+
+/*
+ * The recentre control, over the map.
+ *
+ * Bottom right: MapLibre's zoom buttons are top left and the arrival boards come in from the right
+ * above this, so this corner is the one part of the canvas nothing else uses at any width. A real
+ * button, so it is in the tab order, has a visible focus ring and meets the touch target the rest
+ * of the app uses.
+ *
+ * Blue, matching the dot it takes you back to, rather than the red the rest of the controls use —
+ * the two belong to each other and neither is a bus.
+ */
+.live-map__recentre {
+  position: absolute;
+  right: var(--space-md);
+  bottom: var(--space-md);
+  z-index: 2;
+  width: var(--min-touch-target);
+  height: var(--min-touch-target);
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--colour-hairline);
+  border-radius: var(--radius-pill);
+  background: var(--colour-surface);
+  box-shadow: var(--shadow-panel);
+  cursor: pointer;
+}
+
+.live-map__recentre:hover:not(:disabled) {
+  border-color: var(--colour-blue);
+}
+
+.live-map__recentre:focus-visible {
+  outline: 2px solid var(--colour-blue);
+  outline-offset: 2px;
+}
+
+.live-map__recentre:disabled {
+  cursor: progress;
+  opacity: 0.6;
+}
+
+/*
+ * The mark: a ring with a dot in it, which is the shape every map application uses for this and
+ * therefore the one that needs no explaining. Drawn in CSS rather than as an icon file so it
+ * cannot fail to load, and `aria-hidden` because the button's own label is the accessible name.
+ */
+.live-map__recentre-mark {
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--colour-blue);
+  border-radius: 50%;
+  position: relative;
+}
+
+.live-map__recentre-mark::after {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background: var(--colour-blue);
+}
+
+/* On a phone the canvas is shorter, so the control sits in from the edge by less. */
+@media (max-width: 900px) {
+  .live-map__recentre {
+    right: var(--space-sm);
+    bottom: var(--space-sm);
+  }
+}
