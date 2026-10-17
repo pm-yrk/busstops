@@ -164,10 +164,23 @@
  * Blue, matching the dot it takes you back to, rather than the red the rest of the controls use —
  * the two belong to each other and neither is a bus.
  */
+/*
+ * Clear of the attribution, which lives in this corner too.
+ *
+ * MapLibre's compact attribution is a `<details><summary>` toggle at the bottom right, and the
+ * first version of this button sat on top of it: the deployed accessibility pass caught it as
+ * `target-size (serious) on summary — partially obscured (smallest space is 24px by 5px)`, a
+ * failure that was not there the run before. That is worse than an axe violation. The attribution
+ * is a licence condition of the basemap, so covering its toggle is covering something this product
+ * is required to show, and a 5-pixel sliver is not a tap target on a phone.
+ *
+ * 24px for the toggle, 10px for MapLibre's own margin, and a gap, measured from the bottom of the
+ * canvas rather than guessed.
+ */
 .live-map__recentre {
   position: absolute;
   right: var(--space-md);
-  bottom: var(--space-md);
+  bottom: calc(var(--space-md) + 34px);
   z-index: 2;
   width: var(--min-touch-target);
   height: var(--min-touch-target);
@@ -216,10 +229,11 @@
   background: var(--colour-blue);
 }
 
-/* On a phone the canvas is shorter, so the control sits in from the edge by less. */
+/* On a phone the canvas is shorter, so the control sits in from the edge by less — still above
+ * the attribution toggle, which is in the same corner at every width. */
 @media (max-width: 900px) {
   .live-map__recentre {
     right: var(--space-sm);
-    bottom: var(--space-sm);
+    bottom: calc(var(--space-sm) + 34px);
   }
 }

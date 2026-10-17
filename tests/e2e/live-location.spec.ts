@@ -27,8 +27,27 @@ const HERE = { latitude: 53.7965, longitude: -1.5478 };
  */
 const BARE_STYLE = {
   version: 8,
-  sources: {},
-  layers: [{ id: "ground", type: "background", paint: { "background-color": "#eef1f2" } }],
+  /*
+   * One source with a licence line, and a layer that uses it.
+   *
+   * MapLibre credits the sources a *rendered layer* draws from, and marks the control
+   * `maplibregl-attrib-empty` otherwise — so a style with no sources, or with a source no layer
+   * touches, renders a zero-by-zero control. The overlap test below then asserted `toBeVisible()`
+   * on something permanently hidden, which is a test that checks nothing. A real deployment always
+   * has a basemap source with a licence line; this is the smallest thing that behaves like one.
+   * The source carries no features, so the layer draws nothing and no other assertion here moves.
+   */
+  sources: {
+    credit: {
+      type: "geojson",
+      data: { type: "FeatureCollection", features: [] },
+      attribution: "Test basemap attribution",
+    },
+  },
+  layers: [
+    { id: "ground", type: "background", paint: { "background-color": "#eef1f2" } },
+    { id: "credit-anchor", type: "circle", source: "credit" },
+  ],
 };
 
 /** The parts of MapLibre this spec touches, so it needs no import from the bundle. */
@@ -206,6 +225,43 @@ test.describe("with location permission", () => {
     expect(Math.abs(where!.lat - HERE.latitude)).toBeGreaterThan(0.1);
     // And no dot, because the page never asked: there is no fix to arrive late and move it.
     expect(await painted(page, ["user-dot"])).toBe(0);
+  });
+
+  /*
+   * The attribution toggle must stay tappable.
+   *
+   * MapLibre's compact attribution is a `<details><summary>` in the bottom-right corner, and the
+   * first version of the recentre button sat on top of it — the deployed accessibility pass caught
+   * it as `target-size (serious) on summary — partially obscured (smallest space is 24px by 5px)`.
+   * Worse than a score: the attribution is a licence condition of the basemap, so covering its
+   * toggle covers something this product is required to show.
+   *
+   * Asserted as geometry rather than through axe, because the rule is "these two do not overlap"
+   * and that is checkable exactly.
+   */
+  test("does not cover the basemap attribution", async ({ page }) => {
+    await openLive(page, "/live");
+
+    const control = page.locator(".live-map__recentre");
+    const attribution = page.locator(".maplibregl-ctrl-attrib").first();
+    await expect(control).toBeVisible();
+    await expect(attribution).toBeVisible();
+
+    const button = await control.boundingBox();
+    const credit = await attribution.boundingBox();
+    expect(button, "the recentre control has a box").not.toBeNull();
+    expect(credit, "the attribution has a box").not.toBeNull();
+
+    const overlaps =
+      button!.x < credit!.x + credit!.width &&
+      credit!.x < button!.x + button!.width &&
+      button!.y < credit!.y + credit!.height &&
+      credit!.y < button!.y + button!.height;
+    expect(
+      overlaps,
+      `recentre at ${button!.x},${button!.y} ${button!.width}x${button!.height} against ` +
+        `attribution at ${credit!.x},${credit!.y} ${credit!.width}x${credit!.height}`,
+    ).toBe(false);
   });
 
   test("buses stay tappable with the dot on the map", async ({ page }) => {

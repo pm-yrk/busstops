@@ -60,6 +60,21 @@ walk" with one subtraction and no request. Suppressed beyond two kilometres, whe
 stops being help. It does not infer which bus somebody wants, which bus they are on, or whether a
 bus near them is theirs — and a test asserts the hint contains none of those words.
 
+**And a regression the deployed pass caught that nothing local would have.** The recentre button
+went in the bottom-right corner of the canvas, which is where MapLibre puts its compact attribution
+— a `<details><summary>` toggle. The deployed accessibility check reported `target-size (serious) on
+summary — partially obscured (smallest space is 24px by 5px)`, a failure absent from the run before.
+That is worse than a score: the attribution is a licence condition of the basemap, so covering its
+toggle covers something this product is required to show. The control is now lifted clear of it, and
+the guard is geometry rather than axe — two boxes, asserted not to intersect — because "these do not
+overlap" is checkable exactly. Reverting the offset reproduces it: the button at y 666.8–710.8 and
+x 1364–1408 against the attribution at y 691.8–715.8 and x 1257–1413.
+
+The e2e style needed a licence line of its own before that test meant anything. MapLibre credits the
+sources a _rendered layer_ draws from and marks the control `maplibregl-attrib-empty` otherwise, so
+against a style with no sources the assertion was `toBeVisible()` on a zero-by-zero element — a test
+that checked nothing and passed. One empty source with an attribution, and one layer that uses it.
+
 **What the deployed renderer actually painted.** Seven cases at four widths through Chromium's own
 geolocation emulation, which emulates the _device_ rather than the product: the camera within a
 kilometre of the emulated fix, `user-dot` painting exactly one feature, stops and buses painting
