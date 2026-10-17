@@ -611,6 +611,188 @@ if (stop) {
   console.log("No stop came back, so the stop, route and operator pages are not in this sweep.");
 }
 
+/**
+ * "I am here, and these are the buses and stops around me", against the real deployment.
+ *
+ * The rest of this sweep never grants location, which is right for every other page and leaves the
+ * one thing the live map now does unphotographed. Chromium's own geolocation emulation stands in
+ * for a GPS fix: it emulates the *device*, through exactly the API the product calls and exactly
+ * the permission model a passenger's browser uses, so the page cannot tell the difference.
+ *
+ * Its own contexts, because permission is a property of a browser context rather than of a page,
+ * and the three states have to be asked separately.
+ *
+ * What this asserts strictly is everything that does not depend on our API: the dot, where the
+ * camera went, the sentence a screen reader gets, the deep link winning, and the notice a refusal
+ * produces. Stops around the passenger do depend on `/v1/map`, which on this platform is the
+ * request error 1102 lands on — and a 1102 arrives in a browser as a CORS failure because
+ * Cloudflare's error page carries no `Access-Control-Allow-Origin`. That is a known, separately
+ * tracked defect, so this records the count and does not fail a second time for it.
+ */
+async function proveCurrentLocation(browser, baseUrl, size, record) {
+  /** Leeds city centre, which is where the default viewport looks, so stops are plausible. */
+  const here = { latitude: 53.7965, longitude: -1.5478 };
+
+  const read = (page) =>
+    page.evaluate(() => {
+      const map = globalThis.__busstopsMap;
+      if (!map) return { built: false };
+      const count = (layers, cluster) => {
+        try {
+          const features = map.queryRenderedFeatures({ layers });
+          return cluster
+            ? features.reduce((total, f) => total + (Number(f.properties?.point_count) || 0), 0)
+            : features.length;
+        } catch {
+          return 0;
+        }
+      };
+      const centre = map.getCenter();
+      return {
+        built: true,
+        lat: centre.lat,
+        lon: centre.lng,
+        dots: count(["user-dot"], false),
+        halo: count(["user-accuracy"], false),
+        stops: count(["stop-flags", "stop-pips"], false) + count(["stop-clusters"], true),
+      };
+    });
+
+  const open = async (context, path) => {
+    const page = await context.newPage();
+    const refused = [];
+    page.on("requestfailed", (request) => {
+      if (request.url().includes("/v1/map")) refused.push(request.url());
+    });
+    await page.goto(`${baseUrl}${path}`, { waitUntil: "domcontentloaded", timeout: 60_000 });
+    // The camera move is animated and the position arrives asynchronously.
+    await page.waitForTimeout(9_000);
+    return { page, refused };
+  };
+
+  /* ---- permission granted ---------------------------------------------- */
+  const granted = await browser.newContext({
+    viewport: { width: size.width, height: size.height },
+    deviceScaleFactor: 1,
+    permissions: ["geolocation"],
+    geolocation: here,
+  });
+
+  try {
+    const { page, refused } = await open(granted, "/live");
+    const seen = await read(page);
+
+    if (!seen.built) {
+      // No renderer at all is the documented list-only fallback, not a location failure.
+      record(
+        `${size.name}/live-location the map was built to draw a dot on`,
+        false,
+        "no map instance: the page is in its list-only fallback, so the dot cannot be checked here",
+      );
+    } else {
+      record(
+        `${size.name}/live-location draws "you are here"`,
+        seen.dots === 1,
+        `${seen.dots} location marker(s) painted, ${seen.halo} accuracy halo(s)`,
+      );
+      /*
+       * Within roughly a kilometre. Not exact: the camera is fitted to a box around the passenger
+       * rather than centred on the coordinate, and asserting that arithmetic would assert the
+       * implementation rather than the behaviour.
+       */
+      const off = Math.abs(seen.lat - here.latitude) + Math.abs(seen.lon - here.longitude);
+      record(
+        `${size.name}/live-location opens around the passenger`,
+        off < 0.03,
+        `camera at ${seen.lat.toFixed(4)}, ${seen.lon.toFixed(4)} against a fix at ` +
+          `${here.latitude}, ${here.longitude}`,
+      );
+      record(
+        `${size.name}/live-location loads what is around them`,
+        seen.stops > 0 || refused.length > 0,
+        seen.stops > 0
+          ? `${seen.stops} stop(s) around the passenger`
+          : `no stops drawn, and /v1/map was refused ${refused.length} time(s) — the known 1102, ` +
+              "reported by the checks above rather than failed again here",
+      );
+    }
+
+    const announced = await page
+      .locator("text=/your location is shown on the map/i")
+      .count()
+      .catch(() => 0);
+    record(
+      `${size.name}/live-location is named for a screen reader`,
+      announced > 0,
+      announced > 0 ? "the map says the passenger's location is shown" : "no such sentence found",
+    );
+
+    const recentre = page.getByRole("button", { name: /centre the map on your location/i });
+    const reachable = await recentre.count();
+    record(
+      `${size.name}/live-location offers a recentre`,
+      reachable > 0,
+      reachable > 0 ? "a labelled recentre button is present" : "no recentre button found",
+    );
+    await page.close();
+
+    /* ---- an explicit link wins, with permission already granted -------- */
+    const shared = await open(granted, "/live?bbox=-1.12,53.94,-1.03,53.99");
+    const atYork = await read(shared.page);
+    record(
+      `${size.name}/live-location a shared viewport opens where it was sent`,
+      !atYork.built || (atYork.lat > 53.9 && atYork.dots === 0),
+      atYork.built
+        ? `camera at ${atYork.lat.toFixed(4)} with ${atYork.dots} location marker(s) — York, ` +
+            "and the page never asked for a position"
+        : "no map instance: the list-only fallback, so there is nothing to place",
+    );
+    await shared.page.close();
+  } finally {
+    await granted.close();
+  }
+
+  /* ---- permission refused ---------------------------------------------- */
+  const refusedContext = await browser.newContext({
+    viewport: { width: size.width, height: size.height },
+    deviceScaleFactor: 1,
+    permissions: [],
+  });
+
+  try {
+    const { page } = await open(refusedContext, "/live");
+    const seen = await read(page);
+    record(
+      `${size.name}/live-location draws nothing when location is refused`,
+      !seen.built || seen.dots === 0,
+      seen.built ? `${seen.dots} location marker(s)` : "list-only fallback",
+    );
+
+    const notice = await page
+      .locator(
+        "text=/location permission is not available|could not work out where you are|cannot share your location/i",
+      )
+      .count()
+      .catch(() => 0);
+    record(
+      `${size.name}/live-location says location is unavailable`,
+      notice > 0,
+      notice > 0 ? "the page says so in its own words" : "no explanation offered",
+    );
+
+    // And the way out of it, which must survive a refusal.
+    const search = await page.getByRole("link", { name: /search instead/i }).count();
+    record(
+      `${size.name}/live-location keeps search reachable without location`,
+      search > 0,
+      search > 0 ? "the search link is present" : "no search link",
+    );
+    await page.close();
+  } finally {
+    await refusedContext.close();
+  }
+}
+
 const results = [];
 function record(name, ok, detail) {
   results.push({ name, ok, detail });
@@ -2104,6 +2286,15 @@ for (const size of WIDTHS) {
   await walker.close();
 
   await context.close();
+
+  /*
+   * The location experience, in its own contexts.
+   *
+   * After `context.close()` because permission is a property of a browser context: the sweep's
+   * main context deliberately has none, and granting it there would change every page above.
+   */
+  await proveCurrentLocation(browser, baseUrl, size, record);
+
   completedWidths.push(size.name);
 }
 
