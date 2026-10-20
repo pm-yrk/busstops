@@ -261,6 +261,110 @@ export function computeStopProgress(
 }
 
 /**
+ * Why a bus has, or has not, got a list of stops ahead of it.
+ *
+ * Three states that a passenger reads completely differently, and which the vehicle endpoint used
+ * to collapse into one empty array:
+ *
+ *   - `ahead` — we know where it is on its pattern and which stops remain.
+ *   - `progress_unknown` — we know which pattern it is on and cannot place it along the pattern.
+ *     "We can see this bus on the 36 but cannot tell you how far along it is" is a different
+ *     sentence from both of the others.
+ *   - `end_of_route` — placed, and past the last stop. "This bus has no more stops."
+ *
+ * The fourth state, no confident match at all, is the caller's: it has no geometry to pass in.
+ */
+export type StopsAheadState = "ahead" | "progress_unknown" | "end_of_route";
+
+export interface StopsAheadWindow {
+  state: StopsAheadState;
+  /**
+   * Indices into `pattern.stopSequence`, in timetable order, covering a little of what is behind
+   * the bus and as much as the limit allows of what is in front.
+   *
+   * Indices rather than stops, because resolving a stop is a read and the caller is the thing that
+   * knows how to batch them.
+   */
+  indices: number[];
+  /** Index of the stop the bus is heading for, or null at the end of the route. */
+  nextStopIndex: number | null;
+}
+
+/**
+ * Non-decreasing, which `computeStopProgress` requires and does not check.
+ *
+ * It walks the array and breaks at the first stop beyond the vehicle, so an array that dips
+ * backwards would report the dip as "next" and everything after it as unvisited — a route shown in
+ * the wrong order, which is the one outcome worse than showing no order at all.
+ * `stopDistancesAlongShape` builds these monotonically, so this is a guard against an artifact
+ * built by something else, or by an older version of that code.
+ */
+function isMonotonic(distances: readonly number[]): boolean {
+  for (let i = 1; i < distances.length; i += 1) {
+    if (distances[i]! < distances[i - 1]!) return false;
+  }
+  return true;
+}
+
+/**
+ * Which stops are actually ahead of a bus, given where it is along its pattern.
+ *
+ * This is the fix for a real passenger-facing defect: `/v1/vehicles/:ref` used to answer with
+ * `pattern.stopSequence.slice(0, 40)` and every entry marked `passed: false`, so a bus halfway
+ * through its journey was shown the stops it had left behind an hour ago as the stops it was about
+ * to call at. The projection needed to do better was already in `MatchCandidate.alongPathMetres`
+ * and the stop offsets were already in `PatternGeometry.stopDistancesMetres`; nothing in the Worker
+ * had ever called `computeStopProgress`, which is where those two meet.
+ *
+ * A few stops behind the bus are included on purpose, marked passed by the caller: the full
+ * vehicle page shows where a bus has just come from, and "subdued" needs something to subdue.
+ *
+ * `limit` bounds the whole window, so the number of stops resolved — and therefore the read cost
+ * of this endpoint — does not grow with the length of the route.
+ */
+export function stopsAheadWindow(
+  alongPathMetres: number,
+  stopDistancesMetres: readonly number[],
+  options: { passedContext?: number; limit?: number } = {},
+): StopsAheadWindow {
+  const passedContext = options.passedContext ?? 3;
+  const limit = options.limit ?? 40;
+
+  if (stopDistancesMetres.length === 0 || !Number.isFinite(alongPathMetres)) {
+    return { state: "progress_unknown", indices: [], nextStopIndex: null };
+  }
+  if (!isMonotonic(stopDistancesMetres)) {
+    return { state: "progress_unknown", indices: [], nextStopIndex: null };
+  }
+
+  const progress = computeStopProgress(alongPathMetres, stopDistancesMetres);
+
+  if (progress.nextStopIndex === null) {
+    /*
+     * Past the last stop. The last few are still worth returning — a passenger looking at a bus
+     * sitting at its terminus is owed "it has finished this journey", not a blank panel — and the
+     * state says not to read them as upcoming.
+     */
+    const from = Math.max(0, stopDistancesMetres.length - passedContext);
+    return {
+      state: "end_of_route",
+      indices: range(from, stopDistancesMetres.length),
+      nextStopIndex: null,
+    };
+  }
+
+  const from = Math.max(0, progress.nextStopIndex - passedContext);
+  const to = Math.min(stopDistancesMetres.length, from + limit);
+  return { state: "ahead", indices: range(from, to), nextStopIndex: progress.nextStopIndex };
+}
+
+function range(from: number, to: number): number[] {
+  const out: number[] = [];
+  for (let i = from; i < to; i += 1) out.push(i);
+  return out;
+}
+
+/**
  * Delay against the schedule at the vehicle's current position, interpolating between the
  * surrounding stop times. Positive is late, negative is early, matching the data model.
  */

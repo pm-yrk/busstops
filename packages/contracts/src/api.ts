@@ -252,8 +252,41 @@ export const VehicleDetailResponseSchema = apiEnvelope(
         passed: z.boolean(),
       }),
     ),
+    /**
+     * Why `nextStops` is what it is, because four situations produce very different sentences and
+     * an empty array used to be all four of them.
+     *
+     *   - `ahead` — the bus is placed on its pattern and the stops after it are real.
+     *   - `unmatched` — no confident pattern match, so there is no sequence to show. "We can see
+     *     this bus but cannot match it to a timetabled journey yet."
+     *   - `progress_unknown` — the pattern is known and the bus cannot be placed along it.
+     *   - `end_of_route` — placed, and past its last stop. "This bus has no more stops."
+     *
+     * `unmatched` is the default because it is the state of a response that has not thought about
+     * it, which is what the endpoint used to return for every bus in the country.
+     */
+    nextStopsState: z
+      .enum(["ahead", "unmatched", "progress_unknown", "end_of_route"])
+      .default("unmatched"),
+    /**
+     * Where this bus has actually been recently, oldest first.
+     *
+     * Distinct from `scheduledShape`, which is where it is *meant* to go: one is an observation
+     * and the other is a plan, and a passenger told to read a single blue line as both learns
+     * nothing from either. Empty is a normal state — one observation is not a path.
+     */
     recentTrace: z.array(z.object({ coordinate: CoordinateSchema, observedAt: IsoInstantSchema })),
     scheduledShape: z.array(CoordinateSchema),
+    /**
+     * How far along `scheduledShape` the bus has got, in metres, or null when it cannot be placed.
+     *
+     * One number rather than two pre-split line strings, for two reasons. The Worker has a 10ms
+     * CPU budget and already holds this value from the match, so computing the split here would be
+     * spending the scarce resource to save the browser work it is not short of; and the whole
+     * shape travels with the pattern's tile either way, so splitting server-side would not send
+     * fewer bytes. The client walks the shape to this distance and draws the two sections.
+     */
+    progressAlongShapeMetres: z.number().nullable().default(null),
     incidents: z.array(IncidentSchema),
     /**
      * Who runs this bus, when the observation matched a pattern and the pattern named a service.

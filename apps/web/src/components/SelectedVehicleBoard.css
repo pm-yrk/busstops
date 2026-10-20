@@ -127,3 +127,25 @@
   color: var(--colour-muted);
   font-size: var(--font-size-small);
 }
+
+/*
+ * The next stop, which is now genuinely the next stop.
+ *
+ * This list used to begin at the first stop of the route whatever the bus had already done, so
+ * emphasising its first entry would have emphasised the wrong thing. With the sequence starting
+ * where the bus is, the first row is the answer to "where is this bus going next" and is marked
+ * as such — a label and a rule, not a colour on its own.
+ */
+.selected-vehicle__stops > li.is-next {
+  border-left: 3px solid var(--colour-red);
+  padding-left: var(--space-sm);
+  font-weight: 600;
+}
+
+.selected-vehicle__next {
+  display: block;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--colour-red-text);
+  font-weight: 700;
+}

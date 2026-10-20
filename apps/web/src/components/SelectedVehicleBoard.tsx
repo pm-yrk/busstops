@@ -115,8 +115,9 @@ export function SelectedVehicleBoard({ vehicleRef, bounds, onClose }: SelectedVe
 
           {upcoming.length > 0 ? (
             <ol className="selected-vehicle__stops">
-              {upcoming.slice(0, NEXT_STOPS_VISIBLE).map((stop) => (
-                <li key={stop.stopId}>
+              {upcoming.slice(0, NEXT_STOPS_VISIBLE).map((stop, index) => (
+                <li key={stop.stopId} className={index === 0 ? "is-next" : undefined}>
+                  {index === 0 && <span className="selected-vehicle__next micro">Next stop</span>}
                   <Link to={`/stops/${stop.atcoCode}`}>{stop.name}</Link>
                   {stop.expectedTimeLow && (
                     <span className="muted small">
@@ -131,13 +132,20 @@ export function SelectedVehicleBoard({ vehicleRef, bounds, onClose }: SelectedVe
             </ol>
           ) : (
             /*
-             * Said plainly rather than left blank. A bus we have a position for but no matched
-             * journey for genuinely has no next stops to give, and an empty list reads as "this
-             * bus is not going anywhere".
+             * Said plainly, and said differently for each cause.
+             *
+             * One sentence used to cover every empty list, which made a bus sitting at its
+             * terminus and a bus we could not identify at all read as the same thing. They are
+             * not, and the third case — route known, position not — is different again. An empty
+             * list on its own reads as "this bus is not going anywhere", which is true of none of
+             * them.
              */
             <p className="muted small">
-              We could not match this bus to a timetabled journey, so we cannot say which stops it
-              calls at next.
+              {data.nextStopsState === "end_of_route"
+                ? "This bus has no more stops: it has reached the end of the journey it was matched to."
+                : data.nextStopsState === "progress_unknown"
+                  ? "We know which route this bus is on, but cannot place it along the route confidently enough to say which stops come next."
+                  : "We can see this bus, but cannot confidently match it to a timetabled journey yet, so we cannot say which stops it calls at next."}
             </p>
           )}
 

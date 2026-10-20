@@ -204,3 +204,24 @@
     display: none;
   }
 }
+
+/*
+ * The stop the bus is actually heading for.
+ *
+ * `is-passed` already subdued what is behind it, and with the sequence finally starting in the
+ * right place the next stop is the one thing on this list a passenger is looking for. A left rule
+ * and a small label rather than a colour alone, so it does not depend on seeing a hue.
+ */
+.vehicle-page__stops > li.is-next {
+  border-left: 3px solid var(--colour-red);
+  padding-left: var(--space-sm);
+  font-weight: 600;
+}
+
+.vehicle-page__next-flag {
+  display: block;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--colour-red-text);
+  font-weight: 700;
+}

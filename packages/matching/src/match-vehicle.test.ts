@@ -11,6 +11,7 @@ import {
   computeStopProgress,
   matchObservation,
   scoreCandidate,
+  stopsAheadWindow,
   type PatternGeometry,
 } from "./match-vehicle.js";
 
@@ -345,5 +346,127 @@ describe("buildVehicleState", () => {
     expect(state.matchedRoutePatternId).toBeNull();
     expect(state.delaySeconds).toBeNull();
     expect(state.matchConfidence.level).toBe("low");
+  });
+});
+
+/**
+ * Which stops are actually ahead of the bus.
+ *
+ * The defect these exist for: `/v1/vehicles/:ref` answered with `stopSequence.slice(0, 40)` and
+ * every entry `passed: false`, so a bus halfway along its route was shown the stops it had left
+ * behind as the stops it was about to call at. The projection and the stop offsets were both
+ * already computed; nothing had ever put them together.
+ *
+ * Six stops a kilometre apart, which makes every expectation arithmetic rather than judgement.
+ */
+describe("stops ahead of a bus", () => {
+  /** A → B → C → D → E → F, 1km apart. */
+  const sixStops = [0, 1000, 2000, 3000, 4000, 5000];
+  const NAMES = ["A", "B", "C", "D", "E", "F"];
+  const named = (window: { indices: number[] }) => window.indices.map((index) => NAMES[index]);
+
+  /*
+   * The headline case from the brief. The bus is between C and D, so what is ahead is D, E, F —
+   * not A, B, C, and not all six.
+   */
+  it("starts at the next stop when the bus is between C and D", () => {
+    const window = stopsAheadWindow(2500, sixStops);
+
+    expect(window.state).toBe("ahead");
+    expect(window.nextStopIndex).toBe(3);
+    // D is the next stop, and E and F follow it in timetable order.
+    const ahead = window.indices.filter((index) => index >= window.nextStopIndex!);
+    expect(ahead.map((index) => NAMES[index])).toEqual(["D", "E", "F"]);
+    // A is not in the window at all: three stops of context, so it begins at B.
+    expect(named(window)).toEqual(["A", "B", "C", "D", "E", "F"].slice(0, 6));
+  });
+
+  it("never offers the beginning of the route as what is coming next", () => {
+    const window = stopsAheadWindow(4200, sixStops);
+    const ahead = window.indices.filter((index) => index >= window.nextStopIndex!);
+    expect(ahead.map((index) => NAMES[index])).toEqual(["F"]);
+    expect(ahead.map((index) => NAMES[index])).not.toContain("A");
+  });
+
+  /* Context behind the bus is deliberate, and bounded, so "passed" has something to subdue. */
+  it("includes a little of what the bus has just come from", () => {
+    const window = stopsAheadWindow(4200, sixStops, { passedContext: 2 });
+    expect(named(window)).toEqual(["D", "E", "F"]);
+    expect(window.nextStopIndex).toBe(5);
+  });
+
+  it("keeps the window bounded however long the route is", () => {
+    const long = Array.from({ length: 300 }, (_, index) => index * 500);
+    const window = stopsAheadWindow(60_000, long, { limit: 40 });
+    expect(window.indices.length).toBe(40);
+    // And it is a window around the bus, not the first forty stops of the route.
+    expect(window.indices[0]).toBeGreaterThan(100);
+  });
+
+  it("says the bus has finished rather than showing an empty list", () => {
+    const window = stopsAheadWindow(5200, sixStops);
+    expect(window.state).toBe("end_of_route");
+    expect(window.nextStopIndex).toBeNull();
+    // The last stops are still named, so the panel can say where it ended.
+    expect(named(window)).toEqual(["D", "E", "F"]);
+  });
+
+  it("treats a bus before its first stop as having the whole route ahead", () => {
+    const window = stopsAheadWindow(0, [100, 1000, 2000]);
+    expect(window.state).toBe("ahead");
+    expect(window.nextStopIndex).toBe(0);
+    expect(window.indices).toEqual([0, 1, 2]);
+  });
+
+  /*
+   * A pattern with no stop offsets is a pattern we cannot place the bus on. That is a different
+   * answer from "no more stops", and the caller renders a different sentence for it.
+   */
+  it("refuses to guess when there are no stop offsets", () => {
+    const window = stopsAheadWindow(2500, []);
+    expect(window.state).toBe("progress_unknown");
+    expect(window.indices).toEqual([]);
+  });
+
+  it("refuses to guess when the projection is not a number", () => {
+    expect(stopsAheadWindow(Number.NaN, sixStops).state).toBe("progress_unknown");
+    expect(stopsAheadWindow(Number.POSITIVE_INFINITY, sixStops).state).toBe("progress_unknown");
+  });
+
+  /*
+   * Never reverse a route accidentally. `computeStopProgress` walks the offsets and breaks at the
+   * first one beyond the bus, so offsets that dip backwards would report the dip as "next" and
+   * everything after it as unvisited — a route shown in the wrong order.
+   */
+  it("refuses to guess when the stop offsets go backwards", () => {
+    const window = stopsAheadWindow(2500, [0, 1000, 2000, 1500, 4000]);
+    expect(window.state).toBe("progress_unknown");
+    expect(window.indices).toEqual([]);
+  });
+
+  /*
+   * A stop with no coordinate gets the previous stop's offset from the publisher, so two stops
+   * share a distance. Both are correctly behind a bus past them; the order is still the
+   * timetable's, which is the thing that must not break.
+   */
+  it("handles a stop whose coordinate was missing when the artifact was built", () => {
+    // D had no coordinate, so it carries C's offset.
+    const window = stopsAheadWindow(2500, [0, 1000, 2000, 2000, 4000, 5000]);
+    expect(window.state).toBe("ahead");
+    expect(window.nextStopIndex).toBe(4);
+    expect(window.indices).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  /*
+   * A circular route's offsets still rise monotonically along its shape, so a bus three quarters
+   * of the way round is three quarters of the way through its stop list — the fact that the last
+   * stop is next to the first changes nothing about the order.
+   */
+  it("follows a circular route round rather than back to its start", () => {
+    const circle = [0, 800, 1600, 2400, 3200, 4000];
+    const window = stopsAheadWindow(3300, circle);
+    expect(window.nextStopIndex).toBe(5);
+    const ahead = window.indices.filter((index) => index >= window.nextStopIndex!);
+    expect(ahead).toEqual([5]);
   });
 });

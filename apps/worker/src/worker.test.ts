@@ -12,6 +12,7 @@ import {
   MapResponseSchema,
   OperatorDetailResponseSchema,
   RouteDetailResponseSchema,
+  VehicleDetailResponseSchema,
   SearchResponseSchema,
 } from "@busstops/contracts";
 import {
@@ -1427,6 +1428,153 @@ describe("GET /v1/vehicles/:ref", () => {
     expect(response.status).toBe(404);
     const body = (await response.json()) as { error: { message: string } };
     expect(body.error.message).toMatch(/rotate/i);
+  });
+
+  /*
+   * The real defect, end to end.
+   *
+   * This endpoint answered with `pattern.stopSequence.slice(0, 40)` and every entry
+   * `passed: false`, so a bus most of the way along its route was shown the stops it had left
+   * behind as the stops it was about to call at. The cause was not a missing algorithm — the
+   * projection was in the match and the stop offsets were in the pattern geometry, and
+   * `computeStopProgress` had joined them in the matching package for months. No code path in this
+   * Worker had ever called it.
+   *
+   * So the test places a real bus on a real published pattern, two thirds of the way along, and
+   * asks the endpoint where it is going. The synthetic arithmetic is covered by
+   * `stopsAheadWindow`'s own tests; what this adds is that the handler actually uses it.
+   */
+  describe("stops ahead of a bus most of the way along its route", () => {
+    /** The published pattern with the most stops, and the coordinate of one near its end. */
+    function patternUnderTest() {
+      const network = completeNetwork();
+      const stopsById = new Map(network.stops.map((stop) => [stop.id, stop]));
+      const pattern = [...network.patterns]
+        .filter((candidate) => candidate.stopSequence.every((stopId) => stopsById.has(stopId)))
+        .sort((a, b) => b.stopSequence.length - a.stopSequence.length)[0];
+      expect(pattern, "the fixture publishes a pattern with resolvable stops").toBeDefined();
+      expect(pattern!.stopSequence.length).toBeGreaterThanOrEqual(3);
+      return { pattern: pattern!, stopsById, shape: network.shapes.get(pattern!.shapeRef) ?? [] };
+    }
+
+    /** A SIRI VM document with one bus, at a coordinate of our choosing. */
+    function siriAt(coordinate: { lat: number; lon: number }, bearing: number): string {
+      return `<?xml version="1.0" encoding="UTF-8"?>
+<Siri xmlns="http://www.siri.org.uk/siri" version="2.0"><ServiceDelivery>
+<ResponseTimestamp>2026-09-02T08:00:00+00:00</ResponseTimestamp>
+<VehicleMonitoringDelivery><VehicleActivity>
+<RecordedAtTime>2026-09-02T08:00:00+00:00</RecordedAtTime>
+<MonitoredVehicleJourney>
+<LineRef>72</LineRef><DirectionRef>outbound</DirectionRef>
+<DestinationName>Bradford Interchange</DestinationName>
+<VehicleLocation><Longitude>${coordinate.lon}</Longitude><Latitude>${coordinate.lat}</Latitude></VehicleLocation>
+<Bearing>${bearing}</Bearing>
+<VehicleRef>FLEE-30412</VehicleRef>
+</MonitoredVehicleJourney>
+</VehicleActivity></VehicleMonitoringDelivery></ServiceDelivery></Siri>`;
+    }
+
+    async function askAboutTheBus(coordinate: { lat: number; lon: number }, bearing: number) {
+      const store = await publishedStore();
+      const env = makeEnv(store);
+      resetWorkerState();
+      initialiseWorker(
+        env,
+        () => new Date("2026-09-02T08:00:05Z"),
+        (async () =>
+          new Response(siriAt(coordinate, bearing), { status: 200 })) as unknown as typeof fetch,
+      );
+
+      const bbox = "-1.7,53.7,-1.4,53.9";
+      // The map is how a passenger finds the rotating reference; the detail call needs it.
+      const map = await worker.fetch(get(`/v1/map?bbox=${bbox}&zoom=14`), env, ctx);
+      const mapBody = (await map.json()) as { data: { vehicles: Array<{ vehicleRef: string }> } };
+      expect(mapBody.data.vehicles.length, "the bus is on the map").toBeGreaterThan(0);
+      const ref = mapBody.data.vehicles[0]!.vehicleRef;
+
+      const response = await worker.fetch(
+        get(`/v1/vehicles/${encodeURIComponent(ref)}?bbox=${bbox}`),
+        env,
+        ctx,
+      );
+      expect(response.status).toBe(200);
+      const parsed = VehicleDetailResponseSchema.safeParse(await response.json());
+      expect(parsed.success, JSON.stringify(parsed.error?.issues)).toBe(true);
+      return parsed.data!.data;
+    }
+
+    it("does not offer the start of the route as what is coming next", async () => {
+      const { pattern, stopsById, shape } = patternUnderTest();
+      const lastIndex = pattern.stopSequence.length - 1;
+      // Two thirds along, and never the first stop: the point of the test is that it has passed some.
+      const atIndex = Math.max(1, Math.floor(lastIndex * 0.67));
+      const here = stopsById.get(pattern.stopSequence[atIndex]!)!.locationCoordinate;
+      // Along the shape rather than against it, so the match is not rejected on direction.
+      const bearing =
+        shape.length > 1
+          ? Math.round(
+              (Math.atan2(
+                shape[shape.length - 1]!.lon - shape[0]!.lon,
+                shape[shape.length - 1]!.lat - shape[0]!.lat,
+              ) *
+                180) /
+                Math.PI +
+                360,
+            ) % 360
+          : 0;
+
+      const data = await askAboutTheBus(here, bearing);
+
+      /*
+       * Asserted rather than tolerated.
+       *
+       * An earlier version of this accepted any honest state and returned early, which would have
+       * passed just as cheerfully against the defect it exists to catch, had the match ever
+       * stopped resolving. Verified to reach `ahead` against this fixture — two stops passed, one
+       * ahead, 337m along the shape — so a fixture change that breaks the match is worth failing
+       * on and looking at, rather than quietly measuring nothing.
+       */
+      expect(
+        data.nextStopsState,
+        "the fixture bus should match its pattern; if this changes the match broke, not the window",
+      ).toBe("ahead");
+
+      const upcoming = data.nextStops.filter((stop) => !stop.passed);
+      expect(upcoming.length, "a matched bus has stops ahead of it").toBeGreaterThan(0);
+
+      // The regression: the bus has passed stops, and they are reported as passed.
+      expect(
+        data.nextStops.some((stop) => stop.passed),
+        "stops behind the bus are marked passed",
+      ).toBe(true);
+
+      // And the first thing a passenger is told is genuinely ahead, not stop one of the route.
+      expect(upcoming[0]!.stopId).not.toBe(pattern.stopSequence[0]);
+      expect(data.vehicle.nextStopId).toBe(upcoming[0]!.stopId);
+
+      // Passed stops all come before unpassed ones: the sequence is still the timetable's order.
+      const firstUnpassed = data.nextStops.findIndex((stop) => !stop.passed);
+      expect(data.nextStops.slice(0, firstUnpassed).every((stop) => stop.passed)).toBe(true);
+      expect(data.nextStops.slice(firstUnpassed).every((stop) => !stop.passed)).toBe(true);
+
+      // The route line is clipped at a real point along the shape, not at zero.
+      expect(data.progressAlongShapeMetres).not.toBeNull();
+      expect(data.progressAlongShapeMetres!).toBeGreaterThan(0);
+    });
+
+    /*
+     * A bus nowhere near any published route must not be given somebody else's stop list. The
+     * states are the whole point: "we cannot match it" is a different sentence from "it has no
+     * more stops", and both are different from a list.
+     */
+    it("says it cannot match a bus that is not on any published route", async () => {
+      const data = await askAboutTheBus({ lat: 53.72, lon: -1.42 }, 0);
+      expect(["unmatched", "progress_unknown"]).toContain(data.nextStopsState);
+      expect(data.nextStops).toEqual([]);
+      expect(data.scheduledShape).toEqual([]);
+      expect(data.progressAlongShapeMetres).toBeNull();
+      expect(data.vehicle.nextStopId).toBeNull();
+    });
   });
 });
 

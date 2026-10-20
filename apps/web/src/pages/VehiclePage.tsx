@@ -118,6 +118,16 @@ export function VehiclePage() {
 
   const vehicleState = response?.data.vehicle ?? null;
   const nextStops = useMemo(() => response?.data.nextStops ?? [], [response]);
+  /*
+   * Collapsed, this is what is *ahead*; expanded, it is the whole window including what the bus
+   * has just come from.
+   *
+   * `nextStops.slice(0, 3)` was right while every stop in the array was marked unpassed, which was
+   * the defect. Now that the endpoint returns a few stops behind the bus as well — so "passed"
+   * has something to subdue — slicing from the front would fill a phone screen with stops the bus
+   * left ten minutes ago and push the next one out of view.
+   */
+  const upcomingStops = useMemo(() => nextStops.filter((stop) => !stop.passed), [nextStops]);
 
   const contextKey = `${vehicleState?.vehicleRef ?? ""}|${
     bbox ? `${bbox.west},${bbox.south},${bbox.east},${bbox.north}` : ""
@@ -260,7 +270,9 @@ export function VehiclePage() {
   }
 
   const { vehicle, routePublicName, routeId, destinationName, scheduledShape } = response.data;
-  const visibleStops = showAllStops ? nextStops : nextStops.slice(0, NEXT_STOPS_VISIBLE);
+  const visibleStops = showAllStops ? nextStops : upcomingStops.slice(0, NEXT_STOPS_VISIBLE);
+  const nextStopId = upcomingStops[0]?.stopId ?? null;
+  const stopsState = response?.data.nextStopsState ?? "unmatched";
 
   return (
     <article className="page vehicle-page">
@@ -363,7 +375,15 @@ export function VehiclePage() {
           <>
             <ol className="vehicle-page__stops">
               {visibleStops.map((stop) => (
-                <li key={stop.stopId} className={stop.passed ? "is-passed" : ""}>
+                <li
+                  key={stop.stopId}
+                  className={
+                    stop.passed ? "is-passed" : stop.stopId === nextStopId ? "is-next" : ""
+                  }
+                >
+                  {stop.stopId === nextStopId && (
+                    <span className="vehicle-page__next-flag micro">Next stop</span>
+                  )}
                   <Link to={`/stops/${encodeURIComponent(stop.atcoCode)}`}>{stop.name}</Link>
                   <span className="muted small">
                     {stop.expectedTimeLow && stop.expectedTimeHigh
@@ -373,7 +393,7 @@ export function VehiclePage() {
                 </li>
               ))}
             </ol>
-            {nextStops.length > NEXT_STOPS_VISIBLE ? (
+            {nextStops.length > visibleStops.length || showAllStops ? (
               <button
                 type="button"
                 className="vehicle-page__toggle"
@@ -381,16 +401,41 @@ export function VehiclePage() {
                 aria-expanded={showAllStops}
               >
                 {showAllStops
-                  ? "Show fewer stops"
-                  : `Show all ${nextStops.length} stops on this route`}
+                  ? "Show the next stops only"
+                  : /*
+                     * The count is of what is ahead, because that is what the list is of. Saying
+                     * "all 40 stops on this route" when a third of them are behind the bus
+                     * describes the array rather than the journey.
+                     */
+                    `Show all ${upcomingStops.length} remaining stops`}
               </button>
             ) : null}
           </>
         ) : (
+          /*
+           * Three different things, said differently.
+           *
+           * One message covered all of them, which meant a bus sitting at its terminus and a bus
+           * we could not identify at all read as the same situation. They are not: one has
+           * finished its journey and one is a mystery, and the third — we know the route and not
+           * the position — is a mystery of a different shape.
+           */
           <EmptyState
             art="bus"
-            title="No stop sequence to show"
-            description="We could not match this bus to a published route with enough confidence to list its stops. Showing a guessed sequence would be worse than showing none."
+            title={
+              stopsState === "end_of_route"
+                ? "This bus has no more stops"
+                : stopsState === "progress_unknown"
+                  ? "We cannot tell how far along it is"
+                  : "No stop sequence to show"
+            }
+            description={
+              stopsState === "end_of_route"
+                ? "It has reached the end of the journey it was matched to. It may be about to start another one under a different reference."
+                : stopsState === "progress_unknown"
+                  ? "We can see this bus and we know which route it is on, but we cannot place it along that route confidently enough to say which stops are still to come."
+                  : "We can see this bus, but cannot confidently match it to a timetabled journey yet. Showing a guessed sequence would be worse than showing none."
+            }
           />
         )}
       </section>

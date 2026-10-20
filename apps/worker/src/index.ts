@@ -16,7 +16,7 @@ import {
   corridorBoundingBox,
   isPlausibleEnglandCoordinate,
 } from "@busstops/pipeline-core";
-import { matchObservation } from "@busstops/matching";
+import { matchObservation, stopsAheadWindow } from "@busstops/matching";
 
 import { R2BindingStore, readFeatureFlags, type WorkerEnv } from "./env.js";
 import {
@@ -184,6 +184,17 @@ const STOP_BOARD_BUDGET_MS = 3_000;
  * used to cost them.
  */
 const LIVE_LOOKUP_BUDGET_MS = 2_500;
+/**
+ * How many stops the vehicle endpoint resolves, and how many of them are behind the bus.
+ *
+ * Forty was already the cap; what changed is that the window is now centred on where the bus
+ * actually is rather than on the start of its route, so the read cost of this endpoint is
+ * unchanged while the answer stops being wrong. Three stops of context behind the bus is what the
+ * full vehicle page subdues, which is the minimum that makes "where it has just come from"
+ * legible without pushing the stops ahead off a phone screen.
+ */
+const VEHICLE_STOP_WINDOW = 40;
+const VEHICLE_PASSED_CONTEXT_STOPS = 3;
 
 const LIVE_BBOX_SNAP_DEGREES = 0.25;
 
@@ -1889,7 +1900,8 @@ router.get("/v1/vehicles/:ref", async (_request, { env, params, url }) => {
       : { bearingDegrees: observation.bearingDegrees }),
     delaySeconds: null,
     motionState: "unknown" as const,
-    nextStopId: null,
+    /* Filled in from the progress window below, which is computed after this object. */
+    nextStopId: null as string | null,
     freshnessSeconds: Math.max(
       0,
       (now.getTime() - new Date(observation.observedAt).getTime()) / 1000,
@@ -1901,23 +1913,53 @@ router.get("/v1/vehicles/:ref", async (_request, { env, params, url }) => {
     },
   };
 
-  // Next stops come from the matched pattern's published sequence. Without a confident match
-  // there is no sequence to show, and guessing one would be worse than showing none.
-  // Resolved through the locator in one batch: forty ids, not forty round trips, and no national
-  // stop table.
+  /*
+   * Which stops are actually ahead of this bus.
+   *
+   * This answered `pattern.stopSequence.slice(0, 40)` with every entry `passed: false`, which
+   * means a bus halfway through its journey was shown the stops it had left behind an hour ago as
+   * the stops it was about to call at. A real passenger-facing defect, and the cause was not a
+   * missing algorithm: `MatchCandidate.alongPathMetres` already carried the vehicle projected onto
+   * the pattern, `PatternGeometry.stopDistancesMetres` already carried each stop's offset along
+   * the same line, and `computeStopProgress` in the matching package already put the two together
+   * and was tested. Nothing in this Worker had ever called it. Both vehicle paths here
+   * hand-rolled a subset of `buildVehicleState` and dropped the progress on the way.
+   *
+   * `stopsAheadWindow` is that join, plus the honest states for when it cannot be done, and the
+   * window is bounded so the number of stops resolved does not grow with the length of the route.
+   */
+  const matchedGeometry = match?.best
+    ? geometries.find((geometry) => geometry.pattern.id === match.best!.patternId)
+    : undefined;
+  const confidentlyMatched = Boolean(
+    pattern && match?.best && match.confidence.level !== "low" && matchedGeometry,
+  );
+  const window =
+    confidentlyMatched && matchedGeometry && match?.best
+      ? stopsAheadWindow(match.best.alongPathMetres, matchedGeometry.stopDistancesMetres, {
+          passedContext: VEHICLE_PASSED_CONTEXT_STOPS,
+          limit: VEHICLE_STOP_WINDOW,
+        })
+      : null;
+
   const nextStopIds =
-    pattern && match && match.confidence.level !== "low" ? pattern.stopSequence.slice(0, 40) : [];
+    window && pattern
+      ? window.indices
+          .map((index) => pattern.stopSequence[index])
+          .filter((stopId): stopId is string => stopId !== undefined)
+      : [];
   const nextStopsById =
     nextStopIds.length > 0 && network
       ? await network.stopsByKeys(nextStopIds)
       : new Map<string, Awaited<ReturnType<NetworkReader["stopByKey"]>>>();
 
   const nextStops =
-    nextStopIds.length > 0
-      ? nextStopIds
-          .map((stopId) => {
-            const stop = nextStopsById.get(stopId);
-            if (!stop) return null;
+    window && pattern
+      ? window.indices
+          .map((index) => {
+            const stopId = pattern.stopSequence[index];
+            const stop = stopId === undefined ? undefined : nextStopsById.get(stopId);
+            if (stopId === undefined || !stop) return null;
             return {
               stopId,
               name: stop.name,
@@ -1925,11 +1967,23 @@ router.get("/v1/vehicles/:ref", async (_request, { env, params, url }) => {
               scheduledTime: null,
               expectedTimeLow: null,
               expectedTimeHigh: null,
-              passed: false,
+              /*
+               * Behind the bus, by the projection rather than by position in the array. At the end
+               * of a route every returned stop is behind it, which is what `nextStopIndex: null`
+               * means.
+               */
+              passed: window.nextStopIndex === null ? true : index < window.nextStopIndex,
             };
           })
           .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
       : [];
+
+  /* The stop the bus is heading for, which `VehicleState` has always had a field for. */
+  const nextStopId =
+    window && pattern && window.nextStopIndex !== null
+      ? (pattern.stopSequence[window.nextStopIndex] ?? null)
+      : null;
+  const nextStopsState = confidentlyMatched && window ? window.state : "unmatched";
 
   /*
    * Who runs it, and what has been said about its route.
@@ -1964,7 +2018,7 @@ router.get("/v1/vehicles/:ref", async (_request, { env, params, url }) => {
         safeMode: safeModeActive(state),
       }),
       data: {
-        vehicle,
+        vehicle: { ...vehicle, nextStopId },
         operator,
         disruptions: vehicleDisruptions,
         routePublicName: service
@@ -1984,12 +2038,20 @@ router.get("/v1/vehicles/:ref", async (_request, { env, params, url }) => {
         routePatternId: match?.best?.patternId ?? null,
         destinationName: context?.destinationName ? passengerName(context.destinationName) : null,
         nextStops,
+        nextStopsState,
         recentTrace: [],
-        // The shape travels with the pattern in its tile, so drawing the route needs no extra read.
-        scheduledShape: match?.best
-          ? (geometries.find((geometry) => geometry.pattern.id === match.best!.patternId)?.shape ??
-            [])
-          : [],
+        /*
+         * The shape travels with the pattern in its tile, so drawing the route needs no extra read.
+         *
+         * Gated on a confident match, like the stops are. A line drawn from a match we would not
+         * trust to name the next stop is a line through streets this bus may never see, and it
+         * would read as the most authoritative thing on the map.
+         */
+        scheduledShape: confidentlyMatched ? (matchedGeometry?.shape ?? []) : [],
+        /* Where it is along that shape, for the client to split the drawn line at. */
+        progressAlongShapeMetres: confidentlyMatched
+          ? (match?.best?.alongPathMetres ?? null)
+          : null,
         incidents: [],
       },
     },
