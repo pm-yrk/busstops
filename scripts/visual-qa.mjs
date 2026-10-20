@@ -202,6 +202,26 @@ async function clickPaintedStop(page, sink) {
       const projected = map.project(feature.geometry.coordinates);
       const x = box.left + projected.x;
       const y = box.top + projected.y;
+      /*
+       * Inside the canvas, not merely inside the window.
+       *
+       * This is the harness defect behind every `none of the N painted stops could be clicked:
+       * N under button.button-quiet, h1.live-map__title` message. The projection and the
+       * conversion were right all along — `map.project` is canvas-relative and `box.left/top`
+       * converts it to the viewport correctly — but the test that followed asked whether the
+       * point was on *screen*, and `queryRenderedFeatures` legitimately returns features in
+       * rendered tiles that fall outside the canvas.
+       *
+       * On desktop the live map is a 320px sidebar beside the canvas, so a stop projecting to
+       * x = -50 became viewport x = 270: comfortably inside the window, comfortably outside the
+       * map, and sitting precisely on the sidebar's "Use my location" button. The harness then
+       * counted the sidebar as an overlay covering the stop and reported a product defect that
+       * did not exist. Those features are off the canvas and belong in `offscreen`.
+       */
+      if (x < box.left || y < box.top || x > box.right || y > box.bottom) {
+        offscreen += 1;
+        continue;
+      }
       if (x < 0 || y < 0 || x > globalThis.innerWidth || y > globalThis.innerHeight) {
         offscreen += 1;
         continue;
@@ -438,6 +458,11 @@ async function clickPaintedBus(page, sink) {
       const projected = map.project(feature.geometry.coordinates);
       const x = box.left + projected.x;
       const y = box.top + projected.y;
+      /* The same canvas-bounds test as the stop click: see the note there for what it fixes. */
+      if (x < box.left || y < box.top || x > box.right || y > box.bottom) {
+        offscreen += 1;
+        continue;
+      }
       if (x < 0 || y < 0 || x > globalThis.innerWidth || y > globalThis.innerHeight) {
         offscreen += 1;
         continue;

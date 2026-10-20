@@ -194,3 +194,13 @@
 .selected-vehicle__whole-route {
   margin-top: var(--space-sm);
 }
+
+/*
+ * Quiet on purpose.
+ *
+ * "Where has it just been" is supplementary; "where is it going" is the question somebody tapped
+ * the bus to ask. This note explains an absence without competing with the stop list above it.
+ */
+.selected-vehicle__trail-note {
+  margin: var(--space-xs) 0 0;
+}

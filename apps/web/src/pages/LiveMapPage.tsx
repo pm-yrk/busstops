@@ -14,6 +14,7 @@ import {
 } from "../lib/geo.js";
 import { useSelectedVehicle } from "../lib/use-selected-vehicle.js";
 import { traceSegments } from "../lib/vehicle-trail.js";
+import { useSessionTrail } from "../lib/use-session-trail.js";
 import { useCurrentLocation, type CurrentLocation } from "../lib/use-current-location.js";
 import { delayLabel, distanceLabel, freshnessLabel } from "../lib/format.js";
 import { LoadingBus } from "../components/LoadingBus.js";
@@ -260,6 +261,20 @@ export function LiveMapPage() {
   const [fit, setFit] = useState<{ bounds: Bounds; nonce: number } | null>(null);
 
   /*
+   * The trail this session has watched being made.
+   *
+   * Free, in the sense that matters: the map already refreshes every twenty seconds and every
+   * response already carries the selected bus's position, so keeping them costs no request. It is
+   * what makes the trail a feature rather than a thing that works for half an hour after a
+   * collection run — see `use-session-trail.ts`.
+   */
+  const sessionTrail = useSessionTrail(
+    selectedVehicle,
+    vehicles,
+    response?.meta.observedAt ?? null,
+  );
+
+  /*
    * The route, the trail and the stops to draw for the selected bus.
    *
    * All of it derived from the one response, so there is nothing to keep in step. The shape is
@@ -297,10 +312,21 @@ export function LiveMapPage() {
     const last = ahead[ahead.length - 1];
     const lastCoordinate = last ? byAtco.get(last.atcoCode) : undefined;
 
+    /*
+     * Both sources, as one line.
+     *
+     * The server's points cover before the page was opened and the session's cover since; merged
+     * and handed to the same segmentation, so one set of rules decides what may be joined up. The
+     * dedupe is by timestamp, which is the identity of an observation — the newest server bucket
+     * and the first few refreshes legitimately describe the same moments.
+     */
+    const merged = [...data.recentTrace, ...sessionTrail];
+    const byMoment = new Map(merged.map((point) => [point.observedAt, point]));
+
     return {
       remaining,
       travelled,
-      trail: traceSegments(data.recentTrace),
+      trail: traceSegments([...byMoment.values()]),
       upcoming,
       /*
        * The end of the matched pattern, and only when it is genuinely the end: `nextStops` is a
@@ -311,7 +337,7 @@ export function LiveMapPage() {
           ? { coordinate: lastCoordinate, name: last.name }
           : null,
     };
-  }, [selected.detail, stops]);
+  }, [selected.detail, stops, sessionTrail]);
 
   /*
    * Fit the remaining route, when the passenger asks.
@@ -555,6 +581,7 @@ export function LiveMapPage() {
                   loading={selected.loading}
                   error={selected.error}
                   onShowWholeRoute={showWholeRoute}
+                  trailSegments={overlay?.trail.length ?? 0}
                 />
               )}
             </div>

@@ -40,6 +40,15 @@ export interface SelectedVehicleBoardProps {
   error: string | null;
   /** Fit the remaining scheduled route into the viewport. Absent when there is no route to fit. */
   onShowWholeRoute?: (() => void) | undefined;
+  /**
+   * How many runs of observed path are actually drawn on the map.
+   *
+   * Counted by the page, which merges the server's bucket with what this session has watched and
+   * applies the segmentation — so the card describes what is on the map rather than guessing from
+   * the raw point count. Nought means no line is drawn, which is a normal state for most of the
+   * day and is said in words rather than left as an absence.
+   */
+  trailSegments?: number;
 }
 
 export function SelectedVehicleBoard({
@@ -49,6 +58,7 @@ export function SelectedVehicleBoard({
   loading,
   error,
   onShowWholeRoute,
+  trailSegments = 0,
 }: SelectedVehicleBoardProps) {
   const response = detail;
   const now = useTicker(10_000);
@@ -155,7 +165,7 @@ export function SelectedVehicleBoard({
            * see the difference between two blues. Each row appears only when that line is actually
            * drawn, so the legend never explains something that is not there.
            */}
-          {(data.scheduledShape.length > 1 || data.recentTrace.length > 1) && (
+          {(data.scheduledShape.length > 1 || trailSegments > 0) && (
             <ul className="selected-vehicle__legend micro">
               {data.scheduledShape.length > 1 && (
                 <li>
@@ -166,7 +176,12 @@ export function SelectedVehicleBoard({
                   Scheduled route — where it is due to go
                 </li>
               )}
-              {data.recentTrace.length > 1 && (
+              {/*
+               * Only when a line is genuinely drawn. `trailSegments` is counted after the
+               * segmentation, so a bus with points that could not honestly be joined up gets no
+               * legend row for a line that is not there.
+               */}
+              {trailSegments > 0 && (
                 <li>
                   <span
                     aria-hidden="true"
@@ -176,6 +191,21 @@ export function SelectedVehicleBoard({
                 </li>
               )}
             </ul>
+          )}
+
+          {/*
+           * The honest version of "no trail".
+           *
+           * A collection run gives a bus two or three positions and this project's schedules arrive
+           * roughly four times a day, so for most of the day there is no server history to draw and
+           * the trail has to build from the map's own refreshes instead. Saying that is better than
+           * an absence a passenger has to interpret — and it is deliberately quiet, because where
+           * the bus is *going* is the question they tapped for.
+           */}
+          {trailSegments === 0 && data.scheduledShape.length > 1 && (
+            <p className="selected-vehicle__trail-note micro muted">
+              Recent path will appear as new positions are received.
+            </p>
           )}
 
           {onShowWholeRoute && data.scheduledShape.length > 1 && (
