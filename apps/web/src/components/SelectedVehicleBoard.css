@@ -149,3 +149,48 @@
   color: var(--colour-red-text);
   font-weight: 700;
 }
+
+/*
+ * Which blue line means what.
+ *
+ * Two lines are drawn for a selected bus — the scheduled route ahead and the path it has actually
+ * just taken — and they mean opposite kinds of thing. The swatches match the map's own colours and
+ * weights, and the words carry the meaning for anyone who cannot tell two blues apart.
+ */
+.selected-vehicle__legend {
+  list-style: none;
+  margin: var(--space-sm) 0 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-xs);
+  color: var(--colour-muted);
+}
+
+.selected-vehicle__legend li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.selected-vehicle__key {
+  flex: none;
+  width: 22px;
+  border-radius: var(--radius-pill);
+}
+
+/* The same blue and the same relative weight as `route-ahead` on the map. */
+.selected-vehicle__key--scheduled {
+  height: 4px;
+  background: var(--colour-blue);
+}
+
+/* And the trail: thinner and faded, as it is drawn. */
+.selected-vehicle__key--observed {
+  height: 3px;
+  background: var(--colour-blue);
+  opacity: 0.45;
+}
+
+.selected-vehicle__whole-route {
+  margin-top: var(--space-sm);
+}

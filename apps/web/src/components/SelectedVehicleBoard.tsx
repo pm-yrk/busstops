@@ -1,7 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { Link } from "react-router-dom";
 import type { VehicleDetailResponse } from "@busstops/contracts";
-import { apiClient, ApiError } from "../lib/api.js";
 import { useTicker } from "../lib/use-fetch.js";
 import { LoadingBus } from "./LoadingBus.js";
 import { delayLabel, formatLondonTime, freshnessLabel } from "../lib/format.js";
@@ -22,39 +21,37 @@ import "./SelectedVehicleBoard.css";
  *
  * Keyed by vehicle by the caller, so selecting a different bus remounts this and its state starts
  * clean rather than briefly showing one bus's stops under another's number.
+ *
+ * It no longer fetches. The map needs the same response — the scheduled shape, the progress along
+ * it, the recent trail — and two components calling the same endpoint with the same arguments
+ * would be two requests for one tap on the endpoint that reads a live feed. The page owns the
+ * lookup (`useSelectedVehicle`) and hands the answer to both.
  */
 
 const NEXT_STOPS_VISIBLE = 3;
 
 export interface SelectedVehicleBoardProps {
-  vehicleRef: string;
-  /** The viewport the bus was seen in; the lookup is area-scoped and needs it. */
+  /** The viewport the bus was seen in; the links out of here carry it. */
   bounds: Bounds;
   onClose: () => void;
+  /** The one selected-vehicle response, fetched by the page and shared with the map. */
+  detail: VehicleDetailResponse | null;
+  loading: boolean;
+  error: string | null;
+  /** Fit the remaining scheduled route into the viewport. Absent when there is no route to fit. */
+  onShowWholeRoute?: (() => void) | undefined;
 }
 
-export function SelectedVehicleBoard({ vehicleRef, bounds, onClose }: SelectedVehicleBoardProps) {
-  const [response, setResponse] = useState<VehicleDetailResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
+export function SelectedVehicleBoard({
+  bounds,
+  onClose,
+  detail,
+  loading,
+  error,
+  onShowWholeRoute,
+}: SelectedVehicleBoardProps) {
+  const response = detail;
   const now = useTicker(10_000);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    apiClient
-      .vehicle(vehicleRef, bounds, controller.signal)
-      .then(setResponse)
-      .catch((cause: unknown) => {
-        if (controller.signal.aborted) return;
-        setError(
-          cause instanceof ApiError
-            ? cause.message
-            : "This bus could not be loaded. The map is still usable.",
-        );
-      });
-    return () => controller.abort();
-    // The bounds object is rebuilt each render, so depend on its values rather than its identity.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vehicleRef, bounds.west, bounds.south, bounds.east, bounds.north]);
 
   useEffect(() => {
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
@@ -81,7 +78,7 @@ export function SelectedVehicleBoard({ vehicleRef, bounds, onClose }: SelectedVe
 
       {error !== null && <p className="selected-vehicle__error">{error}</p>}
 
-      {error === null && response === null && <LoadingBus label="Loading this bus" compact />}
+      {error === null && loading && <LoadingBus label="Loading this bus" compact />}
 
       {data && vehicle && (
         <>
@@ -147,6 +144,52 @@ export function SelectedVehicleBoard({ vehicleRef, bounds, onClose }: SelectedVe
                   ? "We know which route this bus is on, but cannot place it along the route confidently enough to say which stops come next."
                   : "We can see this bus, but cannot confidently match it to a timetabled journey yet, so we cannot say which stops it calls at next."}
             </p>
+          )}
+
+          {/*
+           * Which line is which, said in words.
+           *
+           * Two blue lines appear on the map for a selected bus and they mean opposite kinds of
+           * thing: one is a plan and one is an observation. A passenger should never have to work
+           * that out from the styling, and the styling alone cannot say it to somebody who cannot
+           * see the difference between two blues. Each row appears only when that line is actually
+           * drawn, so the legend never explains something that is not there.
+           */}
+          {(data.scheduledShape.length > 1 || data.recentTrace.length > 1) && (
+            <ul className="selected-vehicle__legend micro">
+              {data.scheduledShape.length > 1 && (
+                <li>
+                  <span
+                    aria-hidden="true"
+                    className="selected-vehicle__key selected-vehicle__key--scheduled"
+                  />
+                  Scheduled route — where it is due to go
+                </li>
+              )}
+              {data.recentTrace.length > 1 && (
+                <li>
+                  <span
+                    aria-hidden="true"
+                    className="selected-vehicle__key selected-vehicle__key--observed"
+                  />
+                  Recent observed path — where it has just been
+                </li>
+              )}
+            </ul>
+          )}
+
+          {onShowWholeRoute && data.scheduledShape.length > 1 && (
+            /*
+             * Offered rather than done to you. Selecting a bus must not drag the camera off what
+             * the passenger was looking at, so fitting the route is a thing they ask for.
+             */
+            <button
+              type="button"
+              className="button-quiet selected-vehicle__whole-route"
+              onClick={onShowWholeRoute}
+            >
+              Show whole route
+            </button>
           )}
 
           <p className="selected-vehicle__links">

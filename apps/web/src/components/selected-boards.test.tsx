@@ -118,24 +118,42 @@ describe("the arrival board a selected stop opens", () => {
 });
 
 describe("the board a selected bus opens", () => {
-  it("still opens for the selected vehicle", async () => {
-    vi.spyOn(apiClient, "vehicle").mockImplementation(
-      () => new Promise(() => {}) as ReturnType<typeof apiClient.vehicle>,
-    );
+  /*
+   * It no longer fetches: the page owns the one selected-vehicle lookup and hands the answer to
+   * both the card and the map, so a tap costs one request rather than two identical ones against
+   * the endpoint that reads a live feed.
+   */
+  it("renders what it is given without asking for it", async () => {
+    const vehicle = vi.spyOn(apiClient, "vehicle");
 
     render(
       <MemoryRouter>
         <SelectedVehicleBoard
-          vehicleRef="veh-1"
           bounds={{ west: -1.6, south: 53.775, east: -1.49, north: 53.825 }}
           onClose={() => {}}
+          detail={null}
+          loading
+          error={null}
         />
       </MemoryRouter>,
     );
 
-    // The lookup is area-scoped, so the panel asks with the viewport the bus was returned in.
-    await waitFor(() => expect(vi.mocked(apiClient.vehicle)).toHaveBeenCalled());
-    const [ref] = vi.mocked(apiClient.vehicle).mock.calls[0] ?? [];
-    expect(ref).toBe("veh-1");
+    expect(screen.getByText(/loading this bus/i)).toBeTruthy();
+    expect(vehicle, "the card must not fetch; the page does").not.toHaveBeenCalled();
+  });
+
+  it("shows the error it is handed, and keeps the map usable", () => {
+    render(
+      <MemoryRouter>
+        <SelectedVehicleBoard
+          bounds={{ west: -1.6, south: 53.775, east: -1.49, north: 53.825 }}
+          onClose={() => {}}
+          detail={null}
+          loading={false}
+          error="This bus could not be loaded. The map is still usable."
+        />
+      </MemoryRouter>,
+    );
+    expect(screen.getByText(/map is still usable/i)).toBeTruthy();
   });
 });

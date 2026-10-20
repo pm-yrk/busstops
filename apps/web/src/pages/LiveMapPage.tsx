@@ -6,10 +6,14 @@ import { useFetch, useTicker } from "../lib/use-fetch.js";
 import {
   boundsAroundMe,
   boundsFromParam,
+  boundsOfPath,
   clampBoundsToMaxArea,
+  splitShapeAtProgress,
   vehicleHref,
   type Bounds,
 } from "../lib/geo.js";
+import { useSelectedVehicle } from "../lib/use-selected-vehicle.js";
+import { traceSegments } from "../lib/vehicle-trail.js";
 import { useCurrentLocation, type CurrentLocation } from "../lib/use-current-location.js";
 import { delayLabel, distanceLabel, freshnessLabel } from "../lib/format.js";
 import { LoadingBus } from "../components/LoadingBus.js";
@@ -233,13 +237,101 @@ export function LiveMapPage() {
     if (mayAutoLocate) request();
   }, [mayAutoLocate, request]);
 
+  /*
+   * Memoised because the overlay below depends on them: `response?.data.stops ?? []` is a new
+   * array identity on every render, which would rebuild the selected bus's route features on every
+   * tick of the map's refresh ticker.
+   */
+  const stops = useMemo(() => response?.data.stops ?? [], [response]);
+  const vehicles = useMemo(() => response?.data.vehicles ?? [], [response]);
+
+  /*
+   * One lookup for the selected bus, shared by the card and the map.
+   *
+   * The card used to fetch this itself, which was right while it was the only consumer. The map
+   * now needs the same answer — the shape, the progress along it, the trail, the upcoming stops —
+   * and two components asking the same endpoint for the same bus would be two requests per tap on
+   * the path that reads a live feed. `clamped` rather than `bounds`: the raw viewport can exceed
+   * what the API accepts, and a lookup in a box the API rejects is a bus that cannot be opened.
+   */
+  const selected = useSelectedVehicle(selectedVehicle, clamped);
+
+  /** A camera fit the passenger asked for, applied once. Never on selection. */
+  const [fit, setFit] = useState<{ bounds: Bounds; nonce: number } | null>(null);
+
+  /*
+   * The route, the trail and the stops to draw for the selected bus.
+   *
+   * All of it derived from the one response, so there is nothing to keep in step. The shape is
+   * split at the Worker's own projection of the bus onto it: the remaining section is the answer to
+   * "where is this bus going", and the travelled section is drawn barely-there as context rather
+   * than competing with it.
+   */
+  const overlay = useMemo(() => {
+    const data = selected.detail?.data;
+    if (!data) return null;
+
+    const { travelled, remaining } = splitShapeAtProgress(
+      data.scheduledShape,
+      data.progressAlongShapeMetres,
+    );
+
+    /*
+     * Upcoming stops need coordinates, and `nextStops` carries names and codes rather than
+     * positions — so the points along the line come from the stops the map already has in view,
+     * matched by ATCO code. No extra request for a decoration, and a stop that is off screen
+     * simply has no point drawn on a line that is also off screen.
+     */
+    const byAtco = new Map(stops.map((stop) => [stop.atcoCode, stop.coordinate]));
+    const ahead = data.nextStops.filter((stop) => !stop.passed);
+    const upcoming = ahead
+      .map((stop) => {
+        const coordinate = byAtco.get(stop.atcoCode);
+        return coordinate ? { coordinate, name: stop.name } : null;
+      })
+      .filter(
+        (entry): entry is { coordinate: { lat: number; lon: number }; name: string } =>
+          entry !== null,
+      );
+
+    const last = ahead[ahead.length - 1];
+    const lastCoordinate = last ? byAtco.get(last.atcoCode) : undefined;
+
+    return {
+      remaining,
+      travelled,
+      trail: traceSegments(data.recentTrace),
+      upcoming,
+      /*
+       * The end of the matched pattern, and only when it is genuinely the end: `nextStops` is a
+       * bounded window, so its last entry is the terminus only when the window reached it.
+       */
+      destination:
+        last && lastCoordinate && data.nextStopsState === "ahead" && ahead.length < 40
+          ? { coordinate: lastCoordinate, name: last.name }
+          : null,
+    };
+  }, [selected.detail, stops]);
+
+  /*
+   * Fit the remaining route, when the passenger asks.
+   *
+   * Undefined rather than a no-op when there is nothing to fit, so the card can leave the control
+   * out entirely instead of offering a button that does nothing.
+   */
+  const showWholeRoute = useMemo(() => {
+    const remainingRoute = overlay?.remaining ?? [];
+    if (remainingRoute.length < 2) return undefined;
+    return () => {
+      const box = boundsOfPath(remainingRoute);
+      if (box) setFit({ bounds: box, nonce: Date.now() });
+    };
+  }, [overlay]);
+
   const observedAgeSeconds = useMemo(() => {
     if (!response?.meta.observedAt) return null;
     return Math.max(0, (now.getTime() - new Date(response.meta.observedAt).getTime()) / 1000);
   }, [response, now]);
-
-  const stops = response?.data.stops ?? [];
-  const vehicles = response?.data.vehicles ?? [];
 
   return (
     <div className="live-map">
@@ -380,6 +472,8 @@ export function LiveMapPage() {
                 showStops={layers.stops}
                 showVehicles={layers.vehicles}
                 userLocation={location}
+                selectedVehicleOverlay={overlay}
+                fitBounds={fit}
                 onSelectStop={(code) => {
                   setSelectedVehicle(null);
                   setSelectedStop(code);
@@ -450,7 +544,6 @@ export function LiveMapPage() {
               {selectedVehicle && (
                 <SelectedVehicleBoard
                   key={selectedVehicle}
-                  vehicleRef={selectedVehicle}
                   /*
                    * The clamped box, which is the one the vehicle was actually returned in. The
                    * raw viewport can be larger than the API accepts, and a lookup in a box the
@@ -458,6 +551,10 @@ export function LiveMapPage() {
                    */
                   bounds={clamped}
                   onClose={() => setSelectedVehicle(null)}
+                  detail={selected.detail}
+                  loading={selected.loading}
+                  error={selected.error}
+                  onShowWholeRoute={showWholeRoute}
                 />
               )}
             </div>

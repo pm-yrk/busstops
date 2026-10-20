@@ -357,3 +357,105 @@ export function userFeatures(
 export function describeUserLocation(hasLocation: boolean): string {
   return hasLocation ? " Your location is shown on the map." : "";
 }
+
+/* ---- the selected bus's route and trail ---------------------------------- */
+
+/**
+ * Decoration, in the literal sense: these layers are drawn and never asked about.
+ *
+ * A route line is wide — eight pixels at street zoom — and it runs under every bus and stop on it.
+ * If MapLibre were allowed to answer a click with one of these, every tap along a selected route
+ * would hit the line instead of the thing the passenger aimed at. No handler is registered for
+ * them, and `queryRenderedFeatures` only reaches layers that asked, so a tap falls through to the
+ * markers above.
+ */
+export const SELECTED_VEHICLE_LAYERS = [
+  "route-travelled",
+  "route-ahead",
+  "trail-observed",
+  "route-upcoming-stops",
+  "route-destination",
+] as const;
+
+export interface SelectedVehicleOverlay {
+  /** The part of the scheduled shape the bus still has to travel. */
+  remaining: readonly LatLon[];
+  /** The part it has already covered, drawn heavily subdued. */
+  travelled: readonly LatLon[];
+  /**
+   * Where it has actually been, as separate runs.
+   *
+   * Segments rather than one line: a feed that drops out for ten minutes, or reports a position on
+   * the wrong side of the city, must not be joined up into a confident path the bus never took.
+   */
+  trail: readonly (readonly LatLon[])[];
+  /** Upcoming stops along the remaining route, nearest first. */
+  upcoming: readonly { coordinate: LatLon; name: string }[];
+  /** The last stop of the matched pattern, distinguished from the rest. */
+  destination: { coordinate: LatLon; name: string } | null;
+}
+
+export type OverlayFeature = {
+  type: "Feature";
+  properties: { kind: "remaining" | "travelled" | "trail" | "upcoming" | "next" | "destination" };
+  geometry:
+    | { type: "Point"; coordinates: [number, number] }
+    | { type: "LineString"; coordinates: [number, number][] };
+};
+
+export interface OverlayFeatureCollection {
+  type: "FeatureCollection";
+  features: OverlayFeature[];
+}
+
+const asPair = (point: LatLon): [number, number] => [point.lon, point.lat];
+
+/**
+ * The selected bus's route, trail and stops as one source.
+ *
+ * One source and one `setData` per selection, with the layers filtering on `kind`: selecting a
+ * different bus replaces the whole collection, which is what makes "bus B cleanly replaces bus A"
+ * a property of the data rather than of remembering to tear things down.
+ *
+ * A line needs two points to be a line. One-point runs are dropped rather than drawn, because a
+ * single observation is a position and not a path — which is also why a bus with one observation
+ * gets no trail at all rather than a trail invented from its schedule.
+ */
+export function selectedVehicleFeatures(
+  overlay: SelectedVehicleOverlay | null,
+): OverlayFeatureCollection {
+  const features: OverlayFeature[] = [];
+  if (!overlay) return { type: "FeatureCollection", features };
+
+  const line = (points: readonly LatLon[], kind: OverlayFeature["properties"]["kind"]) => {
+    if (points.length < 2) return;
+    features.push({
+      type: "Feature",
+      properties: { kind },
+      geometry: { type: "LineString", coordinates: points.map(asPair) },
+    });
+  };
+
+  line(overlay.travelled, "travelled");
+  line(overlay.remaining, "remaining");
+  for (const run of overlay.trail) line(run, "trail");
+
+  overlay.upcoming.forEach((stop, index) => {
+    features.push({
+      type: "Feature",
+      // The first one is the stop the bus is heading for, which is the one worth emphasising.
+      properties: { kind: index === 0 ? "next" : "upcoming" },
+      geometry: { type: "Point", coordinates: asPair(stop.coordinate) },
+    });
+  });
+
+  if (overlay.destination) {
+    features.push({
+      type: "Feature",
+      properties: { kind: "destination" },
+      geometry: { type: "Point", coordinates: asPair(overlay.destination.coordinate) },
+    });
+  }
+
+  return { type: "FeatureCollection", features };
+}

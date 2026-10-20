@@ -185,3 +185,102 @@ export function accuracyRing(
   ring.push(ring[0]!);
   return ring;
 }
+
+/**
+ * A scheduled route split at the point the bus has actually reached.
+ *
+ * The whole pattern shape arrives with the vehicle detail, and drawing all of it as "where this
+ * bus is going" would show a passenger the streets it came down twenty minutes ago with exactly
+ * the same emphasis as the ones it is about to. `progressAlongShapeMetres` is the Worker's
+ * projection of the vehicle onto this line, so the split is a walk along the shape accumulating
+ * distance until that value is reached.
+ *
+ * Both halves are returned because both are drawn, at very different weights: the remaining
+ * section is the point of the feature, and the travelled section is context that must not compete
+ * with it.
+ *
+ * The join coordinate is interpolated rather than snapped to the nearest vertex, so the line meets
+ * the bus marker instead of stopping short of it — on a long straight segment the nearest vertex
+ * can be hundreds of metres away, which reads as the route not quite reaching the bus.
+ */
+export interface SplitShape {
+  travelled: LatLon[];
+  remaining: LatLon[];
+}
+
+export function splitShapeAtProgress(
+  shape: readonly LatLon[],
+  progressMetres: number | null,
+): SplitShape {
+  if (shape.length < 2) return { travelled: [], remaining: [] };
+
+  /*
+   * Without a projection there is no "ahead" to draw, so the whole shape is the remaining route.
+   * That is the honest reading: we know the pattern and not the position, and the alternative —
+   * guessing a split — would put the bus somewhere it is not.
+   */
+  if (progressMetres === null || !Number.isFinite(progressMetres) || progressMetres <= 0) {
+    return { travelled: [], remaining: [...shape] };
+  }
+
+  const travelled: LatLon[] = [shape[0]!];
+  let covered = 0;
+
+  for (let i = 1; i < shape.length; i += 1) {
+    const from = shape[i - 1]!;
+    const to = shape[i]!;
+    const segment = haversineMetresBrowser(from, to);
+
+    if (covered + segment < progressMetres) {
+      covered += segment;
+      travelled.push(to);
+      continue;
+    }
+
+    // The split falls inside this segment: interpolate to the exact point.
+    const into = segment === 0 ? 0 : (progressMetres - covered) / segment;
+    const at: LatLon = {
+      lat: from.lat + (to.lat - from.lat) * into,
+      lon: from.lon + (to.lon - from.lon) * into,
+    };
+    travelled.push(at);
+    return { travelled, remaining: [at, ...shape.slice(i)] };
+  }
+
+  /*
+   * Past the end of the shape. A bus at its terminus has no route ahead, and returning the last
+   * point alone would be a one-point line that draws nothing — which is the correct amount of
+   * route to draw for a journey that is over.
+   */
+  return { travelled: [...shape], remaining: [] };
+}
+
+/** The box containing a line, for fitting a route into the viewport. Null for nothing to fit. */
+export function boundsOfPath(path: readonly LatLon[]): Bounds | null {
+  if (path.length === 0) return null;
+  let west = path[0]!.lon;
+  let east = path[0]!.lon;
+  let south = path[0]!.lat;
+  let north = path[0]!.lat;
+  for (const point of path) {
+    if (point.lon < west) west = point.lon;
+    if (point.lon > east) east = point.lon;
+    if (point.lat < south) south = point.lat;
+    if (point.lat > north) north = point.lat;
+  }
+  /*
+   * A degenerate box — a route that doubles back to one point, or a single coordinate — cannot be
+   * fitted: MapLibre needs two distinct corners. Padded by about 150 metres so "fit this" always
+   * has something to fit.
+   */
+  const pad = 0.0015;
+  if (east - west < pad) {
+    west -= pad;
+    east += pad;
+  }
+  if (north - south < pad) {
+    south -= pad;
+    north += pad;
+  }
+  return { west, south, east, north };
+}

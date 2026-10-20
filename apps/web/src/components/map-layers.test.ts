@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { MapStopSummary, MapVehicleSummary } from "@busstops/contracts";
 import {
   CLICKABLE_LAYERS,
+  SELECTED_VEHICLE_LAYERS,
   USER_LAYERS,
   ZOOM,
   describeEmptyVehicles,
@@ -9,6 +10,7 @@ import {
   describeView,
   emptyVehicleReason,
   scaleForZoom,
+  selectedVehicleFeatures,
   stopFeatures,
   userFeatures,
   vehicleFeatures,
@@ -357,5 +359,107 @@ describe("the passenger's own position on the map", () => {
     // stop and vehicle layers, so a change to either cannot silently restyle the other.
     expect(new Set(USER_LAYERS).size).toBe(USER_LAYERS.length);
     expect(Object.values(CLICKABLE_LAYERS).flat()).not.toContain("user-dot");
+  });
+});
+
+/*
+ * The selected bus's route, trail and stops, as the features that draw them.
+ *
+ * One source for all of it, so selecting a different bus is a single `setData` and the previous
+ * bus's route cannot survive it — "bus B replaces bus A" is then a property of the data rather
+ * than of remembering to tear something down.
+ */
+describe("the selected bus's route overlay", () => {
+  const line = (count: number, from = 53.79) =>
+    Array.from({ length: count }, (_, index) => ({ lat: from + index * 0.009, lon: -1.55 }));
+
+  const overlay = (patch: Record<string, unknown> = {}) => ({
+    remaining: line(3),
+    travelled: line(2, 53.77),
+    trail: [line(3, 53.76)],
+    upcoming: [
+      { coordinate: { lat: 53.8, lon: -1.55 }, name: "Boar Lane" },
+      { coordinate: { lat: 53.81, lon: -1.55 }, name: "City Square" },
+    ],
+    destination: { coordinate: { lat: 53.82, lon: -1.55 }, name: "Bradford Interchange" },
+    ...patch,
+  });
+
+  const kinds = (collection: { features: Array<{ properties: { kind: string } }> }) =>
+    collection.features.map((feature) => feature.properties.kind);
+
+  it("draws nothing at all when no bus is selected", () => {
+    expect(selectedVehicleFeatures(null).features).toEqual([]);
+  });
+
+  it("carries the route ahead, the travelled part, the trail and the stops", () => {
+    const features = selectedVehicleFeatures(overlay());
+    expect(kinds(features)).toEqual([
+      "travelled",
+      "remaining",
+      "trail",
+      "next",
+      "upcoming",
+      "destination",
+    ]);
+  });
+
+  /*
+   * The route ahead is drawn after the travelled part and after the trail, so the answer to the
+   * question the passenger tapped for is the line on top.
+   */
+  it("puts the route ahead over the path already taken", () => {
+    const order = kinds(selectedVehicleFeatures(overlay()));
+    expect(order.indexOf("remaining")).toBeGreaterThan(order.indexOf("travelled"));
+  });
+
+  it("marks the first upcoming stop as the next one", () => {
+    const features = selectedVehicleFeatures(overlay());
+    const next = features.features.filter((feature) => feature.properties.kind === "next");
+    expect(next.length, "exactly one stop is the next one").toBe(1);
+    expect(next[0]!.geometry).toEqual({ type: "Point", coordinates: [-1.55, 53.8] });
+  });
+
+  /* A line needs two points. One observation is a position, and one-point runs draw nothing. */
+  it("drops a line that is a single point", () => {
+    expect(kinds(selectedVehicleFeatures(overlay({ trail: [line(1)] })))).not.toContain("trail");
+    expect(kinds(selectedVehicleFeatures(overlay({ remaining: line(1) })))).not.toContain(
+      "remaining",
+    );
+  });
+
+  it("keeps a broken trail as separate runs rather than joining them", () => {
+    const features = selectedVehicleFeatures(overlay({ trail: [line(3, 53.7), line(3, 53.9)] }));
+    const trails = features.features.filter((feature) => feature.properties.kind === "trail");
+    expect(trails.length).toBe(2);
+    // And no feature bridges the two: the gap on the map is the gap in what we saw.
+    for (const trail of trails) {
+      expect(trail.geometry.type).toBe("LineString");
+    }
+  });
+
+  it("omits a destination that is not known", () => {
+    expect(kinds(selectedVehicleFeatures(overlay({ destination: null })))).not.toContain(
+      "destination",
+    );
+  });
+
+  /*
+   * The route line is the widest thing on the map and it runs under every bus and stop on it. If
+   * MapLibre were allowed to answer a click with it, every tap along a selected route would hit
+   * the line instead of the bus or the stop the passenger aimed at.
+   */
+  it("is map decoration: none of its layers can take a click", () => {
+    const clickable = Object.values(CLICKABLE_LAYERS).flat();
+    for (const layer of SELECTED_VEHICLE_LAYERS) {
+      expect(clickable, `${layer} must not be clickable`).not.toContain(layer);
+    }
+  });
+
+  it("shares no layer id with the stop, bus or location layers", () => {
+    const others = [...Object.values(CLICKABLE_LAYERS).flat(), ...USER_LAYERS];
+    for (const layer of SELECTED_VEHICLE_LAYERS) {
+      expect(others).not.toContain(layer);
+    }
   });
 });

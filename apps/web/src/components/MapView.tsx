@@ -9,11 +9,13 @@ import {
   describeUserLocation,
   describeView,
   scaleForZoom,
+  selectedVehicleFeatures,
   stopFeatures,
   userFeatures,
   vehicleFeatures,
   type MapIntent,
   type MapScale,
+  type SelectedVehicleOverlay,
 } from "./mapLayers.js";
 import "maplibre-gl/dist/maplibre-gl.css";
 import "./MapView.css";
@@ -42,6 +44,7 @@ const SOURCES = {
   stops: "busstops-stops",
   vehicles: "busstops-vehicles",
   user: "busstops-user",
+  selected: "busstops-selected-vehicle",
 } as const;
 
 export interface MapViewProps {
@@ -83,6 +86,25 @@ export interface MapViewProps {
    * asked and not answered. The map is identical in all of them.
    */
   userLocation?: { coordinate: LatLon; accuracyMetres: number | null } | null;
+  /**
+   * The route and trail of the bus a passenger has tapped, when one is selected.
+   *
+   * Handed in, like the user's position: this component fetches nothing. The page owns the one
+   * selected-vehicle lookup and both the card and this map are given its answer, which is what
+   * stops a tap costing two identical requests to a live feed.
+   *
+   * Null covers "no bus selected" and "selected but not loaded yet"; the map is identical in both,
+   * and the overlay simply appears when the answer arrives.
+   */
+  selectedVehicleOverlay?: SelectedVehicleOverlay | null;
+  /**
+   * A camera move the page has asked for, as distinct from where the camera is.
+   *
+   * Separate from `focus` so that fitting a route cannot be confused with the page following a
+   * stop or the passenger's own location, and so "Show whole route" is one nonce the map applies
+   * once rather than a bounds prop it might re-apply on a re-render.
+   */
+  fitBounds?: { bounds: Bounds; nonce: number } | null;
 }
 
 /**
@@ -121,6 +143,8 @@ export function MapView({
   intent = { kind: "explore" },
   degraded = false,
   userLocation = null,
+  selectedVehicleOverlay = null,
+  fitBounds = null,
 }: MapViewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
@@ -161,6 +185,14 @@ export function MapView({
    * is worth being able to assert without a renderer.
    */
   const userData = useMemo(() => userFeatures(userLocation), [userLocation]);
+  /*
+   * The selected bus's route, trail and stops. One source, so selecting a different bus is one
+   * `setData` and the previous bus's route cannot survive it.
+   */
+  const selectedData = useMemo(
+    () => selectedVehicleFeatures(selectedVehicleOverlay),
+    [selectedVehicleOverlay],
+  );
 
   useEffect(() => {
     if (!containerRef.current || !styleUrl || mapRef.current) return;
@@ -316,7 +348,32 @@ export function MapView({
     (map.getSource(SOURCES.stops) as maplibregl.GeoJSONSource | undefined)?.setData(stopData);
     (map.getSource(SOURCES.vehicles) as maplibregl.GeoJSONSource | undefined)?.setData(vehicleData);
     (map.getSource(SOURCES.user) as maplibregl.GeoJSONSource | undefined)?.setData(userData);
-  }, [ready, stopData, vehicleData, userData]);
+    (map.getSource(SOURCES.selected) as maplibregl.GeoJSONSource | undefined)?.setData(
+      selectedData,
+    );
+  }, [ready, stopData, vehicleData, userData, selectedData]);
+
+  /*
+   * "Show whole route", applied once per press.
+   *
+   * Deliberately not merged with `focus`: that one is the page following a stop or the passenger,
+   * and a route fit is a third kind of camera move with its own trigger. Same nonce discipline, so
+   * a re-render cannot re-fit a route the passenger has since panned away from.
+   */
+  const appliedFit = useRef<number | null>(null);
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready || !fitBounds) return;
+    if (appliedFit.current === fitBounds.nonce) return;
+    appliedFit.current = fitBounds.nonce;
+    map.fitBounds(
+      [
+        [fitBounds.bounds.west, fitBounds.bounds.south],
+        [fitBounds.bounds.east, fitBounds.bounds.north],
+      ],
+      prefersReducedMotion() ? { animate: false, padding: 48 } : { duration: 700, padding: 48 },
+    );
+  }, [ready, fitBounds]);
 
   if (!styleUrl) {
     return (
@@ -503,6 +560,73 @@ function addSourcesAndLayers(map: MapLibreMap): void {
    * MapLibre paint cannot read a CSS variable, so the hex is named here and the token is the
    * comment — the one place in the app where that trade is unavoidable.
    */
+  map.addSource(SOURCES.selected, { type: "geojson", data: empty });
+
+  /*
+   * ---- the selected bus's route, under everything it runs past -----------
+   *
+   * Order inside this block matters as much as where the block sits. The observed trail goes down
+   * first, then the scheduled route over it, because the question "where is this bus going" is the
+   * one the passenger tapped for and the answer should be the line on top. The travelled part of
+   * the schedule is first of all and barely there: it is context, and at full weight it competes
+   * with the route ahead for exactly the wrong attention.
+   *
+   * All of it is below the stop and bus layers added after it, so a route drawn through a street
+   * full of buses never covers them, and none of these layers is clickable.
+   */
+  map.addLayer({
+    id: "route-travelled",
+    type: "line",
+    source: SOURCES.selected,
+    filter: ["==", ["get", "kind"], "travelled"],
+    layout: { "line-cap": "round", "line-join": "round" },
+    paint: {
+      "line-color": ROUTE_BLUE,
+      "line-width": 3,
+      // Faint enough to read as "already done" rather than as a second route.
+      "line-opacity": 0.18,
+    },
+  });
+
+  /*
+   * Where it has actually been. Blue-grey and thinner than the schedule, dashed so the difference
+   * survives a greyscale screenshot and a passenger who cannot separate two blues — the card says
+   * which is which in words as well.
+   */
+  map.addLayer({
+    id: "trail-observed",
+    type: "line",
+    source: SOURCES.selected,
+    filter: ["==", ["get", "kind"], "trail"],
+    layout: { "line-cap": "round", "line-join": "round" },
+    paint: {
+      "line-color": TRAIL_BLUE,
+      "line-width": 3,
+      "line-opacity": 0.75,
+      "line-dasharray": [2, 1.5],
+    },
+  });
+
+  /*
+   * The route ahead: solid, and the widest line on the map, because it is the answer.
+   *
+   * Width grows with zoom so it stays legible over a city and does not swamp a street. A white
+   * casing underneath would be another layer and another draw; the opacity and width here are
+   * enough to read over both the pale and the dark basemaps this product ships.
+   */
+  map.addLayer({
+    id: "route-ahead",
+    type: "line",
+    source: SOURCES.selected,
+    filter: ["==", ["get", "kind"], "remaining"],
+    layout: { "line-cap": "round", "line-join": "round" },
+    paint: {
+      "line-color": ROUTE_BLUE,
+      "line-width": ["interpolate", ["linear"], ["zoom"], 10, 3, 13, 5, 16, 7],
+      "line-opacity": 0.9,
+    },
+  });
+
   map.addLayer({
     id: "user-accuracy",
     type: "fill",
@@ -702,6 +826,40 @@ function addSourcesAndLayers(map: MapLibreMap): void {
   });
 
   /*
+   * The selected bus's upcoming stops, over the ordinary stop layer.
+   *
+   * Restrained on purpose: small points along the line, the next one larger, and the destination
+   * larger again with a ring. Not labels — a route with forty stops and forty labels is a map
+   * nobody can read, and the card beside it is the detailed list.
+   */
+  map.addLayer({
+    id: "route-upcoming-stops",
+    type: "circle",
+    source: SOURCES.selected,
+    filter: ["in", ["get", "kind"], ["literal", ["upcoming", "next"]]],
+    paint: {
+      "circle-radius": ["case", ["==", ["get", "kind"], "next"], 6, 3.5],
+      "circle-color": "#ffffff",
+      "circle-stroke-color": ROUTE_BLUE,
+      "circle-stroke-width": ["case", ["==", ["get", "kind"], "next"], 3, 1.5],
+    },
+  });
+
+  /* Where this journey ends, which is the other thing a route preview is asked for. */
+  map.addLayer({
+    id: "route-destination",
+    type: "circle",
+    source: SOURCES.selected,
+    filter: ["==", ["get", "kind"], "destination"],
+    paint: {
+      "circle-radius": 7,
+      "circle-color": ROUTE_BLUE,
+      "circle-stroke-color": "#ffffff",
+      "circle-stroke-width": 3,
+    },
+  });
+
+  /*
    * And the dot, over everything, with a white collar so it reads on a dark basemap as well as a
    * pale one.
    *
@@ -726,6 +884,17 @@ function addSourcesAndLayers(map: MapLibreMap): void {
 
 /** `--colour-blue` from the design tokens. Paint expressions cannot read a CSS variable. */
 const USER_BLUE = "#1557ff";
+
+/**
+ * The route ahead, and the path already taken.
+ *
+ * The same blue family as the location dot, which is right — this is all map information rather
+ * than transport red — and separated from it by form instead of hue: the dot is a small filled
+ * circle with a white collar, these are lines. The trail is pulled towards grey and dashed so the
+ * two lines differ in more than one channel.
+ */
+const ROUTE_BLUE = "#1557ff";
+const TRAIL_BLUE = "#5a7fb8";
 
 function prefersReducedMotion(): boolean {
   return globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
