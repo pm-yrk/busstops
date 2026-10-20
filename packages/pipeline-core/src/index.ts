@@ -9,3 +9,4 @@ export * from "./tiles.js";
 export * from "./concurrency.js";
 export * from "./report-annotation.js";
 export * from "./env-numbers.js";
+export * from "./recent-traces.js";

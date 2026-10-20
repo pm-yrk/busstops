@@ -16,6 +16,7 @@ import {
   SearchResponseSchema,
 } from "@busstops/contracts";
 import {
+  buildRecentTraceBuckets,
   ArtifactStore,
   InMemoryObjectStore,
   objectKeyFor,
@@ -1560,6 +1561,79 @@ describe("GET /v1/vehicles/:ref", () => {
       // The route line is clipped at a real point along the shape, not at zero.
       expect(data.progressAlongShapeMetres).not.toBeNull();
       expect(data.progressAlongShapeMetres!).toBeGreaterThan(0);
+    });
+
+    /*
+     * The trail, served from the one bucket object the collector writes.
+     *
+     * `recentTrace` was a literal `[]`. The observations existed all along — the collector
+     * publishes every one it accepts — but as the whole national rolling window, and reading that
+     * to answer for one bus is the national read a tap must not cost. Collection now also writes 64
+     * small buckets at fixed keys and this endpoint reads exactly one of them.
+     */
+    it("serves the recent observed path from one bucket read", async () => {
+      const store = await publishedStore();
+      const env = makeEnv(store);
+      resetWorkerState();
+      /*
+       * Real wall-clock time, not the fixture's.
+       *
+       * The injected clock reaches `LiveService`, which judges the feed's freshness, and not the
+       * handler, which uses `new Date()` for the trail's age window. Seeding September timestamps
+       * therefore produced a trail seven weeks old and correctly got nothing back — the age filter
+       * working, and a test measuring the wrong thing.
+       */
+      const observedAt = new Date(Date.now() - 120_000);
+      initialiseWorker(
+        env,
+        () => new Date("2026-09-02T08:00:05Z"),
+        (async () =>
+          new Response(siriAt({ lat: 53.7965, lon: -1.5379 }, 225), {
+            status: 200,
+          })) as unknown as typeof fetch,
+      );
+
+      const bbox = "-1.7,53.7,-1.4,53.9";
+      const map = await worker.fetch(get(`/v1/map?bbox=${bbox}&zoom=14`), env, ctx);
+      const mapBody = (await map.json()) as { data: { vehicles: Array<{ vehicleRef: string }> } };
+      const ref = mapBody.data.vehicles[0]!.vehicleRef;
+
+      // Seeded as the pipeline would write it, through the same helpers both sides share.
+      const files = buildRecentTraceBuckets(
+        [
+          { vehicleRef: ref, observedAt: observedAt.toISOString(), lat: 53.794, lon: -1.541 },
+          {
+            vehicleRef: ref,
+            observedAt: new Date(observedAt.getTime() + 120_000).toISOString(),
+            lat: 53.7955,
+            lon: -1.5395,
+          },
+        ],
+        new Date(),
+      );
+      for (const [key, body] of files) await store.put(key, body);
+
+      const response = await worker.fetch(
+        get(`/v1/vehicles/${encodeURIComponent(ref)}?bbox=${bbox}`),
+        env,
+        ctx,
+      );
+      const parsed = VehicleDetailResponseSchema.safeParse(await response.json());
+      expect(parsed.success, JSON.stringify(parsed.error?.issues)).toBe(true);
+
+      const trace = parsed.data!.data.recentTrace;
+      expect(trace.length, "both observations are served").toBe(2);
+      // Oldest first, so the drawn line runs the way the bus travelled.
+      expect(Date.parse(trace[0]!.observedAt)).toBeLessThan(Date.parse(trace[1]!.observedAt));
+      expect(trace[0]!.coordinate.lat).toBeCloseTo(53.794, 4);
+    });
+
+    /* No trail is a normal state, and it must never be invented from the schedule. */
+    it("omits the trail when no observations have been stored", async () => {
+      const { pattern, stopsById } = patternUnderTest();
+      const here = stopsById.get(pattern.stopSequence[0]!)!.locationCoordinate;
+      const data = await askAboutTheBus(here, 0);
+      expect(data.recentTrace).toEqual([]);
     });
 
     /*

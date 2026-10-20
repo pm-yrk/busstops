@@ -13,6 +13,7 @@ import { BODS_MINIMUM_REQUEST_INTERVAL_MS } from "@busstops/contracts";
 import {
   ArtifactStore,
   annotateReport,
+  buildRecentTraceBuckets,
   r2StoreFromEnv,
   numberFromEnv,
   positiveNumberFromEnv,
@@ -149,6 +150,58 @@ async function main(): Promise<number> {
      */
     maximumShrinkFraction: 1,
   });
+
+  /*
+   * And the same observations again, bucketed so one bus tap costs one small read.
+   *
+   * The artifact above is the whole national window — thirteen to thirty-nine thousand records on
+   * the runs measured — and the passenger map needs "where has this one bus just been" inside a
+   * 10ms CPU budget. Reading that artifact to answer it is the national read a tap must not cost.
+   *
+   * 64 objects at fixed keys, overwritten every run: ~256 writes a day against an allowance of
+   * roughly 33,000, and 64 objects in R2 forever rather than a growing family. One object per
+   * vehicle was the obvious alternative and the arithmetic rules it out — about 6,500 vehicles a
+   * run is 26,000 writes a day, three quarters of the whole project's allowance, for a decoration.
+   *
+   * Reported rather than silent, because a trail that stops appearing should be visible here
+   * before it is visible as an absence on the map.
+   */
+  const traces = buildRecentTraceBuckets(
+    result.observations.map((observation) => ({
+      vehicleRef: observation.vehicleRef,
+      observedAt: observation.observedAt,
+      lat: observation.coordinate.lat,
+      lon: observation.coordinate.lon,
+    })),
+    startedAt,
+  );
+
+  let traceBytes = 0;
+  let traceFailures = 0;
+  for (const [key, body] of traces) {
+    try {
+      await storeResult.store.put(key, body);
+      traceBytes += body.length;
+    } catch {
+      /*
+       * A failed bucket costs that bus its trail and nothing else. Collection's job is the
+       * observations, which are already published above, and losing a decoration must not fail the
+       * run that gathered the data.
+       */
+      traceFailures += 1;
+    }
+  }
+  report.recentTraces = {
+    buckets: traces.size,
+    bytes: traceBytes,
+    meanBucketBytes: traces.size > 0 ? Math.round(traceBytes / traces.size) : 0,
+    vehiclesWithATrail: [...traces.values()].reduce(
+      // Every line but the header is one vehicle with at least two points.
+      (total, body) => total + Math.max(0, body.split("\n").length - 1),
+      0,
+    ),
+    failures: traceFailures,
+  };
 
   report.outcome = "collected";
   console.log(

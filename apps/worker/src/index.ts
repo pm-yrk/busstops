@@ -14,7 +14,10 @@ import { DepartureReader } from "./departure-reader.js";
 import {
   boundingBoxAreaSquareDegrees,
   corridorBoundingBox,
+  decodeRecentTrace,
   isPlausibleEnglandCoordinate,
+  recentTraceBucket,
+  recentTraceKey,
 } from "@busstops/pipeline-core";
 import { matchObservation, stopsAheadWindow } from "@busstops/matching";
 
@@ -1842,8 +1845,11 @@ router.get("/v1/journeys", async (_request, { env, url }) => {
  * here already knows where it was looking.
  *
  * The recent trace is deliberately empty at the edge. Traces live in the bounded intelligence
- * window, which the Worker does not read per request, and inventing a path between two positions
- * would draw a route the bus may never have taken.
+ * window — thirteen to thirty-nine thousand records on the runs measured — which is the national
+ * read a bus tap must not cost. Collection now also writes 64 small bucket objects at fixed keys,
+ * and this handler reads exactly one of them: see `recent-traces.ts` for the arithmetic behind that
+ * number. Inventing a path between two positions would still draw a route the bus may never have
+ * taken, which is why the trail is segmented rather than joined up.
  */
 router.get("/v1/vehicles/:ref", async (_request, { env, params, url }) => {
   const state = governorState(env);
@@ -1978,6 +1984,36 @@ router.get("/v1/vehicles/:ref", async (_request, { env, params, url }) => {
           .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
       : [];
 
+  /*
+   * Where this bus has actually just been: one object, chosen by a hash of the reference.
+   *
+   * `recentTrace` was a literal `[]` with no comment. The observations exist — the collector
+   * publishes every one it accepts — but they are published as the whole national rolling window,
+   * and reading that to answer for one bus is the national read a tap must not cost. So collection
+   * also writes 64 small bucket objects at fixed keys, and this reads exactly one of them.
+   *
+   * Not awaited alongside the stop resolution on purpose: both are R2 reads and the subrequest
+   * budget is 50 per invocation, but this one is optional. A failure or a miss costs the trail and
+   * nothing else, which is why it is caught and dropped rather than allowed to fail a bus lookup.
+   */
+  let recentTrace: Array<{ coordinate: { lat: number; lon: number }; observedAt: string }> = [];
+  if (env.ARTIFACTS) {
+    try {
+      const bucket = await env.ARTIFACTS.get(
+        recentTraceKey(recentTraceBucket(observation.vehicleRef)),
+      );
+      if (bucket) {
+        const decoded = decodeRecentTrace(await bucket.text(), observation.vehicleRef, now);
+        recentTrace = decoded.points.map(([seconds, lat, lon]) => ({
+          coordinate: { lat, lon },
+          observedAt: new Date(seconds * 1000).toISOString(),
+        }));
+      }
+    } catch {
+      /* A decoration is never worth a 500. The map draws the route and omits the trail. */
+    }
+  }
+
   /* The stop the bus is heading for, which `VehicleState` has always had a field for. */
   const nextStopId =
     window && pattern && window.nextStopIndex !== null
@@ -2039,7 +2075,7 @@ router.get("/v1/vehicles/:ref", async (_request, { env, params, url }) => {
         destinationName: context?.destinationName ? passengerName(context.destinationName) : null,
         nextStops,
         nextStopsState,
-        recentTrace: [],
+        recentTrace,
         /*
          * The shape travels with the pattern in its tile, so drawing the route needs no extra read.
          *
