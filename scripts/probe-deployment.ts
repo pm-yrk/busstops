@@ -1012,10 +1012,21 @@ async function main(): Promise<void> {
     const asked = async (path: string) => {
       const answer = await ask(path);
       if (answer.status !== 200 || answer.json === null) {
+        /*
+         * The application's own refusal and the platform's are both "503" and are not the same
+         * finding: `{"error":{"code":"upstream_unavailable"}}` is this Worker saying the dataset
+         * is not published, and an HTML page is Cloudflare saying the Worker ran out of time.
+         * One is a data state and the other is a resource limit; a status code alone names
+         * neither.
+         */
+        const code = asText(at(answer.json, "error", "code"));
         trouble.push({
           path,
           status: answer.status,
           ms: answer.ms,
+          ...(code
+            ? { code, detail: asText(at(answer.json, "error", "message")).slice(0, 120) }
+            : {}),
           ...(answer.error === undefined ? {} : { error: answer.error }),
           ...(answer.text === undefined ? {} : { body: answer.text.slice(0, 160) }),
         });
