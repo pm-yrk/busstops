@@ -19,6 +19,8 @@ import {
   buildRecentTraceBuckets,
   ArtifactStore,
   InMemoryObjectStore,
+  contentHash,
+  manifestKey,
   objectKeyFor,
   tileIdFor,
 } from "@busstops/pipeline-core";
@@ -31,8 +33,10 @@ import {
 import worker, { initialiseWorker, resetWorkerState } from "./index.js";
 import { R2BindingStore, readFeatureFlags, type R2BucketLike, type WorkerEnv } from "./env.js";
 import {
+  PATTERN_TILE_DEGREES,
   SHARDED,
   TRIP_TILE_DEGREES,
+  patternTileDataset,
   currentArtifactLayout,
   departureBucketFor,
   departureShardDataset,
@@ -1503,6 +1507,139 @@ describe("GET /v1/vehicles/:ref", () => {
       expect(parsed.success, JSON.stringify(parsed.error?.issues)).toBe(true);
       return parsed.data!.data;
     }
+
+    /*
+     * Which objects one bus tap opens.
+     *
+     * This endpoint read the pattern tiles of the whole viewport to identify one vehicle — up to
+     * three mebibytes of route geometry parsed synchronously, with no ledger, to answer "which
+     * route is this bus on". The candidates are the patterns whose shape passes near the bus, and
+     * a pattern is written into every tile its shape crosses with its stop sequence, its stop
+     * distances and its shape all travelling with it, so the tiles around the vehicle hold every
+     * one of them whole.
+     *
+     * The assertion is about keys rather than milliseconds, because CI time is not Cloudflare CPU:
+     * a viewport that spans several pattern tiles must not cause several pattern tiles to be read
+     * for one bus.
+     */
+    it("opens only the pattern tiles around the bus, not the viewport's", async () => {
+      const { pattern, stopsById, shape } = patternUnderTest();
+      const atIndex = Math.max(1, Math.floor((pattern.stopSequence.length - 1) * 0.67));
+      const here = stopsById.get(pattern.stopSequence[atIndex]!)!.locationCoordinate;
+      const bearing =
+        shape.length > 1
+          ? Math.round(
+              (Math.atan2(
+                shape[shape.length - 1]!.lon - shape[0]!.lon,
+                shape[shape.length - 1]!.lat - shape[0]!.lat,
+              ) *
+                180) /
+                Math.PI,
+            )
+          : 0;
+
+      const store = await publishedStore();
+
+      /*
+       * A pattern tile a long way from the bus, and the index entry that makes it readable.
+       *
+       * The fixture publishes one city, so without this there is nothing far away to wrongly open
+       * and the assertion would pass against the defect it exists to catch. The tile is valid and
+       * holds one pattern of its own; a reader that asks for the viewport's tiles will take it,
+       * and a reader that asks for the bus's will not.
+       */
+      /*
+       * Inside the viewport the tap passes, and nowhere near the bus: the whole point is that a
+       * reader asking for the viewport's tiles takes it and a reader asking for the bus's does
+       * not. A tile outside the viewport would prove nothing, because neither reader would open
+       * it.
+       */
+      const farTile = tileIdFor({ lat: 53.72, lon: -1.45 }, PATTERN_TILE_DEGREES);
+      const [indexKey] = await store.list(`data/${SHARDED.index}/`);
+      expect(indexKey, "the fixture published a network index").toBeDefined();
+      const index = JSON.parse((await store.get(indexKey!))!) as NetworkIndexRecord;
+      expect(index.patternTiles).not.toContain(farTile);
+      /*
+       * Republished rather than overwritten: the reader checks the manifest's content hash and
+       * refuses a body that does not match it, which is the integrity guard doing its job and
+       * reads from a test as an empty country.
+       */
+      const rewritten = JSON.stringify({
+        ...index,
+        patternTiles: [...index.patternTiles, farTile],
+      });
+      await store.put(indexKey!, rewritten);
+      const manifest = JSON.parse((await store.get(manifestKey(SHARDED.index)))!) as {
+        contentHash: string;
+      };
+      await store.put(
+        manifestKey(SHARDED.index),
+        JSON.stringify({ ...manifest, contentHash: contentHash(rewritten) }),
+      );
+      await store.put(
+        objectKeyFor(patternTileDataset(farTile), index.version),
+        [
+          JSON.stringify({
+            kind: "shape",
+            shapeRef: "far-shape",
+            points: [
+              { lat: 53.97, lon: -1.91 },
+              { lat: 53.99, lon: -1.89 },
+            ],
+          }),
+        ].join("\n"),
+      );
+
+      /*
+       * Delegating rather than proxying: `InMemoryObjectStore` keeps its contents in a private
+       * field, and a `Proxy` whose `get` trap hands methods back with the proxy as the receiver
+       * makes every one of them throw on that field — which reads from here as a map with no
+       * buses on it rather than as a broken harness.
+       */
+      const reads: string[] = [];
+      const recording = {
+        get: async (key: string) => {
+          reads.push(key);
+          return store.get(key);
+        },
+        put: (key: string, value: string) => store.put(key, value),
+        delete: (key: string) => store.delete(key),
+        list: (prefix: string) => store.list(prefix),
+      };
+      const env = makeEnv(recording as unknown as InMemoryObjectStore);
+      resetWorkerState();
+      initialiseWorker(
+        env,
+        () => new Date("2026-09-02T08:00:05Z"),
+        (async () =>
+          new Response(siriAt(here, bearing), { status: 200 })) as unknown as typeof fetch,
+      );
+
+      /*
+       * A viewport wide enough to cross the pattern grid, which is what the old read opened all
+       * of. The tap that follows is about one point inside it.
+       */
+      const bbox = "-1.7,53.7,-1.4,53.9";
+      const map = await worker.fetch(get(`/v1/map?bbox=${bbox}&zoom=14`), env, ctx);
+      const mapBody = (await map.json()) as { data: { vehicles: Array<{ vehicleRef: string }> } };
+      expect(mapBody.data.vehicles.length, "the bus is on the map").toBeGreaterThan(0);
+      const ref = mapBody.data.vehicles[0]!.vehicleRef;
+
+      reads.length = 0;
+      const response = await worker.fetch(
+        get(`/v1/vehicles/${encodeURIComponent(ref)}?bbox=${bbox}`),
+        env,
+        ctx,
+      );
+      expect(response.status).toBe(200);
+
+      const tapped = [...new Set(reads.filter((key) => key.includes(SHARDED.patternTile)))];
+      expect(tapped.length, "the tap still reads the pattern tile it needs").toBeGreaterThan(0);
+      expect(
+        tapped.some((key) => key.includes(farTile)),
+        `one tap opened a pattern tile a dozen kilometres away: ${tapped.join(", ")}`,
+      ).toBe(false);
+    });
 
     it("does not offer the start of the route as what is coming next", async () => {
       const { pattern, stopsById, shape } = patternUnderTest();

@@ -1016,6 +1016,20 @@ jobs:
           cache: "npm"
       - run: npm ci --no-audit --no-fund
 
+      # First contact, before anything else in this job has touched the deployment.
+      #
+      # Cloudflare's 1102 is a cold-path failure: the same endpoint answers thirty times in a row
+      # once the isolate is holding the tiles, and dies on the first request that has to read and
+      # parse them. So this walks five cities once each, in turn, and never revisits one — every
+      # reading is against artifacts nothing has opened. It runs before the passenger probe
+      # because the passenger probe is what would warm them.
+      - name: Cold first contact, city by city
+        run: |
+          set -o pipefail
+          npx tsx scripts/cold-serving.ts \
+            --worker "${{ needs.preview.outputs.worker_url }}" \
+            --json cold-serving.json 2>&1 | tee cold-serving.log
+
       # A request through the Worker and an independent request straight to BODS, in the same
       # second, for the same viewport — so "no buses" is attributed rather than guessed at.
       - name: Probe
@@ -1040,6 +1054,17 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: What first contact cost
+        if: always()
+        run: |
+          {
+            echo "## Cold first contact"
+            echo
+            echo '```'
+            tail -n 40 cold-serving.log 2>/dev/null || echo "no cold-serving.log was written"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -1047,5 +1072,7 @@ jobs:
           path: |
             deployment-probe.json
             probe.log
+            cold-serving.json
+            cold-serving.log
           retention-days: 7
           if-no-files-found: ignore

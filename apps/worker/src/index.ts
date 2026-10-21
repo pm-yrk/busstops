@@ -199,6 +199,27 @@ const LIVE_LOOKUP_BUDGET_MS = 2_500;
 const VEHICLE_STOP_WINDOW = 40;
 const VEHICLE_PASSED_CONTEXT_STOPS = 3;
 
+/** Wall-clock for the bus lookup's optional reads, in the shape route detail and the board use. */
+const VEHICLE_DETAIL_BUDGET_MS = 1_500;
+
+/**
+ * How far around one bus to look for the routes it might be on.
+ *
+ * This endpoint read the pattern tiles of the *whole viewport* to identify one vehicle — up to
+ * three mebibytes of route geometry, parsed synchronously, with no ledger and no budget, to answer
+ * "which route is this bus on". The patterns that can possibly match are the ones whose shape
+ * passes near the bus, and a pattern is written into every tile its shape crosses, so the tiles
+ * around the vehicle hold every candidate and each one whole — the stop sequence, the stop
+ * distances and the shape all travel with the pattern.
+ *
+ * So this is a reduction in work and not in confidence: the candidate set is the same patterns
+ * minus the ones that were never within miles of the bus. Two hundredths of a degree is about
+ * 2.2km north to south and 1.3km east to west at this latitude, which is far beyond any distance
+ * a match would be accepted at, and it is what makes a bus sitting near a tile edge read its
+ * neighbour as well.
+ */
+const VEHICLE_MATCH_RADIUS_DEGREES = 0.02;
+
 const LIVE_BBOX_SNAP_DEGREES = 0.25;
 
 /** Snapped outward, so the box still contains everything it contained before. */
@@ -1881,15 +1902,46 @@ router.get("/v1/vehicles/:ref", async (_request, { env, params, url }) => {
   }
 
   const context = live.journeyContext.get(observation.vehicleRef);
-  // Bounded to the viewport the caller asked about, which is the same box the vehicle was found in.
-  const geometries = network ? await network.patternsInBoundingBox(bboxResult.bbox) : [];
+
+  /*
+   * From here on this request is on the clock, like the board and route detail already were.
+   *
+   * It was the only passenger endpoint with no ledger at all: no record of what it decoded, no
+   * budget to decline optional work against, and therefore nothing to compare against the runs
+   * where it answered with Cloudflare's error page instead. Begun after the two short-circuit
+   * answers above so a 400 or a 404 neither trims the cache nor opens a breadcrumb.
+   */
+  const vehicleLedger = new ReadLedger(VEHICLE_DETAIL_BUDGET_MS);
+  const endVehicleResidency = beginResidency(vehicleLedger, "vehicle-detail");
+
+  /*
+   * The routes that pass near *this bus*, not every route in the viewport.
+   *
+   * See `VEHICLE_MATCH_RADIUS_DEGREES`: the same candidates, minus the ones that were never
+   * within miles of it.
+   */
+  const matchBox = {
+    west: observation.coordinate.lon - VEHICLE_MATCH_RADIUS_DEGREES,
+    east: observation.coordinate.lon + VEHICLE_MATCH_RADIUS_DEGREES,
+    south: observation.coordinate.lat - VEHICLE_MATCH_RADIUS_DEGREES,
+    north: observation.coordinate.lat + VEHICLE_MATCH_RADIUS_DEGREES,
+  };
+  const geometries = network
+    ? await vehicleLedger.stage("patterns", () =>
+        network!.patternsInBoundingBox(matchBox, Date.now(), vehicleLedger),
+      )
+    : [];
   const match = geometries.length > 0 ? matchObservation(observation, geometries) : null;
   const pattern = match?.best
     ? geometries.find((geometry) => geometry.pattern.id === match.best!.patternId)?.pattern
     : undefined;
   const service =
     pattern && network
-      ? (await network.servicesByIds(new Set([pattern.serviceRouteId]))).get(pattern.serviceRouteId)
+      ? (
+          await vehicleLedger.stage("service", () =>
+            network!.servicesByIds(new Set([pattern.serviceRouteId]), vehicleLedger),
+          )
+        ).get(pattern.serviceRouteId)
       : undefined;
 
   const vehicle = {
@@ -1956,7 +2008,7 @@ router.get("/v1/vehicles/:ref", async (_request, { env, params, url }) => {
       : [];
   const nextStopsById =
     nextStopIds.length > 0 && network
-      ? await network.stopsByKeys(nextStopIds)
+      ? await vehicleLedger.stage("stops", () => network!.stopsByKeys(nextStopIds))
       : new Map<string, Awaited<ReturnType<NetworkReader["stopByKey"]>>>();
 
   const nextStops =
@@ -2031,16 +2083,32 @@ router.get("/v1/vehicles/:ref", async (_request, { env, params, url }) => {
    */
   const operator =
     service && network
-      ? ((await network.operatorsByIds(new Set([service.operatorId]))).get(service.operatorId) ??
-        null)
+      ? ((
+          await vehicleLedger.stage("operator", () =>
+            network!.operatorsByIds(new Set([service.operatorId])),
+          )
+        ).get(service.operatorId) ?? null)
       : null;
   const vehicleRouteName = service?.publicName ?? context?.publishedLineName ?? null;
-  const vehicleNotices = vehicleRouteName
-    ? ((await disruptions?.snapshot())?.notices ?? [])
-    : /* Nothing identifies the service, so nothing can be matched to it without guessing. */ [];
+  /*
+   * Optional, and declined when the request has already spent what it is allowed.
+   *
+   * Notices are context; the bus, its route and its stops are the answer. A request that is out of
+   * budget and opens the national snapshot anyway is the request the platform kills, and it takes
+   * the bus down with the decoration.
+   */
+  const vehicleNotices =
+    vehicleRouteName && vehicleLedger.withinBudget
+      ? await vehicleLedger.stage(
+          "disruptions",
+          async () => (await disruptions?.snapshot())?.notices ?? [],
+        )
+      : /* Nothing identifies the service, so nothing can be matched to it without guessing. */ [];
   const vehicleDisruptions = vehicleRouteName
     ? noticesFor(vehicleNotices, { atcoCodes: [], routeNames: [vehicleRouteName] }, 5)
     : [];
+
+  endVehicleResidency();
 
   return json(
     {
@@ -2052,6 +2120,7 @@ router.get("/v1/vehicles/:ref", async (_request, { env, params, url }) => {
         now,
         failedSources: live.failedSources,
         safeMode: safeModeActive(state),
+        diagnostics: { ...vehicleLedger.toJSON() },
       }),
       data: {
         vehicle: { ...vehicle, nextStopId },
@@ -2647,6 +2716,11 @@ router.get("/v1/search", async (_request, { env, url }) => {
         governorState: state,
         now: new Date(),
         safeMode: safeModeActive(state),
+        /*
+         * Search kept a ledger and reported none of it, so the one endpoint that answers warm
+         * every time and sometimes dies cold had no record of what it decodes on first contact.
+         */
+        diagnostics: { ...searchLedger.toJSON() },
       }),
       data: { results },
     },
