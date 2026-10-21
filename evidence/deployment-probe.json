@@ -1,5 +1,5 @@
 {
-  "startedAt": "2026-10-21T02:27:34.772Z",
+  "startedAt": "2026-10-21T03:12:55.068Z",
   "worker": "https://busstops-api-preview.paulmurrin13.workers.dev",
   "areas": [
     {
@@ -14,8 +14,8 @@
       },
       "map": {
         "status": 200,
-        "ms": 1126,
-        "vehicles": 2,
+        "ms": 2070,
+        "vehicles": 3,
         "stops": 400,
         "degradation": "normal"
       },
@@ -23,16 +23,16 @@
         {
           "source": "bods",
           "outcome": "ok",
-          "rawRecords": 175,
-          "accepted": 2,
+          "rawRecords": 176,
+          "accepted": 3,
           "rejectedBy": {
             "observation Ns old": 173
           },
-          "newestRecordAgeSeconds": 8,
-          "oldestRecordAgeSeconds": 73293,
-          "fetchMs": 697,
+          "newestRecordAgeSeconds": 5,
+          "oldestRecordAgeSeconds": 76013,
+          "fetchMs": 914,
           "parseMs": 0,
-          "chars": 223686,
+          "chars": 224971,
           "reusedParse": false
         }
       ]
@@ -49,8 +49,8 @@
       },
       "map": {
         "status": 200,
-        "ms": 1569,
-        "vehicles": 5,
+        "ms": 1686,
+        "vehicles": 7,
         "stops": 400,
         "degradation": "normal"
       },
@@ -58,16 +58,16 @@
         {
           "source": "bods",
           "outcome": "ok",
-          "rawRecords": 404,
-          "accepted": 5,
+          "rawRecords": 407,
+          "accepted": 7,
           "rejectedBy": {
-            "observation Ns old": 399
+            "observation Ns old": 400
           },
           "newestRecordAgeSeconds": 5,
-          "oldestRecordAgeSeconds": 76308,
-          "fetchMs": 1335,
+          "oldestRecordAgeSeconds": 79029,
+          "fetchMs": 550,
           "parseMs": 0,
-          "chars": 516649,
+          "chars": 520279,
           "reusedParse": false
         }
       ]
@@ -84,8 +84,8 @@
       },
       "map": {
         "status": 200,
-        "ms": 703,
-        "vehicles": 7,
+        "ms": 971,
+        "vehicles": 13,
         "stops": 400,
         "degradation": "normal"
       },
@@ -94,15 +94,15 @@
           "source": "bods",
           "outcome": "ok",
           "rawRecords": 284,
-          "accepted": 7,
+          "accepted": 13,
           "rejectedBy": {
-            "observation Ns old": 277
+            "observation Ns old": 271
           },
-          "newestRecordAgeSeconds": 106,
-          "oldestRecordAgeSeconds": 67171,
-          "fetchMs": 596,
+          "newestRecordAgeSeconds": 13,
+          "oldestRecordAgeSeconds": 69893,
+          "fetchMs": 215,
           "parseMs": 0,
-          "chars": 320150,
+          "chars": 320045,
           "reusedParse": false
         }
       ]
@@ -119,8 +119,8 @@
       },
       "map": {
         "status": 200,
-        "ms": 808,
-        "vehicles": 15,
+        "ms": 1273,
+        "vehicles": 16,
         "stops": 400,
         "degradation": "normal"
       },
@@ -128,16 +128,16 @@
         {
           "source": "bods",
           "outcome": "ok",
-          "rawRecords": 196,
-          "accepted": 15,
+          "rawRecords": 198,
+          "accepted": 16,
           "rejectedBy": {
-            "observation Ns old": 181
+            "observation Ns old": 182
           },
-          "newestRecordAgeSeconds": 3,
-          "oldestRecordAgeSeconds": 65227,
-          "fetchMs": 701,
+          "newestRecordAgeSeconds": 6,
+          "oldestRecordAgeSeconds": 67949,
+          "fetchMs": 694,
           "parseMs": 0,
-          "chars": 251709,
+          "chars": 254225,
           "reusedParse": false
         }
       ]
@@ -154,7 +154,7 @@
       },
       "map": {
         "status": 200,
-        "ms": 1374,
+        "ms": 902,
         "vehicles": 1,
         "stops": 400,
         "degradation": "normal"
@@ -168,9 +168,9 @@
           "rejectedBy": {
             "observation Ns old": 46
           },
-          "newestRecordAgeSeconds": 25,
-          "oldestRecordAgeSeconds": 51321,
-          "fetchMs": 1323,
+          "newestRecordAgeSeconds": 403,
+          "oldestRecordAgeSeconds": 54043,
+          "fetchMs": 184,
           "parseMs": 0,
           "chars": 60494,
           "reusedParse": false
@@ -189,7 +189,7 @@
       },
       "map": {
         "status": 200,
-        "ms": 133,
+        "ms": 200,
         "vehicles": 0,
         "stops": 400,
         "degradation": "normal"
@@ -211,16 +211,16 @@
           "notices": 20,
           "statuses": [],
           "meta": {
-            "generatedAt": "2026-10-21T02:27:40.510Z",
+            "generatedAt": "2026-10-21T03:13:02.196Z",
             "observedAt": null,
             "sources": [
               {
                 "source": "bods",
                 "coverageArea": "non_london",
                 "status": "healthy",
-                "lastSuccessfulFetchAt": "2026-10-21T02:27:40.325Z",
-                "lastAttemptAt": "2026-10-21T02:27:39.002Z",
-                "ageSeconds": 0.311,
+                "lastSuccessfulFetchAt": "2026-10-21T03:13:01.924Z",
+                "lastAttemptAt": "2026-10-21T03:13:01.249Z",
+                "ageSeconds": 0.646,
                 "consecutiveFailures": 0
               }
             ],
@@ -232,7 +232,7 @@
               "© OpenStreetMap contributors, ODbL"
             ],
             "diagnostics": {
-              "elapsedMs": 659,
+              "elapsedMs": 827,
               "budgetMs": 3000,
               "budgetMeasures": "wall-clock-io",
               "budgetChars": 3145728,
@@ -253,7 +253,7 @@
                   "failed": 0,
                   "chars": 926244,
                   "records": 4,
-                  "ms": 75
+                  "ms": 122
                 },
                 "services": {
                   "requested": 4,
@@ -263,7 +263,7 @@
                   "failed": 0,
                   "chars": 79940,
                   "records": 4,
-                  "ms": 360
+                  "ms": 406
                 }
               },
               "counts": {
@@ -273,11 +273,11 @@
               "degradationReason": null,
               "stages": {
                 "live": 0,
-                "patterns": 75,
-                "services": 121,
-                "operators": 146,
+                "patterns": 122,
+                "services": 118,
+                "operators": 176,
                 "disruptions": 0,
-                "weather": 69
+                "weather": 72
               },
               "artifact": {
                 "servicesPath": "buckets",
@@ -310,26 +310,28 @@
           "atcoCode": "450012984",
           "name": "Corn Exchange F",
           "status": 200,
-          "departures": 0,
-          "routes": 5,
+          "departures": 4,
+          "routes": 2,
           "hasWeather": false,
-          "notices": 20,
-          "statuses": [],
+          "notices": 7,
+          "statuses": [
+            ""
+          ],
           "meta": {
-            "generatedAt": "2026-10-21T02:27:41.355Z",
+            "generatedAt": "2026-10-21T03:13:03.452Z",
             "observedAt": null,
             "sources": [
               {
                 "source": "bods",
                 "coverageArea": "non_london",
                 "status": "healthy",
-                "lastSuccessfulFetchAt": "2026-10-21T02:27:40.325Z",
-                "lastAttemptAt": "2026-10-21T02:27:39.002Z",
-                "ageSeconds": 1.304,
+                "lastSuccessfulFetchAt": "2026-10-21T03:13:01.924Z",
+                "lastAttemptAt": "2026-10-21T03:13:01.249Z",
+                "ageSeconds": 1.729,
                 "consecutiveFailures": 0
               }
             ],
-            "coverage": 0.5,
+            "coverage": 1,
             "degradation": "normal",
             "governorState": "green",
             "attribution": [
@@ -337,18 +339,18 @@
               "© OpenStreetMap contributors, ODbL"
             ],
             "diagnostics": {
-              "elapsedMs": 509,
+              "elapsedMs": 322,
               "budgetMs": 3000,
               "budgetMeasures": "wall-clock-io",
               "budgetChars": 3145728,
-              "charsDecoded": 1025163,
-              "objectsRequested": 6,
-              "objectsRead": 6,
+              "charsDecoded": 966044,
+              "objectsRequested": 3,
+              "objectsRead": 3,
               "objectsCached": 0,
               "objectsMissing": 0,
               "objectsFailed": 0,
-              "chars": 1025163,
-              "records": 14,
+              "chars": 966044,
+              "records": 4,
               "families": {
                 "patterns": {
                   "requested": 1,
@@ -357,28 +359,28 @@
                   "missing": 0,
                   "failed": 0,
                   "chars": 926244,
-                  "records": 9,
-                  "ms": 60
+                  "records": 2,
+                  "ms": 123
                 },
                 "services": {
-                  "requested": 5,
-                  "read": 5,
+                  "requested": 2,
+                  "read": 2,
                   "cached": 0,
                   "missing": 0,
                   "failed": 0,
-                  "chars": 98919,
-                  "records": 5,
-                  "ms": 403
+                  "chars": 39800,
+                  "records": 2,
+                  "ms": 199
                 }
               },
               "counts": {
-                "patterns": 9
+                "patterns": 2
               },
               "budgetStopped": false,
               "degradationReason": null,
               "stages": {
                 "live": 0,
-                "patterns": 60,
+                "patterns": 123,
                 "services": 108,
                 "operators": 0,
                 "disruptions": 0,
@@ -386,11 +388,11 @@
               },
               "artifact": {
                 "servicesPath": "buckets",
-                "servicesWanted": 5,
-                "servicesFound": 5,
-                "serviceBucketsRead": 5,
-                "serviceBucketsPresent": 5,
-                "serviceBucketChars": 98919
+                "servicesWanted": 2,
+                "servicesFound": 2,
+                "serviceBucketsRead": 2,
+                "serviceBucketsPresent": 2,
+                "serviceBucketChars": 39800
               },
               "residency": {
                 "requestsServed": 8,
@@ -415,26 +417,28 @@
           "atcoCode": "450032247",
           "name": "Corn Exchange H",
           "status": 200,
-          "departures": 0,
-          "routes": 6,
+          "departures": 1,
+          "routes": 1,
           "hasWeather": false,
-          "notices": 20,
-          "statuses": [],
+          "notices": 2,
+          "statuses": [
+            ""
+          ],
           "meta": {
-            "generatedAt": "2026-10-21T02:27:42.195Z",
+            "generatedAt": "2026-10-21T03:13:04.022Z",
             "observedAt": null,
             "sources": [
               {
                 "source": "bods",
                 "coverageArea": "non_london",
                 "status": "healthy",
-                "lastSuccessfulFetchAt": "2026-10-21T02:27:40.325Z",
-                "lastAttemptAt": "2026-10-21T02:27:39.002Z",
-                "ageSeconds": 2.095,
+                "lastSuccessfulFetchAt": "2026-10-21T03:13:01.924Z",
+                "lastAttemptAt": "2026-10-21T03:13:01.249Z",
+                "ageSeconds": 2.309,
                 "consecutiveFailures": 0
               }
             ],
-            "coverage": 0.5,
+            "coverage": 1,
             "degradation": "normal",
             "governorState": "green",
             "attribution": [
@@ -442,18 +446,18 @@
               "© OpenStreetMap contributors, ODbL"
             ],
             "diagnostics": {
-              "elapsedMs": 547,
+              "elapsedMs": 280,
               "budgetMs": 3000,
               "budgetMeasures": "wall-clock-io",
               "budgetChars": 3145728,
-              "charsDecoded": 1042345,
-              "objectsRequested": 7,
-              "objectsRead": 7,
+              "charsDecoded": 945601,
+              "objectsRequested": 2,
+              "objectsRead": 2,
               "objectsCached": 0,
               "objectsMissing": 0,
               "objectsFailed": 0,
-              "chars": 1042345,
-              "records": 13,
+              "chars": 945601,
+              "records": 2,
               "families": {
                 "patterns": {
                   "requested": 1,
@@ -462,40 +466,40 @@
                   "missing": 0,
                   "failed": 0,
                   "chars": 926244,
-                  "records": 7,
-                  "ms": 59
+                  "records": 1,
+                  "ms": 68
                 },
                 "services": {
-                  "requested": 6,
-                  "read": 6,
+                  "requested": 1,
+                  "read": 1,
                   "cached": 0,
                   "missing": 0,
                   "failed": 0,
-                  "chars": 116101,
-                  "records": 6,
-                  "ms": 601
+                  "chars": 19357,
+                  "records": 1,
+                  "ms": 91
                 }
               },
               "counts": {
-                "patterns": 7
+                "patterns": 1
               },
               "budgetStopped": false,
               "degradationReason": null,
               "stages": {
                 "live": 0,
-                "patterns": 59,
-                "services": 151,
+                "patterns": 68,
+                "services": 91,
                 "operators": 0,
                 "disruptions": 0,
                 "weather": 0
               },
               "artifact": {
                 "servicesPath": "buckets",
-                "servicesWanted": 6,
-                "servicesFound": 6,
-                "serviceBucketsRead": 6,
-                "serviceBucketsPresent": 6,
-                "serviceBucketChars": 116101
+                "servicesWanted": 1,
+                "servicesFound": 1,
+                "serviceBucketsRead": 1,
+                "serviceBucketsPresent": 1,
+                "serviceBucketChars": 19357
               },
               "residency": {
                 "requestsServed": 9,
@@ -520,26 +524,28 @@
           "atcoCode": "450012982",
           "name": "Corn Exchange E",
           "status": 200,
-          "departures": 0,
-          "routes": 3,
+          "departures": 1,
+          "routes": 1,
           "hasWeather": false,
-          "notices": 20,
-          "statuses": [],
+          "notices": 18,
+          "statuses": [
+            ""
+          ],
           "meta": {
-            "generatedAt": "2026-10-21T02:27:43.026Z",
+            "generatedAt": "2026-10-21T03:13:04.554Z",
             "observedAt": null,
             "sources": [
               {
                 "source": "bods",
                 "coverageArea": "non_london",
                 "status": "healthy",
-                "lastSuccessfulFetchAt": "2026-10-21T02:27:40.325Z",
-                "lastAttemptAt": "2026-10-21T02:27:39.002Z",
-                "ageSeconds": 2.876,
+                "lastSuccessfulFetchAt": "2026-10-21T03:13:01.924Z",
+                "lastAttemptAt": "2026-10-21T03:13:01.249Z",
+                "ageSeconds": 2.792,
                 "consecutiveFailures": 0
               }
             ],
-            "coverage": 0.5,
+            "coverage": 1,
             "degradation": "normal",
             "governorState": "green",
             "attribution": [
@@ -547,18 +553,18 @@
               "© OpenStreetMap contributors, ODbL"
             ],
             "diagnostics": {
-              "elapsedMs": 621,
+              "elapsedMs": 275,
               "budgetMs": 3000,
               "budgetMeasures": "wall-clock-io",
               "budgetChars": 3145728,
-              "charsDecoded": 982145,
-              "objectsRequested": 4,
-              "objectsRead": 4,
+              "charsDecoded": 946295,
+              "objectsRequested": 2,
+              "objectsRead": 2,
               "objectsCached": 0,
               "objectsMissing": 0,
               "objectsFailed": 0,
-              "chars": 982145,
-              "records": 9,
+              "chars": 946295,
+              "records": 2,
               "families": {
                 "patterns": {
                   "requested": 1,
@@ -567,40 +573,40 @@
                   "missing": 0,
                   "failed": 0,
                   "chars": 926244,
-                  "records": 6,
-                  "ms": 105
+                  "records": 1,
+                  "ms": 78
                 },
                 "services": {
-                  "requested": 3,
-                  "read": 3,
+                  "requested": 1,
+                  "read": 1,
                   "cached": 0,
                   "missing": 0,
                   "failed": 0,
-                  "chars": 55901,
-                  "records": 3,
-                  "ms": 244
+                  "chars": 20051,
+                  "records": 1,
+                  "ms": 80
                 }
               },
               "counts": {
-                "patterns": 6
+                "patterns": 1
               },
               "budgetStopped": false,
               "degradationReason": null,
               "stages": {
                 "live": 0,
-                "patterns": 105,
-                "services": 99,
+                "patterns": 78,
+                "services": 80,
                 "operators": 0,
                 "disruptions": 0,
                 "weather": 0
               },
               "artifact": {
                 "servicesPath": "buckets",
-                "servicesWanted": 3,
-                "servicesFound": 3,
-                "serviceBucketsRead": 3,
-                "serviceBucketsPresent": 3,
-                "serviceBucketChars": 55901
+                "servicesWanted": 1,
+                "servicesFound": 1,
+                "serviceBucketsRead": 1,
+                "serviceBucketsPresent": 1,
+                "serviceBucketChars": 20051
               },
               "residency": {
                 "requestsServed": 10,
@@ -631,24 +637,24 @@
           "atcoCode": "1800SB31191",
           "name": "Cavendish Street",
           "status": 200,
-          "departures": 2,
-          "routes": 1,
+          "departures": 3,
+          "routes": 2,
           "hasWeather": false,
-          "notices": 1,
+          "notices": 6,
           "statuses": [
             ""
           ],
           "meta": {
-            "generatedAt": "2026-10-21T02:27:43.909Z",
+            "generatedAt": "2026-10-21T03:13:05.092Z",
             "observedAt": null,
             "sources": [
               {
                 "source": "bods",
                 "coverageArea": "non_london",
                 "status": "healthy",
-                "lastSuccessfulFetchAt": "2026-10-21T02:27:40.325Z",
-                "lastAttemptAt": "2026-10-21T02:27:39.002Z",
-                "ageSeconds": 3.718,
+                "lastSuccessfulFetchAt": "2026-10-21T03:13:01.924Z",
+                "lastAttemptAt": "2026-10-21T03:13:01.249Z",
+                "ageSeconds": 3.418,
                 "consecutiveFailures": 0
               }
             ],
@@ -660,18 +666,18 @@
               "© OpenStreetMap contributors, ODbL"
             ],
             "diagnostics": {
-              "elapsedMs": 344,
+              "elapsedMs": 437,
               "budgetMs": 3000,
               "budgetMeasures": "wall-clock-io",
               "budgetChars": 3145728,
-              "charsDecoded": 2046157,
-              "objectsRequested": 3,
-              "objectsRead": 3,
+              "charsDecoded": 2067311,
+              "objectsRequested": 4,
+              "objectsRead": 4,
               "objectsCached": 0,
               "objectsMissing": 0,
               "objectsFailed": 0,
-              "chars": 2046157,
-              "records": 3,
+              "chars": 2067311,
+              "records": 6,
               "families": {
                 "patterns": {
                   "requested": 2,
@@ -680,40 +686,40 @@
                   "missing": 0,
                   "failed": 0,
                   "chars": 2026096,
-                  "records": 2,
-                  "ms": 131
+                  "records": 4,
+                  "ms": 180
                 },
                 "services": {
-                  "requested": 1,
-                  "read": 1,
+                  "requested": 2,
+                  "read": 2,
                   "cached": 0,
                   "missing": 0,
                   "failed": 0,
-                  "chars": 20061,
-                  "records": 1,
-                  "ms": 62
+                  "chars": 41215,
+                  "records": 2,
+                  "ms": 190
                 }
               },
               "counts": {
-                "patterns": 1
+                "patterns": 2
               },
               "budgetStopped": false,
               "degradationReason": null,
               "stages": {
                 "live": 0,
-                "patterns": 69,
-                "services": 62,
+                "patterns": 109,
+                "services": 99,
                 "operators": 0,
                 "disruptions": 0,
-                "weather": 51
+                "weather": 50
               },
               "artifact": {
                 "servicesPath": "buckets",
-                "servicesWanted": 1,
-                "servicesFound": 1,
-                "serviceBucketsRead": 1,
-                "serviceBucketsPresent": 1,
-                "serviceBucketChars": 20061
+                "servicesWanted": 2,
+                "servicesFound": 2,
+                "serviceBucketsRead": 2,
+                "serviceBucketsPresent": 2,
+                "serviceBucketChars": 41215
               },
               "residency": {
                 "requestsServed": 11,
@@ -738,7 +744,7 @@
           "atcoCode": "1800SB04581",
           "name": "Manchester Metropolitan University",
           "status": 200,
-          "departures": 2,
+          "departures": 5,
           "routes": 2,
           "hasWeather": false,
           "notices": 8,
@@ -746,16 +752,16 @@
             ""
           ],
           "meta": {
-            "generatedAt": "2026-10-21T02:27:44.441Z",
+            "generatedAt": "2026-10-21T03:13:05.823Z",
             "observedAt": null,
             "sources": [
               {
                 "source": "bods",
                 "coverageArea": "non_london",
                 "status": "healthy",
-                "lastSuccessfulFetchAt": "2026-10-21T02:27:40.325Z",
-                "lastAttemptAt": "2026-10-21T02:27:39.002Z",
-                "ageSeconds": 4.294,
+                "lastSuccessfulFetchAt": "2026-10-21T03:13:01.924Z",
+                "lastAttemptAt": "2026-10-21T03:13:01.249Z",
+                "ageSeconds": 4.087,
                 "consecutiveFailures": 0
               }
             ],
@@ -767,7 +773,7 @@
               "© OpenStreetMap contributors, ODbL"
             ],
             "diagnostics": {
-              "elapsedMs": 565,
+              "elapsedMs": 388,
               "budgetMs": 3000,
               "budgetMeasures": "wall-clock-io",
               "budgetChars": 3145728,
@@ -778,7 +784,7 @@
               "objectsMissing": 0,
               "objectsFailed": 0,
               "chars": 2062664,
-              "records": 5,
+              "records": 7,
               "families": {
                 "patterns": {
                   "requested": 2,
@@ -787,8 +793,8 @@
                   "missing": 0,
                   "failed": 0,
                   "chars": 2026096,
-                  "records": 3,
-                  "ms": 177
+                  "records": 5,
+                  "ms": 265
                 },
                 "services": {
                   "requested": 2,
@@ -798,18 +804,18 @@
                   "failed": 0,
                   "chars": 36568,
                   "records": 2,
-                  "ms": 167
+                  "ms": 159
                 }
               },
               "counts": {
-                "patterns": 2
+                "patterns": 3
               },
               "budgetStopped": false,
               "degradationReason": null,
               "stages": {
                 "live": 0,
-                "patterns": 95,
-                "services": 84,
+                "patterns": 182,
+                "services": 92,
                 "operators": 0,
                 "disruptions": 0,
                 "weather": 0
@@ -845,24 +851,24 @@
           "atcoCode": "1800SB04561",
           "name": "Manchester Metropolitan University",
           "status": 200,
-          "departures": 5,
-          "routes": 2,
+          "departures": 6,
+          "routes": 5,
           "hasWeather": false,
-          "notices": 10,
+          "notices": 20,
           "statuses": [
             ""
           ],
           "meta": {
-            "generatedAt": "2026-10-21T02:27:45.232Z",
+            "generatedAt": "2026-10-21T03:13:06.515Z",
             "observedAt": null,
             "sources": [
               {
                 "source": "bods",
                 "coverageArea": "non_london",
                 "status": "healthy",
-                "lastSuccessfulFetchAt": "2026-10-21T02:27:40.325Z",
-                "lastAttemptAt": "2026-10-21T02:27:39.002Z",
-                "ageSeconds": 5.028,
+                "lastSuccessfulFetchAt": "2026-10-21T03:13:01.924Z",
+                "lastAttemptAt": "2026-10-21T03:13:01.249Z",
+                "ageSeconds": 4.753,
                 "consecutiveFailures": 0
               }
             ],
@@ -874,18 +880,18 @@
               "© OpenStreetMap contributors, ODbL"
             ],
             "diagnostics": {
-              "elapsedMs": 766,
+              "elapsedMs": 435,
               "budgetMs": 3000,
               "budgetMeasures": "wall-clock-io",
               "budgetChars": 3145728,
-              "charsDecoded": 2061218,
-              "objectsRequested": 4,
-              "objectsRead": 4,
+              "charsDecoded": 2116387,
+              "objectsRequested": 7,
+              "objectsRead": 7,
               "objectsCached": 0,
               "objectsMissing": 0,
               "objectsFailed": 0,
-              "chars": 2061218,
-              "records": 5,
+              "chars": 2116387,
+              "records": 13,
               "families": {
                 "patterns": {
                   "requested": 2,
@@ -894,40 +900,40 @@
                   "missing": 0,
                   "failed": 0,
                   "chars": 2026096,
-                  "records": 3,
-                  "ms": 176
+                  "records": 8,
+                  "ms": 149
                 },
                 "services": {
-                  "requested": 2,
-                  "read": 2,
+                  "requested": 5,
+                  "read": 5,
                   "cached": 0,
                   "missing": 0,
                   "failed": 0,
-                  "chars": 35122,
-                  "records": 2,
-                  "ms": 159
+                  "chars": 90291,
+                  "records": 5,
+                  "ms": 820
                 }
               },
               "counts": {
-                "patterns": 2
+                "patterns": 5
               },
               "budgetStopped": false,
               "degradationReason": null,
               "stages": {
                 "live": 0,
-                "patterns": 103,
-                "services": 100,
+                "patterns": 82,
+                "services": 211,
                 "operators": 0,
                 "disruptions": 0,
                 "weather": 0
               },
               "artifact": {
                 "servicesPath": "buckets",
-                "servicesWanted": 2,
-                "servicesFound": 2,
-                "serviceBucketsRead": 2,
-                "serviceBucketsPresent": 2,
-                "serviceBucketChars": 35122
+                "servicesWanted": 5,
+                "servicesFound": 5,
+                "serviceBucketsRead": 5,
+                "serviceBucketsPresent": 5,
+                "serviceBucketChars": 90291
               },
               "residency": {
                 "requestsServed": 13,
@@ -952,26 +958,28 @@
           "atcoCode": "1800SB31181",
           "name": "Cavendish Street",
           "status": 200,
-          "departures": 0,
-          "routes": 4,
+          "departures": 2,
+          "routes": 2,
           "hasWeather": false,
           "notices": 6,
-          "statuses": [],
+          "statuses": [
+            ""
+          ],
           "meta": {
-            "generatedAt": "2026-10-21T02:27:46.162Z",
+            "generatedAt": "2026-10-21T03:13:07.154Z",
             "observedAt": null,
             "sources": [
               {
                 "source": "bods",
                 "coverageArea": "non_london",
                 "status": "healthy",
-                "lastSuccessfulFetchAt": "2026-10-21T02:27:40.325Z",
-                "lastAttemptAt": "2026-10-21T02:27:39.002Z",
-                "ageSeconds": 6.03,
+                "lastSuccessfulFetchAt": "2026-10-21T03:13:01.924Z",
+                "lastAttemptAt": "2026-10-21T03:13:01.249Z",
+                "ageSeconds": 5.412,
                 "consecutiveFailures": 0
               }
             ],
-            "coverage": 0.5,
+            "coverage": 1,
             "degradation": "normal",
             "governorState": "green",
             "attribution": [
@@ -979,18 +987,18 @@
               "© OpenStreetMap contributors, ODbL"
             ],
             "diagnostics": {
-              "elapsedMs": 545,
+              "elapsedMs": 386,
               "budgetMs": 3000,
               "budgetMeasures": "wall-clock-io",
               "budgetChars": 3145728,
-              "charsDecoded": 2099561,
-              "objectsRequested": 6,
-              "objectsRead": 6,
+              "charsDecoded": 2067311,
+              "objectsRequested": 4,
+              "objectsRead": 4,
               "objectsCached": 0,
               "objectsMissing": 0,
               "objectsFailed": 0,
-              "chars": 2099561,
-              "records": 14,
+              "chars": 2067311,
+              "records": 6,
               "families": {
                 "patterns": {
                   "requested": 2,
@@ -999,40 +1007,40 @@
                   "missing": 0,
                   "failed": 0,
                   "chars": 2026096,
-                  "records": 10,
-                  "ms": 178
+                  "records": 4,
+                  "ms": 257
                 },
                 "services": {
-                  "requested": 4,
-                  "read": 4,
+                  "requested": 2,
+                  "read": 2,
                   "cached": 0,
                   "missing": 0,
                   "failed": 0,
-                  "chars": 73465,
-                  "records": 4,
-                  "ms": 330
+                  "chars": 41215,
+                  "records": 2,
+                  "ms": 219
                 }
               },
               "counts": {
-                "patterns": 6
+                "patterns": 2
               },
               "budgetStopped": false,
               "degradationReason": null,
               "stages": {
                 "live": 0,
-                "patterns": 113,
-                "services": 116,
+                "patterns": 129,
+                "services": 117,
                 "operators": 0,
                 "disruptions": 0,
                 "weather": 0
               },
               "artifact": {
                 "servicesPath": "buckets",
-                "servicesWanted": 4,
-                "servicesFound": 4,
-                "serviceBucketsRead": 4,
-                "serviceBucketsPresent": 4,
-                "serviceBucketChars": 73465
+                "servicesWanted": 2,
+                "servicesFound": 2,
+                "serviceBucketsRead": 2,
+                "serviceBucketsPresent": 2,
+                "serviceBucketChars": 41215
               },
               "residency": {
                 "requestsServed": 14,
@@ -1063,24 +1071,24 @@
           "atcoCode": "43000217802",
           "name": "Ravenhurst Street",
           "status": 200,
-          "departures": 2,
-          "routes": 2,
+          "departures": 9,
+          "routes": 5,
           "hasWeather": false,
-          "notices": 15,
+          "notices": 20,
           "statuses": [
             ""
           ],
           "meta": {
-            "generatedAt": "2026-10-21T02:27:46.981Z",
+            "generatedAt": "2026-10-21T03:13:07.765Z",
             "observedAt": null,
             "sources": [
               {
                 "source": "bods",
                 "coverageArea": "non_london",
                 "status": "healthy",
-                "lastSuccessfulFetchAt": "2026-10-21T02:27:40.325Z",
-                "lastAttemptAt": "2026-10-21T02:27:39.002Z",
-                "ageSeconds": 6.79,
+                "lastSuccessfulFetchAt": "2026-10-21T03:13:01.924Z",
+                "lastAttemptAt": "2026-10-21T03:13:01.249Z",
+                "ageSeconds": 6.027,
                 "consecutiveFailures": 0
               }
             ],
@@ -1092,18 +1100,18 @@
               "© OpenStreetMap contributors, ODbL"
             ],
             "diagnostics": {
-              "elapsedMs": 343,
+              "elapsedMs": 424,
               "budgetMs": 3000,
               "budgetMeasures": "wall-clock-io",
               "budgetChars": 3145728,
-              "charsDecoded": 1303082,
-              "objectsRequested": 4,
-              "objectsRead": 4,
+              "charsDecoded": 1355406,
+              "objectsRequested": 7,
+              "objectsRead": 7,
               "objectsCached": 0,
               "objectsMissing": 0,
               "objectsFailed": 0,
-              "chars": 1303082,
-              "records": 6,
+              "chars": 1355406,
+              "records": 17,
               "families": {
                 "patterns": {
                   "requested": 2,
@@ -1112,40 +1120,40 @@
                   "missing": 0,
                   "failed": 0,
                   "chars": 1265101,
-                  "records": 4,
-                  "ms": 135
+                  "records": 12,
+                  "ms": 180
                 },
                 "services": {
-                  "requested": 2,
-                  "read": 2,
+                  "requested": 5,
+                  "read": 5,
                   "cached": 0,
                   "missing": 0,
                   "failed": 0,
-                  "chars": 37981,
-                  "records": 2,
-                  "ms": 148
+                  "chars": 90305,
+                  "records": 5,
+                  "ms": 516
                 }
               },
               "counts": {
-                "patterns": 2
+                "patterns": 6
               },
               "budgetStopped": false,
               "degradationReason": null,
               "stages": {
                 "live": 0,
-                "patterns": 76,
-                "services": 74,
+                "patterns": 96,
+                "services": 168,
                 "operators": 0,
                 "disruptions": 0,
-                "weather": 56
+                "weather": 57
               },
               "artifact": {
                 "servicesPath": "buckets",
-                "servicesWanted": 2,
-                "servicesFound": 2,
-                "serviceBucketsRead": 2,
-                "serviceBucketsPresent": 2,
-                "serviceBucketChars": 37981
+                "servicesWanted": 5,
+                "servicesFound": 5,
+                "serviceBucketsRead": 5,
+                "serviceBucketsPresent": 5,
+                "serviceBucketChars": 90305
               },
               "residency": {
                 "requestsServed": 15,
@@ -1170,24 +1178,24 @@
           "atcoCode": "43000217801",
           "name": "Ravenhurst Street",
           "status": 200,
-          "departures": 1,
-          "routes": 1,
+          "departures": 6,
+          "routes": 4,
           "hasWeather": false,
-          "notices": 15,
+          "notices": 20,
           "statuses": [
             ""
           ],
           "meta": {
-            "generatedAt": "2026-10-21T02:27:47.503Z",
+            "generatedAt": "2026-10-21T03:13:08.452Z",
             "observedAt": null,
             "sources": [
               {
                 "source": "bods",
                 "coverageArea": "non_london",
                 "status": "healthy",
-                "lastSuccessfulFetchAt": "2026-10-21T02:27:40.325Z",
-                "lastAttemptAt": "2026-10-21T02:27:39.002Z",
-                "ageSeconds": 7.328,
+                "lastSuccessfulFetchAt": "2026-10-21T03:13:01.924Z",
+                "lastAttemptAt": "2026-10-21T03:13:01.249Z",
+                "ageSeconds": 6.766,
                 "consecutiveFailures": 0
               }
             ],
@@ -1199,18 +1207,18 @@
               "© OpenStreetMap contributors, ODbL"
             ],
             "diagnostics": {
-              "elapsedMs": 290,
+              "elapsedMs": 615,
               "budgetMs": 3000,
               "budgetMeasures": "wall-clock-io",
               "budgetChars": 3145728,
-              "charsDecoded": 1288392,
-              "objectsRequested": 3,
-              "objectsRead": 3,
+              "charsDecoded": 1339277,
+              "objectsRequested": 6,
+              "objectsRead": 6,
               "objectsCached": 0,
               "objectsMissing": 0,
               "objectsFailed": 0,
-              "chars": 1288392,
-              "records": 3,
+              "chars": 1339277,
+              "records": 12,
               "families": {
                 "patterns": {
                   "requested": 2,
@@ -1219,40 +1227,40 @@
                   "missing": 0,
                   "failed": 0,
                   "chars": 1265101,
-                  "records": 2,
-                  "ms": 141
+                  "records": 8,
+                  "ms": 302
                 },
                 "services": {
-                  "requested": 1,
-                  "read": 1,
+                  "requested": 4,
+                  "read": 4,
                   "cached": 0,
                   "missing": 0,
                   "failed": 0,
-                  "chars": 23291,
-                  "records": 1,
-                  "ms": 79
+                  "chars": 74176,
+                  "records": 4,
+                  "ms": 522
                 }
               },
               "counts": {
-                "patterns": 1
+                "patterns": 4
               },
               "budgetStopped": false,
               "degradationReason": null,
               "stages": {
                 "live": 0,
-                "patterns": 74,
-                "services": 79,
+                "patterns": 156,
+                "services": 190,
                 "operators": 0,
                 "disruptions": 0,
                 "weather": 0
               },
               "artifact": {
                 "servicesPath": "buckets",
-                "servicesWanted": 1,
-                "servicesFound": 1,
-                "serviceBucketsRead": 1,
-                "serviceBucketsPresent": 1,
-                "serviceBucketChars": 23291
+                "servicesWanted": 4,
+                "servicesFound": 4,
+                "serviceBucketsRead": 4,
+                "serviceBucketsPresent": 4,
+                "serviceBucketChars": 74176
               },
               "residency": {
                 "requestsServed": 16,
@@ -1283,16 +1291,16 @@
           "notices": 0,
           "statuses": [],
           "meta": {
-            "generatedAt": "2026-10-21T02:27:47.991Z",
+            "generatedAt": "2026-10-21T03:13:09.355Z",
             "observedAt": null,
             "sources": [
               {
                 "source": "bods",
                 "coverageArea": "non_london",
                 "status": "healthy",
-                "lastSuccessfulFetchAt": "2026-10-21T02:27:40.325Z",
-                "lastAttemptAt": "2026-10-21T02:27:39.002Z",
-                "ageSeconds": 8.017,
+                "lastSuccessfulFetchAt": "2026-10-21T03:13:01.924Z",
+                "lastAttemptAt": "2026-10-21T03:13:01.249Z",
+                "ageSeconds": 7.636,
                 "consecutiveFailures": 0
               }
             ],
@@ -1304,7 +1312,7 @@
               "© OpenStreetMap contributors, ODbL"
             ],
             "diagnostics": {
-              "elapsedMs": 256,
+              "elapsedMs": 215,
               "budgetMs": 3000,
               "budgetMeasures": "wall-clock-io",
               "budgetChars": 3145728,
@@ -1325,7 +1333,7 @@
                   "failed": 0,
                   "chars": 1265101,
                   "records": 0,
-                  "ms": 159
+                  "ms": 165
                 }
               },
               "counts": {
@@ -1335,7 +1343,7 @@
               "degradationReason": null,
               "stages": {
                 "live": 0,
-                "patterns": 100,
+                "patterns": 84,
                 "services": 0,
                 "operators": 0,
                 "disruptions": 0,
@@ -1370,16 +1378,16 @@
           "notices": 0,
           "statuses": [],
           "meta": {
-            "generatedAt": "2026-10-21T02:27:48.702Z",
+            "generatedAt": "2026-10-21T03:13:09.920Z",
             "observedAt": null,
             "sources": [
               {
                 "source": "bods",
                 "coverageArea": "non_london",
                 "status": "healthy",
-                "lastSuccessfulFetchAt": "2026-10-21T02:27:40.325Z",
-                "lastAttemptAt": "2026-10-21T02:27:39.002Z",
-                "ageSeconds": 8.527,
+                "lastSuccessfulFetchAt": "2026-10-21T03:13:01.924Z",
+                "lastAttemptAt": "2026-10-21T03:13:01.249Z",
+                "ageSeconds": 8.213,
                 "consecutiveFailures": 0
               }
             ],
@@ -1391,7 +1399,7 @@
               "© OpenStreetMap contributors, ODbL"
             ],
             "diagnostics": {
-              "elapsedMs": 235,
+              "elapsedMs": 196,
               "budgetMs": 3000,
               "budgetMeasures": "wall-clock-io",
               "budgetChars": 3145728,
@@ -1412,7 +1420,7 @@
                   "failed": 0,
                   "chars": 1265101,
                   "records": 0,
-                  "ms": 118
+                  "ms": 142
                 }
               },
               "counts": {
@@ -1422,7 +1430,7 @@
               "degradationReason": null,
               "stages": {
                 "live": 0,
-                "patterns": 60,
+                "patterns": 72,
                 "services": 0,
                 "operators": 0,
                 "disruptions": 0,
@@ -1463,16 +1471,16 @@
           "notices": 10,
           "statuses": [],
           "meta": {
-            "generatedAt": "2026-10-21T02:27:49.189Z",
+            "generatedAt": "2026-10-21T03:13:10.531Z",
             "observedAt": null,
             "sources": [
               {
                 "source": "bods",
                 "coverageArea": "non_london",
                 "status": "healthy",
-                "lastSuccessfulFetchAt": "2026-10-21T02:27:40.325Z",
-                "lastAttemptAt": "2026-10-21T02:27:39.002Z",
-                "ageSeconds": 8.988,
+                "lastSuccessfulFetchAt": "2026-10-21T03:13:01.924Z",
+                "lastAttemptAt": "2026-10-21T03:13:01.249Z",
+                "ageSeconds": 8.802,
                 "consecutiveFailures": 0
               }
             ],
@@ -1484,7 +1492,7 @@
               "© OpenStreetMap contributors, ODbL"
             ],
             "diagnostics": {
-              "elapsedMs": 430,
+              "elapsedMs": 542,
               "budgetMs": 3000,
               "budgetMeasures": "wall-clock-io",
               "budgetChars": 3145728,
@@ -1505,7 +1513,7 @@
                   "failed": 0,
                   "chars": 563978,
                   "records": 1,
-                  "ms": 73
+                  "ms": 118
                 },
                 "services": {
                   "requested": 1,
@@ -1515,7 +1523,7 @@
                   "failed": 0,
                   "chars": 22209,
                   "records": 1,
-                  "ms": 110
+                  "ms": 136
                 }
               },
               "counts": {
@@ -1525,11 +1533,11 @@
               "degradationReason": null,
               "stages": {
                 "live": 0,
-                "patterns": 73,
-                "services": 110,
+                "patterns": 118,
+                "services": 136,
                 "operators": 0,
                 "disruptions": 0,
-                "weather": 63
+                "weather": 70
               },
               "artifact": {
                 "servicesPath": "buckets",
@@ -1568,16 +1576,16 @@
           "notices": 10,
           "statuses": [],
           "meta": {
-            "generatedAt": "2026-10-21T02:27:49.810Z",
+            "generatedAt": "2026-10-21T03:13:11.384Z",
             "observedAt": null,
             "sources": [
               {
                 "source": "bods",
                 "coverageArea": "non_london",
                 "status": "healthy",
-                "lastSuccessfulFetchAt": "2026-10-21T02:27:40.325Z",
-                "lastAttemptAt": "2026-10-21T02:27:39.002Z",
-                "ageSeconds": 9.688,
+                "lastSuccessfulFetchAt": "2026-10-21T03:13:01.924Z",
+                "lastAttemptAt": "2026-10-21T03:13:01.249Z",
+                "ageSeconds": 9.707,
                 "consecutiveFailures": 0
               }
             ],
@@ -1589,7 +1597,7 @@
               "© OpenStreetMap contributors, ODbL"
             ],
             "diagnostics": {
-              "elapsedMs": 289,
+              "elapsedMs": 198,
               "budgetMs": 3000,
               "budgetMeasures": "wall-clock-io",
               "budgetChars": 3145728,
@@ -1610,7 +1618,7 @@
                   "failed": 0,
                   "chars": 563978,
                   "records": 1,
-                  "ms": 66
+                  "ms": 59
                 },
                 "services": {
                   "requested": 1,
@@ -1620,7 +1628,7 @@
                   "failed": 0,
                   "chars": 22209,
                   "records": 1,
-                  "ms": 55
+                  "ms": 56
                 }
               },
               "counts": {
@@ -1630,8 +1638,8 @@
               "degradationReason": null,
               "stages": {
                 "live": 0,
-                "patterns": 66,
-                "services": 55,
+                "patterns": 59,
+                "services": 56,
                 "operators": 0,
                 "disruptions": 0,
                 "weather": 0
@@ -1673,16 +1681,16 @@
           "notices": 10,
           "statuses": [],
           "meta": {
-            "generatedAt": "2026-10-21T02:27:50.363Z",
+            "generatedAt": "2026-10-21T03:13:11.908Z",
             "observedAt": null,
             "sources": [
               {
                 "source": "bods",
                 "coverageArea": "non_london",
                 "status": "healthy",
-                "lastSuccessfulFetchAt": "2026-10-21T02:27:40.325Z",
-                "lastAttemptAt": "2026-10-21T02:27:39.002Z",
-                "ageSeconds": 10.152,
+                "lastSuccessfulFetchAt": "2026-10-21T03:13:01.924Z",
+                "lastAttemptAt": "2026-10-21T03:13:01.249Z",
+                "ageSeconds": 10.141,
                 "consecutiveFailures": 0
               }
             ],
@@ -1694,7 +1702,7 @@
               "© OpenStreetMap contributors, ODbL"
             ],
             "diagnostics": {
-              "elapsedMs": 358,
+              "elapsedMs": 294,
               "budgetMs": 3000,
               "budgetMeasures": "wall-clock-io",
               "budgetChars": 3145728,
@@ -1715,7 +1723,7 @@
                   "failed": 0,
                   "chars": 563978,
                   "records": 1,
-                  "ms": 70
+                  "ms": 111
                 },
                 "services": {
                   "requested": 1,
@@ -1725,7 +1733,7 @@
                   "failed": 0,
                   "chars": 22209,
                   "records": 1,
-                  "ms": 66
+                  "ms": 70
                 }
               },
               "counts": {
@@ -1735,8 +1743,8 @@
               "degradationReason": null,
               "stages": {
                 "live": 0,
-                "patterns": 70,
-                "services": 66,
+                "patterns": 111,
+                "services": 70,
                 "operators": 0,
                 "disruptions": 0,
                 "weather": 0
@@ -1778,16 +1786,16 @@
           "notices": 10,
           "statuses": [],
           "meta": {
-            "generatedAt": "2026-10-21T02:27:50.926Z",
+            "generatedAt": "2026-10-21T03:13:12.420Z",
             "observedAt": null,
             "sources": [
               {
                 "source": "bods",
                 "coverageArea": "non_london",
                 "status": "healthy",
-                "lastSuccessfulFetchAt": "2026-10-21T02:27:40.325Z",
-                "lastAttemptAt": "2026-10-21T02:27:39.002Z",
-                "ageSeconds": 10.748,
+                "lastSuccessfulFetchAt": "2026-10-21T03:13:01.924Z",
+                "lastAttemptAt": "2026-10-21T03:13:01.249Z",
+                "ageSeconds": 10.671,
                 "consecutiveFailures": 0
               }
             ],
@@ -1799,7 +1807,7 @@
               "© OpenStreetMap contributors, ODbL"
             ],
             "diagnostics": {
-              "elapsedMs": 316,
+              "elapsedMs": 290,
               "budgetMs": 3000,
               "budgetMeasures": "wall-clock-io",
               "budgetChars": 3145728,
@@ -1820,7 +1828,7 @@
                   "failed": 0,
                   "chars": 563978,
                   "records": 1,
-                  "ms": 59
+                  "ms": 98
                 },
                 "services": {
                   "requested": 1,
@@ -1830,7 +1838,7 @@
                   "failed": 0,
                   "chars": 22209,
                   "records": 1,
-                  "ms": 57
+                  "ms": 78
                 }
               },
               "counts": {
@@ -1840,8 +1848,8 @@
               "degradationReason": null,
               "stages": {
                 "live": 0,
-                "patterns": 59,
-                "services": 57,
+                "patterns": 98,
+                "services": 78,
                 "operators": 0,
                 "disruptions": 0,
                 "weather": 0
@@ -1889,16 +1897,16 @@
           "notices": 15,
           "statuses": [],
           "meta": {
-            "generatedAt": "2026-10-21T02:27:51.446Z",
+            "generatedAt": "2026-10-21T03:13:12.934Z",
             "observedAt": null,
             "sources": [
               {
                 "source": "bods",
                 "coverageArea": "non_london",
                 "status": "healthy",
-                "lastSuccessfulFetchAt": "2026-10-21T02:27:40.325Z",
-                "lastAttemptAt": "2026-10-21T02:27:39.002Z",
-                "ageSeconds": 11.259,
+                "lastSuccessfulFetchAt": "2026-10-21T03:13:01.924Z",
+                "lastAttemptAt": "2026-10-21T03:13:01.249Z",
+                "ageSeconds": 11.207,
                 "consecutiveFailures": 0
               }
             ],
@@ -1910,7 +1918,7 @@
               "© OpenStreetMap contributors, ODbL"
             ],
             "diagnostics": {
-              "elapsedMs": 347,
+              "elapsedMs": 296,
               "budgetMs": 3000,
               "budgetMeasures": "wall-clock-io",
               "budgetChars": 3145728,
@@ -1931,7 +1939,7 @@
                   "failed": 0,
                   "chars": 521127,
                   "records": 3,
-                  "ms": 61
+                  "ms": 81
                 },
                 "services": {
                   "requested": 2,
@@ -1941,7 +1949,7 @@
                   "failed": 0,
                   "chars": 37260,
                   "records": 2,
-                  "ms": 135
+                  "ms": 228
                 }
               },
               "counts": {
@@ -1951,8 +1959,8 @@
               "degradationReason": null,
               "stages": {
                 "live": 0,
-                "patterns": 61,
-                "services": 73,
+                "patterns": 81,
+                "services": 137,
                 "operators": 0,
                 "disruptions": 0,
                 "weather": 0
@@ -1994,16 +2002,16 @@
           "notices": 20,
           "statuses": [],
           "meta": {
-            "generatedAt": "2026-10-21T02:27:51.978Z",
+            "generatedAt": "2026-10-21T03:13:13.468Z",
             "observedAt": null,
             "sources": [
               {
                 "source": "bods",
                 "coverageArea": "non_london",
                 "status": "healthy",
-                "lastSuccessfulFetchAt": "2026-10-21T02:27:40.325Z",
-                "lastAttemptAt": "2026-10-21T02:27:39.002Z",
-                "ageSeconds": 11.831,
+                "lastSuccessfulFetchAt": "2026-10-21T03:13:01.924Z",
+                "lastAttemptAt": "2026-10-21T03:13:01.249Z",
+                "ageSeconds": 11.728,
                 "consecutiveFailures": 0
               }
             ],
@@ -2015,7 +2023,7 @@
               "© OpenStreetMap contributors, ODbL"
             ],
             "diagnostics": {
-              "elapsedMs": 308,
+              "elapsedMs": 342,
               "budgetMs": 3000,
               "budgetMeasures": "wall-clock-io",
               "budgetChars": 3145728,
@@ -2036,7 +2044,7 @@
                   "failed": 0,
                   "chars": 521127,
                   "records": 10,
-                  "ms": 72
+                  "ms": 93
                 },
                 "services": {
                   "requested": 5,
@@ -2046,7 +2054,7 @@
                   "failed": 0,
                   "chars": 90676,
                   "records": 5,
-                  "ms": 335
+                  "ms": 508
                 }
               },
               "counts": {
@@ -2056,8 +2064,8 @@
               "degradationReason": null,
               "stages": {
                 "live": 0,
-                "patterns": 72,
-                "services": 88,
+                "patterns": 93,
+                "services": 116,
                 "operators": 0,
                 "disruptions": 0,
                 "weather": 0
@@ -2099,16 +2107,16 @@
           "notices": 15,
           "statuses": [],
           "meta": {
-            "generatedAt": "2026-10-21T02:27:52.515Z",
+            "generatedAt": "2026-10-21T03:13:14.033Z",
             "observedAt": null,
             "sources": [
               {
                 "source": "bods",
                 "coverageArea": "non_london",
                 "status": "healthy",
-                "lastSuccessfulFetchAt": "2026-10-21T02:27:40.325Z",
-                "lastAttemptAt": "2026-10-21T02:27:39.002Z",
-                "ageSeconds": 12.329,
+                "lastSuccessfulFetchAt": "2026-10-21T03:13:01.924Z",
+                "lastAttemptAt": "2026-10-21T03:13:01.249Z",
+                "ageSeconds": 12.241,
                 "consecutiveFailures": 0
               }
             ],
@@ -2120,7 +2128,7 @@
               "© OpenStreetMap contributors, ODbL"
             ],
             "diagnostics": {
-              "elapsedMs": 291,
+              "elapsedMs": 300,
               "budgetMs": 3000,
               "budgetMeasures": "wall-clock-io",
               "budgetChars": 3145728,
@@ -2141,7 +2149,7 @@
                   "failed": 0,
                   "chars": 521127,
                   "records": 3,
-                  "ms": 71
+                  "ms": 79
                 },
                 "services": {
                   "requested": 2,
@@ -2151,7 +2159,7 @@
                   "failed": 0,
                   "chars": 37260,
                   "records": 2,
-                  "ms": 136
+                  "ms": 147
                 }
               },
               "counts": {
@@ -2161,8 +2169,8 @@
               "degradationReason": null,
               "stages": {
                 "live": 0,
-                "patterns": 71,
-                "services": 86,
+                "patterns": 79,
+                "services": 80,
                 "operators": 0,
                 "disruptions": 0,
                 "weather": 0
@@ -2204,16 +2212,16 @@
           "notices": 0,
           "statuses": [],
           "meta": {
-            "generatedAt": "2026-10-21T02:27:52.990Z",
+            "generatedAt": "2026-10-21T03:13:14.639Z",
             "observedAt": null,
             "sources": [
               {
                 "source": "bods",
                 "coverageArea": "non_london",
                 "status": "healthy",
-                "lastSuccessfulFetchAt": "2026-10-21T02:27:40.325Z",
-                "lastAttemptAt": "2026-10-21T02:27:39.002Z",
-                "ageSeconds": 12.82,
+                "lastSuccessfulFetchAt": "2026-10-21T03:13:01.924Z",
+                "lastAttemptAt": "2026-10-21T03:13:01.249Z",
+                "ageSeconds": 12.919,
                 "consecutiveFailures": 0
               }
             ],
@@ -2225,7 +2233,7 @@
               "© OpenStreetMap contributors, ODbL"
             ],
             "diagnostics": {
-              "elapsedMs": 205,
+              "elapsedMs": 150,
               "budgetMs": 3000,
               "budgetMeasures": "wall-clock-io",
               "budgetChars": 3145728,
@@ -2246,7 +2254,7 @@
                   "failed": 0,
                   "chars": 521127,
                   "records": 0,
-                  "ms": 53
+                  "ms": 79
                 }
               },
               "counts": {
@@ -2256,7 +2264,7 @@
               "degradationReason": null,
               "stages": {
                 "live": 0,
-                "patterns": 53,
+                "patterns": 79,
                 "services": 0,
                 "operators": 0,
                 "disruptions": 0,
@@ -2304,35 +2312,35 @@
     },
     {
       "area": "Manchester",
-      "route": "103",
+      "route": "101",
       "operator": "Bee Network",
-      "variants": 5,
-      "stops": 64,
-      "origin": "Piccadilly Gardens",
-      "destination": "Manchester Airport The Station",
+      "variants": 3,
+      "stops": 56,
+      "origin": "Wythenshawe Town Centre",
+      "destination": "Piccadilly Gardens",
       "ordered": true,
       "alphabetical": false,
       "complete": true,
-      "middleStop": "Bucklow Drive",
-      "middleStopNumber": 33,
+      "middleStop": "Princess Parkway",
+      "middleStopNumber": 29,
       "middleBoardStatus": 200,
-      "middleDue": 5
+      "middleDue": 2
     },
     {
       "area": "Birmingham",
-      "route": "4",
+      "route": "2",
       "operator": "National Express West Midlands",
       "variants": 6,
-      "stops": 39,
-      "origin": "Solihull Station",
-      "destination": "Church Centre",
+      "stops": 43,
+      "origin": "Moor Street Station",
+      "destination": "Maypole Shops",
       "ordered": true,
       "alphabetical": false,
       "complete": true,
-      "middleStop": "Tyseley Lane",
-      "middleStopNumber": 20,
+      "middleStop": "Billesley Fire Station",
+      "middleStopNumber": 22,
       "middleBoardStatus": 200,
-      "middleDue": 3
+      "middleDue": 7
     },
     {
       "area": "Bristol",
@@ -2348,7 +2356,7 @@
       "middleStop": "Broadmead",
       "middleStopNumber": 12,
       "middleBoardStatus": 200,
-      "middleDue": 3
+      "middleDue": 2
     },
     {
       "area": "York",
@@ -2409,20 +2417,20 @@
       {
         "stop": "Station B",
         "status": 200,
-        "departures": 0,
-        "routes": 5
+        "departures": 1,
+        "routes": 1
       },
       {
         "stop": "Station D",
         "status": 200,
-        "departures": 0,
-        "routes": 9
+        "departures": 3,
+        "routes": 3
       }
     ],
     "openedStop": "Station B",
     "boardStatus": 200,
-    "departures": 0,
-    "routes": 5
+    "departures": 1,
+    "routes": 1
   },
   "postcodeSearches": [
     {
@@ -2505,7 +2513,7 @@
       },
       {
         "label": "Buses observed",
-        "value": "51",
+        "value": "14",
         "basis": "observed"
       },
       {
@@ -2530,7 +2538,7 @@
       },
       {
         "label": "Median segment time",
-        "value": "117",
+        "value": "62",
         "basis": "calculated"
       },
       {
@@ -63251,33 +63259,98 @@
         "stopsInThisViewport": 4
       },
       "stop": {
-        "stop": "Leeds City Bus Station",
-        "atcoCode": "450030220",
+        "stop": "Corn Exchange F",
+        "atcoCode": "450012984",
         "status": 200,
-        "routeCount": 3,
-        "routesComplete": false,
-        "departuresDue": 20,
+        "routeCount": 2,
+        "routesComplete": true,
+        "departuresDue": 4,
         "coverage": {
-          "read": 2,
+          "read": 1,
           "missing": 0,
           "serviceDates": [
-            "2026-10-20",
             "2026-10-21"
           ]
         },
         "coordinate": {
-          "lat": 53.7966924405563,
-          "lon": -1.535701855597298
+          "lat": 53.796252883398196,
+          "lon": -1.540595085757328
         },
-        "routeId": "0836d9e8-8d12-59d2-bed5-db645157b361",
-        "nextScheduledDeparture": "2026-10-21T02:45:00.000Z",
-        "candidatesTried": 1,
-        "otherCandidates": [],
+        "routeId": "8c80f9d5-c476-57f4-b0bf-f283f29ec293",
+        "nextScheduledDeparture": "2026-10-21T04:01:00.000Z",
+        "candidatesTried": 4,
+        "otherCandidates": [
+          {
+            "stop": "Leeds City Bus Station",
+            "atcoCode": "450030220",
+            "status": 200,
+            "routeCount": 0,
+            "routesComplete": false,
+            "departuresDue": 9,
+            "coverage": {
+              "read": 1,
+              "missing": 0,
+              "serviceDates": [
+                "2026-10-21"
+              ]
+            },
+            "coordinate": {
+              "lat": 53.7966924405563,
+              "lon": -1.535701855597298
+            },
+            "routeId": null,
+            "nextScheduledDeparture": "2026-10-21T03:50:00.000Z"
+          },
+          {
+            "stop": "Leeds City Bus Station",
+            "atcoCode": "450030221",
+            "status": 200,
+            "routeCount": 0,
+            "routesComplete": true,
+            "departuresDue": 0,
+            "coverage": {
+              "read": 1,
+              "missing": 0,
+              "serviceDates": [
+                "2026-10-21"
+              ]
+            },
+            "coordinate": {
+              "lat": 53.79672839120385,
+              "lon": -1.535701458747847
+            },
+            "routeId": null,
+            "nextScheduledDeparture": null
+          },
+          {
+            "stop": "Corn Exchange I",
+            "atcoCode": "450012652",
+            "status": 200,
+            "routeCount": 4,
+            "routesComplete": true,
+            "departuresDue": 0,
+            "coverage": {
+              "read": 1,
+              "missing": 0,
+              "serviceDates": [
+                "2026-10-21"
+              ]
+            },
+            "coordinate": {
+              "lat": 53.795896918214815,
+              "lon": -1.541525024859797
+            },
+            "routeId": "d055c145-9585-5561-80f2-db870550502f",
+            "nextScheduledDeparture": null
+          }
+        ],
         "windowMinutes": 90,
         "state": "PASS"
       },
       "live": {
-        "deployed": 2,
+        "deployed": 3,
+        "degradation": "normal",
+        "coverage": 1,
         "upstreamRaw": 0,
         "upstreamAccepted": 0,
         "upstreamRejected": 0,
@@ -63289,32 +63362,27 @@
       "selectedBuses": [
         {
           "status": 200,
-          "route": "X84",
-          "destination": "Lawnswood School",
-          "matchedPattern": "21c043f0-676a-5536-85d5-45d3176f301c",
-          "nextStopsState": "ahead",
-          "stopsReturned": 40,
-          "passedStops": 3,
-          "stopsAhead": [
-            "Golden Beam",
-            "St Michaels Church",
-            "Headingley Arndale",
-            "St Anne's Road"
-          ],
-          "shapePoints": 66,
-          "progressAlongShapeMetres": 2944,
+          "route": "72",
+          "destination": "Little Germany W",
+          "matchedPattern": null,
+          "nextStopsState": "unmatched",
+          "stopsReturned": 0,
+          "passedStops": 0,
+          "stopsAhead": [],
+          "shapePoints": 0,
+          "progressAlongShapeMetres": null,
           "serverTracePoints": 0,
           "traceSpanSeconds": 0,
           "traceAgeSeconds": null,
-          "stopsAheadState": "PASS",
-          "bluePreview": "PASS — clipped at the bus",
+          "stopsAheadState": "no confident pattern match",
+          "bluePreview": "no shape — unmatched",
           "recentTrail": "insufficient server observations (the session trail accumulates in the browser)"
         },
         {
           "status": 200,
-          "route": "61A",
-          "destination": "The Headrow",
-          "matchedPattern": "22e87356-f5e8-54fe-9c23-2d506370a9d3",
+          "route": "467",
+          "destination": "P1 Park Row",
+          "matchedPattern": "08c2fe8b-b7f4-5766-8b92-f178fbe3caa8",
           "nextStopsState": "unmatched",
           "stopsReturned": 0,
           "passedStops": 0,
@@ -63331,16 +63399,16 @@
       ],
       "routeDetail": {
         "status": 200,
-        "routeId": "0836d9e8-8d12-59d2-bed5-db645157b361",
-        "name": "UKN11",
-        "variants": 2,
-        "stops": 4,
+        "routeId": "8c80f9d5-c476-57f4-b0bf-f283f29ec293",
+        "name": "12",
+        "variants": 5,
+        "stops": 64,
         "state": "PASS"
       },
       "journey": {
         "status": 200,
-        "from": "Leeds City Bus Station",
-        "to": "Newton Parade",
+        "from": "Corn Exchange F",
+        "to": "Scott Hall Grove",
         "options": 1,
         "state": "PASS"
       }
@@ -63363,14 +63431,13 @@
         "stop": "Cavendish Street",
         "atcoCode": "1800SB31191",
         "status": 200,
-        "routeCount": 1,
+        "routeCount": 2,
         "routesComplete": true,
-        "departuresDue": 2,
+        "departuresDue": 4,
         "coverage": {
-          "read": 2,
+          "read": 1,
           "missing": 0,
           "serviceDates": [
-            "2026-10-20",
             "2026-10-21"
           ]
         },
@@ -63378,15 +63445,17 @@
           "lat": 53.469502,
           "lon": -2.240907
         },
-        "routeId": "4411b868-e0b5-52b4-abc9-0b329069b7ce",
-        "nextScheduledDeparture": "2026-10-21T03:05:00.000Z",
+        "routeId": "48149c06-4d39-549f-9b98-cd6c657379cd",
+        "nextScheduledDeparture": "2026-10-21T03:49:00.000Z",
         "candidatesTried": 1,
         "otherCandidates": [],
         "windowMinutes": 90,
         "state": "PASS"
       },
       "live": {
-        "deployed": 5,
+        "deployed": 7,
+        "degradation": "normal",
+        "coverage": 1,
         "upstreamRaw": 0,
         "upstreamAccepted": 0,
         "upstreamRejected": 0,
@@ -63398,9 +63467,9 @@
       "selectedBuses": [
         {
           "status": 200,
-          "route": "43",
-          "destination": "Manchester Airport The Station",
-          "matchedPattern": "d95fd3b5-a763-5661-8a7b-da6aaff740fa",
+          "route": "V2",
+          "destination": "Bolton Interchange",
+          "matchedPattern": "ee4b2d86-4922-52ff-b5d4-9003d779421f",
           "nextStopsState": "unmatched",
           "stopsReturned": 0,
           "passedStops": 0,
@@ -63416,29 +63485,34 @@
         },
         {
           "status": 200,
-          "route": "42B",
-          "destination": "Parrs Wood",
-          "matchedPattern": "59d8c6b2-e209-5f1e-9480-aa46b8e0024d",
-          "nextStopsState": "unmatched",
-          "stopsReturned": 0,
-          "passedStops": 0,
-          "stopsAhead": [],
-          "shapePoints": 0,
-          "progressAlongShapeMetres": null,
+          "route": "103",
+          "destination": "Manchester Airport The Station",
+          "matchedPattern": "5dada468-5e05-5a71-8b9b-8a746362c4e2",
+          "nextStopsState": "ahead",
+          "stopsReturned": 40,
+          "passedStops": 3,
+          "stopsAhead": [
+            "Wilbraham Road",
+            "Stirling Avenue",
+            "Whitchurch Road",
+            "Withington Metrolink Stop"
+          ],
+          "shapePoints": 64,
+          "progressAlongShapeMetres": 4511,
           "serverTracePoints": 0,
           "traceSpanSeconds": 0,
           "traceAgeSeconds": null,
-          "stopsAheadState": "no confident pattern match",
-          "bluePreview": "no shape — unmatched",
+          "stopsAheadState": "PASS",
+          "bluePreview": "PASS — clipped at the bus",
           "recentTrail": "insufficient server observations (the session trail accumulates in the browser)"
         }
       ],
       "routeDetail": {
         "status": 200,
-        "routeId": "4411b868-e0b5-52b4-abc9-0b329069b7ce",
-        "name": "103",
-        "variants": 5,
-        "stops": 64,
+        "routeId": "48149c06-4d39-549f-9b98-cd6c657379cd",
+        "name": "101",
+        "variants": 3,
+        "stops": 56,
         "state": "PASS"
       },
       "journey": {
@@ -63467,14 +63541,13 @@
         "stop": "Ravenhurst Street",
         "atcoCode": "43000217802",
         "status": 200,
-        "routeCount": 2,
+        "routeCount": 5,
         "routesComplete": true,
-        "departuresDue": 2,
+        "departuresDue": 9,
         "coverage": {
-          "read": 2,
+          "read": 1,
           "missing": 0,
           "serviceDates": [
-            "2026-10-20",
             "2026-10-21"
           ]
         },
@@ -63482,7 +63555,7 @@
           "lat": 52.46944,
           "lon": -1.87929
         },
-        "routeId": "bd4e47e0-d920-51e5-9e26-9714c23c9551",
+        "routeId": "bd5536e0-d926-53b0-9853-78fc484522b7",
         "nextScheduledDeparture": "2026-10-21T03:32:00.000Z",
         "candidatesTried": 1,
         "otherCandidates": [],
@@ -63490,7 +63563,9 @@
         "state": "PASS"
       },
       "live": {
-        "deployed": 7,
+        "deployed": 12,
+        "degradation": "normal",
+        "coverage": 1,
         "upstreamRaw": 0,
         "upstreamAccepted": 0,
         "upstreamRejected": 0,
@@ -63501,29 +63576,34 @@
       },
       "selectedBuses": [
         {
-          "status": 503,
-          "route": null,
-          "destination": null,
-          "matchedPattern": null,
-          "nextStopsState": "",
-          "stopsReturned": 0,
-          "passedStops": 0,
-          "stopsAhead": [],
-          "shapePoints": 0,
-          "progressAlongShapeMetres": null,
+          "status": 200,
+          "route": "80",
+          "destination": "Luton Interchange adj Rail Stn Stand 9",
+          "matchedPattern": "72525fc8-4e19-5aa3-a713-86e372b1638e",
+          "nextStopsState": "ahead",
+          "stopsReturned": 12,
+          "passedStops": 3,
+          "stopsAhead": [
+            "Leyburn Road",
+            "Friston Avenue",
+            "Frederick Road",
+            "Five Ways Station"
+          ],
+          "shapePoints": 46,
+          "progressAlongShapeMetres": 9339,
           "serverTracePoints": 0,
           "traceSpanSeconds": 0,
           "traceAgeSeconds": null,
-          "stopsAheadState": "no confident pattern match",
-          "bluePreview": "no shape — unmatched",
+          "stopsAheadState": "PASS",
+          "bluePreview": "PASS — clipped at the bus",
           "recentTrail": "insufficient server observations (the session trail accumulates in the browser)"
         },
         {
-          "status": 503,
-          "route": null,
-          "destination": null,
-          "matchedPattern": null,
-          "nextStopsState": "",
+          "status": 200,
+          "route": "590",
+          "destination": "Coventry Pool Meadow Bus Station",
+          "matchedPattern": "4c2c60ee-fac0-58d4-93c3-59935123f308",
+          "nextStopsState": "unmatched",
           "stopsReturned": 0,
           "passedStops": 0,
           "stopsAhead": [],
@@ -63538,46 +63618,20 @@
         }
       ],
       "routeDetail": {
-        "status": 503,
-        "routeId": "bd4e47e0-d920-51e5-9e26-9714c23c9551",
-        "name": "",
-        "variants": 0,
-        "stops": 0,
-        "state": "FAIL — HTTP 503, 0 variant(s), 0 stop(s)"
+        "status": 200,
+        "routeId": "bd5536e0-d926-53b0-9853-78fc484522b7",
+        "name": "2",
+        "variants": 6,
+        "stops": 43,
+        "state": "PASS"
       },
       "journey": {
-        "status": 503,
+        "status": 200,
         "from": "Ravenhurst Street",
         "to": "Cheston Road",
-        "options": 0,
-        "state": "FAIL — /v1/journeys answered HTTP 503"
-      },
-      "trouble": [
-        {
-          "path": "/v1/vehicles/2peb5cpduggp0?bbox=-1.96000%2C52.42000%2C-1.80000%2C52.52000",
-          "status": 503,
-          "ms": 437,
-          "body": "<!DOCTYPE html> <html class=\"no-js\" lang=\"en-US\"> <head> <title>Worker exceeded resource limits | busstops-api-preview.paulmurrin13.workers.dev | Cloudflare</title> <meta charset=\"UTF-8\" /> <meta http"
-        },
-        {
-          "path": "/v1/vehicles/pyp6rl4jctaj?bbox=-1.96000%2C52.42000%2C-1.80000%2C52.52000",
-          "status": 503,
-          "ms": 43,
-          "body": "<!DOCTYPE html> <html class=\"no-js\" lang=\"en-US\"> <head> <title>Worker exceeded resource limits | busstops-api-preview.paulmurrin13.workers.dev | Cloudflare</title> <meta charset=\"UTF-8\" /> <meta http"
-        },
-        {
-          "path": "/v1/routes/bd4e47e0-d920-51e5-9e26-9714c23c9551",
-          "status": 503,
-          "ms": 300,
-          "body": "<!DOCTYPE html> <html class=\"no-js\" lang=\"en-US\"> <head> <title>Worker exceeded resource limits | busstops-api-preview.paulmurrin13.workers.dev | Cloudflare</title> <meta charset=\"UTF-8\" /> <meta http"
-        },
-        {
-          "path": "/v1/journeys?fromLat=52.46944&fromLon=-1.87929&toLat=52.49647&toLon=-1.87833",
-          "status": 503,
-          "ms": 125,
-          "body": "<!DOCTYPE html> <html class=\"no-js\" lang=\"en-US\"> <head> <title>Worker exceeded resource limits | busstops-api-preview.paulmurrin13.workers.dev | Cloudflare</title> <meta charset=\"UTF-8\" /> <meta http"
-        }
-      ]
+        "options": 1,
+        "state": "PASS"
+      }
     },
     {
       "city": "Bristol",
@@ -63595,113 +63649,174 @@
       },
       "stop": {
         "stop": "Brook Road",
-        "atcoCode": "0940088c-1dc6-5546-a01b-daea393b72f4",
-        "status": 503,
-        "routeCount": 0,
-        "routesComplete": null,
+        "atcoCode": "0100BRP90092",
+        "status": 200,
+        "routeCount": 1,
+        "routesComplete": true,
         "departuresDue": 0,
-        "coverage": null,
-        "coordinate": null,
-        "routeId": null,
+        "coverage": {
+          "read": 1,
+          "missing": 0,
+          "serviceDates": [
+            "2026-10-21"
+          ]
+        },
+        "coordinate": {
+          "lat": 51.46598,
+          "lon": -2.58088
+        },
+        "routeId": "dc0e6904-d3c4-5296-810a-44c81b56d2dd",
         "nextScheduledDeparture": null,
         "candidatesTried": 4,
         "otherCandidates": [
           {
             "stop": "Brook Road",
-            "atcoCode": "0940098c-1dc6-56f9-9d21-8fbc6ca6f8e2",
-            "status": 503,
-            "routeCount": 0,
-            "routesComplete": null,
+            "atcoCode": "0100BRP90093",
+            "status": 200,
+            "routeCount": 1,
+            "routesComplete": true,
             "departuresDue": 0,
-            "coverage": null,
-            "coordinate": null,
-            "routeId": null,
+            "coverage": {
+              "read": 1,
+              "missing": 0,
+              "serviceDates": [
+                "2026-10-21"
+              ]
+            },
+            "coordinate": {
+              "lat": 51.46563,
+              "lon": -2.58173
+            },
+            "routeId": "dc0e6904-d3c4-5296-810a-44c81b56d2dd",
             "nextScheduledDeparture": null
           },
           {
             "stop": "Denbigh Street",
-            "atcoCode": "0940078c-1dc6-5393-966a-f32349bbda08",
-            "status": 503,
-            "routeCount": 0,
-            "routesComplete": null,
+            "atcoCode": "0100BRP90091",
+            "status": 200,
+            "routeCount": 1,
+            "routesComplete": true,
             "departuresDue": 0,
-            "coverage": null,
-            "coordinate": null,
-            "routeId": null,
+            "coverage": {
+              "read": 1,
+              "missing": 0,
+              "serviceDates": [
+                "2026-10-21"
+              ]
+            },
+            "coordinate": {
+              "lat": 51.46498,
+              "lon": -2.58398
+            },
+            "routeId": "dc0e6904-d3c4-5296-810a-44c81b56d2dd",
             "nextScheduledDeparture": null
           },
           {
             "stop": "Denbigh Street",
-            "atcoCode": "0940068c-1dc6-51e0-9568-7f0f8bbf56f7",
-            "status": 503,
-            "routeCount": 0,
-            "routesComplete": null,
+            "atcoCode": "0100BRP90090",
+            "status": 200,
+            "routeCount": 1,
+            "routesComplete": true,
             "departuresDue": 0,
-            "coverage": null,
-            "coordinate": null,
-            "routeId": null,
+            "coverage": {
+              "read": 1,
+              "missing": 0,
+              "serviceDates": [
+                "2026-10-21"
+              ]
+            },
+            "coordinate": {
+              "lat": 51.46439,
+              "lon": -2.58494
+            },
+            "routeId": "dc0e6904-d3c4-5296-810a-44c81b56d2dd",
             "nextScheduledDeparture": null
           }
         ],
         "windowMinutes": 90,
-        "state": "FAIL — /v1/stops answered HTTP 503"
+        "state": "routes known, nothing due in the next 90 minutes"
       },
       "live": {
-        "deployed": 0,
+        "deployed": 16,
+        "degradation": "normal",
+        "coverage": 1,
         "upstreamRaw": 0,
         "upstreamAccepted": 0,
         "upstreamRejected": 0,
         "upstreamStatus": null,
-        "degraded": null,
+        "degraded": false,
         "upstreamError": "no key",
         "state": "upstream not asked (no key)"
       },
-      "selectedBuses": "no live bus in this viewport at test time",
+      "selectedBuses": [
+        {
+          "status": 200,
+          "route": "75",
+          "destination": "Hengrove Bus Depot",
+          "matchedPattern": "6f5c4374-8012-5a47-8f3a-f9ab09ee090c",
+          "nextStopsState": "ahead",
+          "stopsReturned": 39,
+          "passedStops": 3,
+          "stopsAhead": [
+            "Zetland Road Junction",
+            "Montpelier High School",
+            "Nine Tree Hill",
+            "Stokes Croft"
+          ],
+          "shapePoints": 65,
+          "progressAlongShapeMetres": 10355,
+          "serverTracePoints": 0,
+          "traceSpanSeconds": 0,
+          "traceAgeSeconds": null,
+          "stopsAheadState": "PASS",
+          "bluePreview": "PASS — clipped at the bus",
+          "recentTrail": "insufficient server observations (the session trail accumulates in the browser)"
+        },
+        {
+          "status": 200,
+          "route": "100",
+          "destination": "Cribbs Causeway Bus Station H",
+          "matchedPattern": "c284506c-3c07-5e6a-ad36-fe26077449b3",
+          "nextStopsState": "ahead",
+          "stopsReturned": 15,
+          "passedStops": 3,
+          "stopsAhead": [
+            "Highbury Road",
+            "Parson Street Stn",
+            "Chessel Street",
+            "Victor Road"
+          ],
+          "shapePoints": 77,
+          "progressAlongShapeMetres": 42874,
+          "serverTracePoints": 0,
+          "traceSpanSeconds": 0,
+          "traceAgeSeconds": null,
+          "stopsAheadState": "PASS",
+          "bluePreview": "PASS — clipped at the bus",
+          "recentTrail": "insufficient server observations (the session trail accumulates in the browser)"
+        }
+      ],
       "routeDetail": {
-        "state": "no route id available from this city's stop or search"
+        "status": 200,
+        "routeId": "dc0e6904-d3c4-5296-810a-44c81b56d2dd",
+        "name": "25",
+        "variants": 2,
+        "stops": 23,
+        "state": "PASS"
       },
       "journey": {
         "status": 503,
         "from": "Brook Road",
-        "to": "Lockleaze Road",
+        "to": "Wessex Avenue",
         "options": 0,
         "state": "FAIL — /v1/journeys answered HTTP 503"
       },
       "trouble": [
         {
-          "path": "/v1/stops/0940088c-1dc6-5546-a01b-daea393b72f4",
+          "path": "/v1/journeys?fromLat=51.46598&fromLon=-2.58088&toLat=51.49138&toLon=-2.58076",
           "status": 503,
-          "ms": 447,
-          "body": "<!DOCTYPE html> <html class=\"no-js\" lang=\"en-US\"> <head> <title>Worker exceeded resource limits | busstops-api-preview.paulmurrin13.workers.dev | Cloudflare</title> <meta charset=\"UTF-8\" /> <meta http"
-        },
-        {
-          "path": "/v1/stops/0940098c-1dc6-56f9-9d21-8fbc6ca6f8e2",
-          "status": 503,
-          "ms": 413,
-          "body": "<!DOCTYPE html> <html class=\"no-js\" lang=\"en-US\"> <head> <title>Worker exceeded resource limits | busstops-api-preview.paulmurrin13.workers.dev | Cloudflare</title> <meta charset=\"UTF-8\" /> <meta http"
-        },
-        {
-          "path": "/v1/stops/0940078c-1dc6-5393-966a-f32349bbda08",
-          "status": 503,
-          "ms": 514,
-          "body": "<!DOCTYPE html> <html class=\"no-js\" lang=\"en-US\"> <head> <title>Worker exceeded resource limits | busstops-api-preview.paulmurrin13.workers.dev | Cloudflare</title> <meta charset=\"UTF-8\" /> <meta http"
-        },
-        {
-          "path": "/v1/stops/0940068c-1dc6-51e0-9568-7f0f8bbf56f7",
-          "status": 503,
-          "ms": 316,
-          "body": "<!DOCTYPE html> <html class=\"no-js\" lang=\"en-US\"> <head> <title>Worker exceeded resource limits | busstops-api-preview.paulmurrin13.workers.dev | Cloudflare</title> <meta charset=\"UTF-8\" /> <meta http"
-        },
-        {
-          "path": "/v1/map?bbox=-2.66000%2C51.42000%2C-2.50000%2C51.51000&zoom=13",
-          "status": 503,
-          "ms": 206,
-          "body": "<!DOCTYPE html> <html class=\"no-js\" lang=\"en-US\"> <head> <title>Worker exceeded resource limits | busstops-api-preview.paulmurrin13.workers.dev | Cloudflare</title> <meta charset=\"UTF-8\" /> <meta http"
-        },
-        {
-          "path": "/v1/journeys?fromLat=51.46500&fromLon=-2.58000&toLat=51.49028&toLon=-2.57864",
-          "status": 503,
-          "ms": 378,
+          "ms": 671,
+          "cloudflare": "<title>Worker exceeded resource limits | busstops-api-preview.paulmurrin13.worke",
           "body": "<!DOCTYPE html> <html class=\"no-js\" lang=\"en-US\"> <head> <title>Worker exceeded resource limits | busstops-api-preview.paulmurrin13.workers.dev | Cloudflare</title> <meta charset=\"UTF-8\" /> <meta http"
         }
       ]
@@ -63728,10 +63843,9 @@
         "routesComplete": true,
         "departuresDue": 0,
         "coverage": {
-          "read": 2,
+          "read": 1,
           "missing": 0,
           "serviceDates": [
-            "2026-10-20",
             "2026-10-21"
           ]
         },
@@ -63745,37 +63859,64 @@
         "otherCandidates": [
           {
             "stop": "Trinity Methodist Church",
-            "atcoCode": "1e387c71-b4b3-56c1-873c-eb85cd07b130",
-            "status": 503,
-            "routeCount": 0,
-            "routesComplete": null,
+            "atcoCode": "3290YYA00214",
+            "status": 200,
+            "routeCount": 5,
+            "routesComplete": true,
             "departuresDue": 0,
-            "coverage": null,
-            "coordinate": null,
-            "routeId": null,
+            "coverage": {
+              "read": 1,
+              "missing": 0,
+              "serviceDates": [
+                "2026-10-21"
+              ]
+            },
+            "coordinate": {
+              "lat": 53.964206529,
+              "lon": -1.075868139
+            },
+            "routeId": "817c7dba-a74e-5287-a97f-07747491c7a1",
             "nextScheduledDeparture": null
           },
           {
             "stop": "Lowther Street",
-            "atcoCode": "37a5f471-c2f1-5661-a655-3f010772816d",
-            "status": 503,
-            "routeCount": 0,
-            "routesComplete": null,
+            "atcoCode": "3290YYA00197",
+            "status": 200,
+            "routeCount": 2,
+            "routesComplete": true,
             "departuresDue": 0,
-            "coverage": null,
-            "coordinate": null,
-            "routeId": null,
+            "coverage": {
+              "read": 1,
+              "missing": 0,
+              "serviceDates": [
+                "2026-10-21"
+              ]
+            },
+            "coordinate": {
+              "lat": 53.965788414,
+              "lon": -1.073531417
+            },
+            "routeId": "2f6f1194-6e38-5fe5-937d-61d10378ddda",
             "nextScheduledDeparture": null
           },
           {
             "stop": "Park Grove School",
-            "atcoCode": "e9e07171-96f2-5490-902c-0af28b3cbd0b",
-            "status": 503,
+            "atcoCode": "3290YYA00855",
+            "status": 200,
             "routeCount": 0,
-            "routesComplete": null,
+            "routesComplete": true,
             "departuresDue": 0,
-            "coverage": null,
-            "coordinate": null,
+            "coverage": {
+              "read": 1,
+              "missing": 0,
+              "serviceDates": [
+                "2026-10-21"
+              ]
+            },
+            "coordinate": {
+              "lat": 53.966332352,
+              "lon": -1.075302845
+            },
             "routeId": null,
             "nextScheduledDeparture": null
           }
@@ -63784,16 +63925,37 @@
         "state": "routes known, nothing due in the next 90 minutes"
       },
       "live": {
-        "deployed": 0,
+        "deployed": 1,
+        "degradation": "normal",
+        "coverage": 1,
         "upstreamRaw": 0,
         "upstreamAccepted": 0,
         "upstreamRejected": 0,
         "upstreamStatus": null,
-        "degraded": null,
+        "degraded": false,
         "upstreamError": "no key",
         "state": "upstream not asked (no key)"
       },
-      "selectedBuses": "no live bus in this viewport at test time",
+      "selectedBuses": [
+        {
+          "status": 200,
+          "route": "10",
+          "destination": "Rougier Street",
+          "matchedPattern": "39c36c31-3ced-54ee-a1e3-782f60121419",
+          "nextStopsState": "unmatched",
+          "stopsReturned": 0,
+          "passedStops": 0,
+          "stopsAhead": [],
+          "shapePoints": 0,
+          "progressAlongShapeMetres": null,
+          "serverTracePoints": 0,
+          "traceSpanSeconds": 0,
+          "traceAgeSeconds": null,
+          "stopsAheadState": "no confident pattern match",
+          "bluePreview": "no shape — unmatched",
+          "recentTrail": "insufficient server observations (the session trail accumulates in the browser)"
+        }
+      ],
       "routeDetail": {
         "status": 200,
         "routeId": "2f6f1194-6e38-5fe5-937d-61d10378ddda",
@@ -63803,44 +63965,12 @@
         "state": "PASS"
       },
       "journey": {
-        "status": 503,
+        "status": 200,
         "from": "Lowther Street",
         "to": "New Earswick Shops",
-        "options": 0,
-        "state": "FAIL — /v1/journeys answered HTTP 503"
-      },
-      "trouble": [
-        {
-          "path": "/v1/stops/1e387c71-b4b3-56c1-873c-eb85cd07b130",
-          "status": 503,
-          "ms": 486,
-          "body": "<!DOCTYPE html> <html class=\"no-js\" lang=\"en-US\"> <head> <title>Worker exceeded resource limits | busstops-api-preview.paulmurrin13.workers.dev | Cloudflare</title> <meta charset=\"UTF-8\" /> <meta http"
-        },
-        {
-          "path": "/v1/stops/37a5f471-c2f1-5661-a655-3f010772816d",
-          "status": 503,
-          "ms": 349,
-          "body": "<!DOCTYPE html> <html class=\"no-js\" lang=\"en-US\"> <head> <title>Worker exceeded resource limits | busstops-api-preview.paulmurrin13.workers.dev | Cloudflare</title> <meta charset=\"UTF-8\" /> <meta http"
-        },
-        {
-          "path": "/v1/stops/e9e07171-96f2-5490-902c-0af28b3cbd0b",
-          "status": 503,
-          "ms": 384,
-          "body": "<!DOCTYPE html> <html class=\"no-js\" lang=\"en-US\"> <head> <title>Worker exceeded resource limits | busstops-api-preview.paulmurrin13.workers.dev | Cloudflare</title> <meta charset=\"UTF-8\" /> <meta http"
-        },
-        {
-          "path": "/v1/map?bbox=-1.12000%2C53.94000%2C-1.03000%2C53.99000&zoom=13",
-          "status": 503,
-          "ms": 700,
-          "body": "<!DOCTYPE html> <html class=\"no-js\" lang=\"en-US\"> <head> <title>Worker exceeded resource limits | busstops-api-preview.paulmurrin13.workers.dev | Cloudflare</title> <meta charset=\"UTF-8\" /> <meta http"
-        },
-        {
-          "path": "/v1/journeys?fromLat=53.96562&fromLon=-1.07390&toLat=53.99111&toLon=-1.07263",
-          "status": 503,
-          "ms": 377,
-          "body": "<!DOCTYPE html> <html class=\"no-js\" lang=\"en-US\"> <head> <title>Worker exceeded resource limits | busstops-api-preview.paulmurrin13.workers.dev | Cloudflare</title> <meta charset=\"UTF-8\" /> <meta http"
-        }
-      ]
+        "options": 1,
+        "state": "PASS"
+      }
     }
   ],
   "cityPace": {
@@ -63853,9 +63983,9 @@
         "source": "bods",
         "coverageArea": "non_london",
         "status": "healthy",
-        "lastSuccessfulFetchAt": "2026-10-21T02:29:27.089Z",
-        "lastAttemptAt": "2026-10-21T02:29:26.521Z",
-        "ageSeconds": 3.857,
+        "lastSuccessfulFetchAt": "2026-10-21T03:15:07.159Z",
+        "lastAttemptAt": "2026-10-21T03:15:06.515Z",
+        "ageSeconds": 5.671,
         "consecutiveFailures": 0
       },
       {
@@ -63873,6 +64003,6 @@
   },
   "failures": [],
   "notes": [
-    "Departures: Leeds, Bristol, York had routes but no departure due at the moment of the probe — plausible off-peak, worth re-checking in service hours."
+    "Departures: Bristol, York had routes but no departure due at the moment of the probe — plausible off-peak, worth re-checking in service hours."
   ]
 }
