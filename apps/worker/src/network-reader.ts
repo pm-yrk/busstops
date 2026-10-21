@@ -2244,6 +2244,19 @@ export class NetworkReader {
         indexTiles,
         index.version,
         now,
+        /*
+         * The map's bound, and lowering it to the board's own was tried and reverted.
+         *
+         * The deployed cold ledger measures a Manchester board decoding 2.03 MiB here, and the
+         * obvious response is to allow it less. It would change nothing: `boxAround` is 1,500
+         * metres and the pattern grid is an eighth of a degree, so this read asks for one tile
+         * almost every time, and a budget is only ever checked between tiles. The 2.03 MiB is one
+         * object, and a smaller number would not have stopped it.
+         *
+         * Reducing it needs a smaller unit of storage rather than a smaller allowance, which is a
+         * different piece of work from this one. The number is left where it is so nobody reads a
+         * tighter bound as a saving that was never made.
+         */
         Math.min(this.patternChars, this.requestChars),
         ledger
           ? { ledger, family: "patterns", budgetReason: "pattern_enrichment_budget" }

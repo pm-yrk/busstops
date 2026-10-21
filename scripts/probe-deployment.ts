@@ -1270,10 +1270,21 @@ async function main(): Promise<void> {
             ? "upstream currently empty"
             : mapVehicles.length > 0
               ? "PASS"
-              : asText(at(map.json, "meta", "degradation")) === "normal"
-                ? "FAIL — upstream has buses, the deployment returned none, and called it a complete answer"
-                : "FAIL — upstream has buses and the deployment could not reach the live feed " +
-                  `(${asText(at(map.json, "meta", "degradation")) || "no degradation reported"})`,
+              : map.json === null
+                ? /*
+                   * No answer at all, so nothing can be said about the live feed.
+                   *
+                   * This read "could not reach the live feed (no degradation reported)" whenever
+                   * `/v1/map` itself answered with the platform's error page — a sentence about
+                   * the upstream, written from the absence of a response that never came from the
+                   * Worker. The `trouble` entry beside it named error 1102 correctly the whole
+                   * time; the summary contradicted it.
+                   */
+                  `FAIL — /v1/map did not answer (HTTP ${String(map.status)}); the live feed was never asked`
+                : asText(at(map.json, "meta", "degradation")) === "normal"
+                  ? "FAIL — upstream has buses, the deployment returned none, and called it a complete answer"
+                  : "FAIL — upstream has buses and the deployment could not reach the live feed " +
+                    `(${asText(at(map.json, "meta", "degradation")) || "no degradation reported"})`,
     };
     if (upstream.accepted > 0 && mapVehicles.length === 0) {
       failures.push(
