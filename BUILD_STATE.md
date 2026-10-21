@@ -1,8 +1,52 @@
 # Bus Stops. Build State
 
-Last updated: 2026-10-17 (the live map opens around the passenger; location stays on the device)
+Last updated: 2026-10-21 (the selected bus knows where it is going; the trail builds while you watch)
 
 ## Current status
+
+### 21 October: tapping a bus answers the question it was tapped to ask
+
+Tapping a bus used to open a panel that named a route and a destination and then listed the first
+forty stops of the pattern — from the start of the route, whether the bus had passed them an hour
+ago or not. The fix is not a new algorithm. `computeStopProgress`, `alongPathMetres` and
+`stopDistancesMetres` were all in `packages/matching`, all tested, and no code path in the Worker
+ever called any of them: both vehicle endpoints hand-rolled a subset of `buildVehicleState` and
+dropped the progress on the floor. `stopsAheadWindow` is that arithmetic given a name, and the
+endpoint now answers with the stops in front of the bus, the ones just behind it for context, and
+`nextStopsState` — `ahead`, `unmatched`, `progress_unknown` or `end_of_route` — so an empty list
+says which of four quite different things it means.
+
+**Deployed, on a real bus.** Leeds, 02:49 UTC: service X84 to Lawnswood School, matched to a
+pattern, 3 of 40 stops marked passed, 2,944 metres along a 66-point shape. The blue line is cut at
+that point, so what is drawn as "where this bus is going" no longer includes the streets it came
+down twenty minutes ago, and the part behind it is a separate, quieter line.
+
+**The trail is two sources, and the second one is why it exists.** The collector publishes each
+run's observations into 64 fixed-key bucket objects — `recent-traces/<bucket>.jsonl`, hashed on
+the salted daily reference — because one object per vehicle would be about 26,000 writes a day
+against an R2 Class A allowance of roughly 33,000. Measured on the 21 October run: 64 objects,
+72,419 bytes in total, 1,132 bytes a bucket, 764 vehicles with a trail, no failures. A tap costs
+one bounded read of one bucket.
+
+That server trail covers before the page was opened, and this project's schedules are delivered
+about four times a day, so for most of the day it is empty — which would make "recent path" a
+feature nobody ever sees. So the map keeps what it is already being told: `/v1/map` refreshes
+every twenty seconds and each response carries the selected bus's position, and holding those
+while the bus stays selected builds a path for no additional request. It lives in memory for as
+long as one bus is selected and nowhere else — no `localStorage`, no `sessionStorage`, no cookie,
+no request body — so a reload starts from nothing and selecting another bus discards the first.
+Measured on the deployment: three map refreshes in the window, nought further vehicle lookups,
+nought other calls, nought browser-storage writes.
+
+**What is still wrong, and it is not this.** The preview Worker answers a share of requests with
+Cloudflare's error 1102 page — "Worker exceeded resource limits" — on `/v1/stops/:id`,
+`/v1/vehicles/:ref`, `/v1/routes/:id`, `/v1/journeys`, `/v1/search` and `/v1/map`. It is
+intermittent and it is not only a property of hammering: the city walk now paces itself at one
+request a second, like somebody reading a page, and still lost every stop lookup in Bristol while
+Leeds, Manchester and Birmingham in the same run answered perfectly. Failing requests take 300 to
+900ms against 100 to 250ms for healthy ones, which is an invocation doing work and then hitting
+the ceiling rather than being turned away at the door. This predates the work above by more than a
+week and is recorded here rather than worked around.
 
 ### 17 October: the live map opens where the passenger is
 
