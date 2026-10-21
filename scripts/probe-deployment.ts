@@ -71,6 +71,8 @@ const asArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : [
 const asCount = (value: unknown): number | null => (Array.isArray(value) ? value.length : null);
 const asText = (value: unknown): string =>
   value === undefined || value === null ? "" : String(value);
+const asNumber = (value: unknown): number | undefined =>
+  typeof value === "number" && Number.isFinite(value) ? value : undefined;
 
 interface Answer {
   status: number | null;
@@ -686,7 +688,12 @@ async function main(): Promise<void> {
      * all twenty-five stops, not just the nearest. So this asks a few of them, reports each, and
      * judges on whether any of them is somewhere a bus actually goes.
      */
-    const tried: Array<{ stop: string; status: number; departures: number; routes: number }> = [];
+    const tried: Array<{
+      stop: string;
+      status: number | null;
+      departures: number;
+      routes: number;
+    }> = [];
     for (const candidate of nearbyStops.slice(0, 3)) {
       const stopId = asText(at(candidate, "id"));
       if (!stopId) continue;
@@ -873,7 +880,7 @@ async function main(): Promise<void> {
      * will one day be believed about an unhealthy one.
      */
     const legVariants = asArray(at(legRoute.json, "data", "variants"));
-    const legStops = legVariants.reduce(
+    const legStops = legVariants.reduce<number>(
       (most, variant) => Math.max(most, asCount(at(variant, "stops")) ?? 0),
       0,
     );
@@ -950,6 +957,387 @@ async function main(): Promise<void> {
   );
   report.disruptions = { status: disruptions.status, data: disruptionData };
   if (official === undefined) notes.push("Disruptions: the response carries no official notices.");
+
+  /*
+   * ---- the passenger path, city by city -----------------------------------
+   *
+   * One block that answers the questions a report has to answer, per city, in the order a
+   * passenger meets them: find the place, open a stop, read its routes, read what is due, see the
+   * buses, open one, read where it is going, plan a trip.
+   *
+   * Written as *states* rather than pass/fail, because the honest answer at nine in the evening in
+   * York is "nothing due", and a probe that calls that a failure trains everyone to ignore it.
+   * Each city carries the identifiers behind its numbers so a surprising result can be traced
+   * without running the probe again.
+   */
+  head("City by city");
+
+  /**
+   * The board's own window, which is `DEPARTURE_WINDOW_MINUTES` in the Worker.
+   *
+   * Recorded next to every "nothing due", because the two statements are only meaningful
+   * together: a stop with a readable timetable and nothing in the next ninety minutes is a quiet
+   * stop. The deployed API has no way to ask for the departure after that window, so "unknown
+   * beyond the window" is the honest answer — and inventing one from a shard this probe cannot
+   * read would not be.
+   */
+  const BOARD_WINDOW_MINUTES = 90;
+
+  interface StopAttempt {
+    stop: string;
+    atcoCode: string;
+    status: number | null;
+    routeCount: number;
+    routesComplete: boolean | null;
+    departuresDue: number;
+    coverage: unknown;
+    coordinate: { lat: number; lon: number } | null;
+    routeId: string | null;
+    nextScheduledDeparture: string | null;
+  }
+
+  const cities: Array<Record<string, unknown>> = [];
+
+  for (const area of AREAS.filter((candidate) => !candidate.name.startsWith("London"))) {
+    const city: Record<string, unknown> = { city: area.name };
+    const centre = {
+      lat: (area.bbox.south + area.bbox.north) / 2,
+      lon: (area.bbox.west + area.bbox.east) / 2,
+    };
+
+    /* Search: what a visitor types first. */
+    const search = await ask(`/v1/search?q=${encodeURIComponent(area.name)}`);
+    const results = asArray(at(search.json, "data", "results"));
+    const searchStops = results.filter((result) => at(result, "kind") === "stop");
+    city.search = {
+      status: search.status,
+      results: results.length,
+      stops: searchStops.length,
+      led: asText(at(results[0], "title")),
+      kinds: [...new Set(results.map((result) => asText(at(result, "kind"))))],
+      state:
+        search.status !== 200
+          ? `FAIL — /v1/search answered HTTP ${String(search.status)}`
+          : results.length > 0
+            ? "PASS"
+            : "FAIL — no results for the city's own name",
+    };
+
+    /*
+     * The stop a passenger would actually land on.
+     *
+     * A city's name is a place rather than a stop, so the search leads with a locality and its
+     * stop results are whatever happens to carry the city's name — which for "Leeds" includes a
+     * stop called Leeds Road in somebody else's town. So the candidates are the search's own
+     * stops first and then the stops around the middle of the viewport, and the one reported is
+     * the first of them a bus actually serves. Every candidate tried is recorded, because "the
+     * third one had routes" and "none of them did" are different findings.
+     */
+    const nearby = await ask(
+      `/v1/nearby?lat=${centre.lat.toFixed(5)}&lon=${centre.lon.toFixed(5)}&radius=600`,
+    );
+    const nearbyStops = asArray(at(nearby.json, "data", "results")).filter(
+      (result) => at(result, "kind") === "stop",
+    );
+
+    const tried: StopAttempt[] = [];
+    for (const candidate of [...searchStops.slice(0, 2), ...nearbyStops.slice(0, 4)]) {
+      const key = asText(at(candidate, "id"));
+      if (!key) continue;
+      if (tried.some((attempt) => attempt.atcoCode === key)) continue;
+      const board = await ask(`/v1/stops/${encodeURIComponent(key)}`);
+      const data = at(board.json, "data");
+      const routes = asArray(at(data, "routes"));
+      const departures = asArray(at(data, "departures"));
+      const coordinate = at(data, "stop", "locationCoordinate");
+      const lat = asNumber(at(coordinate, "lat"));
+      const lon = asNumber(at(coordinate, "lon"));
+      const soonest = departures
+        .map(
+          (departure) =>
+            asText(at(departure, "scheduledTime")) || asText(at(departure, "expectedTime")),
+        )
+        .filter((value) => value.length > 0)
+        .sort()[0];
+      tried.push({
+        stop: asText(at(data, "stop", "name")) || asText(at(candidate, "title")),
+        atcoCode: asText(at(data, "stop", "atcoCode")) || key,
+        status: board.status,
+        routeCount: routes.length,
+        routesComplete:
+          typeof at(data, "routesComplete") === "boolean"
+            ? (at(data, "routesComplete") as boolean)
+            : null,
+        departuresDue: departures.length,
+        coverage: at(data, "timetableCoverage") ?? null,
+        coordinate: lat === undefined || lon === undefined ? null : { lat, lon },
+        routeId: asText(at(routes[0], "id")) || null,
+        nextScheduledDeparture: soonest ?? null,
+      });
+      /* Enough: the first stop a bus serves is the stop a passenger would have opened. */
+      if (routes.length > 0 && departures.length > 0) break;
+    }
+
+    const chosen =
+      tried.find((attempt) => attempt.routeCount > 0 && attempt.departuresDue > 0) ??
+      tried.find((attempt) => attempt.routeCount > 0) ??
+      tried.find((attempt) => attempt.status === 200) ??
+      tried[0];
+
+    if (!chosen) {
+      city.stop = { state: "FAIL — no stop could be opened from search or from the viewport" };
+      console.log(
+        `${area.name.padEnd(12)} no stop could be opened from search or from the viewport`,
+      );
+      failures.push(
+        `${area.name}: neither the search nor the nearby stops opened a departure board.`,
+      );
+      cities.push(city);
+      continue;
+    }
+
+    const coverageMissing = asNumber(at(chosen.coverage, "missing")) ?? 0;
+    const coverageRead = asNumber(at(chosen.coverage, "read")) ?? 0;
+
+    city.stop = {
+      ...chosen,
+      candidatesTried: tried.length,
+      otherCandidates: tried.filter((attempt) => attempt !== chosen),
+      windowMinutes: BOARD_WINDOW_MINUTES,
+      state:
+        chosen.status !== 200
+          ? `FAIL — /v1/stops answered HTTP ${String(chosen.status)}`
+          : chosen.routeCount === 0 && chosen.departuresDue > 0
+            ? "FAIL — departures returned with no routes"
+            : chosen.routeCount === 0
+              ? coverageRead > 0 && coverageMissing === 0
+                ? "no routes here; today's timetable was read and has nothing at this stop"
+                : "no routes returned — trace required"
+              : chosen.departuresDue > 0
+                ? "PASS"
+                : coverageMissing > 0
+                  ? `routes known; ${String(coverageMissing)} timetable shard(s) missing — published-data gap`
+                  : `routes known, nothing due in the next ${String(BOARD_WINDOW_MINUTES)} minutes`,
+    };
+
+    /*
+     * A board that lists departures and no routes is a defect rather than a quiet evening: every
+     * departure row names its pattern, so the route list is derivable from what it just returned.
+     */
+    if (chosen.status === 200 && chosen.routeCount === 0 && chosen.departuresDue > 0) {
+      failures.push(
+        `${area.name}: ${chosen.atcoCode} returned ${String(chosen.departuresDue)} departure(s) ` +
+          `and no routes, though every departure row names its pattern.`,
+      );
+    }
+    if (coverageMissing > 0) {
+      notes.push(
+        `${area.name}: ${chosen.atcoCode} could not read ${String(coverageMissing)} timetable ` +
+          `shard(s), so its board is incomplete rather than quiet.`,
+      );
+    }
+
+    /* Live vehicles: ours against the upstream's, in the same box at the same minute. */
+    const bbox = encodeURIComponent(bboxParam(area.bbox));
+    const map = await ask(`/v1/map?bbox=${bbox}&zoom=13`);
+    const mapVehicles = asArray(at(map.json, "data", "vehicles"));
+    const upstream = await askBodsDirectly(area.bbox);
+    city.live = {
+      deployed: mapVehicles.length,
+      upstreamRaw: upstream.accepted + upstream.rejected,
+      upstreamAccepted: upstream.accepted,
+      upstreamRejected: upstream.rejected,
+      upstreamStatus: upstream.status,
+      degraded: at(map.json, "data", "degraded") ?? null,
+      ...(upstream.error === undefined ? {} : { upstreamError: upstream.error }),
+      state:
+        upstream.status === null
+          ? `upstream not asked (${upstream.error ?? "no key on this runner"})`
+          : upstream.accepted === 0
+            ? "upstream currently empty"
+            : mapVehicles.length > 0
+              ? "PASS"
+              : "FAIL — upstream has buses and the deployment returned none",
+    };
+    if (upstream.accepted > 0 && mapVehicles.length === 0) {
+      failures.push(
+        `${area.name}: the upstream accepted ${String(upstream.accepted)} vehicle(s) in this box ` +
+          `and the deployed map returned none.`,
+      );
+    }
+
+    /*
+     * The selected bus, for as many as this viewport offers up to two.
+     *
+     * Two rather than one because a single bus can be legitimately unmatched — out of service,
+     * or on a pattern no tile in the viewport carries — and one unmatched bus is not evidence
+     * about the feature either way.
+     */
+    const buses: Array<Record<string, unknown>> = [];
+    for (const vehicle of mapVehicles.slice(0, 2)) {
+      const vehicleRef = asText(at(vehicle, "vehicleRef"));
+      if (!vehicleRef) continue;
+      const detail = await ask(`/v1/vehicles/${encodeURIComponent(vehicleRef)}?bbox=${bbox}`);
+      const data = at(detail.json, "data");
+      const nextStops = asArray(at(data, "nextStops"));
+      const ahead = nextStops.filter((entry) => at(entry, "passed") !== true);
+      const shape = asArray(at(data, "scheduledShape"));
+      const trace = asArray(at(data, "recentTrace"));
+      const progress = asNumber(at(data, "progressAlongShapeMetres"));
+      const state = asText(at(data, "nextStopsState"));
+      const first = asText(at(trace[0], "observedAt"));
+      const last = asText(at(trace[trace.length - 1], "observedAt"));
+      /*
+       * The defect this work started from, recognisable from the outside: the window is forty
+       * stops, so a bus placed on its pattern with all forty still ahead of it is the whole
+       * pattern from its first stop rather than the stops in front of the bus.
+       */
+      const unclipped =
+        state === "ahead" && ahead.length === nextStops.length && nextStops.length >= 40;
+
+      buses.push({
+        status: detail.status,
+        route: asText(at(data, "routePublicName")) || null,
+        destination: asText(at(data, "destinationName")) || null,
+        matchedPattern: asText(at(data, "routePatternId")) || null,
+        nextStopsState: state,
+        stopsReturned: nextStops.length,
+        passedStops: nextStops.length - ahead.length,
+        stopsAhead: ahead.slice(0, 4).map((entry) => asText(at(entry, "name"))),
+        shapePoints: shape.length,
+        progressAlongShapeMetres: progress === undefined ? null : Math.round(progress),
+        serverTracePoints: trace.length,
+        traceSpanSeconds:
+          trace.length > 1 && first && last
+            ? Math.round((Date.parse(last) - Date.parse(first)) / 1000)
+            : 0,
+        traceAgeSeconds: last ? Math.round((Date.now() - Date.parse(last)) / 1000) : null,
+        stopsAheadState: unclipped
+          ? "FAIL — the window is not clipped at the bus"
+          : state === "ahead" && ahead.length > 0
+            ? "PASS"
+            : state === "end_of_route"
+              ? "at the end of its route"
+              : state === "progress_unknown"
+                ? "pattern known, position not placed on it"
+                : "no confident pattern match",
+        bluePreview:
+          state === "ahead" && shape.length > 1 && progress !== undefined
+            ? "PASS — clipped at the bus"
+            : shape.length > 1
+              ? "shape present, drawn whole (no progress)"
+              : "no shape — unmatched",
+        recentTrail:
+          trace.length > 1
+            ? `PASS — ${String(trace.length)} server points`
+            : "insufficient server observations (the session trail accumulates in the browser)",
+      });
+
+      /*
+       * The regression that started this work, asserted against a real bus: a bus placed on its
+       * pattern with stops behind it must have those stops marked, or the first thing a passenger
+       * is told is a stop the bus left twenty minutes ago.
+       */
+      if (unclipped) {
+        failures.push(
+          `${area.name}: ${String(nextStops.length)} stops returned for a bus placed on its ` +
+            `pattern and not one of them is marked passed, which is the unclipped window.`,
+        );
+      }
+    }
+    city.selectedBuses = buses.length > 0 ? buses : "no live bus in this viewport at test time";
+
+    /*
+     * Route detail, from a route this city's own board named — not from the search, which answers
+     * a city name with a locality and may offer no route at all.
+     */
+    const routeId =
+      chosen.routeId ??
+      asText(
+        at(
+          results.find((result) => at(result, "kind") === "route"),
+          "id",
+        ),
+      );
+    if (routeId) {
+      const route = await ask(`/v1/routes/${encodeURIComponent(routeId)}`);
+      const variants = asArray(at(route.json, "data", "variants"));
+      const stops = variants.reduce<number>(
+        (most, variant) => Math.max(most, asArray(at(variant, "stops")).length),
+        0,
+      );
+      city.routeDetail = {
+        status: route.status,
+        routeId,
+        name:
+          asText(at(route.json, "data", "route", "publicName")) ||
+          asText(at(route.json, "data", "publicName")),
+        variants: variants.length,
+        stops,
+        state:
+          route.status === 200 && variants.length > 0 && stops > 0
+            ? "PASS"
+            : `FAIL — HTTP ${String(route.status)}, ${String(variants.length)} variant(s), ${String(stops)} stop(s)`,
+      };
+    } else {
+      city.routeDetail = { state: "no route id available from this city's stop or search" };
+    }
+
+    /*
+     * The planner, between two stops that exist.
+     *
+     * Planning between arbitrary coordinates tests the planner's ability to find a stop more than
+     * its ability to find a bus, so the origin is the stop just opened and the destination is a
+     * stop a couple of kilometres away.
+     */
+    const origin = chosen.coordinate ?? centre;
+    const towards = { lat: origin.lat + 0.025, lon: origin.lon };
+    const far = await ask(
+      `/v1/nearby?lat=${towards.lat.toFixed(5)}&lon=${towards.lon.toFixed(5)}&radius=800`,
+    );
+    const farStop = asArray(at(far.json, "data", "results")).find(
+      (result) => at(result, "kind") === "stop",
+    );
+    const destination = {
+      lat: asNumber(at(farStop, "coordinate", "lat")) ?? towards.lat,
+      lon: asNumber(at(farStop, "coordinate", "lon")) ?? towards.lon,
+    };
+    const journey = await ask(
+      `/v1/journeys?fromLat=${origin.lat.toFixed(5)}&fromLon=${origin.lon.toFixed(5)}` +
+        `&toLat=${destination.lat.toFixed(5)}&toLon=${destination.lon.toFixed(5)}`,
+    );
+    const options = asArray(
+      at(journey.json, "data", "options") ?? at(journey.json, "data", "journeys"),
+    );
+    city.journey = {
+      status: journey.status,
+      from: chosen.stop,
+      to: asText(at(farStop, "title")) || "a point 2.8km north",
+      options: options.length,
+      state:
+        journey.status !== 200
+          ? `FAIL — /v1/journeys answered HTTP ${String(journey.status)}`
+          : options.length > 0
+            ? "PASS"
+            : "no option found between these two stops at this time",
+    };
+
+    const summary = (value: unknown): string => String(asText(at(value, "state")) || "-");
+    console.log(
+      `${area.name.padEnd(12)} ` +
+        `search ${String(results.length).padStart(3)} · ` +
+        `${chosen.atcoCode.padEnd(14)} routes ${String(chosen.routeCount).padStart(3)} · ` +
+        `due ${String(chosen.departuresDue).padStart(3)} · ` +
+        `live ${String(mapVehicles.length).padStart(4)}/${String(upstream.accepted).padStart(4)} · ` +
+        `bus ${buses[0] ? String(asText(at(buses[0], "stopsAheadState"))) : "none"} · ` +
+        `route ${summary(city.routeDetail)} · journey ${summary(city.journey)}`,
+    );
+    console.log(`             stop: ${summary(city.stop)}`);
+    cities.push(city);
+  }
+
+  report.cities = cities;
+  annotate("notice", "city health", JSON.stringify(cities, null, 1));
 
   const health = await ask(`/v1/sources/health`);
   console.log(`GET /v1/sources/health          : HTTP ${health.status}`);
