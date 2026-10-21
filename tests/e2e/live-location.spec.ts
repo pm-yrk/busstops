@@ -264,6 +264,39 @@ test.describe("with location permission", () => {
     ).toBe(false);
   });
 
+  /*
+   * And the zoom controls, now that the button is on their side of the map.
+   *
+   * It was moved to the bottom left because the attribution's height varies with the viewport and
+   * clearing it by a fixed number of pixels had been wrong twice — at phone the deployed
+   * accessibility pass measured only 44px by 21.5px of the button as reachable. The corner is
+   * free, and this is what keeps it free: MapLibre's zoom controls are top left, so on a short
+   * map they are the other thing that could end up underneath.
+   */
+  test("does not cover the zoom controls", async ({ page }) => {
+    await openLive(page, "/live");
+
+    const control = page.locator(".live-map__recentre");
+    const zoom = page.locator(".maplibregl-ctrl-top-left").first();
+    await expect(control).toBeVisible();
+
+    const button = await control.boundingBox();
+    const controls = await zoom.boundingBox();
+    expect(button, "the recentre control has a box").not.toBeNull();
+    expect(controls, "the zoom controls have a box").not.toBeNull();
+
+    const overlaps =
+      button!.x < controls!.x + controls!.width &&
+      controls!.x < button!.x + button!.width &&
+      button!.y < controls!.y + controls!.height &&
+      controls!.y < button!.y + button!.height;
+    expect(
+      overlaps,
+      `recentre at ${button!.x},${button!.y} ${button!.width}x${button!.height} against ` +
+        `zoom at ${controls!.x},${controls!.y} ${controls!.width}x${controls!.height}`,
+    ).toBe(false);
+  });
+
   test("buses stay tappable with the dot on the map", async ({ page }) => {
     await openLive(page, "/live");
     expect(await paintedBuses(page), "buses painted alongside the dot").toBeGreaterThan(0);

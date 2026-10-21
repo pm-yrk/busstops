@@ -164,7 +164,27 @@ const PAGES = [
  * something else is skipped for the next one. If every painted stop is covered, that is still a
  * failure and the message names what covered them — it does not quietly pass.
  */
+/**
+ * The map on the screen before anything is projected onto it.
+ *
+ * `map.project` gives a point inside the canvas, and the click needs a point inside the *window*.
+ * When the page is scrolled so the canvas sits above the fold those are not the same thing, and
+ * every stop reads as off-screen: the deployed sweep reported "none of the 187 painted stops
+ * could be clicked: 187 off-screen", and re-centring the map then put the canvas centre under
+ * `header.app__header`. Nothing was wrong with the map or the handlers — the sweep was clicking
+ * at coordinates that were not on the screen.
+ */
+async function bringMapIntoView(page) {
+  await page.evaluate(async () => {
+    const canvas = document.querySelector(".maplibregl-canvas");
+    if (!canvas) return;
+    canvas.scrollIntoView({ block: "center", inline: "center" });
+    await new Promise((resolve) => globalThis.requestAnimationFrame(() => resolve(undefined)));
+  });
+}
+
 async function clickPaintedStop(page, sink) {
+  await bringMapIntoView(page);
   await waitForPaintedFeatures(page, ["stop-pips", "stop-flags", "stop-clusters"]);
 
   /*
@@ -434,6 +454,7 @@ async function waitForPaintedFeatures(page, layers, timeoutMs = 15_000) {
 }
 
 async function clickPaintedBus(page, sink) {
+  await bringMapIntoView(page);
   await waitForPaintedFeatures(page, ["vehicle-buses", "vehicle-pips"]);
   const point = await page.evaluate(() => {
     const map = globalThis.__busstopsMap;

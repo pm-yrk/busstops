@@ -177,10 +177,20 @@
  * 24px for the toggle, 10px for MapLibre's own margin, and a gap, measured from the bottom of the
  * canvas rather than guessed.
  */
+/*
+ * Bottom left, where nothing else on this map is drawn.
+ *
+ * It sat bottom right and was raised 34px to clear MapLibre's compact attribution, which worked
+ * at desktop and did not at phone: the deployed accessibility pass measured the button with only
+ * 44px by 21.5px of it reachable, because the attribution is taller there. Clearing a control
+ * whose height depends on the viewport by a fixed number of pixels is a guess that has now been
+ * wrong twice. MapLibre puts its attribution bottom right and this map's zoom controls are top
+ * left, so the bottom left corner is free at every width and needs no clearance at all.
+ */
 .live-map__recentre {
   position: absolute;
-  right: var(--space-md);
-  bottom: calc(var(--space-md) + 34px);
+  left: var(--space-md);
+  bottom: var(--space-md);
   z-index: 2;
   width: var(--min-touch-target);
   height: var(--min-touch-target);

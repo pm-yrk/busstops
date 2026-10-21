@@ -152,6 +152,13 @@ export function MapView({
   const selectVehicleRef = useRef(onSelectVehicle);
   const [failed, setFailed] = useState(false);
   const [ready, setReady] = useState(false);
+  /*
+   * Whether there is a map on the screen, read from inside MapLibre's own error handler.
+   *
+   * A ref rather than `ready`, because the handler is registered once when the map is created and
+   * would close over the first render's value of any state it read.
+   */
+  const drawn = useRef(false);
   const [scale, setScale] = useState<MapScale>(() => scaleForZoom(14));
   const styleUrl = configuredStyleUrl();
 
@@ -228,7 +235,29 @@ export function MapView({
      * Nothing is drawn in the top left at any width.
      */
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-left");
-    map.on("error", () => setFailed(true));
+
+    /*
+     * A renderer error is fatal only until the map is actually up.
+     *
+     * This replaced the whole map with the list for *any* error MapLibre raised, and MapLibre
+     * raises one for a single tile that 404s, a sprite that arrives late, or a glyph range the
+     * basemap does not serve. The basemap is somebody else's free service, so those happen — and
+     * the deployed sweep caught the consequence three times in one run at desktop: "The map could
+     * not be loaded", with the API healthy and the buses listed underneath it.
+     *
+     * Before the style has loaded there is nothing on screen and the list-only fallback is the
+     * right answer. After it, the map is drawn, every layer is attached and the stops and buses
+     * are on it; throwing all of that away because one tile failed is a worse answer than a map
+     * with a gap in its background. The error is still surfaced, in the console, where a
+     * developer looks.
+     */
+    map.on("error", (event) => {
+      if (drawn.current) {
+        console.warn("map error after load, keeping the map", event.error ?? event);
+        return;
+      }
+      setFailed(true);
+    });
 
     map.on("moveend", () => {
       const view = map.getBounds();
@@ -257,6 +286,7 @@ export function MapView({
           map.addImage("direction-pip", trianglePip(), { pixelRatio: 1, sdf: true });
         }
         addSourcesAndLayers(map);
+        drawn.current = true;
         setReady(true);
         setScale(scaleForZoom(map.getZoom()));
       })();
