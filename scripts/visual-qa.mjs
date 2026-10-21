@@ -178,7 +178,17 @@ async function bringMapIntoView(page) {
   await page.evaluate(async () => {
     const canvas = document.querySelector(".maplibregl-canvas");
     if (!canvas) return;
-    canvas.scrollIntoView({ block: "center", inline: "center" });
+    /*
+     * The window, explicitly, rather than `scrollIntoView`.
+     *
+     * A map's container clips its overflow, so `scrollIntoView` scrolls that container — which is
+     * already showing the canvas — and leaves the window exactly where it was. The sweep tried it
+     * and still reported all 172 painted stops as off-screen, with the canvas centre landing on
+     * `header.app__header`, which is a canvas three hundred pixels above the top of the window.
+     */
+    const rect = canvas.getBoundingClientRect();
+    const header = document.querySelector("header")?.getBoundingClientRect().height ?? 0;
+    globalThis.scrollBy({ top: rect.top - header - 8, left: 0, behavior: "instant" });
     await new Promise((resolve) => globalThis.requestAnimationFrame(() => resolve(undefined)));
   });
 }
