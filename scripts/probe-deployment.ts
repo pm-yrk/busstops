@@ -1062,8 +1062,30 @@ async function main(): Promise<void> {
       (result) => at(result, "kind") === "stop",
     );
 
+    /*
+     * In this city, not merely named after it.
+     *
+     * "York" matched a stop called York Avenue in Greater Manchester, which opened, had routes and
+     * was duly reported as York's departure board — a row that is true about a stop and false
+     * about the city it is filed under. The search's stops count only when their coordinate is
+     * inside this viewport; the viewport's own stops always are.
+     */
+    const inCity = (result: unknown) => {
+      const lat = asNumber(at(result, "coordinate", "lat"));
+      const lon = asNumber(at(result, "coordinate", "lon"));
+      if (lat === undefined || lon === undefined) return false;
+      return (
+        lat >= area.bbox.south &&
+        lat <= area.bbox.north &&
+        lon >= area.bbox.west &&
+        lon <= area.bbox.east
+      );
+    };
+    const searchStopsInCity = searchStops.filter(inCity);
+    (city.search as Record<string, unknown>).stopsInThisViewport = searchStopsInCity.length;
+
     const tried: StopAttempt[] = [];
-    for (const candidate of [...searchStops.slice(0, 2), ...nearbyStops.slice(0, 4)]) {
+    for (const candidate of [...searchStopsInCity.slice(0, 2), ...nearbyStops.slice(0, 4)]) {
       const key = asText(at(candidate, "id"));
       if (!key) continue;
       if (tried.some((attempt) => attempt.atcoCode === key)) continue;

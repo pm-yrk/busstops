@@ -438,8 +438,20 @@ async function clickPaintedBus(page, sink) {
   const point = await page.evaluate(() => {
     const map = globalThis.__busstopsMap;
     if (!map) return null;
-    const features = map.queryRenderedFeatures({ layers: ["vehicle-buses", "vehicle-pips"] });
-    if (features.length === 0) return null;
+    const painted = map.queryRenderedFeatures({ layers: ["vehicle-buses", "vehicle-pips"] });
+    if (painted.length === 0) return null;
+
+    /*
+     * A bus still reporting, before one that is not.
+     *
+     * Everything measured after the tap — the stops ahead, the route, and above all a path that
+     * builds from later refreshes — needs the bus to still be in the feed a minute from now. The
+     * map already knows which ones are stale, so there is no reason to tap one of those first and
+     * then report that the trail could not be measured.
+     */
+    const features = [...painted].sort(
+      (a, b) => Number(a.properties?.stale ?? false) - Number(b.properties?.stale ?? false),
+    );
 
     const canvas = map.getCanvas();
     const box = canvas.getBoundingClientRect();
