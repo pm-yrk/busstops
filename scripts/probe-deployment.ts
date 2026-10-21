@@ -100,7 +100,22 @@ async function ask(path: string, timeoutMs = 45_000): Promise<Answer> {
       ms: Date.now() - started,
       bytes: text.length,
       json: parsed,
-      ...(parseable ? {} : { text: text.slice(0, 300).replace(/\s+/g, " ") }),
+      /*
+       * The comments stripped first, because they are what filled the old limit.
+       *
+       * Cloudflare's error page opens with four IE conditional comments; three hundred characters
+       * of it is the doctype and those, and the only words that identify the failure — the title,
+       * and "Error 1102" — sit after them. Five hundred characters of comment-free text reaches
+       * both.
+       */
+      ...(parseable
+        ? {}
+        : {
+            text: text
+              .replace(/<!--[\s\S]*?-->/g, " ")
+              .replace(/\s+/g, " ")
+              .slice(0, 500),
+          }),
     };
   } catch (error) {
     return {
@@ -1046,7 +1061,9 @@ async function main(): Promise<void> {
          * limiting. Keeping the first hundred and sixty characters of the body kept the doctype
          * and the IE conditional comments and told us none of them apart.
          */
-        const platform = (answer.text ?? "").match(/error\s+(\d{4})[^<]*/i);
+        const page = answer.text ?? "";
+        const platform =
+          page.match(/error\s+\d{4}[^<]*/i) ?? page.match(/<title>\s*([^<]{0,90})<\/title>/i);
         trouble.push({
           path,
           status: answer.status,
