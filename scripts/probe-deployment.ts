@@ -1020,6 +1020,13 @@ async function main(): Promise<void> {
          * neither.
          */
         const code = asText(at(answer.json, "error", "code"));
+        /*
+         * Cloudflare's error pages are a kilobyte of boilerplate with the only useful word in the
+         * title: 1101 is a Worker that threw, 1102 is one that ran out of CPU, 1015 is rate
+         * limiting. Keeping the first hundred and sixty characters of the body kept the doctype
+         * and the IE conditional comments and told us none of them apart.
+         */
+        const platform = (answer.text ?? "").match(/error\s+(\d{4})[^<]*/i);
         trouble.push({
           path,
           status: answer.status,
@@ -1028,7 +1035,10 @@ async function main(): Promise<void> {
             ? { code, detail: asText(at(answer.json, "error", "message")).slice(0, 120) }
             : {}),
           ...(answer.error === undefined ? {} : { error: answer.error }),
-          ...(answer.text === undefined ? {} : { body: answer.text.slice(0, 160) }),
+          ...(platform === null ? {} : { cloudflare: platform[0].trim().slice(0, 80) }),
+          ...(answer.text === undefined
+            ? {}
+            : { body: answer.text.replace(/<!--.*?-->/g, "").slice(0, 200) }),
         });
       }
       return answer;
