@@ -1000,13 +1000,35 @@ async function main(): Promise<void> {
 
   for (const area of AREAS.filter((candidate) => !candidate.name.startsWith("London"))) {
     const city: Record<string, unknown> = { city: area.name };
+    /*
+     * Every answer that was not a clean 200, with the first of whatever came back instead.
+     *
+     * Cloudflare's own 1102 page is HTML with no CORS header, which a browser reports as a CORS
+     * failure and a probe reports as "HTTP 500" — two descriptions of the same thing, neither of
+     * which names it. Keeping the first line of an unparseable body is what tells a resource
+     * limit apart from an application error without guessing.
+     */
+    const trouble: Array<Record<string, unknown>> = [];
+    const asked = async (path: string) => {
+      const answer = await ask(path);
+      if (answer.status !== 200 || answer.json === null) {
+        trouble.push({
+          path,
+          status: answer.status,
+          ms: answer.ms,
+          ...(answer.error === undefined ? {} : { error: answer.error }),
+          ...(answer.text === undefined ? {} : { body: answer.text.slice(0, 160) }),
+        });
+      }
+      return answer;
+    };
     const centre = {
       lat: (area.bbox.south + area.bbox.north) / 2,
       lon: (area.bbox.west + area.bbox.east) / 2,
     };
 
     /* Search: what a visitor types first. */
-    const search = await ask(`/v1/search?q=${encodeURIComponent(area.name)}`);
+    const search = await asked(`/v1/search?q=${encodeURIComponent(area.name)}`);
     const results = asArray(at(search.json, "data", "results"));
     const searchStops = results.filter((result) => at(result, "kind") === "stop");
     city.search = {
@@ -1033,7 +1055,7 @@ async function main(): Promise<void> {
      * the first of them a bus actually serves. Every candidate tried is recorded, because "the
      * third one had routes" and "none of them did" are different findings.
      */
-    const nearby = await ask(
+    const nearby = await asked(
       `/v1/nearby?lat=${centre.lat.toFixed(5)}&lon=${centre.lon.toFixed(5)}&radius=600`,
     );
     const nearbyStops = asArray(at(nearby.json, "data", "results")).filter(
@@ -1045,7 +1067,7 @@ async function main(): Promise<void> {
       const key = asText(at(candidate, "id"));
       if (!key) continue;
       if (tried.some((attempt) => attempt.atcoCode === key)) continue;
-      const board = await ask(`/v1/stops/${encodeURIComponent(key)}`);
+      const board = await asked(`/v1/stops/${encodeURIComponent(key)}`);
       const data = at(board.json, "data");
       const routes = asArray(at(data, "routes"));
       const departures = asArray(at(data, "departures"));
@@ -1089,6 +1111,7 @@ async function main(): Promise<void> {
       console.log(
         `${area.name.padEnd(12)} no stop could be opened from search or from the viewport`,
       );
+      if (trouble.length > 0) city.trouble = trouble;
       failures.push(
         `${area.name}: neither the search nor the nearby stops opened a departure board.`,
       );
@@ -1139,7 +1162,7 @@ async function main(): Promise<void> {
 
     /* Live vehicles: ours against the upstream's, in the same box at the same minute. */
     const bbox = encodeURIComponent(bboxParam(area.bbox));
-    const map = await ask(`/v1/map?bbox=${bbox}&zoom=13`);
+    const map = await asked(`/v1/map?bbox=${bbox}&zoom=13`);
     const mapVehicles = asArray(at(map.json, "data", "vehicles"));
     const upstream = await askBodsDirectly(area.bbox);
     city.live = {
@@ -1177,7 +1200,7 @@ async function main(): Promise<void> {
     for (const vehicle of mapVehicles.slice(0, 2)) {
       const vehicleRef = asText(at(vehicle, "vehicleRef"));
       if (!vehicleRef) continue;
-      const detail = await ask(`/v1/vehicles/${encodeURIComponent(vehicleRef)}?bbox=${bbox}`);
+      const detail = await asked(`/v1/vehicles/${encodeURIComponent(vehicleRef)}?bbox=${bbox}`);
       const data = at(detail.json, "data");
       const nextStops = asArray(at(data, "nextStops"));
       const ahead = nextStops.filter((entry) => at(entry, "passed") !== true);
@@ -1260,7 +1283,7 @@ async function main(): Promise<void> {
         ),
       );
     if (routeId) {
-      const route = await ask(`/v1/routes/${encodeURIComponent(routeId)}`);
+      const route = await asked(`/v1/routes/${encodeURIComponent(routeId)}`);
       const variants = asArray(at(route.json, "data", "variants"));
       const stops = variants.reduce<number>(
         (most, variant) => Math.max(most, asArray(at(variant, "stops")).length),
@@ -1292,7 +1315,7 @@ async function main(): Promise<void> {
      */
     const origin = chosen.coordinate ?? centre;
     const towards = { lat: origin.lat + 0.025, lon: origin.lon };
-    const far = await ask(
+    const far = await asked(
       `/v1/nearby?lat=${towards.lat.toFixed(5)}&lon=${towards.lon.toFixed(5)}&radius=800`,
     );
     const farStop = asArray(at(far.json, "data", "results")).find(
@@ -1302,7 +1325,7 @@ async function main(): Promise<void> {
       lat: asNumber(at(farStop, "coordinate", "lat")) ?? towards.lat,
       lon: asNumber(at(farStop, "coordinate", "lon")) ?? towards.lon,
     };
-    const journey = await ask(
+    const journey = await asked(
       `/v1/journeys?fromLat=${origin.lat.toFixed(5)}&fromLon=${origin.lon.toFixed(5)}` +
         `&toLat=${destination.lat.toFixed(5)}&toLon=${destination.lon.toFixed(5)}`,
     );
@@ -1333,6 +1356,10 @@ async function main(): Promise<void> {
         `route ${summary(city.routeDetail)} · journey ${summary(city.journey)}`,
     );
     console.log(`             stop: ${summary(city.stop)}`);
+    if (trouble.length > 0) {
+      city.trouble = trouble;
+      console.log(`             trouble: ${JSON.stringify(trouble).slice(0, 300)}`);
+    }
     cities.push(city);
   }
 
