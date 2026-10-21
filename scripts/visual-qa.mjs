@@ -818,6 +818,264 @@ async function proveCurrentLocation(browser, baseUrl, size, record) {
   }
 }
 
+/**
+ * The selected bus, beyond "a panel opened".
+ *
+ * Three claims about a tapped bus can only be made against a deployment, because all three are
+ * about what the renderer was handed over time rather than about what a component returns:
+ *
+ *   1. that the stops listed are the ones in front of the bus, or that the panel says plainly why
+ *      it cannot say;
+ *   2. that the blue line drawn for a matched bus is actually there, on the map, not merely in a
+ *      prop;
+ *   3. that a trail builds from the map's own twenty-second refreshes, for no additional request
+ *      and no byte of browser storage.
+ *
+ * The third is the one that needs time to pass, so this keeps the bus selected across two
+ * refreshes and reads the overlay before and after. The request tally is taken only inside that
+ * window, which is the honest measurement: the one vehicle lookup happens when the bus is
+ * selected, and what matters is that nothing further is asked for in order to draw a path.
+ *
+ * It reads the `selected` source's own GeoJSON — an internal of MapLibre's `GeoJSONSource`, used
+ * deliberately, because `queryRenderedFeatures` returns tile-clipped geometry and cannot answer
+ * "how many positions are in this line". Both are read: the source says what was handed over, the
+ * rendered query says a layer drew it.
+ */
+async function proveSelectedBusExperience(page, size, record) {
+  const apiOrigin = apiUrlArg ? new URL(apiUrlArg).origin : null;
+  const REFRESH_WINDOW_MS = 46_000;
+
+  const readOverlay = () =>
+    page.evaluate(() => {
+      const map = globalThis.__busstopsMap;
+      if (!map) return null;
+      const source = map.getSource("busstops-selected-vehicle");
+      if (!source) return null;
+      const data =
+        typeof source.serialize === "function" ? source.serialize().data : (source._data ?? null);
+      const features = data && Array.isArray(data.features) ? data.features : [];
+      const points = (kind) =>
+        features
+          .filter((feature) => feature.properties?.kind === kind)
+          .reduce((total, feature) => total + (feature.geometry?.coordinates?.length ?? 0), 0);
+      const rendered = (layer) => {
+        try {
+          return map.queryRenderedFeatures({ layers: [layer] }).length;
+        } catch {
+          return 0;
+        }
+      };
+      return {
+        trailRuns: features.filter((feature) => feature.properties?.kind === "trail").length,
+        trailPoints: points("trail"),
+        remainingPoints: points("remaining"),
+        travelledPoints: points("travelled"),
+        upcoming: features.filter((feature) =>
+          ["next", "upcoming"].includes(feature.properties?.kind),
+        ).length,
+        destination: features.some((feature) => feature.properties?.kind === "destination"),
+        drawnAhead: rendered("route-ahead"),
+        drawnTrail: rendered("trail-observed"),
+        drawnTravelled: rendered("route-travelled"),
+      };
+    });
+
+  const readPanel = () =>
+    page.evaluate(() => {
+      const panel = document.querySelector(".selected-vehicle");
+      if (!panel) return null;
+      const stops = [...panel.querySelectorAll(".selected-vehicle__stops li")];
+      return {
+        stops: stops.length,
+        firstIsNext: stops[0]?.classList.contains("is-next") ?? false,
+        firstStop: stops[0]?.textContent?.trim().slice(0, 60) ?? "",
+        /* One of the three honest sentences, when there is no list to show. */
+        emptyReason: panel.querySelector(".selected-vehicle__stops")
+          ? ""
+          : (panel.querySelector("p.muted.small")?.textContent?.trim() ?? ""),
+        legendScheduled: panel.querySelector(".selected-vehicle__key--scheduled") !== null,
+        legendObserved: panel.querySelector(".selected-vehicle__key--observed") !== null,
+        trailNote: panel.querySelector(".selected-vehicle__trail-note") !== null,
+        /*
+         * Three states, not two. "Not reported" is a real answer from the feed and must not be
+         * read as "moving", because a trail that does not grow is then judged against a bus
+         * nobody said was going anywhere.
+         */
+        motion: /Not moving/.test(panel.textContent ?? "")
+          ? "not moving"
+          : /Moving/.test(panel.textContent ?? "")
+            ? "moving"
+            : "not reported",
+        /* From the link, which is the only place the page carries the rotating reference. */
+        ref:
+          panel
+            .querySelector(".selected-vehicle__links a[href*='/vehicles/']")
+            ?.getAttribute("href")
+            ?.split("/vehicles/")[1] ?? "",
+        wholeRoute: panel.querySelector(".selected-vehicle__whole-route") !== null,
+      };
+    });
+
+  const before = await readOverlay();
+  const panel = await readPanel();
+  if (before === null || panel === null) {
+    record(
+      `${size.name}/live keeps a selected bus long enough to trail it`,
+      false,
+      before === null
+        ? "the map exposes no selected-vehicle source, so nothing was handed to the renderer"
+        : "the bus panel closed before it could be measured",
+    );
+    return;
+  }
+
+  /*
+   * Stops ahead, or a sentence saying why not.
+   *
+   * The defect this replaces returned forty stops from the start of the route for every bus in
+   * the country, and an empty list with no explanation for the rest. So either there is a list
+   * whose first entry is flagged as the next stop, or there is one of the three sentences — and
+   * an empty list with neither is the failure.
+   */
+  record(
+    `${size.name}/live says which stops come next, or says why it cannot`,
+    (panel.stops > 0 && panel.firstIsNext) || panel.emptyReason.length > 0,
+    panel.stops > 0
+      ? `${panel.stops} stop(s), next "${panel.firstStop}"`
+      : panel.emptyReason.length > 0
+        ? `no list, and it says: "${panel.emptyReason.slice(0, 90)}"`
+        : "no stops and no explanation, which is the state this was meant to end",
+  );
+
+  /*
+   * The blue route, for a bus that has one.
+   *
+   * Gated on the bus actually being matched rather than passed either way: a bus with no
+   * confident pattern has no route to draw and saying so is correct, while a matched bus whose
+   * line is missing is the defect.
+   */
+  if (panel.stops > 0) {
+    record(
+      `${size.name}/live draws the route a selected bus is about to travel`,
+      before.remainingPoints > 1 && before.drawnAhead > 0,
+      `${before.remainingPoints} point(s) ahead and ${before.travelledPoints} behind, ` +
+        `${before.drawnAhead} drawn ahead / ${before.drawnTravelled} drawn behind, ` +
+        `${before.upcoming} upcoming stop marker(s)${before.destination ? " and a destination" : ""}` +
+        `; legend ${panel.legendScheduled ? "names the scheduled route" : "does not name it"}` +
+        `${panel.wholeRoute ? "; whole-route button offered" : ""}`,
+    );
+  } else {
+    console.log(
+      `        the selected bus is not matched to a pattern, so no route line was expected`,
+    );
+  }
+
+  /* ---- the trail, across two refreshes ---------------------------------- */
+
+  const asked = [];
+  const listener = (request) => {
+    const url = request.url();
+    if (apiOrigin !== null && url.startsWith(apiOrigin)) asked.push(new URL(url).pathname);
+  };
+  page.on("request", listener);
+
+  /*
+   * Counted rather than trusted. The claim is that the trail touches no browser storage, and the
+   * only way to be sure of that on a deployment is to watch the setter. Patched after the panel
+   * is open, so this covers the window the trail is actually accumulating in.
+   */
+  await page.evaluate(() => {
+    globalThis.__storageWrites = [];
+    const original = globalThis.Storage.prototype.setItem;
+    globalThis.__restoreStorage = () => {
+      globalThis.Storage.prototype.setItem = original;
+    };
+    globalThis.Storage.prototype.setItem = function patched(key, value) {
+      globalThis.__storageWrites.push(String(key));
+      return original.call(this, key, value);
+    };
+  });
+
+  await page.waitForTimeout(REFRESH_WINDOW_MS);
+  page.off("request", listener);
+
+  const after = await readOverlay();
+  const panelAfter = await readPanel();
+  const writes = await page.evaluate(() => {
+    globalThis.__restoreStorage?.();
+    return globalThis.__storageWrites ?? [];
+  });
+
+  const vehicleLookups = asked.filter((path) => path.startsWith("/v1/vehicles/"));
+  const mapRefreshes = asked.filter((path) => path.startsWith("/v1/map"));
+  const other = asked.filter(
+    (path) => !path.startsWith("/v1/map") && !path.startsWith("/v1/vehicles/"),
+  );
+
+  if (after === null || panelAfter === null) {
+    record(
+      `${size.name}/live keeps a selected bus long enough to trail it`,
+      false,
+      "the selection was lost during the window, so the trail could not be measured",
+    );
+    return;
+  }
+
+  /*
+   * Grew, or honestly did not.
+   *
+   * A stationary bus contributes nothing a line can be drawn from — the segmentation drops
+   * movement under ten metres, deliberately, so a bus shuffling at a stand does not litter the
+   * map. That is the right behaviour and not a failure, so it is reported as the state it is.
+   */
+  const grew = after.trailPoints > before.trailPoints;
+  /*
+   * What it took to say "this should have grown".
+   *
+   * A trail is assembled out of refreshes that carry this bus, so three things can legitimately
+   * produce no new points: the bus was not moving, it dropped out of the viewport's feed, or no
+   * refresh landed inside the window. Each is observable and each is named in the detail, so the
+   * assertion stays strict in the case it is about — a moving bus, still in the feed, with
+   * refreshes arriving — without turning a quiet feed into a red check.
+   */
+  const stillInFeed = await page.evaluate((ref) => {
+    const map = globalThis.__busstopsMap;
+    const source = ref ? map?.getSource("busstops-vehicles") : null;
+    if (!source) return null;
+    const data =
+      typeof source.serialize === "function" ? source.serialize().data : (source._data ?? null);
+    const features = data && Array.isArray(data.features) ? data.features : [];
+    return features.some((feature) => feature.properties?.vehicleRef === ref);
+  }, panel.ref);
+  const expected = panel.motion === "moving" && stillInFeed !== false && mapRefreshes.length > 0;
+  record(
+    `${size.name}/live builds a recent path from the refreshes it was already making`,
+    grew || !expected,
+    `${before.trailPoints} → ${after.trailPoints} point(s) in ${after.trailRuns} run(s) over ` +
+      `${Math.round(REFRESH_WINDOW_MS / 1000)}s, ${after.drawnTrail} drawn` +
+      `; the bus was ${panel.motion}, ${stillInFeed === false ? "and left the feed" : stillInFeed === null ? "and the feed could not be read" : "and stayed in the feed"}` +
+      `, across ${mapRefreshes.length} refresh(es)` +
+      `; the panel ${panelAfter.legendObserved ? "names the observed path" : panelAfter.trailNote ? "says a path will appear as positions arrive" : "says nothing about a path"}`,
+  );
+
+  /*
+   * And the cost of it, which is the whole design.
+   *
+   * The map was already asking `/v1/map` every twenty seconds. The trail is assembled out of
+   * those answers, so the only acceptable number of additional requests is zero — one vehicle
+   * lookup when the bus was selected, and nothing after it.
+   */
+  record(
+    `${size.name}/live adds no request and no stored byte to draw the path`,
+    vehicleLookups.length === 0 && other.length === 0 && writes.length === 0,
+    `${mapRefreshes.length} map refresh(es) in the window (the cadence it already had), ` +
+      `${vehicleLookups.length} further vehicle lookup(s), ${other.length} other call(s)` +
+      `${other.length > 0 ? ` [${[...new Set(other)].slice(0, 3).join(", ")}]` : ""}, ` +
+      `${writes.length} browser-storage write(s)` +
+      `${writes.length > 0 ? ` [${[...new Set(writes)].slice(0, 3).join(", ")}]` : ""}`,
+  );
+}
+
 const results = [];
 function record(name, ok, detail) {
   results.push({ name, ok, detail });
@@ -1704,6 +1962,21 @@ for (const size of WIDTHS) {
               /\/routes\/[0-9a-f]{8}-/.test(busPanel.routeLink),
               busPanel.routeLink,
             );
+          }
+
+          /*
+           * And then the experience, which needs time to pass rather than a screenshot.
+           *
+           * Only with the panel genuinely open and settled: what follows measures what happens
+           * to a bus that stays selected, and against a loading panel it would measure the
+           * lookup instead.
+           */
+          if (busPanel.open && !busPanel.loading && busPanel.error === "") {
+            await proveSelectedBusExperience(page, size, record);
+            await page.screenshot({
+              path: join(screenshotDir, `${size.name}-live-bus-trail.png`),
+              fullPage: false,
+            });
           }
         } else {
           console.log("        no buses in view, so the bus panel was not exercised");
