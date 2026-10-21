@@ -14,10 +14,10 @@ opened. It is measured now, and that is not what it is.
 reading is against artifacts the isolate has not touched; then it repeats the walk warm. The
 browser sweep is serialised after it so the two cannot be confused. The first run:
 
-| pass | requests | result |
-| --- | --- | --- |
-| cold | 33 | 33 answered, residency 0 → 11.9 MiB |
-| warm | 25 | **17 lost to 1102**, every one at 11.9 MiB resident |
+| pass | requests | result                                              |
+| ---- | -------- | --------------------------------------------------- |
+| cold | 33       | 33 answered, residency 0 → 11.9 MiB                 |
+| warm | 25       | **17 lost to 1102**, every one at 11.9 MiB resident |
 
 **Thirty-three first-contact requests without a single failure.** The residency column is the
 finding: it grew only ever after a bus tap, and by that tap's own decode to within a percent each
