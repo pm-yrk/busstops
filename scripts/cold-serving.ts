@@ -413,7 +413,14 @@ async function main(): Promise<void> {
   };
   if (JSON_OUT) writeFileSync(JSON_OUT, JSON.stringify(report, null, 1));
   annotate("notice", "cold serving", JSON.stringify({ cold, warm }, null, 1));
-  annotate("notice", "cold serving trace", JSON.stringify(trace));
+  /*
+   * One row per line, because the splitter divides on line boundaries.
+   *
+   * A single `JSON.stringify` of the whole trace is one very long line, and GitHub cuts an
+   * annotation off at about four kibibytes — so the first attempt at this arrived truncated
+   * mid-number and would not parse, which is the same failure the splitter was written for.
+   */
+  annotate("notice", "cold serving trace", trace.map((row) => JSON.stringify(row)).join("\n"));
   if (failures.length > 0) {
     annotate(
       "failure",

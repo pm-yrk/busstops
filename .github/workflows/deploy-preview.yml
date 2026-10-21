@@ -949,7 +949,13 @@ jobs:
   # loop this work actually runs on.
   sweep:
     name: Look at the deployed preview
-    needs: preview
+    # The probe first, and not only for tidiness.
+    #
+    # The sweep opens twenty-five pages at three widths with no pacing, against the same Worker
+    # the probe is measuring. Run them together and "the second walk failed" cannot be told from
+    # "a browser sweep was hammering it at the time" — which is precisely the question the cold
+    # and warm walks exist to answer. Serialising costs a few minutes and removes the confound.
+    needs: [preview, probe]
     if: ${{ always() && needs.preview.outputs.pages_url != '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
