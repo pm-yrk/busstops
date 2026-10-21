@@ -1,172 +1,172 @@
 {
-  "startedAt": "2026-10-21T02:15:31.320Z",
+  "startedAt": "2026-10-21T02:29:32.243Z",
   "areas": [
     {
       "area": "Leeds",
       "status": 200,
       "contentType": "text/xml",
-      "bytes": 224958,
-      "ms": 654,
+      "bytes": 223686,
+      "ms": 824,
       "error": null,
-      "rawActivities": 176,
+      "rawActivities": 175,
       "parseRejected": 0,
-      "responseTimestamp": "2026-10-21T02:15:31.552+00:00",
-      "accepted": 3,
+      "responseTimestamp": "2026-10-21T02:29:32.651+00:00",
+      "accepted": 2,
       "rejectedBy": {
         "observation Ns old": 173
       },
-      "oldestObservation": "2026-10-21T02:15:05.000Z",
-      "newestObservation": "2026-10-21T02:15:17.000Z",
-      "oldestAgeSeconds": 27,
-      "newestAgeSeconds": 15,
+      "oldestObservation": "2026-10-21T02:29:10.000Z",
+      "newestObservation": "2026-10-21T02:29:24.000Z",
+      "oldestAgeSeconds": 23,
+      "newestAgeSeconds": 9,
       "rawAgeSeconds": {
-        "min": 15,
-        "median": 28006,
-        "max": 72570
+        "min": 9,
+        "median": 28847,
+        "max": 73411
       }
     },
     {
       "area": "Manchester",
       "status": 200,
       "contentType": "text/xml",
-      "bytes": 520435,
-      "ms": 318,
+      "bytes": 517972,
+      "ms": 394,
       "error": null,
-      "rawActivities": 407,
+      "rawActivities": 405,
       "parseRejected": 0,
-      "responseTimestamp": "2026-10-21T02:15:32.143+00:00",
-      "accepted": 7,
+      "responseTimestamp": "2026-10-21T02:29:33.221+00:00",
+      "accepted": 6,
       "rejectedBy": {
-        "observation Ns old": 400
+        "observation Ns old": 399
       },
-      "oldestObservation": "2026-10-21T02:15:17.000Z",
-      "newestObservation": "2026-10-21T02:15:26.000Z",
-      "oldestAgeSeconds": 15,
-      "newestAgeSeconds": 6,
+      "oldestObservation": "2026-10-21T02:29:21.000Z",
+      "newestObservation": "2026-10-21T02:29:31.000Z",
+      "oldestAgeSeconds": 13,
+      "newestAgeSeconds": 3,
       "rawAgeSeconds": {
-        "min": 6,
-        "median": 24461,
-        "max": 75584
+        "min": 3,
+        "median": 25303,
+        "max": 76426
       }
     },
     {
       "area": "Birmingham",
       "status": 200,
       "contentType": "text/xml",
-      "bytes": 321199,
-      "ms": 700,
+      "bytes": 320151,
+      "ms": 862,
       "error": null,
-      "rawActivities": 285,
+      "rawActivities": 284,
       "parseRejected": 0,
-      "responseTimestamp": "2026-10-21T02:15:32.671+00:00",
-      "accepted": 8,
+      "responseTimestamp": "2026-10-21T02:29:33.927+00:00",
+      "accepted": 7,
       "rejectedBy": {
         "observation Ns old": 277
       },
-      "oldestObservation": "2026-10-21T02:08:11.000Z",
-      "newestObservation": "2026-10-21T02:15:20.000Z",
-      "oldestAgeSeconds": 442,
-      "newestAgeSeconds": 13,
+      "oldestObservation": "2026-10-21T02:29:06.000Z",
+      "newestObservation": "2026-10-21T02:29:19.000Z",
+      "oldestAgeSeconds": 28,
+      "newestAgeSeconds": 15,
       "rawAgeSeconds": {
-        "min": 13,
-        "median": 26292,
-        "max": 66447
+        "min": 15,
+        "median": 27133,
+        "max": 67288
       }
     },
     {
       "area": "Bristol",
       "status": 200,
       "contentType": "text/xml",
-      "bytes": 251646,
-      "ms": 715,
+      "bytes": 250380,
+      "ms": 984,
       "error": null,
-      "rawActivities": 196,
+      "rawActivities": 195,
       "parseRejected": 0,
-      "responseTimestamp": "2026-10-21T02:15:33.409+00:00",
-      "accepted": 15,
+      "responseTimestamp": "2026-10-21T02:29:34.904+00:00",
+      "accepted": 14,
       "rejectedBy": {
         "observation Ns old": 181
       },
-      "oldestObservation": "2026-10-21T02:15:02.000Z",
-      "newestObservation": "2026-10-21T02:15:31.000Z",
+      "oldestObservation": "2026-10-21T02:29:03.000Z",
+      "newestObservation": "2026-10-21T02:29:29.000Z",
       "oldestAgeSeconds": 32,
-      "newestAgeSeconds": 3,
+      "newestAgeSeconds": 6,
       "rawAgeSeconds": {
-        "min": 3,
-        "median": 23016,
-        "max": 64503
+        "min": 6,
+        "median": 23857,
+        "max": 65344
       }
     },
     {
       "area": "Newcastle",
       "status": 200,
       "contentType": "text/xml",
-      "bytes": 400369,
-      "ms": 734,
+      "bytes": 399079,
+      "ms": 1113,
       "error": null,
-      "rawActivities": 338,
+      "rawActivities": 337,
       "parseRejected": 0,
-      "responseTimestamp": "2026-10-21T02:15:34.136+00:00",
-      "accepted": 2,
+      "responseTimestamp": "2026-10-21T02:29:35.987+00:00",
+      "accepted": 1,
       "rejectedBy": {
         "observation Ns old": 336
       },
-      "oldestObservation": "2026-10-21T02:15:23.000Z",
-      "newestObservation": "2026-10-21T02:15:25.000Z",
-      "oldestAgeSeconds": 12,
-      "newestAgeSeconds": 10,
+      "oldestObservation": "2026-10-21T02:29:20.000Z",
+      "newestObservation": "2026-10-21T02:29:20.000Z",
+      "oldestAgeSeconds": 17,
+      "newestAgeSeconds": 17,
       "rawAgeSeconds": {
-        "min": 10,
-        "median": 26298,
-        "max": 80522
+        "min": 17,
+        "median": 27140,
+        "max": 81364
       }
     },
     {
       "area": "Nottingham",
       "status": 200,
       "contentType": "text/xml",
-      "bytes": 262228,
-      "ms": 2936,
+      "bytes": 261086,
+      "ms": 737,
       "error": null,
-      "rawActivities": 232,
+      "rawActivities": 231,
       "parseRejected": 0,
-      "responseTimestamp": "2026-10-21T02:15:34.898+00:00",
+      "responseTimestamp": "2026-10-21T02:29:36.871+00:00",
       "accepted": 4,
       "rejectedBy": {
-        "observation Ns old": 228
+        "observation Ns old": 227
       },
-      "oldestObservation": "2026-10-21T02:15:16.000Z",
-      "newestObservation": "2026-10-21T02:15:30.000Z",
-      "oldestAgeSeconds": 22,
-      "newestAgeSeconds": 8,
+      "oldestObservation": "2026-10-21T02:27:36.000Z",
+      "newestObservation": "2026-10-21T02:29:26.000Z",
+      "oldestAgeSeconds": 121,
+      "newestAgeSeconds": 11,
       "rawAgeSeconds": {
-        "min": 8,
-        "median": 26885,
-        "max": 65615
+        "min": 11,
+        "median": 27723,
+        "max": 66454
       }
     },
     {
       "area": "London (Westminster)",
       "status": 200,
       "contentType": "text/xml",
-      "bytes": 311706,
-      "ms": 269,
+      "bytes": 320050,
+      "ms": 1020,
       "error": null,
-      "rawActivities": 353,
+      "rawActivities": 363,
       "parseRejected": 0,
-      "responseTimestamp": "2026-10-21T02:15:37.679+00:00",
-      "accepted": 136,
+      "responseTimestamp": "2026-10-21T02:29:37.787+00:00",
+      "accepted": 144,
       "rejectedBy": {
-        "observation Ns old": 217
+        "observation Ns old": 219
       },
-      "oldestObservation": "2026-10-21T02:05:47.000Z",
-      "newestObservation": "2026-10-21T02:15:31.000Z",
-      "oldestAgeSeconds": 591,
-      "newestAgeSeconds": 7,
+      "oldestObservation": "2026-10-21T02:20:01.000Z",
+      "newestObservation": "2026-10-21T02:29:29.000Z",
+      "oldestAgeSeconds": 577,
+      "newestAgeSeconds": 9,
       "rawAgeSeconds": {
-        "min": 7,
-        "median": 8189,
-        "max": 76761
+        "min": 9,
+        "median": 8527,
+        "max": 77601
       }
     }
   ],
@@ -178,7 +178,7 @@
       "contentType": "application/zip",
       "contentLength": null,
       "bytes": null,
-      "ms": 324,
+      "ms": 476,
       "error": null,
       "head": null
     },
@@ -189,7 +189,7 @@
       "contentType": "application/zip",
       "contentLength": null,
       "bytes": null,
-      "ms": 461,
+      "ms": 379,
       "error": null,
       "head": null
     },
@@ -200,7 +200,7 @@
       "contentType": "application/zip",
       "contentLength": null,
       "bytes": null,
-      "ms": 574,
+      "ms": 843,
       "error": null,
       "head": null
     },
@@ -211,7 +211,7 @@
       "contentType": "text/html",
       "contentLength": "1099",
       "bytes": 1099,
-      "ms": 143,
+      "ms": 109,
       "error": null,
       "head": "<!doctype html> <title>Bus Open Data Service</title> <style> body { text-align: center; padding: 150px; } h1 { font-size: 50px; } body { font: 20px Helvetica, sans-serif; color: #333; } article { display: block; text-align: left; width: 650px; margin: 0 auto; } a { color: #0000EE; text-decoration: none; } a:hover { color: #333; text-decoration: none; } </style> <article> <h1>Thank"
     },
@@ -222,7 +222,7 @@
       "contentType": "text/html; charset=utf-8",
       "contentLength": null,
       "bytes": 17215,
-      "ms": 290,
+      "ms": 229,
       "error": null,
       "head": " <!DOCTYPE html> <html lang=\"en\" class=\"govuk-template govuk-template--rebranded\"> <head> <link rel=\"shortcut icon\" sizes=\"16x16 32x32 48x48\" type=\"image/x-icon\" href=\"/assets/frontend/images/favicon.dec306ee0746.ico\" /> <meta charset=\"utf-8\" /> <title> Page not found </title> <meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover"
     },
@@ -233,9 +233,9 @@
       "contentType": "text/xml",
       "contentLength": null,
       "bytes": 5581728,
-      "ms": 1786,
+      "ms": 1036,
       "error": null,
-      "head": "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?> <Siri version=\"2.0\" xmlns=\"http://www.siri.org.uk/siri\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:schemaLocation=\"http://www.siri.org.uk/siri http://www.siri.org.uk/schema/2.0/xsd/siri.xsd\"> <ServiceDelivery> <ResponseTimestamp>2026-10-21T02:14:43.109Z</ResponseTimestamp> <ProducerRef>DepartmentForTrans"
+      "head": "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?> <Siri version=\"2.0\" xmlns=\"http://www.siri.org.uk/siri\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:schemaLocation=\"http://www.siri.org.uk/siri http://www.siri.org.uk/schema/2.0/xsd/siri.xsd\"> <ServiceDelivery> <ResponseTimestamp>2026-10-21T02:28:42.833Z</ResponseTimestamp> <ProducerRef>DepartmentForTrans"
     },
     {
       "label": "datasets index",
@@ -244,7 +244,7 @@
       "contentType": "application/json",
       "contentLength": null,
       "bytes": 2773,
-      "ms": 326,
+      "ms": 317,
       "error": null,
       "head": "{\"count\":901,\"next\":\"https://data.bus-data.dft.gov.uk/api/v1/dataset/?api_key=dd2604f15cbcfcc47de7a8511ea46f1718297fec&limit=1&offset=1\",\"previous\":null,\"results\":[{\"id\":464,\"created\":\"2020-08-23T13:25:21+00:00\",\"modified\":\"2026-09-17T09:19:54+00:00\",\"operatorName\":\"Kinch Buses\",\"noc\":[\"KBUS\"],\"name\":\"Kinch Buses_464_20260917 09:16:47\",\"description\":\"Timetable data for Kinchbus (KBUS) services.\",\""
     },
@@ -252,9 +252,9 @@
       "label": "tfl arrivals at a Westminster stop",
       "url": "https://api.tfl.gov.uk/StopPoint/490008660N/Arrivals?app_key=***",
       "status": 200,
-      "bytes": 2849,
-      "ms": 229,
-      "records": 3,
+      "bytes": 1894,
+      "ms": 270,
+      "records": 2,
       "error": null
     },
     {
@@ -262,7 +262,7 @@
       "url": "https://api.tfl.gov.uk/Line/Mode/bus/Status?app_key=***",
       "status": 200,
       "bytes": 996009,
-      "ms": 1948,
+      "ms": 1440,
       "records": 675,
       "error": null
     },
@@ -271,7 +271,7 @@
       "url": "https://api.tfl.gov.uk/Line/Mode/bus/Disruption?app_key=***",
       "status": 200,
       "bytes": 16099,
-      "ms": 240,
+      "ms": 287,
       "records": 32,
       "error": null
     }
