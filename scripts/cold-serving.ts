@@ -113,6 +113,8 @@ interface Reading {
   budgetStopped?: boolean;
   degradationReason?: string | null;
   residentCharsBefore?: number;
+  /** Parsed records the isolate was already holding. This is the memory, not the characters. */
+  residentRecordsBefore?: number;
   requestsServed?: number;
 }
 
@@ -200,6 +202,7 @@ async function ask(
           budgetStopped: at(diagnostics, "budgetStopped") === true,
           degradationReason: (at(diagnostics, "degradationReason") as string | null) ?? null,
           residentCharsBefore: asNumber(at(diagnostics, "residency", "charsBefore")) ?? 0,
+          residentRecordsBefore: asNumber(at(diagnostics, "residency", "recordsBefore")) ?? 0,
           requestsServed: asNumber(at(diagnostics, "residency", "requestsServed")) ?? 0,
         }),
   });
@@ -360,21 +363,57 @@ async function main(): Promise<void> {
     }
   }
 
+  console.log("");
+  console.log("pass  city        endpoint   served  residentBefore  recordsBefore  chars  status");
+  for (const row of readings) {
+    console.log(
+      `${row.pass.padEnd(5)} ${row.city.padEnd(11)} ${row.endpoint.padEnd(9)} ` +
+        `${String(row.requestsServed ?? "-").padStart(6)}  ` +
+        `${String(row.residentCharsBefore ?? "-").padStart(14)}  ` +
+        `${String(row.residentRecordsBefore ?? "-").padStart(13)}  ` +
+        `${String(row.charsDecoded ?? "-").padStart(8)}  ${String(row.status ?? "-")}` +
+        (row.platform === undefined ? "" : `  ${row.platform.slice(0, 40)}`),
+    );
+  }
+
   const failures = readings.filter((row) => row.platform !== undefined);
   console.log("");
   for (const row of failures) {
     console.log(`  ${row.pass} ${row.city} ${row.endpoint}: ${row.platform}`);
   }
 
+  /*
+   * The trace, because the summary cannot answer the question the first run raised.
+   *
+   * That run found nought platform errors on the cold walk and seventeen on the warm one, which
+   * is the opposite of a first-contact failure and points at what an isolate accumulates rather
+   * than at what a request decodes. `requestsServed` and the residency it started against are the
+   * two numbers that separate those, and they are per request.
+   */
+  const trace = readings.map((row) => ({
+    pass: row.pass,
+    city: row.city,
+    endpoint: row.endpoint,
+    status: row.status,
+    ms: row.ms,
+    chars: row.charsDecoded ?? null,
+    served: row.requestsServed ?? null,
+    residentBefore: row.residentCharsBefore ?? null,
+    recordsBefore: row.residentRecordsBefore ?? null,
+    ...(row.platform === undefined ? {} : { platform: row.platform.slice(0, 40) }),
+  }));
+
   const report = {
     startedAt: new Date().toISOString(),
     worker: WORKER,
     cold,
     warm,
+    trace,
     readings,
   };
   if (JSON_OUT) writeFileSync(JSON_OUT, JSON.stringify(report, null, 1));
   annotate("notice", "cold serving", JSON.stringify({ cold, warm }, null, 1));
+  annotate("notice", "cold serving trace", JSON.stringify(trace));
   if (failures.length > 0) {
     annotate(
       "failure",
