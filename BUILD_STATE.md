@@ -1,8 +1,50 @@
 # Bus Stops. Build State
 
-Last updated: 2026-10-21 (the selected bus knows where it is going; the trail builds while you watch)
+Last updated: 2026-10-21 (error 1102 measured: one endpoint was filling the isolate, and it no longer does)
 
 ## Current status
+
+### 21 October: the 1102 is accumulation, not first contact
+
+This repository has believed for several weeks that Cloudflare's error 1102 on this deployment was
+a cold-path failure — the first request for a city paying to read and parse artifacts nothing had
+opened. It is measured now, and that is not what it is.
+
+`scripts/cold-serving.ts` walks five cities once each, in turn, never revisiting one, so every
+reading is against artifacts the isolate has not touched; then it repeats the walk warm. The
+browser sweep is serialised after it so the two cannot be confused. The first run:
+
+| pass | requests | result |
+| --- | --- | --- |
+| cold | 33 | 33 answered, residency 0 → 11.9 MiB |
+| warm | 25 | **17 lost to 1102**, every one at 11.9 MiB resident |
+
+**Thirty-three first-contact requests without a single failure.** The residency column is the
+finding: it grew only ever after a bus tap, and by that tap's own decode to within a percent each
+time — 2.54 MiB after Leeds, 2.95 after Manchester, 3.30 after Birmingham, 1.79 after Bristol, 1.30
+after York, holding 5,756 parsed patterns. Nothing else in the walk added a byte, because every
+other read is line-filtered and a filtered read already declines the cache. Once the isolate held
+that, requests sorted by cost: search at 34 KB and nearby at 551 KB kept answering while map, stop
+and journey in the same cities died.
+
+`/v1/vehicles/:ref` was reading whole pattern geometry tiles — 1.3 to 3.3 MiB in a city, the
+largest objects a passenger request opens — to identify one bus, and keeping them. It no longer
+keeps them, and it reads the tiles around the vehicle rather than around the viewport. With that
+one change the same walk answered **66 of 66**, residency flat at zero throughout, and the
+repeated-endpoint instrument stayed at 30/30 with its medians improved.
+
+**It is not finished.** An hour later, at the weekday morning peak, the same build answered 23 of
+53 — and the trace says why: `served` ran 1 to 50 without resetting, so one isolate took the whole
+walk, and failures began at request 17. The run that passed had its isolate recycle at request 26.
+So the accumulator that was removed was real and is gone, and the margin that is left is too thin
+to survive a long-lived isolate at peak. What is left to reduce is the per-request decode itself:
+journey at 4.21 MiB, vehicle at 2.97, map at 2.18, stop at 2.03, route at 2.14.
+
+One thing that looked like a fix and was not: allowing the board's pattern-index read less text.
+`boxAround` is 1,500 metres against an eighth-of-a-degree grid, so that read asks for one tile
+almost every time and a budget is only checked between tiles. The 2.03 MiB is a single object and
+no smaller allowance would have stopped it. It was reverted and the reason is recorded where
+somebody would otherwise try it again.
 
 ### 21 October: tapping a bus answers the question it was tapped to ask
 
