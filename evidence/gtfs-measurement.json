@@ -1,11 +1,11 @@
 {
-  "measuredAt": "2026-10-21T01:58:51.421Z",
+  "measuredAt": "2026-10-21T02:24:26.897Z",
   "regions": [
     {
       "region": "all",
       "url": "https://data.bus-data.dft.gov.uk/timetable/download/gtfs-file/all/",
       "downloadBytes": 2082459942,
-      "downloadMs": 70991,
+      "downloadMs": 55834,
       "entries": [
         {
           "name": "agency.txt",
@@ -127,7 +127,7 @@
       "tripsOnHorizon": 441056,
       "stopTimesTotal": 71318241,
       "stopTimesOnHorizon": 17061145,
-      "stopTimesMs": 124155,
+      "stopTimesMs": 197548,
       "counts": {
         "calendar.txt": 2432,
         "calendar_dates.txt": 279181,
@@ -140,13 +140,13 @@
         "trips.txt": 1854936,
         "stop_times.txt": 71318241
       },
-      "peakRssMib": 616
+      "peakRssMib": 623
     },
     {
       "region": "yorkshire",
       "url": "https://data.bus-data.dft.gov.uk/timetable/download/gtfs-file/yorkshire/",
       "downloadBytes": 251861533,
-      "downloadMs": 8518,
+      "downloadMs": 6897,
       "entries": [
         {
           "name": "agency.txt",
@@ -263,7 +263,7 @@
       "tripsOnHorizon": 31830,
       "stopTimesTotal": 7583520,
       "stopTimesOnHorizon": 1418897,
-      "stopTimesMs": 11468,
+      "stopTimesMs": 19888,
       "counts": {
         "calendar.txt": 291,
         "calendar_dates.txt": 22188,
@@ -275,13 +275,13 @@
         "trips.txt": 167751,
         "stop_times.txt": 7583520
       },
-      "peakRssMib": 609
+      "peakRssMib": 614
     },
     {
       "region": "north_west",
       "url": "https://data.bus-data.dft.gov.uk/timetable/download/gtfs-file/north_west/",
       "downloadBytes": 170479696,
-      "downloadMs": 6436,
+      "downloadMs": 4783,
       "entries": [
         {
           "name": "agency.txt",
@@ -398,7 +398,7 @@
       "tripsOnHorizon": 42594,
       "stopTimesTotal": 5637483,
       "stopTimesOnHorizon": 1844277,
-      "stopTimesMs": 8660,
+      "stopTimesMs": 15031,
       "counts": {
         "calendar.txt": 296,
         "calendar_dates.txt": 47804,
@@ -410,7 +410,7 @@
         "trips.txt": 137998,
         "stop_times.txt": 5637483
       },
-      "peakRssMib": 608
+      "peakRssMib": 614
     }
   ]
 }
