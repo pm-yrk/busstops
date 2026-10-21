@@ -247,7 +247,20 @@ export function emptyVehicleReason(
   if (sources.length > 0 && sources.every((source) => source.coverageArea === "london")) {
     return "london_has_no_positions";
   }
-  return degradation === "scheduled_only" ? "feed_unavailable" : "none_reported";
+  /*
+   * Two degradations mean the same thing to a passenger, and only one of them was handled.
+   *
+   * `scheduled_only` is every live source down; `partial_sources` is at least one of them having
+   * failed for this request — which is what the Worker reports when the map's live read runs out
+   * of budget in a dense viewport, because the live stage gets whatever the stop read left it.
+   * Reading only the first meant a viewport whose feed we never managed to ask was told "There
+   * are no live buses in this area at the moment": a statement about the bus service, made out of
+   * a failure of ours, in the two cities where it was measured.
+   */
+  if (degradation === "scheduled_only" || degradation === "partial_sources") {
+    return "feed_unavailable";
+  }
+  return "none_reported";
 }
 
 export function describeEmptyVehicles(reason: EmptyVehicleReason): string {

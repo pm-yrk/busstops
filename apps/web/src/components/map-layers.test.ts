@@ -211,6 +211,22 @@ describe("why a viewport has no buses on it", () => {
     expect(describeEmptyVehicles("feed_unavailable")).toContain("unavailable right now");
   });
 
+  /*
+   * Measured on the deployment: Manchester and Birmingham returned no vehicles while the upstream
+   * had eight and nine plausible ones in the same box at the same minute. The Worker said so —
+   * `partial_sources`, because the map's live read gets whatever the stop read leaves it and a
+   * dense viewport leaves it 300ms — and this function read only `scheduled_only`, so the page
+   * told the passenger there were no buses there.
+   */
+  it("treats one failed source as a failed feed, not as empty streets", () => {
+    expect(emptyVehicleReason([bods], "partial_sources")).toBe("feed_unavailable");
+  });
+
+  /* London still wins: it has no positions to publish whatever else happened to the request. */
+  it("keeps London's own reason when a source also failed", () => {
+    expect(emptyVehicleReason([tfl], "partial_sources")).toBe("london_has_no_positions");
+  });
+
   it("falls back to the ordinary answer when no source is named", () => {
     expect(emptyVehicleReason([], "none")).toBe("none_reported");
     expect(describeEmptyVehicles("none_reported")).toContain("Try panning");

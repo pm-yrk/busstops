@@ -1245,8 +1245,18 @@ async function main(): Promise<void> {
     const map = await asked(`/v1/map?bbox=${bbox}&zoom=13`);
     const mapVehicles = asArray(at(map.json, "data", "vehicles"));
     const upstream = await askBodsDirectly(area.bbox);
+    /*
+     * What the response said about itself, not only what it carried.
+     *
+     * "No buses" and "we could not ask for buses" are the same empty array and completely
+     * different statements, and the only thing that separates them is the meta: `degradation` is
+     * `partial_sources` when a live source failed for this request, and `coverage` drops to 0.5
+     * with it. A row that reports the count without them cannot tell the two apart.
+     */
     city.live = {
       deployed: mapVehicles.length,
+      degradation: asText(at(map.json, "meta", "degradation")) || null,
+      coverage: asNumber(at(map.json, "meta", "coverage")) ?? null,
       upstreamRaw: upstream.accepted + upstream.rejected,
       upstreamAccepted: upstream.accepted,
       upstreamRejected: upstream.rejected,
@@ -1260,7 +1270,10 @@ async function main(): Promise<void> {
             ? "upstream currently empty"
             : mapVehicles.length > 0
               ? "PASS"
-              : "FAIL — upstream has buses and the deployment returned none",
+              : asText(at(map.json, "meta", "degradation")) === "normal"
+                ? "FAIL — upstream has buses, the deployment returned none, and called it a complete answer"
+                : "FAIL — upstream has buses and the deployment could not reach the live feed " +
+                  `(${asText(at(map.json, "meta", "degradation")) || "no degradation reported"})`,
     };
     if (upstream.accepted > 0 && mapVehicles.length === 0) {
       failures.push(
