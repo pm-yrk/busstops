@@ -1,46 +1,46 @@
 {
-  "measuredAt": "2026-10-14T19:38:55.819Z",
+  "measuredAt": "2026-10-21T01:58:51.421Z",
   "regions": [
     {
       "region": "all",
       "url": "https://data.bus-data.dft.gov.uk/timetable/download/gtfs-file/all/",
-      "downloadBytes": 1843595186,
-      "downloadMs": 41110,
+      "downloadBytes": 2082459942,
+      "downloadMs": 70991,
       "entries": [
         {
           "name": "agency.txt",
-          "compressed": 10883,
-          "uncompressed": 47607
+          "compressed": 11959,
+          "uncompressed": 52377
         },
         {
           "name": "stops.txt",
-          "compressed": 9840018,
-          "uncompressed": 20409704
+          "compressed": 10061717,
+          "uncompressed": 20831446
         },
         {
           "name": "routes.txt",
-          "compressed": 102439,
-          "uncompressed": 313711
+          "compressed": 106485,
+          "uncompressed": 325495
         },
         {
           "name": "calendar.txt",
-          "compressed": 15725,
-          "uncompressed": 83367
+          "compressed": 17182,
+          "uncompressed": 91879
         },
         {
           "name": "calendar_dates.txt",
-          "compressed": 741190,
-          "uncompressed": 4042711
+          "compressed": 852339,
+          "uncompressed": 4675005
         },
         {
           "name": "trips.txt",
-          "compressed": 56647022,
-          "uncompressed": 214143176
+          "compressed": 64211928,
+          "uncompressed": 244633441
         },
         {
           "name": "shapes.txt",
-          "compressed": 821348795,
-          "uncompressed": 5517332668
+          "compressed": 955816741,
+          "uncompressed": 6438256692
         },
         {
           "name": "frequencies.txt",
@@ -49,21 +49,21 @@
         },
         {
           "name": "feed_info.txt",
-          "compressed": 142,
+          "compressed": 141,
           "uncompressed": 191
         },
         {
           "name": "stop_times.txt",
-          "compressed": 954885096,
-          "uncompressed": 5510053444
+          "compressed": 1051377574,
+          "uncompressed": 6076971362
         }
       ],
       "activeServiceIds": {
-        "today": 1203,
-        "tomorrow": 1247
+        "today": 1231,
+        "tomorrow": 1243
       },
       "agency": {
-        "rows": 567,
+        "rows": 625,
         "columns": [
           "agency_id",
           "agency_name",
@@ -73,7 +73,7 @@
           "agency_phone",
           "agency_noc"
         ],
-        "withAgencyId": 567,
+        "withAgencyId": 625,
         "sampleIds": [
           "OP10",
           "OP101",
@@ -85,8 +85,8 @@
           "OP104",
           "OP105",
           "OP10594",
-          "OP10792",
-          "OP108"
+          "OP1060",
+          "OP10792"
         ],
         "sampleNames": [
           "M & H Coaches",
@@ -124,82 +124,82 @@
           "007"
         ]
       },
-      "tripsOnHorizon": 430524,
-      "stopTimesTotal": 64725383,
-      "stopTimesOnHorizon": 16805407,
-      "stopTimesMs": 178871,
+      "tripsOnHorizon": 441056,
+      "stopTimesTotal": 71318241,
+      "stopTimesOnHorizon": 17061145,
+      "stopTimesMs": 124155,
       "counts": {
-        "calendar.txt": 2207,
-        "calendar_dates.txt": 241445,
-        "agency.txt": 567,
-        "routes.txt": 13216,
-        "stops.txt": 304898,
+        "calendar.txt": 2432,
+        "calendar_dates.txt": 279181,
+        "agency.txt": 625,
+        "routes.txt": 13666,
+        "stops.txt": 310616,
         "feed_info.txt": 1,
         "frequencies.txt": 83,
-        "shapes.txt": 90214621,
-        "trips.txt": 1655424,
-        "stop_times.txt": 64725383
+        "shapes.txt": 105431004,
+        "trips.txt": 1854936,
+        "stop_times.txt": 71318241
       },
-      "peakRssMib": 609
+      "peakRssMib": 616
     },
     {
       "region": "yorkshire",
       "url": "https://data.bus-data.dft.gov.uk/timetable/download/gtfs-file/yorkshire/",
-      "downloadBytes": 253089471,
-      "downloadMs": 6633,
+      "downloadBytes": 251861533,
+      "downloadMs": 8518,
       "entries": [
         {
           "name": "agency.txt",
-          "compressed": 1199,
-          "uncompressed": 4731
+          "compressed": 1227,
+          "uncompressed": 4822
         },
         {
           "name": "stops.txt",
-          "compressed": 1080322,
-          "uncompressed": 2475916
+          "compressed": 1084096,
+          "uncompressed": 2482688
         },
         {
           "name": "routes.txt",
-          "compressed": 9479,
-          "uncompressed": 28763
+          "compressed": 9390,
+          "uncompressed": 28401
         },
         {
           "name": "calendar.txt",
-          "compressed": 2069,
-          "uncompressed": 9918
+          "compressed": 2271,
+          "uncompressed": 10979
         },
         {
           "name": "calendar_dates.txt",
-          "compressed": 104426,
-          "uncompressed": 351738
+          "compressed": 110409,
+          "uncompressed": 370320
         },
         {
           "name": "trips.txt",
-          "compressed": 7079286,
-          "uncompressed": 24990503
+          "compressed": 7128829,
+          "uncompressed": 25605297
         },
         {
           "name": "shapes.txt",
-          "compressed": 145102578,
-          "uncompressed": 1009291927
+          "compressed": 145820996,
+          "uncompressed": 1014814942
         },
         {
           "name": "feed_info.txt",
-          "compressed": 142,
+          "compressed": 141,
           "uncompressed": 191
         },
         {
           "name": "stop_times.txt",
-          "compressed": 99708910,
-          "uncompressed": 656779084
+          "compressed": 97703114,
+          "uncompressed": 639767765
         }
       ],
       "activeServiceIds": {
-        "today": 129,
-        "tomorrow": 130
+        "today": 137,
+        "tomorrow": 142
       },
       "agency": {
-        "rows": 57,
+        "rows": 58,
         "columns": [
           "agency_id",
           "agency_name",
@@ -209,9 +209,10 @@
           "agency_phone",
           "agency_noc"
         ],
-        "withAgencyId": 57,
+        "withAgencyId": 58,
         "sampleIds": [
           "OP10924",
+          "OP1123",
           "OP11950",
           "OP11955",
           "OP12112",
@@ -221,16 +222,15 @@
           "OP14184",
           "OP152",
           "OP153",
-          "OP1554",
-          "OP18078"
+          "OP1554"
         ],
         "sampleNames": [
           "Bee Network",
+          "South Yorkshire Future Tram",
           "Coopers Tours",
           "Sweyne Coaches",
           "Stagecoach East Midlands",
-          "21 Transport",
-          "Hulleys of Baslow"
+          "21 Transport"
         ],
         "nocShapedSampleIds": 0
       },
@@ -260,63 +260,63 @@
           "30A"
         ]
       },
-      "tripsOnHorizon": 31607,
-      "stopTimesTotal": 7780056,
-      "stopTimesOnHorizon": 1413386,
-      "stopTimesMs": 20253,
+      "tripsOnHorizon": 31830,
+      "stopTimesTotal": 7583520,
+      "stopTimesOnHorizon": 1418897,
+      "stopTimesMs": 11468,
       "counts": {
-        "calendar.txt": 263,
-        "calendar_dates.txt": 21099,
-        "agency.txt": 57,
-        "routes.txt": 1210,
-        "stops.txt": 32131,
+        "calendar.txt": 291,
+        "calendar_dates.txt": 22188,
+        "agency.txt": 58,
+        "routes.txt": 1196,
+        "stops.txt": 32189,
         "feed_info.txt": 1,
-        "shapes.txt": 16487424,
-        "trips.txt": 170288,
-        "stop_times.txt": 7780056
+        "shapes.txt": 16582342,
+        "trips.txt": 167751,
+        "stop_times.txt": 7583520
       },
-      "peakRssMib": 599
+      "peakRssMib": 609
     },
     {
       "region": "north_west",
       "url": "https://data.bus-data.dft.gov.uk/timetable/download/gtfs-file/north_west/",
-      "downloadBytes": 158936899,
-      "downloadMs": 58517,
+      "downloadBytes": 170479696,
+      "downloadMs": 6436,
       "entries": [
         {
           "name": "agency.txt",
-          "compressed": 1304,
-          "uncompressed": 5863
+          "compressed": 1319,
+          "uncompressed": 5866
         },
         {
           "name": "stops.txt",
-          "compressed": 1088172,
-          "uncompressed": 2427464
+          "compressed": 1090872,
+          "uncompressed": 2432907
         },
         {
           "name": "routes.txt",
-          "compressed": 13341,
-          "uncompressed": 42251
+          "compressed": 13325,
+          "uncompressed": 42132
         },
         {
           "name": "calendar.txt",
-          "compressed": 2108,
-          "uncompressed": 10521
+          "compressed": 2201,
+          "uncompressed": 11177
         },
         {
           "name": "calendar_dates.txt",
-          "compressed": 219299,
-          "uncompressed": 734917
+          "compressed": 241870,
+          "uncompressed": 801298
         },
         {
           "name": "trips.txt",
-          "compressed": 4698442,
-          "uncompressed": 16350022
+          "compressed": 4827563,
+          "uncompressed": 16714923
         },
         {
           "name": "shapes.txt",
-          "compressed": 75903009,
-          "uncompressed": 510137618
+          "compressed": 85143977,
+          "uncompressed": 574474220
         },
         {
           "name": "feed_info.txt",
@@ -325,13 +325,13 @@
         },
         {
           "name": "stop_times.txt",
-          "compressed": 77010022,
-          "uncompressed": 470102936
+          "compressed": 79157367,
+          "uncompressed": 483338499
         }
       ],
       "activeServiceIds": {
-        "today": 274,
-        "tomorrow": 281
+        "today": 273,
+        "tomorrow": 276
       },
       "agency": {
         "rows": 71,
@@ -395,22 +395,22 @@
           "317"
         ]
       },
-      "tripsOnHorizon": 42283,
-      "stopTimesTotal": 5481275,
-      "stopTimesOnHorizon": 1849579,
-      "stopTimesMs": 14497,
+      "tripsOnHorizon": 42594,
+      "stopTimesTotal": 5637483,
+      "stopTimesOnHorizon": 1844277,
+      "stopTimesMs": 8660,
       "counts": {
-        "calendar.txt": 279,
-        "calendar_dates.txt": 43833,
+        "calendar.txt": 296,
+        "calendar_dates.txt": 47804,
         "agency.txt": 71,
-        "routes.txt": 1733,
-        "stops.txt": 36715,
+        "routes.txt": 1729,
+        "stops.txt": 36790,
         "feed_info.txt": 1,
-        "shapes.txt": 8391745,
-        "trips.txt": 135347,
-        "stop_times.txt": 5481275
+        "shapes.txt": 9460453,
+        "trips.txt": 137998,
+        "stop_times.txt": 5637483
       },
-      "peakRssMib": 602
+      "peakRssMib": 608
     }
   ]
 }
