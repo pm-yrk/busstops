@@ -175,6 +175,33 @@ const PAGES = [
  * at coordinates that were not on the screen.
  */
 async function bringMapIntoView(page) {
+  /*
+   * And first, whether there is a map at all.
+   *
+   * `MapView` replaces itself with the list when the renderer fails, and the map object it built
+   * before that stays on `globalThis` with its canvas detached — a detached element's rectangle
+   * is all zeros, so every painted feature projects outside it and the sweep reported "none of
+   * the 172 painted stops could be clicked: 172 off-screen" with the canvas centre landing on the
+   * page header. That is a true description of a dead canvas and a completely misleading one of
+   * the click handlers, which were never reached. Said plainly here instead.
+   */
+  const missing = await page.evaluate(() => {
+    const canvas = document.querySelector(".maplibregl-canvas");
+    const box = canvas?.getBoundingClientRect();
+    if (document.querySelector(".map-view--unavailable")) {
+      return (
+        document.querySelector(".map-view--unavailable p")?.textContent?.trim() ??
+        "the map is not showing"
+      );
+    }
+    if (!canvas) return "there is no map canvas on the page";
+    if (!box || box.width === 0 || box.height === 0) {
+      return `the map canvas has no size (${String(Math.round(box?.width ?? 0))}x${String(Math.round(box?.height ?? 0))}), so it is not the one on screen`;
+    }
+    return null;
+  });
+  if (missing) throw new Error(missing);
+
   await page.evaluate(async () => {
     const canvas = document.querySelector(".maplibregl-canvas");
     if (!canvas) return;
