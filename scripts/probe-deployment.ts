@@ -983,6 +983,10 @@ async function main(): Promise<void> {
    */
   const BOARD_WINDOW_MINUTES = 90;
 
+  /** A second between page-sized steps, and three between cities: one person, reading. */
+  const STEP_PACE_MS = 1_000;
+  const CITY_PACE_MS = 3_000;
+
   interface StopAttempt {
     stop: string;
     atcoCode: string;
@@ -999,6 +1003,7 @@ async function main(): Promise<void> {
   const cities: Array<Record<string, unknown>> = [];
 
   for (const area of AREAS.filter((candidate) => !candidate.name.startsWith("London"))) {
+    await new Promise((resolve) => setTimeout(resolve, CITY_PACE_MS));
     const city: Record<string, unknown> = { city: area.name };
     /*
      * Every answer that was not a clean 200, with the first of whatever came back instead.
@@ -1009,7 +1014,22 @@ async function main(): Promise<void> {
      * limit apart from an application error without guessing.
      */
     const trouble: Array<Record<string, unknown>> = [];
+    /*
+     * At a passenger's pace, deliberately — and this is not the probe going easy on itself.
+     *
+     * The run before this one walked all five cities flat out, on an isolate that had already
+     * served a hundred requests from the earlier sections, and the result was Leeds, Manchester
+     * and Birmingham answering perfectly and then every call for Bristol and York coming back as
+     * Cloudflare's error page, with latency climbing from ~100ms to ~800ms on the way. That is a
+     * real and known property of this deployment under a sustained single-client stream, and it
+     * is measured by the sections above, which stay unpaced on purpose.
+     *
+     * What it is not is the passenger path, and a table of what a passenger gets must not be a
+     * table of what a load test gets. A page load is a handful of requests and then somebody
+     * reading for a few seconds, so that is what this does.
+     */
     const asked = async (path: string) => {
+      await new Promise((resolve) => setTimeout(resolve, STEP_PACE_MS));
       const answer = await ask(path);
       if (answer.status !== 200 || answer.json === null) {
         /*
@@ -1407,6 +1427,7 @@ async function main(): Promise<void> {
   }
 
   report.cities = cities;
+  report.cityPace = { stepMs: STEP_PACE_MS, cityMs: CITY_PACE_MS };
   annotate("notice", "city health", JSON.stringify(cities, null, 1));
 
   const health = await ask(`/v1/sources/health`);
