@@ -1641,6 +1641,76 @@ describe("GET /v1/vehicles/:ref", () => {
       ).toBe(false);
     });
 
+    /*
+     * What the tap leaves behind for every request after it.
+     *
+     * The deployed trace is what made this specific: thirty-three first-contact requests across
+     * five cities answered without a single failure, and the residency each one reported grew
+     * only ever after a bus tap — 2.5 MiB after Leeds, 5.5 after Manchester, 8.8 after
+     * Birmingham, 11.9 after York, each step matching that city's vehicle decode to within a
+     * percent. From there every request with real decoding to do answered with Cloudflare's error
+     * page while the cheap ones carried on. The pattern geometry tiles are the largest objects a
+     * passenger request opens and a tap wants one pattern out of one of them.
+     *
+     * So the assertion is about what is resident afterwards, not about time: the tile this
+     * request decoded must not still be held when it ends.
+     */
+    it("does not leave its pattern tile resident for the next request", async () => {
+      const { pattern, stopsById, shape } = patternUnderTest();
+      const atIndex = Math.max(1, Math.floor((pattern.stopSequence.length - 1) * 0.67));
+      const here = stopsById.get(pattern.stopSequence[atIndex]!)!.locationCoordinate;
+      const bearing =
+        shape.length > 1
+          ? Math.round(
+              (Math.atan2(
+                shape[shape.length - 1]!.lon - shape[0]!.lon,
+                shape[shape.length - 1]!.lat - shape[0]!.lat,
+              ) *
+                180) /
+                Math.PI,
+            )
+          : 0;
+
+      const store = await publishedStore();
+      const env = makeEnv(store);
+      resetWorkerState();
+      initialiseWorker(
+        env,
+        () => new Date("2026-09-02T08:00:05Z"),
+        (async () =>
+          new Response(siriAt(here, bearing), { status: 200 })) as unknown as typeof fetch,
+      );
+
+      const bbox = "-1.7,53.7,-1.4,53.9";
+      const map = await worker.fetch(get(`/v1/map?bbox=${bbox}&zoom=14`), env, ctx);
+      const mapBody = (await map.json()) as { data: { vehicles: Array<{ vehicleRef: string }> } };
+      const ref = mapBody.data.vehicles[0]!.vehicleRef;
+
+      const response = await worker.fetch(
+        get(`/v1/vehicles/${encodeURIComponent(ref)}?bbox=${bbox}`),
+        env,
+        ctx,
+      );
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as {
+        meta: {
+          diagnostics?: {
+            families?: { patterns?: { chars: number } };
+            residency?: { charsAfter: number };
+          };
+        };
+      };
+
+      const decoded = body.meta.diagnostics?.families?.patterns?.chars ?? 0;
+      const residentAfter = body.meta.diagnostics?.residency?.charsAfter ?? 0;
+      expect(decoded, "the tap genuinely decoded a pattern tile").toBeGreaterThan(0);
+      expect(
+        residentAfter,
+        `the tap decoded ${String(decoded)} characters of pattern tile and left ` +
+          `${String(residentAfter)} resident`,
+      ).toBeLessThan(decoded);
+    });
+
     it("does not offer the start of the route as what is coming next", async () => {
       const { pattern, stopsById, shape } = patternUnderTest();
       const lastIndex = pattern.stopSequence.length - 1;

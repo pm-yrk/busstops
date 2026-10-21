@@ -129,6 +129,18 @@ export class RateLimiter {
     return { allowed: true, remaining: this.config.limit - window.count, retryAfterSeconds: 0 };
   }
 
+  /**
+   * Forget every window.
+   *
+   * For the suite rather than for the edge: the limiter is module-level and survives
+   * `resetWorkerState`, so a test's outcome depended on how many requests the tests before it had
+   * made. Two board tests started answering 429 the moment two more were added above them, which
+   * is a test suite reporting the order it runs in rather than the behaviour it asserts.
+   */
+  reset(): void {
+    this.windows.clear();
+  }
+
   private evictExpired(now: number): void {
     if (this.windows.size < 5000) return;
     for (const [key, window] of this.windows) {

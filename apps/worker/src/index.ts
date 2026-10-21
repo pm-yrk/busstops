@@ -1926,9 +1926,23 @@ router.get("/v1/vehicles/:ref", async (_request, { env, params, url }) => {
     south: observation.coordinate.lat - VEHICLE_MATCH_RADIUS_DEGREES,
     north: observation.coordinate.lat + VEHICLE_MATCH_RADIUS_DEGREES,
   };
+  /*
+   * And not kept afterwards, which is the part the deployed trace actually caught.
+   *
+   * The tiles are the largest objects a passenger request opens, and a tap wants exactly one
+   * pattern out of one of them. Five taps across five cities left 11.9 MiB of shard text and
+   * 5,756 parsed patterns resident in the isolate — and from that point every request with real
+   * decoding to do answered with Cloudflare's error page, while the cheap ones carried on. The
+   * walk before those taps had made thirty-three first-contact requests without a single
+   * failure, so this was never a cold path: it was one endpoint filling the isolate for
+   * everything that came after it.
+   *
+   * The trade is that a second tap in the same viewport decodes again. That is one request
+   * paying for itself, against every subsequent request paying for this one.
+   */
   const geometries = network
     ? await vehicleLedger.stage("patterns", () =>
-        network!.patternsInBoundingBox(matchBox, Date.now(), vehicleLedger),
+        network!.patternsInBoundingBox(matchBox, Date.now(), vehicleLedger, false),
       )
     : [];
   const match = geometries.length > 0 ? matchObservation(observation, geometries) : null;
@@ -2829,6 +2843,8 @@ function proMeta(state: GovernorState, dataMode: string) {
 }
 
 export function resetWorkerState(): void {
+  /* Module-level, and so is every reader below: a test that starts clean has to clear it too. */
+  rateLimiter.reset();
   network = null;
   liveService = null;
   journeyService = null;

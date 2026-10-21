@@ -794,6 +794,17 @@ export class NetworkReader {
      * slow one. It will still *use* a full entry that is already there.
      */
     keep?: LineFilter,
+    /**
+     * Whether what is read may stay resident for the requests that follow.
+     *
+     * The cache is a working set and it is usually the right trade: a cache hit costs no parse,
+     * and the parse is what a Workers Free invocation has ten milliseconds of. It is the wrong
+     * trade for a read that one request wants and nobody else will — a pattern geometry tile is
+     * 1.3 to 3.3 MiB in a city, and the deployed trace measured five bus taps leaving 11.9 MiB of
+     * text and 5,756 parsed patterns resident between them, after which every later request that
+     * had real decoding to do died with error 1102.
+     */
+    retain = true,
   ): Promise<{ records: T[]; chars: number }> {
     const key = `${version}:${dataset}`;
     const cached = this.shards.get(key);
@@ -847,7 +858,7 @@ export class NetworkReader {
       ms: Date.now() - began,
     });
     // See `keep`: a partial parse must never be cached as though it were the whole tile.
-    if (!keep) this.shards.set(key, { records, chars, usedAt: now });
+    if (!keep && retain) this.shards.set(key, { records, chars, usedAt: now });
     this.evictShards();
     return { records, chars };
   }
@@ -969,6 +980,8 @@ export class NetworkReader {
     track?: ReadTrack,
     /** Passed through to the parse; see `readShardSized`. */
     keep?: LineFilter,
+    /** Passed through to the cache; see `readShardSized`. */
+    retain = true,
   ): Promise<{ records: T[]; truncated: boolean }> {
     // Only tiles the publish actually wrote are requested: asking for the rest would be a read
     // operation per empty tile, metered, for a guaranteed miss.
@@ -1009,7 +1022,9 @@ export class NetworkReader {
     while (start < wanted.length) {
       const batch = wanted.slice(start, start + batchSize);
       const results = await Promise.all(
-        batch.map((tile) => this.readShardSized<T>(dataset(tile), version, now, track, keep)),
+        batch.map((tile) =>
+          this.readShardSized<T>(dataset(tile), version, now, track, keep, retain),
+        ),
       );
       for (const result of results) {
         records.push(...result.records);
@@ -1136,6 +1151,14 @@ export class NetworkReader {
      * last read still using a number calibrated for somebody else's question.
      */
     budgetChars?: number,
+    /**
+     * Whether the tiles this opens may stay resident afterwards.
+     *
+     * A pattern geometry tile is the largest object a passenger request touches — 1.3 to 3.3 MiB
+     * in a city — and the one caller that wants a single bus identified does not want it kept.
+     * See `readShardSized`.
+     */
+    retain = true,
   ): Promise<{ geometries: PatternGeometry[]; complete: boolean }> {
     const index = await this.networkIndex(now);
     if (!index) return { geometries: [], complete: false };
@@ -1164,6 +1187,8 @@ export class NetworkReader {
       ledger
         ? { ledger, family: "patterns", budgetReason: "pattern_enrichment_budget" }
         : undefined,
+      undefined,
+      retain,
     );
     const geometries = toGeometries(assemblePatternTile(lines.records));
     ledger?.count({ patterns: geometries.length });
@@ -1956,9 +1981,18 @@ export class NetworkReader {
     bbox: { west: number; south: number; east: number; north: number },
     now: number = Date.now(),
     ledger?: ReadLedger,
+    /** See `patternsInTilesDetailed`. The bus lookup is the caller that passes false. */
+    retain = true,
   ): Promise<PatternGeometry[]> {
-    return (await this.patternsInTilesDetailed(patternTilesForBoundingBox(bbox), now, ledger))
-      .geometries;
+    return (
+      await this.patternsInTilesDetailed(
+        patternTilesForBoundingBox(bbox),
+        now,
+        ledger,
+        undefined,
+        retain,
+      )
+    ).geometries;
   }
 
   /**
