@@ -1063,7 +1063,7 @@ async function main(): Promise<void> {
          */
         const page = answer.text ?? "";
         const platform =
-          page.match(/error\s+\d{4}[^<]*/i) ?? page.match(/<title>\s*([^<]{0,90})<\/title>/i);
+          page.match(/error\s+\d{4}[^<]*/i) ?? page.match(/<title>\s*([^<]{0,160})<\/title>/i);
         trouble.push({
           path,
           status: answer.status,
