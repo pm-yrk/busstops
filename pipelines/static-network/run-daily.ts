@@ -843,14 +843,24 @@ function writeReport(report: Record<string, unknown>): void {
             published: (report.shards as { published?: number }).published,
             publishedBytes: (report.shards as { publishedBytes?: number }).publishedBytes,
             failed: (report.shards as { failed?: unknown[] }).failed?.slice(0, 3),
+            /*
+             * Minutes as well as objects and bytes, because the wall clock is the constraint.
+             *
+             * The step is bounded in time, not in objects, and three runs were lost to that
+             * ceiling before anything said which family was spending it. A family's write time
+             * is roughly its object count over the account's write rate, so the two numbers
+             * together say what a retiling would cost before it is attempted rather than after.
+             */
             families: (
               report.shards as { families?: Array<Record<string, unknown>> }
             ).families?.map(
               (family) =>
                 `${String(family.name)} ${String(family.objects)} obj ${String(
                   Math.round(Number(family.bytes ?? 0) / 1024 / 1024),
-                )} MiB`,
+                )} MiB ${(Number(family.ms ?? 0) / 60000).toFixed(1)} min` +
+                (Number(family.failed ?? 0) > 0 ? ` ${String(family.failed)} FAILED` : ""),
             ),
+            truncated: (report.shards as { truncated?: unknown[] }).truncated?.length,
           },
     departureShards: report.departureShards,
     counts: report.counts,

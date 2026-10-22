@@ -609,7 +609,20 @@ jobs:
         # Deliberately below the job's own limit. A step that times out fails the step and leaves
         # the run to carry on with what it has; a job that times out cancels the verification and
         # the screenshots too, and then nobody can see how far the build got.
-        timeout-minutes: 110
+        #
+        # Raised from 110 because the build grew into it. 110 was chosen when a bootstrap took 43
+        # minutes; the national build now spends 99 of them (run 39728288656 ran 05:31:18 to
+        # 07:10:05 and finished), so there were eleven minutes of headroom left and two runs in a
+        # row died in them — 39741980050 and 39757394852 both stopped at 110 minutes to the
+        # second, having published nothing at all. A ceiling that a healthy run nearly touches is
+        # not a hang detector, it is a coin toss on the whole artifact.
+        #
+        # 165 keeps the property the number exists for: the job allows 240, the steps after this
+        # one — deploy, the cold walk, the passenger probe — take about 35, so a hung build is
+        # still killed with time left for the verification to run and say how far it got. Actions
+        # minutes are free and unlimited on a public repository, so the cost of the larger
+        # allowance is zero unless it is used.
+        timeout-minutes: 165
         env:
           BODS_API_KEY: ${{ secrets.BODS_API_KEY }}
           TFL_APP_KEY: ${{ secrets.TFL_APP_KEY }}
