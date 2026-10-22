@@ -2099,7 +2099,16 @@ router.get("/v1/vehicles/:ref", async (_request, { env, params, url }) => {
    */
   const geometries = network
     ? await vehicleLedger.stage("patterns", () =>
-        network!.patternsInBoundingBox(matchBox, Date.now(), vehicleLedger, false),
+        /*
+         * And only the patterns that pass near the bus are built, not every pattern in the tile.
+         *
+         * The read was already bounded to a small box and already declined to keep what it
+         * opened; what it still did was turn the whole tile into objects to find one pattern —
+         * 3,156,408 characters measured in a dense city, the largest allocation any passenger
+         * request makes. The filter is a prefilter: `matchObservation` below still does the real
+         * geometry on whatever survives it.
+         */
+        network!.patternsInBoundingBox(matchBox, Date.now(), vehicleLedger, false, true),
       )
     : [];
   const match = geometries.length > 0 ? matchObservation(observation, geometries) : null;

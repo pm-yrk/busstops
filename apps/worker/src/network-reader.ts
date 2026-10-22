@@ -567,6 +567,75 @@ function valueAt(body: string, start: number, end: number, field: string): strin
 }
 
 /**
+ * A filter that keeps only the pattern-tile lines whose geometry passes near one point.
+ *
+ * `/v1/vehicles/:ref` wants one pattern — the one its bus is on — and the read that identifies it
+ * opened a pattern tile with no filter at all, so every shape and every pattern in it was built
+ * into objects. Measured on the deployment, that is 3,156,408 characters for a tap in a dense
+ * city, three and a half times the next largest passenger read and the biggest single allocation
+ * any request makes.
+ *
+ * Why allocation rather than bytes is the thing to cut: identical requests pass on a fresh
+ * isolate and fail on one that has served ninety, with nothing resident in any cache. Work that
+ * is the same cannot explain that; a heap that has had a hundred multi-megabyte strings and
+ * object graphs through it can.
+ *
+ * The test is numeric, not textual. An earlier sketch matched `"lat":53.7` as a string prefix,
+ * which is wrong for a whole-degree coordinate — `JSON.stringify(53)` has no decimal point at all
+ * — and silently drops the shapes it cannot match. This walks the line's `"lat":`/`"lon":` pairs
+ * and compares them as numbers, which allocates nothing and cannot be defeated by formatting.
+ *
+ * Stateful, because the format is: a shape line always precedes the patterns that name it, so the
+ * refs of the shapes that passed are what decides which patterns are worth building. Deliberately
+ * permissive — a generous box, and a shape counts if any of its points is inside it — because
+ * this only decides what to *build*. `matchObservation` still does the real geometry on whatever
+ * survives, so a shape wrongly kept costs a little work and a shape wrongly dropped would cost a
+ * passenger their route.
+ */
+function patternsNear(centre: Coordinate, marginDegrees: number): LineFilter {
+  const west = centre.lon - marginDegrees;
+  const east = centre.lon + marginDegrees;
+  const south = centre.lat - marginDegrees;
+  const north = centre.lat + marginDegrees;
+  const kept = new Set<string>();
+
+  /** Every `"<field>":` number in the line, tested in place until one passes. */
+  const anyWithin = (body: string, start: number, end: number): boolean => {
+    let at = start;
+    for (;;) {
+      const latAt = body.indexOf('"lat":', at);
+      if (latAt < 0 || latAt >= end) return false;
+      const lonAt = body.indexOf('"lon":', latAt);
+      if (lonAt < 0 || lonAt >= end) return false;
+      const lat = Number.parseFloat(body.slice(latAt + 6, lonAt - 1));
+      /* The lon runs to the object's closing brace, which is the next one after it. */
+      const closes = body.indexOf("}", lonAt);
+      const lon = Number.parseFloat(body.slice(lonAt + 6, closes < 0 ? end : closes));
+      if (lat >= south && lat <= north && lon >= west && lon <= east) return true;
+      at = closes < 0 ? lonAt + 6 : closes;
+    }
+  };
+
+  return (body, start, end) => {
+    const ref = valueAt(body, start, end, "shapeRef");
+    if (ref === null) return false;
+    /*
+     * A shape line carries points and a pattern line does not, which is how the two are told
+     * apart without parsing either: a pattern's only coordinates would be in a field it has none
+     * of. Checked by looking for the points array rather than by reading `kind`, so a line whose
+     * key order changes still sorts itself correctly.
+     */
+    const points = body.indexOf('"points":', start);
+    if (points >= 0 && points < end) {
+      if (!anyWithin(body, points, end)) return false;
+      kept.add(ref);
+      return true;
+    }
+    return kept.has(ref);
+  };
+}
+
+/**
  * A JSON number read in place, for fields that are not strings.
  *
  * `valueAt` looks for `"field":"` and stops at the closing quote, which finds nothing when the
@@ -1284,6 +1353,14 @@ export class NetworkReader {
      * See `readShardSized`.
      */
     retain = true,
+    /**
+     * Build only the patterns whose geometry passes near this point.
+     *
+     * For the one caller that wants a single pattern out of a tile: see `patternsNear`. Absent
+     * means build everything, which is what a journey corridor and a viewport both need — they
+     * want the whole slice, not one line of it.
+     */
+    near?: { centre: Coordinate; marginDegrees: number },
   ): Promise<{ geometries: PatternGeometry[]; complete: boolean }> {
     const index = await this.networkIndex(now);
     if (!index) return { geometries: [], complete: false };
@@ -1312,7 +1389,7 @@ export class NetworkReader {
       ledger
         ? { ledger, family: "patterns", budgetReason: "pattern_enrichment_budget" }
         : undefined,
-      undefined,
+      near ? patternsNear(near.centre, near.marginDegrees) : undefined,
       retain,
     );
     const geometries = toGeometries(assemblePatternTile(lines.records));
@@ -2180,6 +2257,15 @@ export class NetworkReader {
     ledger?: ReadLedger,
     /** See `patternsInTilesDetailed`. The bus lookup is the caller that passes false. */
     retain = true,
+    /**
+     * Build only the patterns passing near the middle of the box.
+     *
+     * The bus lookup asks for a box around one vehicle and wants the one pattern it is on, so
+     * everything else in the tile is built and thrown away — 3,156,408 characters of it in a
+     * dense city, the largest allocation any passenger request makes. A viewport is the other
+     * caller and genuinely wants all of them, so this is opt-in.
+     */
+    nearCentre = false,
   ): Promise<PatternGeometry[]> {
     return (
       await this.patternsInTilesDetailed(
@@ -2188,6 +2274,17 @@ export class NetworkReader {
         ledger,
         undefined,
         retain,
+        nearCentre
+          ? {
+              centre: { lat: (bbox.north + bbox.south) / 2, lon: (bbox.east + bbox.west) / 2 },
+              /*
+               * Half the box again, so a shape that clips a corner of it still counts. The
+               * filter decides what to build and `matchObservation` decides what matched, so
+               * generous here is cheap and mean here is a passenger losing their route.
+               */
+              marginDegrees: Math.max(bbox.north - bbox.south, bbox.east - bbox.west) * 0.75,
+            }
+          : undefined,
       )
     ).geometries;
   }
