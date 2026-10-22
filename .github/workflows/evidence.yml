@@ -421,7 +421,19 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           # Enough for the whole backlog at the account's measured rate, inside the step's limit.
+          # 48,228 objects at the 4.52 a second the last pass measured is about 178 minutes.
           PRUNE_TIME_BUDGET_MS: "11400000"
+          # How many published versions to keep, newest first. Two by default: the live one and
+          # one to roll back to.
+          #
+          # Two national versions do not fit in the free allowance, which is the finding the dry
+          # run produced and not a backlog at all: 7,265,335,603 bytes for 2026-09-30 and
+          # 6,193,457,496 for 2026-10-22 is 13,458,793,099 against 10,737,418,240, so removing
+          # every removable object still leaves the bucket over. Getting inside it means keeping
+          # one — and that is a deliberate act for after the fine grid has passed acceptance,
+          # because until then the previous version is the rollback. Set here so the decision is
+          # visible rather than buried in a default.
+          KEEP_NETWORK_VERSIONS: ${{ vars.KEEP_NETWORK_VERSIONS || '2' }}
           # Through the environment, not interpolated into the script.
           HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         run: |
