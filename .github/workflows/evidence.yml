@@ -386,6 +386,76 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
+  # Deletes the shards that withheld-index bootstraps left behind.
+  #
+  # Measured: 20,579,583,137 bytes stored against a 10,737,418,240 free allowance. The cause is in
+  # the retention report — each bootstrap that published its shards and then withheld its index
+  # left them there, 16,529 and 16,583 and 15,816 objects for 3.07, 2.53 and 5.65 GB. Retention
+  # already classifies them as removable; it deletes at about four and a half objects a second, so
+  # twenty minutes cleared 6,076 of 48,929 and the rest needs a pass of its own.
+  #
+  # `[prune]` reports and deletes nothing. `[prune-apply]` deletes, and only versions the manifest
+  # proves superseded: it refuses on a missing manifest, on a manifest that disagrees with the
+  # index record, on an incomplete listing, and on a live version with no objects under it. The
+  # coarse map-projection tiles are not touched by it at all — they sit at the *live* version, and
+  # this prunes by version, so the fine-grid rollback stays available until it is given up
+  # deliberately.
+  #
+  # Here rather than on the deploy workflow so three hours of housekeeping does not hold the
+  # concurrency slot the serving measurements need.
+  prune_artifacts:
+    name: Prune superseded network artifacts
+    if: contains(github.event.head_commit.message, '[prune]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 215
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - run: npm ci --no-audit --no-fund
+
+      - name: Report, and delete when asked
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          # Enough for the whole backlog at the account's measured rate, inside the step's limit.
+          PRUNE_TIME_BUDGET_MS: "11400000"
+          # Through the environment, not interpolated into the script.
+          HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          set -o pipefail
+          APPLY=""
+          if printf '%s' "$HEAD_COMMIT_MESSAGE" | grep -q '\[prune-apply\]'; then
+            APPLY="--apply"
+            echo "Applying: superseded versions will be deleted."
+          else
+            echo "Report only. Add [prune-apply] to the commit message to delete."
+          fi
+          npx tsx pipelines/static-network/run-prune.ts $APPLY 2>&1 | tee prune.log
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "## Artifact retention"
+            echo
+            echo '```'
+            sed -n '1,160p' prune.log 2>/dev/null || echo "no prune.log was written"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-prune
+          path: |
+            prune-report.json
+            prune.log
+          retention-days: 14
+          if-no-files-found: ignore
+
   # One commit, after both measurements, whatever either of them did.
   #
   # Each measurement job hands its files over as an artifact and this job is the only thing that
