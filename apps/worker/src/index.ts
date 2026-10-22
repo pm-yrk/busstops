@@ -1077,7 +1077,29 @@ router.get("/v1/map", async (_request, { env, url }) => {
         ...(index === null ? {} : { networkPartialCoverage: index.partialCoverage }),
         failedSources,
         safeMode: safeModeActive(state),
-        diagnostics: { ...ledger.toJSON() },
+        diagnostics: {
+          ...ledger.toJSON(),
+          /*
+           * Whether this request parsed the live feed or shared somebody else's parse, and how
+           * many objects it opened — the two figures a concurrent page load has to be judged by
+           * and neither of which was visible from outside.
+           *
+           * The parse is the expensive half on the free plan: a local benchmark puts SIRI-VM at
+           * about a hundred milliseconds per mebibyte against ten milliseconds of CPU, and a
+           * Worker's clock does not advance across pure computation, so it has always reported
+           * `parse=0ms` while costing several times the budget. `reusedParse` is the only honest
+           * evidence that two simultaneous callers are no longer doing it twice.
+           *
+           * `subrequests` counts what the platform counts: every object read, plus each live
+           * fetch. An invocation gets fifty, and the finer projection grid made that a bound
+           * worth reporting rather than assuming.
+           */
+          reusedParse: (liveObservations?.diagnostics ?? []).some(
+            (entry) => entry.reusedParse === true,
+          ),
+          liveFetches: liveObservations?.diagnostics.length ?? 0,
+          subrequests: ledger.toJSON().objectsRead + (liveObservations?.diagnostics.length ?? 0),
+        },
       }),
       data,
     },
