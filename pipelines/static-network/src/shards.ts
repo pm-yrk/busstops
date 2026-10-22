@@ -440,18 +440,22 @@ export const MAP_STOPS_PREFIX = "network/map-stops";
  * draw at most four hundred markers. The over-read is geometric, not per-record, and the only
  * lever on it is the size of the square.
  *
- * A sixteenth of a degree is about 7km by 4km. A city viewport spans six to eight of them instead
- * of one to four much larger ones, so the text walked comes down by roughly five times while the
- * bytes stored stay the same — the same stops, in more and smaller objects. Nationally that takes
- * the family from a few hundred objects to a few thousand, which is a build-time write cost and
- * no storage cost worth the name.
+ * An eighth of a degree is about 14km by 8km: a quarter of the area, so a city viewport walks
+ * roughly a quarter of the text while the bytes stored stay the same — the same stops, in more
+ * and smaller objects.
+ *
+ * It was a sixteenth first, which is a sixteenth of the area and the better serving number. The
+ * build would not pay for it: the national publish is write-bound, and taking this family from
+ * about 460 objects to roughly 7,400 timed the bootstrap out at its 110-minute limit with nothing
+ * published at all. A quarter of the objects buys most of the saving, which is the trade the
+ * measurement supports rather than the one that reads best.
  *
  * Its own constant rather than a change to `STOP_TILE_DEGREES`, because the stop tiles carry the
  * full records that the locator and the board read by id and nothing about those wants retiling.
  * It is declared in the layout, so a reader can never pair its own grid with an artifact written
  * on a different one.
  */
-export const MAP_STOP_TILE_DEGREES = 0.0625;
+export const MAP_STOP_TILE_DEGREES = 0.125;
 
 export function tileForMapStop(stop: Stop): string {
   return tileIdFor(stop.locationCoordinate, MAP_STOP_TILE_DEGREES);

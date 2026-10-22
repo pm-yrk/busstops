@@ -41,16 +41,24 @@ describe("the grid the map projection is filed on", () => {
     expect(currentArtifactLayout().mapStopTileDegrees).toBe(MAP_STOP_TILE_DEGREES);
   });
 
-  it("covers a city viewport in more and smaller squares", () => {
+  it("covers a city viewport in a smaller total area", () => {
     const coarse = stopTilesForBoundingBox(LEEDS);
     const fine = mapStopTilesForBoundingBox(LEEDS);
-    expect(fine.length).toBeGreaterThan(coarse.length);
     /*
-     * The saving is the area walked, so that is what is asserted: the finer cover is a fraction
-     * of the coarse one even though it is made of more pieces.
+     * Area, not tile count. A Leeds viewport happens to span two squares on either grid — the
+     * count is an accident of where the lines fall — while the area each square covers, and so
+     * the text walked to draw the markers in it, is four times smaller. The saving was never in
+     * the number of objects.
      */
     const area = (tiles: string[], size: number) => tiles.length * size * size;
-    expect(area(fine, MAP_STOP_TILE_DEGREES)).toBeLessThan(area(coarse, STOP_TILE_DEGREES) / 2);
+    /*
+     * Strictly less, and not by a target number. The grid was a sixteenth of a degree first and
+     * the national build would not pay for it — write-bound, and 7,400 objects timed the
+     * bootstrap out — so the figure is what the build affords rather than what reads best. A test
+     * that pinned a ratio would have to be edited every time that trade is remeasured, which
+     * makes it a statement about today's constant rather than about the property.
+     */
+    expect(area(fine, MAP_STOP_TILE_DEGREES)).toBeLessThan(area(coarse, STOP_TILE_DEGREES));
   });
 
   /*
