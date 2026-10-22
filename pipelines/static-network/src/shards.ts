@@ -1160,6 +1160,15 @@ export type LayoutCheck =
  * bucket says how it was written, so nothing here can promise it matches — and saying so is what
  * lets a deployment tell "verified" apart from "assumed", which is the whole point.
  */
+/**
+ * Layout fields a reader reads from the artifact rather than assuming, so they cannot mismatch.
+ *
+ * A set rather than a condition inside the loop, so adding one is a deliberate statement that the
+ * reader really does follow it — the cost of being wrong here is a reader that silently asks for
+ * objects nobody wrote.
+ */
+const FOLLOWED_LAYOUT_FIELDS = new Set<keyof ArtifactLayout>(["mapStopTileDegrees"]);
+
 export function checkArtifactLayout(
   artifact: ArtifactLayout | null | undefined,
   reader: ArtifactLayout = currentArtifactLayout(),
@@ -1168,6 +1177,25 @@ export function checkArtifactLayout(
 
   const differences: Array<{ field: string; artifact: unknown; reader: unknown }> = [];
   for (const field of Object.keys(reader) as Array<keyof ArtifactLayout>) {
+    /*
+     * Not every declared field is a thing the two must agree *on*.
+     *
+     * This check exists for the layouts a reader has compiled in and cannot adapt to: ask the
+     * trip tiles for a quarter-degree id when they were written on an eighth and every key is one
+     * that was never written, so the planner reports England as having no timetable rather than
+     * reporting that it cannot read one. That is a genuine incompatibility.
+     *
+     * The map projection's grid is the opposite case. `NetworkReader.mapStopGrid` takes it from
+     * this very declaration rather than from a constant of its own, which is what lets a build be
+     * asked for a finer square without a deploy — so a reader meeting a grid it was not compiled
+     * with is working exactly as designed. Comparing it anyway is how re-filing the projection
+     * onto sixteenths made `/v1/journeys` answer `artifact_format_mismatch` and refuse to plan at
+     * all: a declaration meant to prevent a silent wrong answer produced a loud one instead.
+     *
+     * So the rule is about the field, not the value: a layout number the reader *follows* is
+     * information, and only a number it *assumes* can be a mismatch.
+     */
+    if (FOLLOWED_LAYOUT_FIELDS.has(field)) continue;
     if (artifact[field] !== reader[field]) {
       differences.push({ field, artifact: artifact[field], reader: reader[field] });
     }

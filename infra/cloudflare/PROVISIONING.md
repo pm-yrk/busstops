@@ -280,18 +280,26 @@ Verified, with how:
 Settings → Secrets and variables → Actions → **Variables**. Every one has a working default; set
 one only to override it. These are public by definition and must not be secrets.
 
-| Variable                                                          | Default                       |
-| ----------------------------------------------------------------- | ----------------------------- |
-| `BUDGET_UTILIZATION`                                              | `0` — assume headroom         |
-| `R2_BUCKET_ARTIFACTS`                                             | `busstops-artifacts`          |
-| `PUBLIC_BASE_URL`                                                 | Used for Daily Brief links    |
-| `R2_STORAGE_LIMIT_BYTES`                                          | 10 GiB                        |
-| `MAX_PARTITIONS_PER_RUN`                                          | 12                            |
-| `BODS_DAILY_REQUEST_BUDGET`                                       | 8,640                         |
-| `COLLECTION_PASSES`                                               | 3                             |
-| `COLLECTION_BUDGET_MS`                                            | 240,000                       |
-| `BATCH_BUDGET_MS`                                                 | 300,000                       |
-| `EMAIL_PROVIDER`, `EMAIL_PROVIDER_ENDPOINT`, `EMAIL_FROM_ADDRESS` | Unset; email delivery skipped |
+| Variable                                                          | Default                         |
+| ----------------------------------------------------------------- | ------------------------------- |
+| `BUDGET_UTILIZATION`                                              | `0` — assume headroom           |
+| `R2_BUCKET_ARTIFACTS`                                             | `busstops-artifacts`            |
+| `PUBLIC_BASE_URL`                                                 | Used for Daily Brief links      |
+| `R2_STORAGE_LIMIT_BYTES`                                          | 10 GiB                          |
+| `MAX_PARTITIONS_PER_RUN`                                          | 12                              |
+| `BODS_DAILY_REQUEST_BUDGET`                                       | 8,640                           |
+| `COLLECTION_PASSES`                                               | 3                               |
+| `COLLECTION_BUDGET_MS`                                            | 240,000                         |
+| `BATCH_BUDGET_MS`                                                 | 300,000                         |
+| `EMAIL_PROVIDER`, `EMAIL_PROVIDER_ENDPOINT`, `EMAIL_FROM_ADDRESS` | Unset; email delivery skipped   |
+| `KEEP_NETWORK_VERSIONS`                                           | 2 — the live one and a rollback |
+
+`KEEP_NETWORK_VERSIONS` is the one of these worth a sentence. A national network version occupies
+six to seven gigabytes, so keeping two of them is thirteen against R2's ten-gigabyte free
+allowance: retention can delete every superseded object and the bucket still will not fit. Setting
+it to `1` is what brings it inside, and it is a deliberate act — it gives up the ability to roll
+back to the previous artifact, so it belongs after a new one has passed acceptance rather than as
+routine housekeeping.
 
 ---
 

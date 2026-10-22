@@ -1417,16 +1417,30 @@ await check("two simultaneous map requests share one live-feed parse", async () 
   const shared = diagnostics.filter((one) => one.reusedParse === true).length;
 
   /*
-   * One parse and one reuse is the proof. Two parses is the defect this exists to catch. Two
-   * reuses means an earlier request in this run had already parsed the same viewport within the
-   * feed's eight-second window — which is the cache doing its older job, so it is reported rather
-   * than failed: the duplicate-parse case is what must never appear.
+   * Which isolate answered, because that is what decides whether sharing was even possible.
+   *
+   * The cache lives in the isolate. Cloudflare routes concurrent requests to whichever isolates
+   * it has, so two simultaneous requests often land on two — and then each parses once, which is
+   * not duplicated work on one CPU and not the defect. The first version of this check asserted
+   * sharing outright and failed for exactly that reason: it was asking a question the platform,
+   * not the Worker, answers.
+   *
+   * `requestsServed` is the isolate's own tally, so two readings from one isolate are
+   * consecutive. That is the case where a duplicate parse is real, and the only case this can
+   * assert on.
    */
-  assert(
-    parsed <= 1,
-    `both simultaneous requests parsed the live feed independently, which is the duplicated CPU ` +
-      `this is meant to remove`,
-  );
+  const served = diagnostics
+    .map((one) => one.residency?.requestsServed)
+    .filter((n) => typeof n === "number");
+  const oneIsolate = served.length === 2 && Math.abs(served[0] - served[1]) === 1;
+
+  if (oneIsolate) {
+    assert(
+      parsed <= 1,
+      `both simultaneous requests were served by one isolate and each parsed the live feed ` +
+        `independently, which is the duplicated CPU this is meant to remove`,
+    );
+  }
 
   const vehicles = both.map((one) => one.body?.data?.vehicles?.length ?? 0);
   assert(
@@ -1435,7 +1449,8 @@ await check("two simultaneous map requests share one live-feed parse", async () 
   );
 
   return (
-    `${parsed} parse(s) and ${shared} reuse(s) across two simultaneous identical requests; ` +
+    `${parsed} parse(s) and ${shared} reuse(s) across two simultaneous identical requests, ` +
+    `${oneIsolate ? "both on one isolate" : `served ${served.join(" and ")} — ${served.length === 2 ? "different isolates, so each parses once and nothing is duplicated" : "isolate unknown"}`}; ` +
     `${vehicles[0]} vehicle(s) each; ` +
     `subrequests ${diagnostics.map((one) => one.subrequests ?? "?").join("/")}, ` +
     `chars ${diagnostics.map((one) => one.charsDecoded ?? "?").join("/")}`

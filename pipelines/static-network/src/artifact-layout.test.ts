@@ -67,4 +67,37 @@ describe("checking an artifact's layout against the reader", () => {
     expect(currentArtifactLayout().formatVersion).toBe(ARTIFACT_FORMAT_VERSION);
     expect(ARTIFACT_FORMAT_VERSION).toBeGreaterThan(1);
   });
+
+  /**
+   * A layout number the reader *follows* is information, not a mismatch.
+   *
+   * The check exists for the grids a reader has compiled in and cannot adapt to: ask the trip tiles
+   * for a quarter-degree id when they were written on an eighth and every key is one that was never
+   * written, so the planner reports England as having no timetable instead of reporting that it
+   * cannot read one.
+   *
+   * The map projection's grid is the opposite. `NetworkReader.mapStopGrid` takes it from the
+   * artifact's own declaration, which is what lets a build be asked for a finer square without a
+   * deploy — so a reader meeting a grid it was not compiled with is working as designed. Comparing
+   * it anyway is how re-filing the projection onto sixteenths made `/v1/journeys` answer
+   * `artifact_format_mismatch` and refuse to plan at all: a declaration meant to prevent a silent
+   * wrong answer produced a loud one instead.
+   */
+  describe("a layout the reader follows rather than assumes", () => {
+    it("does not call a different map-projection grid a mismatch", () => {
+      const finer: ArtifactLayout = {
+        ...currentArtifactLayout(),
+        mapStopTileDegrees: (currentArtifactLayout().mapStopTileDegrees ?? 0.25) / 4,
+      };
+      expect(checkArtifactLayout(finer)).toEqual({ state: "compatible" });
+
+      const coarser: ArtifactLayout = { ...currentArtifactLayout(), mapStopTileDegrees: 0.25 };
+      expect(checkArtifactLayout(coarser)).toEqual({ state: "compatible" });
+    });
+
+    it("still calls a different trip grid a mismatch, which is the case it is for", () => {
+      const check = checkArtifactLayout({ ...currentArtifactLayout(), tripTileDegrees: 0.5 });
+      expect(check.state).toBe("mismatch");
+    });
+  });
 });
