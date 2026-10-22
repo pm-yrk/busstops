@@ -1277,19 +1277,33 @@ router.get("/v1/stops/:id", async (_request, { env, params }) => {
    * — all pure computation, against the ten milliseconds a Workers Free invocation gets. A board
    * names about ten services, and asking for those is one pass over the text instead.
    */
-  const services = await boardLedger.stage("services", () =>
-    network!.servicesByIds(
-      new Set([
-        ...patterns.map((pattern) => pattern.serviceRouteId),
-        /* The direct lookup's ids, which are the whole answer when it was the path taken. */
-        ...directServices.serviceIds,
-      ]),
-      // The board is the path the partitioned family exists for, so it is the one that records
-      // which representation answered and what it cost.
-      boardLedger,
-    ),
-  );
-  mark("board:services:done", { services: services.size });
+  /*
+   * Bounded when the stop's own index answered, because that answer can be much longer.
+   *
+   * The pattern path bounded this at a dozen ids: a board's departures name a dozen patterns. The
+   * direct path names every route that calls at the stop, and a city interchange has fifty — past
+   * the cap on service buckets, where `servicesByIds` reads the whole national object instead.
+   * That is 4.7 MiB, so the unbounded call would have turned a fix for a 2.03 MiB pattern tile
+   * into something twice as expensive, on exactly the busiest boards. `servicesByIdsBounded` has
+   * no such fallback and reports whether it got all of them.
+   */
+  const resolved = directUsable
+    ? await boardLedger.stage("services", () =>
+        network!.servicesByIdsBounded(new Set(directServices.serviceIds), boardLedger),
+      )
+    : {
+        services: await boardLedger.stage("services", () =>
+          network!.servicesByIds(
+            new Set(patterns.map((pattern) => pattern.serviceRouteId)),
+            // The board is the path the partitioned family exists for, so it is the one that
+            // records which representation answered and what it cost.
+            boardLedger,
+          ),
+        ),
+        complete: true,
+      };
+  const services = resolved.services;
+  mark("board:services:done", { services: services.size, complete: resolved.complete });
 
   /*
    * `observedAt` is the age of the observation behind the answer. It used to be set to the first
@@ -1378,7 +1392,12 @@ router.get("/v1/stops/:id", async (_request, { env, params }) => {
          * statement about the bus service made out of a limit of ours, which is the one thing this
          * API has decided it will not do.
          */
-        routesComplete: patternRead.complete,
+        /*
+         * And whether the services behind that list were all readable, not only whether the
+         * question was answerable. A board whose stop index named fifty routes and whose service
+         * read could reach thirty-two buckets of them has a short list for a reason of ours.
+         */
+        routesComplete: patternRead.complete && resolved.complete,
         accessibility: stopAccessibility(stop),
         ...(timetableCoverage === undefined ? {} : { timetableCoverage }),
         disruptions: snapshot

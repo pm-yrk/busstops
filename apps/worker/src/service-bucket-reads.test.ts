@@ -110,6 +110,75 @@ describe("resolving a handful of service ids", () => {
     expect(bucketReads.length, "one object per distinct bucket").toBeLessThanOrEqual(2);
   });
 
+  /*
+   * The board that can now ask a much longer question, and must not be answered expensively.
+   *
+   * A board used to learn its routes from the patterns its departures named, which bounded this at
+   * a dozen ids. Asking `stop-services` makes the answer complete — every route that calls at the
+   * stop rather than only the ones with a bus due — and a city interchange has fifty of them,
+   * past the cap on buckets, where `servicesByIds` reads the whole national object instead. At
+   * 4.7 MiB that would have made the fix for a 2.03 MiB pattern tile cost twice what it saved, on
+   * exactly the busiest boards.
+   */
+  it("answers more ids than the cap from buckets, and says the list is bounded", async () => {
+    const { reader, reads } = await published({ buckets: true });
+    reads.length = 0;
+
+    /* Enough distinct buckets to be past the cap, found rather than assumed. */
+    const wanted = new Set<string>();
+    const buckets = new Set<number>();
+    for (const candidate of SERVICES) {
+      wanted.add(candidate.id);
+      buckets.add(serviceBucketFor(candidate.id));
+      if (buckets.size > 40) break;
+    }
+    expect(buckets.size, "the fixture must span more buckets than the cap").toBeGreaterThan(32);
+
+    const ledger = new ReadLedger(1000);
+    const bounded = await reader.servicesByIdsBounded(wanted, ledger);
+
+    // Bounded, and saying so: this is what `routesComplete` is built from.
+    expect(bounded.complete).toBe(false);
+    expect(bounded.services.size).toBeGreaterThan(0);
+    expect(bounded.services.size).toBeLessThan(wanted.size);
+    // The claim: not one byte of the national object, however many ids were asked for.
+    expect(reads.some((key) => key.includes("network/services/"))).toBe(false);
+    expect(reads.filter((key) => key.includes("network/services-bucket/")).length).toBe(32);
+  });
+
+  it("reports a bounded answer as complete when the ids do fit", async () => {
+    const { reader, reads } = await published({ buckets: true });
+    reads.length = 0;
+
+    const wanted = new Set([SERVICES[3]!.id, SERVICES[400]!.id]);
+    const bounded = await reader.servicesByIdsBounded(wanted, new ReadLedger(1000));
+
+    expect(bounded.complete).toBe(true);
+    expect([...bounded.services.keys()].sort()).toEqual([...wanted].sort());
+    expect(reads.some((key) => key.includes("network/services/"))).toBe(false);
+  });
+
+  /*
+   * The distinction the bounded read rests on.
+   *
+   * "The family exists and this request wants more of it than the cap allows" is the expensive
+   * case, answered by reading the cap's worth and reporting a bounded list. "The family does not
+   * exist" is a question about the artifact's age with no cheaper answer at all, and refusing it
+   * would mean a board on an older artifact listing no routes while calling that the complete
+   * truth. So one falls back and the other does not.
+   */
+  it("still falls back to the whole object when there are no buckets at all", async () => {
+    const { reader, reads } = await published({ buckets: false });
+    reads.length = 0;
+
+    const wanted = new Set([SERVICES[11]!.id, SERVICES[1200]!.id]);
+    const bounded = await reader.servicesByIdsBounded(wanted, new ReadLedger(1000));
+
+    expect([...bounded.services.keys()].sort()).toEqual([...wanted].sort());
+    expect(bounded.complete).toBe(true);
+    expect(reads.some((key) => key.includes("network/services/"))).toBe(true);
+  });
+
   it("reads one object when the wanted ids share a bucket", async () => {
     const { reader, reads } = await published({ buckets: true });
     // Two ids known to land together, found rather than assumed.

@@ -2756,7 +2756,14 @@ export class NetworkReader {
   private async servicesFromBuckets(
     ids: ReadonlySet<string>,
     ledger?: ReadLedger,
-  ): Promise<Map<string, ServiceRoute> | null> {
+    /**
+     * Read what the cap allows instead of refusing, for a caller that must not fall back.
+     *
+     * The fallback is the whole national services object, 4.7 MiB, and for one caller that is now
+     * the wrong answer rather than a slower one — see `servicesByIdsBounded`.
+     */
+    bounded = false,
+  ): Promise<{ services: Map<string, ServiceRoute>; complete: boolean } | null> {
     const index = await this.networkIndex(Date.now());
     if (!index) return null;
 
@@ -2772,7 +2779,16 @@ export class NetworkReader {
       if (existing) existing.push(id);
       else byBucket.set(bucket, [id]);
     }
-    if (byBucket.size > MAX_SERVICE_BUCKETS_PER_REQUEST) return null;
+    if (byBucket.size > MAX_SERVICE_BUCKETS_PER_REQUEST && !bounded) return null;
+    /*
+     * Sorted before the cut, so a board that cannot have all its buckets reads the same ones
+     * every time. An arbitrary slice would make the same stop list different routes on different
+     * requests, which reads as the data being wrong rather than as the list being bounded.
+     */
+    const selected = [...byBucket]
+      .sort((a, b) => a[0] - b[0])
+      .slice(0, MAX_SERVICE_BUCKETS_PER_REQUEST);
+    const complete = selected.length === byBucket.size;
 
     const found = new Map<string, ServiceRoute>();
     let bucketsPresent = 0;
@@ -2793,7 +2809,7 @@ export class NetworkReader {
      * buckets a board's departures happen to span.
      */
     const reads = await Promise.all(
-      [...byBucket].map(async ([bucket, wanted]) => {
+      selected.map(async ([bucket, wanted]) => {
         const want = new Set(wanted);
         return this.readShardSized<ServiceRoute>(
           serviceBucketDataset(bucket),
@@ -2823,11 +2839,59 @@ export class NetworkReader {
       servicesPath: "buckets",
       servicesWanted: ids.size,
       servicesFound: found.size,
-      serviceBucketsRead: byBucket.size,
+      serviceBucketsRead: selected.length,
+      serviceBucketsWanted: byBucket.size,
       serviceBucketsPresent: bucketsPresent,
       serviceBucketChars: chars,
+      serviceBucketsComplete: complete,
     });
-    return found;
+    return { services: found, complete };
+  }
+
+  /**
+   * The services a stop's own index named, from their buckets and never from the whole object.
+   *
+   * A board used to learn which services call at a stop from the patterns its departures named,
+   * which bounded the question at a dozen ids. Asking `stop-services` instead makes the answer
+   * complete — every route that calls there, not only the ones with a bus due in the next ninety
+   * minutes — and a city interchange has fifty of them. `servicesByIds` answers more than
+   * thirty-two buckets' worth by reading the national object, which is 4.7 MiB: for this caller
+   * that turns a fix for a 2.03 MiB pattern tile into something twice as expensive.
+   *
+   * So this one does not have that fallback. It reads what the cap allows and says whether that
+   * was all of them, and the board puts that in `routesComplete` — which is the field that exists
+   * to stop a bounded read being presented as a statement about the bus service.
+   */
+  async servicesByIdsBounded(
+    ids: ReadonlySet<string>,
+    ledger?: ReadLedger,
+  ): Promise<{ services: Map<string, ServiceRoute>; complete: boolean }> {
+    if (ids.size === 0) return { services: new Map(), complete: true };
+
+    if (this.servicesCache) {
+      const services = new Map<string, ServiceRoute>();
+      for (const id of ids) {
+        const service = this.servicesCache.get(id);
+        if (service) services.set(id, service);
+      }
+      ledger?.artifactNote({ servicesPath: "resident", servicesWanted: ids.size });
+      return { services, complete: true };
+    }
+
+    const bucketed = await this.servicesFromBuckets(ids, ledger, true);
+    if (bucketed) return bucketed;
+
+    /*
+     * Null means this artifact has no service buckets at all — a version published before the
+     * family existed — and that is the one case the whole object is still the right read.
+     *
+     * The distinction is the point. "The family exists and this request wants more of it than the
+     * cap allows" is the expensive case this method was written for, and it is answered by
+     * reading the cap's worth and saying the list is bounded. "The family does not exist" is an
+     * artifact-age question with no cheaper answer at all, and refusing it would mean a board on
+     * an older artifact listing no routes while reporting that as the complete truth.
+     */
+    return { services: await this.servicesByIds(ids, ledger), complete: true };
   }
 
   /**
@@ -2864,7 +2928,7 @@ export class NetworkReader {
     }
 
     const bucketed = await this.servicesFromBuckets(ids, ledger);
-    if (bucketed !== null) return bucketed;
+    if (bucketed !== null) return bucketed.services;
 
     const text = await this.servicesText();
     if (text === null) return found;
