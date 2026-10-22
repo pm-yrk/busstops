@@ -33,8 +33,10 @@ import {
 import worker, { initialiseWorker, resetWorkerState } from "./index.js";
 import { R2BindingStore, readFeatureFlags, type R2BucketLike, type WorkerEnv } from "./env.js";
 import {
+  PATTERN_INDEX_PREFIX,
   PATTERN_TILE_DEGREES,
   SHARDED,
+  STOP_SERVICES_PREFIX,
   TRIP_TILE_DEGREES,
   patternTileDataset,
   currentArtifactLayout,
@@ -590,6 +592,54 @@ describe("GET /v1/stops/:id", () => {
     expect(body.meta.degradation).not.toBe("normal");
   });
 
+  /*
+   * What a stop with nothing due has to open to say which routes serve it.
+   *
+   * It opened a pattern-index tile on the geographic grid, because its own departures named no
+   * patterns to ask for by id. `boxAround` is 1,500 metres against an eighth-of-a-degree grid, so
+   * that is one tile, and the deployed cold ledger measured a Manchester board decoding 2.03 MiB
+   * of one to produce a list of route names. The byte budget could not help: it is checked
+   * between tiles and there is only ever one.
+   *
+   * About which objects are opened, not about how long anything took — CI time is not Cloudflare
+   * CPU. A board that goes back to the geographic read fails here.
+   */
+  it("looks a quiet stop's services up directly instead of scanning the patterns around it", async () => {
+    const store = await publishedStore();
+    const reads: string[] = [];
+    const recording = {
+      get: async (key: string) => {
+        reads.push(key);
+        return store.get(key);
+      },
+      put: (key: string, value: string) => store.put(key, value),
+      delete: (key: string) => store.delete(key),
+      list: (prefix: string) => store.list(prefix),
+    };
+    const env = makeEnv(recording as unknown as InMemoryObjectStore);
+    resetWorkerState();
+    // Late enough that the published timetable has nothing in the board's window.
+    initialiseWorker(env, () => new Date("2026-09-03T03:30:00Z"));
+
+    const response = await worker.fetch(get("/v1/stops/450010001"), env, ctx);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      data: { departures: unknown[]; routes: Array<{ publicName: string }> };
+    };
+
+    // The premise: this really is the quiet path, or the test proves nothing about it.
+    expect(body.data.departures.length, "the stop under test has nothing due").toBe(0);
+    expect(body.data.routes.length, "and still names the routes that serve it").toBeGreaterThan(0);
+
+    const scanned = reads.filter((key) => key.includes(PATTERN_INDEX_PREFIX));
+    const direct = reads.filter((key) => key.includes(STOP_SERVICES_PREFIX));
+    expect(
+      direct.length,
+      `the board opened no stop-services bucket; it read ${String(reads.length)} object(s)`,
+    ).toBeGreaterThan(0);
+    expect(scanned, `a quiet board opened the pattern index: ${scanned.join(", ")}`).toEqual([]);
+  });
+
   it("measures the board it serves, weather stage included", async () => {
     /*
      * This endpoint had no ledger until run 68 answered 1102 for it and there was nothing to
@@ -609,9 +659,17 @@ describe("GET /v1/stops/:id", () => {
     };
     const diagnostics = body.meta.diagnostics;
     expect(diagnostics).toBeDefined();
-    expect(Object.keys(diagnostics?.stages ?? {})).toEqual(
-      expect.arrayContaining(["live", "patterns", "services", "weather"]),
-    );
+    const stages = Object.keys(diagnostics?.stages ?? {});
+    expect(stages).toEqual(expect.arrayContaining(["live", "services", "weather"]));
+    /*
+     * And however it found out which services call here. There are two legitimate paths: the
+     * departures name their patterns and it reads those, or they name none and it looks the stop
+     * up directly in `stop-services`. A board that reports neither has skipped the question.
+     */
+    expect(
+      stages.includes("patterns") || stages.includes("stop-services"),
+      `the board reported neither a pattern read nor a direct lookup: ${stages.join(", ")}`,
+    ).toBe(true);
     expect(diagnostics?.residency?.requestsServed).toBeGreaterThan(0);
   });
 });

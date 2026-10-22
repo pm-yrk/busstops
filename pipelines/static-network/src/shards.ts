@@ -463,6 +463,75 @@ export function stopRoutesDataset(tile: string): string {
 }
 
 /**
+ * Which services call at one stop, by the stop's own id, in one small object.
+ *
+ * The question "which routes serve this stop" is asked by every departure board, and the board
+ * was answering it from the pattern index on the geographic grid. That works when the board's own
+ * departures name their patterns, because then it is a lookup by id — but a stop with nothing due
+ * names nothing, and the fallback is a geographic read. `boxAround` is 1,500 metres against an
+ * eighth-of-a-degree grid, so it asks for one tile, and the deployed cold ledger measured a
+ * Manchester board decoding 2.03 MiB of that one tile to produce a list of route names. A byte
+ * budget cannot help: it is checked between tiles and there is only ever one.
+ *
+ * The geography is the problem, so this family has none. A stop hashes to a bucket, the bucket
+ * holds one line per stop, and the line holds the ids of the services whose patterns call there.
+ * Nothing else: no stop sequence, no geometry, no names. The names, the operator and the rest come
+ * from `servicesByIds` and `operatorsByIds`, which are already targeted bucket reads and are what
+ * the board uses for them today.
+ *
+ * ## The arithmetic it was sized on
+ *
+ * A row is a stop id and a handful of service ids, both UUIDs: about 40 characters for the stop
+ * and 39 for each service, so a stop served by four services is roughly 200 characters. Against
+ * the published counts — of the order of 350,000 stops, most of them served — that is tens of
+ * megabytes nationally, and at 1,024 buckets an object is tens of kilobytes. A board reads one of
+ * them and parses one line of it.
+ */
+export const STOP_SERVICES_PREFIX = "network/stop-services";
+
+/**
+ * Enough buckets that one is tens of kilobytes rather than megabytes, few enough that a build
+ * writes a thousand objects and not a hundred thousand.
+ */
+export const STOP_SERVICES_BUCKETS = 1_024;
+
+export function stopServicesBucketFor(stopId: string, buckets = STOP_SERVICES_BUCKETS): number {
+  // FNV-1a, the same hash every other bucketed family here uses, so one function decides a layout.
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < stopId.length; i += 1) {
+    hash ^= stopId.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash % buckets;
+}
+
+export function stopServicesDataset(bucket: number): string {
+  return `${STOP_SERVICES_PREFIX}/${bucket}`;
+}
+
+/** One stop's serving services. Ids only; everything a passenger reads is resolved from them. */
+export interface StopServicesRow {
+  /** Stop id, as the stop tiles file it. */
+  s: string;
+  /** Ids of the services whose patterns call here, sorted so a publish is byte-identical. */
+  v: string[];
+}
+
+/**
+ * The shard as text: a header, then one line per stop keyed by its id.
+ *
+ * Keyed as a pair rather than as an object so the reader can find a stop's line by scanning for
+ * `["<id>"` without parsing anything — the same shape the pattern index and the route-pattern
+ * index already use, for the same reason.
+ */
+export function stopServicesShardLines(rows: readonly StopServicesRow[]): string[] {
+  return [
+    JSON.stringify({ v: 1, n: rows.length }),
+    ...rows.map((row) => JSON.stringify([row.s, row.v])),
+  ];
+}
+
+/**
  * Every pattern by its own id, without its geometry.
  *
  * The journey planner needs a pattern's stop sequence and nothing else — `buildGraphFor` reads
@@ -653,6 +722,17 @@ export interface NetworkIndexRecord {
    * distinguishable from "the object could not be read", which are opposite facts.
    */
   stopRouteTiles?: string[];
+  /**
+   * How many stop-services buckets this publish wrote, and which of them exist.
+   *
+   * Absent on an artifact built before the family existed, which is what sends a board back to
+   * the geographic pattern read rather than asking for an object that is not there. The shard
+   * list separates "nothing was filed in this bucket" from "the object could not be read", which
+   * mean "no services call at any stop that hashes here" and "we cannot say" — opposite facts,
+   * and a board must never present the second as the first.
+   */
+  stopServicesBuckets?: number;
+  stopServicesShards?: number[];
   /**
    * Tiles of the map projection. Absent on an artifact built before it existed, which is what
    * lets a reader fall back to the stop and stop-route families rather than describe an empty

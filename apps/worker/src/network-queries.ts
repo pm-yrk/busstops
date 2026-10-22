@@ -136,7 +136,22 @@ export function routesServingStop(
       serviceIds.add(pattern.serviceRouteId);
     }
   }
+  return routesFromServiceIds(serviceIds, services, operators);
+}
 
+/**
+ * The same list, from service ids that are already known.
+ *
+ * Which is all the patterns were ever opened to produce: the loop above reads `serviceRouteId`
+ * and `stopSequence` and nothing else. A board that can look its stop's services up directly —
+ * see `servicesCallingAtStop` — has the ids without reading a pattern at all, and this is where
+ * the two paths meet.
+ */
+export function routesFromServiceIds(
+  serviceIds: ReadonlySet<string>,
+  services: ReadonlyMap<string, ServiceRoute>,
+  operators: ReadonlyMap<string, Operator>,
+): Array<{ id: string; publicName: string; operatorId: string; operatorName: string }> {
   return [...serviceIds]
     .map((serviceId) => {
       const service = services.get(serviceId);

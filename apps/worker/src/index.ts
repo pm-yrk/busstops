@@ -278,6 +278,7 @@ import {
   distinguishVariantDescriptions,
   routeVariants,
   routesForOperator,
+  routesFromServiceIds,
   routesServingStop,
 } from "./network-queries.js";
 import { Router } from "./router.js";
@@ -1204,11 +1205,45 @@ router.get("/v1/stops/:id", async (_request, { env, params }) => {
    * night, or a stop served only outside the window. That is the case it is affordable in.
    */
   const namedPatternIds = new Set(departureRows.map((row) => row.p).filter(Boolean));
-  const patternRead = await boardLedger.stage("patterns", () =>
-    namedPatternIds.size > 0
-      ? network!.patternsByIdsNearStop(stop, namedPatternIds, Date.now(), boardLedger)
-      : network!.patternsCallingAtStop(stop, Date.now(), boardLedger),
-  );
+
+  /*
+   * A stop with nothing due now asks by its own id, not by where it is.
+   *
+   * The geographic fallback below is what the deployed cold ledger caught: `boxAround` is 1,500
+   * metres against an eighth-of-a-degree grid, so it opens one pattern-index tile, and a
+   * Manchester board decoded 2.03 MiB of that one tile to produce a list of route names. A byte
+   * budget cannot help — it is checked between tiles and there is only ever one. `stop-services`
+   * is the same answer with the geography taken out: one bucket chosen by a hash of the stop id,
+   * one line parsed out of it, service ids only.
+   *
+   * It is tried first and the pattern read stays behind it, because an artifact published before
+   * the family existed has no buckets and a board must fall back rather than describe a stop as
+   * having no services.
+   */
+  const directServices =
+    namedPatternIds.size === 0
+      ? await boardLedger.stage("stop-services", () =>
+          network!.servicesCallingAtStop(stop.id, Date.now(), boardLedger),
+        )
+      : { serviceIds: [], available: false };
+  mark("board:stop-services:done", {
+    available: directServices.available,
+    services: directServices.serviceIds.length,
+  });
+
+  const patternRead =
+    namedPatternIds.size === 0 && directServices.available
+      ? /*
+         * Nothing read, and nothing needed: the service ids are the answer the patterns were only
+         * ever being opened to produce. `complete` is true because a direct lookup either found
+         * the stop's line or established that it has none.
+         */
+        { patterns: [], complete: true, source: "stop_services_index" }
+      : await boardLedger.stage("patterns", () =>
+          namedPatternIds.size > 0
+            ? network!.patternsByIdsNearStop(stop, namedPatternIds, Date.now(), boardLedger)
+            : network!.patternsCallingAtStop(stop, Date.now(), boardLedger),
+        );
   const patterns = patternRead.patterns;
   mark("board:patterns:done", {
     patterns: patterns.length,
@@ -1228,7 +1263,11 @@ router.get("/v1/stops/:id", async (_request, { env, params }) => {
    */
   const services = await boardLedger.stage("services", () =>
     network!.servicesByIds(
-      new Set(patterns.map((pattern) => pattern.serviceRouteId)),
+      new Set([
+        ...patterns.map((pattern) => pattern.serviceRouteId),
+        /* The direct lookup's ids, which are the whole answer when it was the path taken. */
+        ...directServices.serviceIds,
+      ]),
       // The board is the path the partitioned family exists for, so it is the one that records
       // which representation answered and what it cost.
       boardLedger,
@@ -1254,12 +1293,17 @@ router.get("/v1/stops/:id", async (_request, { env, params }) => {
   const operatorIds = new Set(
     [...services.values()].map((service) => service.operatorId).filter(Boolean),
   );
-  const routes = routesServingStop(
-    patterns,
-    stop.id,
-    services,
-    await boardLedger.stage("operators", () => network!.operatorsByIds(operatorIds)),
+  const operators = await boardLedger.stage("operators", () =>
+    network!.operatorsByIds(operatorIds),
   );
+  /*
+   * From whichever path produced the ids. The patterns were only ever opened to find out which
+   * services call here, so a board that looked that up directly has the same answer without them.
+   */
+  const routes =
+    directServices.serviceIds.length > 0
+      ? routesFromServiceIds(new Set(directServices.serviceIds), services, operators)
+      : routesServingStop(patterns, stop.id, services, operators);
   const snapshot = await boardLedger.stage("disruptions", async () =>
     disruptions ? ((await disruptions.snapshot()) ?? null) : null,
   );

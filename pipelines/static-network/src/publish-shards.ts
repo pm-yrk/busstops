@@ -42,8 +42,13 @@ import {
   patternIndexTileDataset,
   patternIndexShardLines,
   stopRoutesDataset,
+  STOP_SERVICES_BUCKETS,
+  stopServicesBucketFor,
+  stopServicesDataset,
+  stopServicesShardLines,
   type PatternIndexRow,
   type StopRoutesRow,
+  type StopServicesRow,
   type MapStopRow,
   mapStopsDataset,
   type StopDetailRow,
@@ -371,6 +376,27 @@ export async function publishNetworkShards(
   stopRouteShards.clear();
 
   /*
+   * And which services call at each stop, by the stop's own id rather than by where it is.
+   *
+   * The names above answer the map, which wants a label on a marker. A departure board wants
+   * identity — the service to link to and the operator to name — and it was getting that by
+   * reading the pattern index on the geographic grid whenever its own departures named no
+   * patterns, which is every quiet stop. One tile, measured at 2.03 MiB on the deployment, to
+   * list the routes at one stop. This family has no geography in it at all.
+   */
+  const stopServiceShards = groupStopServicesByBucket(network);
+  const stopServicesShards = [...stopServiceShards.keys()].sort((a, b) => a - b);
+  await publishFamily(
+    "stop-services",
+    [...stopServiceShards].map(([bucket, rows]) => ({
+      dataset: stopServicesDataset(bucket),
+      lines: stopServicesShardLines(rows),
+      records: rows.length,
+    })),
+  );
+  stopServiceShards.clear();
+
+  /*
    * And every pattern by its own id, without its geometry.
    *
    * The planner reads `pattern.stopSequence` and never touches a shape, and it was getting that
@@ -465,6 +491,8 @@ export async function publishNetworkShards(
     searchTiles,
     searchPrefixes,
     stopRouteTiles,
+    stopServicesBuckets: STOP_SERVICES_BUCKETS,
+    stopServicesShards,
     mapStopTiles,
     stopDetailBuckets,
     patternIndexBuckets: PATTERN_INDEX_BUCKETS,
@@ -697,6 +725,47 @@ function routeNamesByStop(network: BuiltNetwork): Map<string, Set<string>> {
     }
   }
   return namesByStop;
+}
+
+/**
+ * Which services call at each stop, bucketed by the stop's own id.
+ *
+ * Built from the patterns rather than from the names: a board links to a service and names an
+ * operator, and both of those need identity. The names family above and this one are built from
+ * the same patterns in the same pass, so the two cannot disagree about which services call where.
+ */
+function groupStopServicesByBucket(network: BuiltNetwork): Map<number, StopServicesRow[]> {
+  const published = new Set(network.services.map((service) => service.id));
+  const byStop = new Map<string, Set<string>>();
+  for (const pattern of network.patterns) {
+    /*
+     * A pattern whose service is not in this build is left out, exactly as the names family
+     * leaves it out. Filing an id a reader cannot resolve would put a board in the position of
+     * naming a route it cannot describe.
+     */
+    if (!published.has(pattern.serviceRouteId)) continue;
+    for (const stopId of pattern.stopSequence) {
+      const services = byStop.get(stopId);
+      if (services) services.add(pattern.serviceRouteId);
+      else byStop.set(stopId, new Set([pattern.serviceRouteId]));
+    }
+  }
+
+  const byBucket = new Map<number, StopServicesRow[]>();
+  for (const stop of network.stops) {
+    const services = byStop.get(stop.id);
+    /* A stop nothing calls at files no row: an absent row and an empty one say the same thing. */
+    if (!services || services.size === 0) continue;
+    const bucket = stopServicesBucketFor(stop.id);
+    const row: StopServicesRow = { s: stop.id, v: [...services].sort() };
+    const rows = byBucket.get(bucket);
+    if (rows) rows.push(row);
+    else byBucket.set(bucket, [row]);
+  }
+
+  // Deterministic order, so the same network publishes byte-identical shards.
+  for (const rows of byBucket.values()) rows.sort((a, b) => (a.s < b.s ? -1 : 1));
+  return byBucket;
 }
 
 function groupStopRoutesByTile(

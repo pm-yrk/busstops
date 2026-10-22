@@ -49,6 +49,8 @@ import {
   patternIndexDataset,
   patternIndexTileDataset,
   stopRoutesDataset,
+  stopServicesBucketFor,
+  stopServicesDataset,
   mapStopsDataset,
   stopDetailDataset,
   stopDetailBucketFor,
@@ -2219,6 +2221,55 @@ export class NetworkReader {
       complete: !read.truncated && patterns.length === patternIds.size,
       source: "pattern_index_by_id",
     };
+  }
+
+  /**
+   * Which services call at one stop, from the stop's own bucket.
+   *
+   * The board asked the pattern index on the geographic grid for this whenever its departures
+   * named no patterns — which is every stop with nothing due — and the deployed cold ledger
+   * measured one Manchester board decoding 2.03 MiB of a single tile to answer it. The byte
+   * budget could not help: it is checked between tiles and `boxAround` asks for one.
+   *
+   * This is the same answer with no geography in it. One bucket, chosen by a hash of the stop id,
+   * and the line is found by scanning for `["<id>"` so nothing else in the object is ever parsed.
+   * It returns ids only; the names, the operators and everything a passenger reads come from
+   * `servicesByIds` and `operatorsByIds`, which the board already calls.
+   *
+   * `available` is false on an artifact published before the family existed, which is what sends
+   * the caller back to the pattern read rather than describing a stop as having no services.
+   */
+  async servicesCallingAtStop(
+    stopId: string,
+    now: number = Date.now(),
+    ledger?: ReadLedger,
+  ): Promise<{ serviceIds: string[]; available: boolean }> {
+    const index = await this.networkIndex(now);
+    const buckets = index?.stopServicesBuckets ?? 0;
+    if (!index || buckets <= 0) return { serviceIds: [], available: false };
+
+    const bucket = stopServicesBucketFor(stopId, buckets);
+    /*
+     * A bucket the publish did not write means nothing hashed there, which is an answer. A bucket
+     * it did write and that cannot be read is not, and the shard list is what tells them apart.
+     */
+    if (index.stopServicesShards && !index.stopServicesShards.includes(bucket)) {
+      return { serviceIds: [], available: true };
+    }
+
+    const needle = `["${stopId}"`;
+    const rows = await this.readShardSized<[string, string[]]>(
+      stopServicesDataset(bucket),
+      index.version,
+      now,
+      ledger ? { ledger, family: "services", budgetReason: "stop_services_budget" } : undefined,
+      (body, start, end) => body.startsWith(needle, start) && start + needle.length <= end,
+      /* One stop's line out of a bucket: a partial parse must never be cached as the whole one. */
+      false,
+    );
+
+    const row = rows.records.find(([id]) => id === stopId);
+    return { serviceIds: row ? row[1] : [], available: true };
   }
 
   async patternsCallingAtStop(
