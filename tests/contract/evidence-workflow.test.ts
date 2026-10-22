@@ -80,9 +80,21 @@ describe("workflows that commit back onto the branch", () => {
     expect(publish!.body).toMatch(/if:\s*always\(\)/);
   });
 
-  /* The parser has to actually find the jobs, or every assertion above passes on nothing. */
+  /*
+   * The parser has to actually find the jobs, or every assertion above passes on nothing.
+   *
+   * It asserts what the assertions above depend on — that the three jobs they name are found —
+   * and the failure mode a naive indent-matching parser actually has, which is picking up keys
+   * from inside a job as though they were jobs. It deliberately does not pin the whole roster:
+   * adding a measurement job is a normal thing to do, and a test that goes red for it is a test
+   * that teaches whoever is watching to edit the expectation rather than read it.
+   */
   it("finds the workflow's jobs", () => {
     const ids = jobsOf(readFileSync(join(WORKFLOWS, "evidence.yml"), "utf8")).map(({ id }) => id);
-    expect(ids).toEqual(["probe", "gtfs", "publish"]);
+    expect(ids).toEqual(expect.arrayContaining(["probe", "gtfs", "publish"]));
+    expect(ids).not.toContain("steps");
+    expect(ids).not.toContain("runs-on");
+    expect(ids).not.toContain("env");
+    expect(ids).not.toContain("with");
   });
 });

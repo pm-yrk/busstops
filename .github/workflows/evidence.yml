@@ -192,6 +192,65 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+  # What each candidate map-projection grid would cost, read off the published artifact.
+  #
+  # Its own marker and its own job, deliberately. The question — how much smaller a city viewport
+  # gets if the projection is filed on a smaller square, and how many more objects that is to
+  # write — was answered three times by running a national build, and two of those runs died at a
+  # step limit with nothing published at all. A single pass over 460 objects answers it in
+  # minutes. This job deploys nothing and writes nothing to the bucket; it reads, re-files the
+  # rows in memory, and reports.
+  #
+  # Pushed here rather than as an input to `deploy-preview` because that workflow's concurrency
+  # group holds one run at a time, and a two-minute measurement should not queue behind a
+  # two-and-a-half-hour build.
+  map_grid:
+    name: Measure what each map-projection grid would cost
+    if: contains(github.event.head_commit.message, '[map-grid]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - run: npm ci --no-audit --no-fund
+
+      - name: Measure
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          # The whole projection's rows are held at once to re-file them; the bytes themselves are
+          # released per tile. Headroom rather than a requirement, and the runner's memory is
+          # already paid for either way.
+          NODE_OPTIONS: "--max-old-space-size=8192"
+        run: |
+          set -o pipefail
+          npx tsx scripts/measure-map-grid.ts \
+            --json map-grid.json 2>&1 | tee map-grid.log
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "## What each map-projection grid would cost"
+            echo
+            echo '```'
+            sed -n '1,120p' map-grid.log 2>/dev/null || echo "no map-grid.log was written"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-map-grid
+          path: |
+            map-grid.json
+            map-grid.log
+          retention-days: 7
+          if-no-files-found: ignore
+
   # One commit, after both measurements, whatever either of them did.
   #
   # Each measurement job hands its files over as an artifact and this job is the only thing that
