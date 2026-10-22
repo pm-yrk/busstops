@@ -251,6 +251,75 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  # Re-files the published map projection onto the grid MAP_STOP_TILE_DEGREES names.
+  #
+  # `[retile]` reports and writes nothing. `[retile-apply]` additionally writes the new tiles,
+  # reads every one of them back, and then moves the index — one object, after everything else has
+  # been verified, so until that write the artifact serves exactly what it served before. The
+  # tiles it replaces are left in place, which is what makes a rollback one index write.
+  #
+  # Not part of the national build, because a finer grid is a repartition of rows that are already
+  # published and none of the build's work is needed to compute it. That build takes between 99
+  # and 165 minutes — measured, same inputs, ten hours apart — and the extra objects have twice
+  # pushed it past its step limit with nothing published at all.
+  retile_map_stops:
+    name: Re-file the map projection onto a smaller square
+    if: contains(github.event.head_commit.message, '[retile]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - run: npm ci --no-audit --no-fund
+
+      - name: Re-file
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          # The grid, from the same variable the national build reads, so the two cannot be asked
+          # for different things by different means.
+          MAP_STOP_TILE_DEGREES: "0.0625"
+          NODE_OPTIONS: "--max-old-space-size=8192"
+          # Through the environment, not interpolated into the script. A commit message is
+          # attacker-controlled text on a public repository, and `${{ }}` substitution happens
+          # before the shell sees the line — so a message with a backtick in it would run.
+          HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          set -o pipefail
+          APPLY=""
+          if printf '%s' "$HEAD_COMMIT_MESSAGE" | grep -q '\[retile-apply\]'; then
+            APPLY="--apply"
+            echo "Applying: tiles will be written and the index swapped."
+          else
+            echo "Report only. Add [retile-apply] to the commit message to publish."
+          fi
+          npx tsx pipelines/static-network/run-retile-map-stops.ts $APPLY \
+            --json retile.json 2>&1 | tee retile.log
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "## Re-filing the map projection"
+            echo
+            echo '```'
+            sed -n '1,120p' retile.log 2>/dev/null || echo "no retile.log was written"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-retile
+          path: |
+            retile.json
+            retile.log
+          retention-days: 14
+          if-no-files-found: ignore
+
   # One commit, after both measurements, whatever either of them did.
   #
   # Each measurement job hands its files over as an artifact and this job is the only thing that
