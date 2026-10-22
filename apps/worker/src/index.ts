@@ -1428,8 +1428,22 @@ router.get("/v1/stops/:id", async (_request, { env, params }) => {
           // dataset name carries the service date, window and bucket that produced it.
           ...timetableFailures.map((failure) => `timetable ${failure.dataset}`),
         ],
-        // Stage times, residency, and whatever the last request that did not finish had reached.
-        diagnostics: { ...boardLedger.toJSON() },
+        /*
+         * Stage times, residency, and whatever the last request that did not finish had reached —
+         * plus the departure text this isolate is holding, which was the one piece of residency
+         * visible only in the breadcrumb of a request that died.
+         *
+         * `residency.charsBefore` covers the shard cache and reported zero all through a peak
+         * walk in which a journey died with four and a quarter mebibytes of departure text
+         * resident. Two readers, two caches, and only one of them was in the number anybody was
+         * reading. Carried on every board so a walk can correlate it per request rather than
+         * only on the requests unlucky enough to be described by the next one.
+         */
+        diagnostics: {
+          ...boardLedger.toJSON(),
+          departureShardsResident: departures2?.cachedShardCount ?? 0,
+          departureCharsResident: departures2?.cachedChars ?? 0,
+        },
         safeMode: safeModeActive(state),
       }),
       data: {
