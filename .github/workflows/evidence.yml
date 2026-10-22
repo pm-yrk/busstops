@@ -320,6 +320,72 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
+  # Builds `network/stop-serving-routes` from what is already published, measuring first.
+  #
+  # `[enrich]` measures and writes nothing — a serving projection duplicates route and operator
+  # names, and whether that is tens of megabytes or hundreds is a question to answer before
+  # publishing rather than after. `[enrich-apply]` additionally writes the family, verifies every
+  # object from a listing, and only then declares it in the index; the id index is left in place,
+  # which is what makes the deploy order safe both ways and a rollback one write.
+  #
+  # Not part of the national build because every input is already published: the join needs no
+  # GTFS archive, no NaPTAN parse and no million journeys.
+  enrich_stop_services:
+    name: Build the enriched stop serving-route index
+    if: contains(github.event.head_commit.message, '[enrich]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - run: npm ci --no-audit --no-fund
+
+      - name: Join and measure
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          # The whole services table and every bucket's rows are held at once to join them. The
+          # runner's memory is already paid for; the Worker is the one that must not do this.
+          NODE_OPTIONS: "--max-old-space-size=8192"
+          # Through the environment, not interpolated: a commit message is attacker-controlled
+          # text on a public repository and `${{ }}` substitution happens before the shell sees it.
+          HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          set -o pipefail
+          APPLY=""
+          if printf '%s' "$HEAD_COMMIT_MESSAGE" | grep -q '\[enrich-apply\]'; then
+            APPLY="--apply"
+            echo "Applying: the family will be written and declared in the index."
+          else
+            echo "Measuring only. Add [enrich-apply] to the commit message to publish."
+          fi
+          npx tsx pipelines/static-network/run-enrich-stop-services.ts $APPLY \
+            --json stop-serving-routes.json 2>&1 | tee stop-serving-routes.log
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "## Enriched stop serving-route index"
+            echo
+            echo '```'
+            sed -n '1,120p' stop-serving-routes.log 2>/dev/null || echo "no log was written"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-stop-serving-routes
+          path: |
+            stop-serving-routes.json
+            stop-serving-routes.log
+          retention-days: 14
+          if-no-files-found: ignore
+
   # One commit, after both measurements, whatever either of them did.
   #
   # Each measurement job hands its files over as an artifact and this job is the only thing that

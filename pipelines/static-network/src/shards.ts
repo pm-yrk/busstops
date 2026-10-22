@@ -606,6 +606,104 @@ export function stopServicesShardLines(rows: readonly StopServicesRow[]): string
 }
 
 /**
+ * The same lookup, carrying what a stop board renders rather than only what it must then resolve.
+ *
+ * `stop-services` answered "which services call here" in one hashed bucket, which removed the
+ * geographic pattern scan — and then the board had to turn fifty service ids into fifty names.
+ * Each id lives in its own hashed service bucket, so a city interchange asked for upwards of
+ * thirty-two objects, each one a subrequest against the fifty an invocation gets in total for its
+ * index, departure shards, operators, live feed, weather and disruptions as well. Deployed, that
+ * took Leeds City Bus Station from four of four samples answering to four of four answering 1102.
+ *
+ * A serving projection fixes that in the artifact rather than with more reads: the name and the
+ * operator travel with the id, so the question costs one bucket however many routes call there.
+ *
+ * **A new family rather than a new version of the old one, because of deploy order.** The Worker
+ * ships before the data does. An old Worker meeting enriched rows in `stop-services` would read
+ * each entry's array where it expected an id, match nothing, and show a stop as having no routes
+ * at all — which is the silent wrong answer this whole family exists to avoid. Under its own
+ * prefix, an old Worker simply does not know the field is there and keeps using what it knows,
+ * and a new Worker meeting an old artifact finds no declaration and does the same.
+ *
+ * It deliberately carries nothing else. Not the geometry, not the stop sequence, not trips, not
+ * the operator's contact details, not accessibility, not disruption context: those belong to the
+ * route page and the board does not render them.
+ */
+export const STOP_SERVING_ROUTES_PREFIX = "network/stop-serving-routes";
+
+/** The same count as `stop-services`, so one stop's two families land in comparable objects. */
+export const STOP_SERVING_ROUTES_BUCKETS = STOP_SERVICES_BUCKETS;
+
+export function stopServingRoutesBucketFor(
+  stopId: string,
+  buckets = STOP_SERVING_ROUTES_BUCKETS,
+): number {
+  return stopServicesBucketFor(stopId, buckets);
+}
+
+export function stopServingRoutesDataset(bucket: number): string {
+  return `${STOP_SERVING_ROUTES_PREFIX}/${bucket}`;
+}
+
+/**
+ * One serving route at a stop: the identity, and the two strings a board prints.
+ *
+ * The ids are canonical and are not collapsed by public name. Several operators run a "1", and a
+ * board that merged them would link a passenger to somebody else's timetable — so the service id
+ * and the operator id are both carried, and the names are projections of them.
+ *
+ * The operator is referenced by position into the bucket's own table rather than repeated. Across
+ * a national build the same operator id — thirty-six characters — appears on every one of its
+ * routes at every stop it serves, and that repetition was measured as the largest single cost of
+ * the obvious encoding.
+ */
+export interface StopServingRouteEntry {
+  /** Canonical service id, what the route page is opened by. */
+  id: string;
+  /** Public route name, as a board prints it. */
+  name: string;
+  /** Index into the bucket's operator table. */
+  o: number;
+}
+
+export interface StopServingRoutesRow {
+  /** Stop id, as the stop tiles file it. */
+  s: string;
+  /** The routes calling here, ordered as the board orders them. */
+  r: StopServingRouteEntry[];
+}
+
+/** The bucket's operator table: canonical id and display name, by position. */
+export type StopServingOperator = [id: string, name: string];
+
+export interface StopServingRoutesHeader {
+  v: 1;
+  n: number;
+  /** Operators referenced by the rows below, by position. */
+  o: StopServingOperator[];
+}
+
+/**
+ * The shard as text: a header carrying the operator table, then one line per stop keyed by its id.
+ *
+ * Keyed as a pair, like every other bucketed family here, so a reader finds a stop's line by
+ * scanning for `["<id>"` without parsing anything else. The header is the one other line a reader
+ * has to build, and it is first so a filter can take it by position.
+ */
+export function stopServingRoutesShardLines(
+  rows: readonly StopServingRoutesRow[],
+  operators: readonly StopServingOperator[],
+): string[] {
+  const header: StopServingRoutesHeader = { v: 1, n: rows.length, o: [...operators] };
+  return [
+    JSON.stringify(header),
+    ...rows.map((row) =>
+      JSON.stringify([row.s, row.r.map((entry) => [entry.id, entry.name, entry.o])]),
+    ),
+  ];
+}
+
+/**
  * Every pattern by its own id, without its geometry.
  *
  * The journey planner needs a pattern's stop sequence and nothing else — `buildGraphFor` reads
@@ -807,6 +905,17 @@ export interface NetworkIndexRecord {
    */
   stopServicesBuckets?: number;
   stopServicesShards?: number[];
+  /**
+   * The enriched serving-route buckets, when this artifact carries them.
+   *
+   * Absent on everything published before the family existed, which is the declaration a reader
+   * needs: with no buckets named here it uses `stop-services` and resolves the names itself, and
+   * an older Worker that has never heard of this field keeps doing exactly that. Deploy order is
+   * safe in both directions because the two families are separate objects rather than two
+   * versions of one.
+   */
+  stopServingRoutesBuckets?: number;
+  stopServingRoutesShards?: number[];
   /**
    * Tiles of the map projection. Absent on an artifact built before it existed, which is what
    * lets a reader fall back to the stop and stop-route families rather than describe an empty

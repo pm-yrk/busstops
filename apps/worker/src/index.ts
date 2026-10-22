@@ -3,6 +3,7 @@ import {
   MAP_QUERY_LIMITS,
   type GovernorState,
   type MapResponseData,
+  type Operator,
   type SearchResult,
   type ServiceRoute,
 } from "@busstops/contracts";
@@ -1207,65 +1208,74 @@ router.get("/v1/stops/:id", async (_request, { env, params }) => {
   const namedPatternIds = new Set(departureRows.map((row) => row.p).filter(Boolean));
 
   /*
-   * A stop with nothing due asks by its own id. A stop with departures asks by their patterns.
+   * Every board asks by its own id, and the answer carries what the board prints.
    *
-   * `stop-services` is the better *answer* for both — one bucket chosen by a hash of the stop id,
-   * one line parsed out of it, where the geographic read opens a pattern-index tile and a dense
-   * one is megabytes of text that has to be walked whether anything is parsed out of it or not.
-   * So this handler asked it on every board for one deployment, and the deployment said no.
+   * There were two failed shapes before this one, and both are worth keeping in mind. Asking the
+   * pattern tiles geographically costs megabytes: `boxAround` is 1,500 metres against an
+   * eighth-of-a-degree grid, so the read opens one pattern-index tile and a dense one is text
+   * that has to be walked whether anything is parsed out of it or not — 2.03 MiB measured for a
+   * Manchester board. Asking `stop-services` for ids and then resolving them costs subrequests:
+   * every id lives in its own hashed service bucket, an interchange has fifty routes, and the
+   * deployed probe took Leeds City Bus Station from four of four samples answering to four of
+   * four answering 1102 against the fifty subrequests an invocation gets in total.
    *
-   * What it measured: Leeds City Bus Station went from four of four samples answering with three
-   * routes named from three service buckets, to four of four answering 1102. Norwich Tombland and
-   * Birmingham Coach Station the same. The reason is the thing that makes the index the better
-   * answer — it names *every* route that calls at a stop, not only the ones with a bus due — and
-   * an interchange has fifty of them. Fifty service ids is upwards of thirty-two service buckets,
-   * each one a subrequest, against the fifty an invocation gets in total for its index, its
-   * departure shards, its operators, its live feed, its weather and its disruptions. The question
-   * got better and the bill got bigger than the platform allows.
+   * `stop-serving-routes` is the same question with both costs removed: one bucket, one line, and
+   * the service id, route name and operator already beside each other. It is the whole answer, so
+   * the services and operators reads below are skipped entirely when it is the path taken.
    *
-   * So it is asked where it is affordable and where the alternative is worst: the stop whose own
-   * departures name no patterns, which is the stop whose geographic read costs the most and buys
-   * the least. Making it the answer for every board needs the route's name and operator in the
-   * index itself, so that naming fifty routes is one read rather than fifty-one — which is a
-   * change to what is published, not to what is asked.
+   * It is the first choice for every board, busy or quiet, and the two older paths remain behind
+   * it in order — because an artifact published before this family existed must still get a route
+   * list rather than be described as having no services.
+   */
+  const serving = await boardLedger.stage("serving-routes", () =>
+    network!.servingRoutesAtStop(stop.id, Date.now(), boardLedger),
+  );
+  mark("board:serving-routes:done", {
+    declared: serving !== null,
+    routes: serving?.routes.length ?? 0,
+    complete: serving?.complete ?? false,
+  });
+
+  /*
+   * The id-only index, for an artifact that has that family and not the enriched one. Asked only
+   * where it is affordable — the stop whose own departures name no patterns, which is the stop
+   * whose geographic read costs the most and buys the least.
    */
   const directServices =
-    namedPatternIds.size === 0
+    serving === null && namedPatternIds.size === 0
       ? await boardLedger.stage("stop-services", () =>
           network!.servicesCallingAtStop(stop.id, Date.now(), boardLedger),
         )
       : { serviceIds: [], available: false };
-  mark("board:stop-services:done", {
-    available: directServices.available,
-    services: directServices.serviceIds.length,
-  });
 
   /*
    * Trusted unless this board's own departures contradict it.
    *
-   * `available` says the artifact carries the family, not that it carries a row for this stop —
-   * a stop nothing calls at has no row, and that is the right answer for it. But a stop with
-   * buses due in the next ninety minutes and no row is a disagreement between two parts of the
-   * same artifact, and the honest response to that is not to publish "no routes, and that list is
-   * complete". So the departures settle it: when they name patterns and the index names no
-   * services, the geographic read answers and pays for itself.
+   * `available` says the artifact carries the family, not that it carries a row for this stop — a
+   * stop nothing calls at has no row, and that is the right answer for it. But a stop with buses
+   * due and no row is a disagreement inside one artifact, and the honest response to that is not
+   * to publish "no routes, and that list is complete". So the departures settle it.
    */
   const directUsable =
     directServices.available &&
     (directServices.serviceIds.length > 0 || namedPatternIds.size === 0);
 
-  const patternRead = directUsable
-    ? /*
-       * Nothing read, and nothing needed: the service ids are the answer the patterns were only
-       * ever being opened to produce. `complete` is true because a direct lookup either found the
-       * stop's lines or established that it has none.
-       */
-      { patterns: [], complete: true, source: "stop_services_index" }
-    : await boardLedger.stage("patterns", () =>
-        namedPatternIds.size > 0
-          ? network!.patternsByIdsNearStop(stop, namedPatternIds, Date.now(), boardLedger)
-          : network!.patternsCallingAtStop(stop, Date.now(), boardLedger),
-      );
+  const patternRead =
+    serving !== null
+      ? /* Nothing read and nothing needed: the enriched index is the whole answer. */
+        { patterns: [], complete: serving.complete, source: "stop_serving_routes" }
+      : directUsable
+        ? /*
+           * Nothing read, and nothing needed: the service ids are the answer the patterns were only
+           * ever being opened to produce. `complete` is true because a direct lookup either found the
+           * stop's lines or established that it has none.
+           */
+          { patterns: [], complete: true, source: "stop_services_index" }
+        : await boardLedger.stage("patterns", () =>
+            namedPatternIds.size > 0
+              ? network!.patternsByIdsNearStop(stop, namedPatternIds, Date.now(), boardLedger)
+              : network!.patternsCallingAtStop(stop, Date.now(), boardLedger),
+          );
   const patterns = patternRead.patterns;
   mark("board:patterns:done", {
     patterns: patterns.length,
@@ -1293,21 +1303,25 @@ router.get("/v1/stops/:id", async (_request, { env, params }) => {
    * into something twice as expensive, on exactly the busiest boards. `servicesByIdsBounded` has
    * no such fallback and reports whether it got all of them.
    */
-  const resolved = directUsable
-    ? await boardLedger.stage("services", () =>
-        network!.servicesByIdsBounded(new Set(directServices.serviceIds), boardLedger),
-      )
-    : {
-        services: await boardLedger.stage("services", () =>
-          network!.servicesByIds(
-            new Set(patterns.map((pattern) => pattern.serviceRouteId)),
-            // The board is the path the partitioned family exists for, so it is the one that
-            // records which representation answered and what it cost.
-            boardLedger,
-          ),
-        ),
-        complete: true,
-      };
+  const resolved =
+    serving !== null
+      ? /* The enriched index already named them. Nothing to resolve, and nothing to read. */
+        { services: new Map<string, ServiceRoute>(), complete: serving.complete }
+      : directUsable
+        ? await boardLedger.stage("services", () =>
+            network!.servicesByIdsBounded(new Set(directServices.serviceIds), boardLedger),
+          )
+        : {
+            services: await boardLedger.stage("services", () =>
+              network!.servicesByIds(
+                new Set(patterns.map((pattern) => pattern.serviceRouteId)),
+                // The board is the path the partitioned family exists for, so it is the one that
+                // records which representation answered and what it cost.
+                boardLedger,
+              ),
+            ),
+            complete: true,
+          };
   const services = resolved.services;
   mark("board:services:done", { services: services.size, complete: resolved.complete });
 
@@ -1329,16 +1343,26 @@ router.get("/v1/stops/:id", async (_request, { env, params }) => {
   const operatorIds = new Set(
     [...services.values()].map((service) => service.operatorId).filter(Boolean),
   );
-  const operators = await boardLedger.stage("operators", () =>
-    network!.operatorsByIds(operatorIds),
-  );
   /*
-   * From whichever path produced the ids. The patterns were only ever opened to find out which
-   * services call here, so a board that looked that up directly has the same answer without them.
+   * Skipped as well when the enriched index answered: it carries the operator's name beside the
+   * route's, so there are no ids left to look up. `operatorsText` is a national object, and not
+   * reading it is most of why this path costs one object in total.
    */
-  const routes = directUsable
-    ? routesFromServiceIds(new Set(directServices.serviceIds), services, operators)
-    : routesServingStop(patterns, stop.id, services, operators);
+  const operators =
+    serving !== null
+      ? new Map<string, Operator>()
+      : await boardLedger.stage("operators", () => network!.operatorsByIds(operatorIds));
+  /*
+   * From whichever path produced them. All three name the same thing — the routes that serve this
+   * stop, by canonical id, with the operator that runs each — and differ only in what they had to
+   * read to say it.
+   */
+  const routes =
+    serving !== null
+      ? serving.routes
+      : directUsable
+        ? routesFromServiceIds(new Set(directServices.serviceIds), services, operators)
+        : routesServingStop(patterns, stop.id, services, operators);
   const snapshot = await boardLedger.stage("disruptions", async () =>
     disruptions ? ((await disruptions.snapshot()) ?? null) : null,
   );

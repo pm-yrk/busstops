@@ -50,6 +50,12 @@ import {
   type PatternIndexRow,
   type StopRoutesRow,
   type StopServicesRow,
+  type StopServingOperator,
+  type StopServingRouteEntry,
+  type StopServingRoutesRow,
+  stopServingRoutesDataset,
+  stopServingRoutesShardLines,
+  STOP_SERVING_ROUTES_BUCKETS,
   type MapStopRow,
   mapStopsDataset,
   type StopDetailRow,
@@ -407,6 +413,26 @@ export async function publishNetworkShards(
   stopServiceShards.clear();
 
   /*
+   * And the same lookup with the names attached, which is what a board actually renders.
+   *
+   * Published beside the id index rather than instead of it: the Worker ships before the data
+   * does, so an artifact has to be readable by the Worker already deployed. A reader that knows
+   * this family prefers it; one that does not keeps using the ids. Both are built from one pass,
+   * so they cannot disagree about which services call where.
+   */
+  const servingRouteShards = groupStopServingRoutesByBucket(network);
+  const stopServingRoutesShards = [...servingRouteShards.keys()].sort((a, b) => a - b);
+  await publishFamily(
+    "stop-serving-routes",
+    [...servingRouteShards].map(([bucket, entry]) => ({
+      dataset: stopServingRoutesDataset(bucket),
+      lines: stopServingRoutesShardLines(entry.rows, entry.operators),
+      records: entry.rows.length,
+    })),
+  );
+  servingRouteShards.clear();
+
+  /*
    * And every pattern by its own id, without its geometry.
    *
    * The planner reads `pattern.stopSequence` and never touches a shape, and it was getting that
@@ -503,6 +529,8 @@ export async function publishNetworkShards(
     stopRouteTiles,
     stopServicesBuckets: STOP_SERVICES_BUCKETS,
     stopServicesShards,
+    stopServingRoutesBuckets: STOP_SERVING_ROUTES_BUCKETS,
+    stopServingRoutesShards,
     mapStopTiles,
     stopDetailBuckets,
     patternIndexBuckets: PATTERN_INDEX_BUCKETS,
@@ -778,6 +806,85 @@ function groupStopServicesByBucket(network: BuiltNetwork): Map<number, StopServi
   // Deterministic order, so the same network publishes byte-identical shards.
   for (const rows of byBucket.values()) rows.sort((a, b) => (a.s < b.s ? -1 : 1));
   return byBucket;
+}
+
+/**
+ * The same lookup, carrying what the board renders: the route's name and who runs it.
+ *
+ * Built from the id index rather than beside it, so the two cannot disagree about which services
+ * call where — one answers "which" and the other answers "which, and what they are called", and a
+ * board that got different lists from them would be a board whose route list depended on which
+ * family happened to be published.
+ *
+ * The operator table is per bucket. A national build repeats the same thirty-six-character
+ * operator id on every route at every stop that operator serves, and that repetition is the
+ * largest single cost of the obvious encoding; referencing it by position inside the bucket costs
+ * one small integer and one table entry.
+ */
+function groupStopServingRoutesByBucket(
+  network: BuiltNetwork,
+): Map<number, { rows: StopServingRoutesRow[]; operators: StopServingOperator[] }> {
+  const services = new Map(network.services.map((service) => [service.id, service]));
+  const operatorNames = new Map(
+    network.operators.map((operator) => [operator.id, operator.name] as const),
+  );
+
+  interface Building {
+    rows: StopServingRoutesRow[];
+    operatorIndex: Map<string, number>;
+    operators: StopServingOperator[];
+  }
+  const byBucket = new Map<number, Building>();
+
+  for (const [bucket, idRows] of groupStopServicesByBucket(network)) {
+    const entry: Building = byBucket.get(bucket) ?? {
+      rows: [],
+      operatorIndex: new Map(),
+      operators: [],
+    };
+    for (const row of idRows) {
+      const routes: StopServingRouteEntry[] = [];
+      for (const serviceId of row.v) {
+        const service = services.get(serviceId);
+        /*
+         * `groupStopServicesByBucket` already drops a service this build does not publish, so a
+         * miss here would be a disagreement between two passes over one network. Skipped rather
+         * than guessed at: a route with no name is not something a board can render.
+         */
+        if (!service) continue;
+        let operatorIndex = entry.operatorIndex.get(service.operatorId);
+        if (operatorIndex === undefined) {
+          operatorIndex = entry.operators.length;
+          entry.operatorIndex.set(service.operatorId, operatorIndex);
+          entry.operators.push([
+            service.operatorId,
+            operatorNames.get(service.operatorId) ?? "Unknown operator",
+          ]);
+        }
+        routes.push({ id: service.id, name: service.publicName, o: operatorIndex });
+      }
+      if (routes.length === 0) continue;
+      /*
+       * Ordered by id, which is deterministic so a publish is byte-identical. Presentation order
+       * is the reader's: it already sorts the other two paths' lists with `compareRouteNames`,
+       * and a board whose routes were ordered differently depending on which family answered
+       * would be a board that reshuffled itself as the artifact rolled forward.
+       */
+      routes.sort((a, b) => (a.id < b.id ? -1 : 1));
+      entry.rows.push({ s: row.s, r: routes });
+    }
+    if (entry.rows.length > 0) byBucket.set(bucket, entry);
+  }
+
+  const published = new Map<
+    number,
+    { rows: StopServingRoutesRow[]; operators: StopServingOperator[] }
+  >();
+  for (const [bucket, entry] of byBucket) {
+    entry.rows.sort((a, b) => (a.s < b.s ? -1 : 1));
+    published.set(bucket, { rows: entry.rows, operators: entry.operators });
+  }
+  return published;
 }
 
 function groupStopRoutesByTile(

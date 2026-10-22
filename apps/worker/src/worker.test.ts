@@ -37,6 +37,7 @@ import {
   PATTERN_TILE_DEGREES,
   SHARDED,
   STOP_SERVICES_PREFIX,
+  STOP_SERVING_ROUTES_PREFIX,
   TRIP_TILE_DEGREES,
   patternTileDataset,
   currentArtifactLayout,
@@ -632,12 +633,16 @@ describe("GET /v1/stops/:id", () => {
     expect(body.data.routes.length, "and still names the routes that serve it").toBeGreaterThan(0);
 
     const scanned = reads.filter((key) => key.includes(PATTERN_INDEX_PREFIX));
-    const direct = reads.filter((key) => key.includes(STOP_SERVICES_PREFIX));
+    const direct = reads.filter((key) => key.includes(STOP_SERVING_ROUTES_PREFIX));
     expect(
       direct.length,
-      `the board opened no stop-services bucket; it read ${String(reads.length)} object(s)`,
-    ).toBeGreaterThan(0);
+      `the board opened no serving-routes bucket; it read ${String(reads.length)} object(s)`,
+    ).toBe(1);
     expect(scanned, `a quiet board opened the pattern index: ${scanned.join(", ")}`).toEqual([]);
+    /* And nothing to resolve afterwards: the names came with the ids. */
+    expect(reads.filter((key) => key.includes("network/services-bucket/"))).toEqual([]);
+    expect(reads.filter((key) => key.includes("network/services/"))).toEqual([]);
+    expect(reads.filter((key) => key.includes("network/operators/"))).toEqual([]);
   });
 
   it("measures the board it serves, weather stage included", async () => {
@@ -660,15 +665,18 @@ describe("GET /v1/stops/:id", () => {
     const diagnostics = body.meta.diagnostics;
     expect(diagnostics).toBeDefined();
     const stages = Object.keys(diagnostics?.stages ?? {});
-    expect(stages).toEqual(expect.arrayContaining(["live", "services", "weather"]));
+    expect(stages).toEqual(expect.arrayContaining(["live", "weather"]));
     /*
-     * And however it found out which services call here. There are two legitimate paths: the
-     * departures name their patterns and it reads those, or they name none and it looks the stop
-     * up directly in `stop-services`. A board that reports neither has skipped the question.
+     * And however it found out which routes serve this stop. There are three legitimate paths, in
+     * descending order of what they cost: the enriched index names them outright, the id index
+     * names them and the services are resolved, or the patterns around the stop are read. A board
+     * that reports none of the three has skipped the question.
      */
     expect(
-      stages.includes("patterns") || stages.includes("stop-services"),
-      `the board reported neither a pattern read nor a direct lookup: ${stages.join(", ")}`,
+      stages.includes("serving-routes") ||
+        stages.includes("stop-services") ||
+        stages.includes("patterns"),
+      `the board reported no route lookup at all: ${stages.join(", ")}`,
     ).toBe(true);
     expect(diagnostics?.residency?.requestsServed).toBeGreaterThan(0);
   });

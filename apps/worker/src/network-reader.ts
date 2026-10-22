@@ -6,7 +6,7 @@ import type {
   ServiceRoute,
   Stop,
 } from "@busstops/contracts";
-import type { RouteStop } from "./network-queries.js";
+import { compareRouteNames, type RouteStop } from "./network-queries.js";
 import {
   ArtifactStore,
   objectKeyFor,
@@ -53,6 +53,10 @@ import {
   stopRoutesDataset,
   stopServicesBucketFor,
   stopServicesDataset,
+  stopServingRoutesBucketFor,
+  stopServingRoutesDataset,
+  type StopServingOperator,
+  type StopServingRoutesHeader,
   mapStopsDataset,
   stopDetailDataset,
   stopDetailBucketFor,
@@ -692,6 +696,19 @@ export interface MapStop {
   indicator?: string;
   routePublicNames: string[];
 }
+
+/**
+ * A serving route at a stop, as a board renders it: identity first, names as projections of it.
+ */
+export interface StopServingRoute {
+  id: string;
+  publicName: string;
+  operatorId: string;
+  operatorName: string;
+}
+
+/** A line of a serving-routes bucket: the header, or one stop's row. */
+type StopServingRoutesLine = StopServingRoutesHeader | [string, Array<[string, string, number]>];
 
 /** Where a nearby list was read from, so the endpoint can report which family it cost. */
 export type NearbySource = "map_projection" | "search_tiles";
@@ -2430,6 +2447,111 @@ export class NetworkReader {
 
     const row = rows.records.find(([id]) => id === stopId);
     return { serviceIds: row ? row[1] : [], available: true };
+  }
+
+  /**
+   * Which routes serve a stop, named and attributed, from one bucket.
+   *
+   * `servicesCallingAtStop` above removed the geographic pattern scan and left the board holding
+   * fifty service ids to resolve. Each lives in its own hashed service bucket, so an interchange
+   * asked for upwards of thirty-two objects — each a subrequest against the fifty an invocation
+   * gets for everything — and the deployed probe measured Leeds City Bus Station going from four
+   * of four samples answering to four of four answering 1102. The enriched family carries the
+   * name and the operator beside the id, so the cost is one object whatever the stop's size.
+   *
+   * Identity is not collapsed by name: several operators run a "1", and the service id and
+   * operator id are both carried so a board links to the right timetable and the right operator.
+   *
+   * Null when this artifact does not declare the family, which is every artifact published before
+   * it existed. The caller then uses what it used before rather than treating "we cannot read it"
+   * as "no routes call here".
+   */
+  async servingRoutesAtStop(
+    stopId: string,
+    now: number = Date.now(),
+    ledger?: ReadLedger,
+  ): Promise<{ routes: StopServingRoute[]; complete: boolean } | null> {
+    const index = await this.networkIndex(now);
+    const buckets = index?.stopServingRoutesBuckets ?? 0;
+    if (!index || buckets <= 0) return null;
+
+    const bucket = stopServingRoutesBucketFor(stopId, buckets);
+    /*
+     * A bucket the publish did not write means nothing hashed there, which is an answer — a stop
+     * no service calls at has no row and that is the truth about it. A bucket it did write and
+     * that cannot be read is not an answer, and the shard list is what tells the two apart.
+     */
+    if (index.stopServingRoutesShards && !index.stopServingRoutesShards.includes(bucket)) {
+      return { routes: [], complete: true };
+    }
+
+    const needle = `["${stopId}"`;
+    /*
+     * Two lines out of the bucket: the stop's own, and the header carrying the operator table.
+     * The header is first by construction, so it is taken by position rather than by shape — a
+     * filter that recognised it by content would also match a stop whose id began with a brace.
+     */
+    const read = await this.readShardSized<StopServingRoutesLine>(
+      stopServingRoutesDataset(bucket),
+      index.version,
+      now,
+      ledger
+        ? { ledger, family: "services", budgetReason: "stop_serving_routes_budget" }
+        : undefined,
+      (body, start, end) =>
+        start === 0 || (body.startsWith(needle, start) && start + needle.length <= end),
+      /* One stop's line out of a bucket: a partial parse must never be cached as the whole one. */
+      false,
+    );
+
+    let operators: StopServingOperator[] = [];
+    let row: [string, Array<[string, string, number]>] | null = null;
+    for (const line of read.records) {
+      if (Array.isArray(line)) {
+        if (line[0] === stopId) row = line as [string, Array<[string, string, number]>];
+      } else if (Array.isArray(line.o)) {
+        operators = line.o;
+      }
+    }
+
+    /*
+     * A row whose operator table did not come back is not a row this reader can attribute, and a
+     * route attributed to "Unknown operator" when the artifact knows perfectly well who runs it
+     * is a worse answer than saying the list is incomplete. The budget is the only thing that can
+     * cause it — the header is the first line and costs a few kilobytes — so it is reported
+     * rather than papered over.
+     */
+    if (row !== null && operators.length === 0 && row[1].length > 0) {
+      return { routes: [], complete: false };
+    }
+
+    const routes = (row?.[1] ?? [])
+      .map(([id, name, operatorIndex]) => {
+        const operator = operators[operatorIndex];
+        return {
+          id,
+          publicName: name,
+          operatorId: operator?.[0] ?? "",
+          operatorName: operator?.[1] ?? "Unknown operator",
+        };
+      })
+      /*
+       * Presented in the same order as the other two paths, which sort by name here rather than
+       * in the publisher. A board whose routes reshuffled depending on which family answered
+       * would reshuffle itself as the artifact rolled forward, for no reason a reader could see.
+       */
+      .sort((a, b) => compareRouteNames(a.publicName, b.publicName));
+    /*
+     * Complete when the bucket was actually read.
+     *
+     * `chars` is the text this read walked, so zero means the object was absent or the read did
+     * not happen — and then "no row for this stop" is not a statement about the stop at all. With
+     * the bucket read, a stop with no row genuinely has no service calling at it, which is the
+     * answer for a withdrawn stop or a stop on a route that stopped running, and saying so is the
+     * point of having a direct index.
+     */
+    if (read.chars === 0) return { routes: [], complete: false };
+    return { routes, complete: true };
   }
 
   async patternsCallingAtStop(
