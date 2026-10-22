@@ -826,6 +826,32 @@ function writeReport(report: Record<string, unknown>): void {
     prunedServiceDates: report.prunedServiceDates,
     publishedDatasets: Array.isArray(report.published) ? report.published.length : undefined,
     failed: report.failed,
+    /*
+     * Why a publish did not produce an index, and what each family cost.
+     *
+     * `shards_incomplete` means the index was withheld, which is the right thing to do — the
+     * previous complete artifact stays live rather than a version with holes in it. But the
+     * digest said only that, so a run that stopped because one shard threw and a run that stopped
+     * because the whole publish would not fit were the same four words. The per-family bytes are
+     * also the cost gate for any new family: it is the only measurement of what one actually
+     * occupies nationally, and guessing at that is how a bucket goes over its allowance.
+     */
+    shardOutcome:
+      report.shards === undefined
+        ? undefined
+        : {
+            published: (report.shards as { published?: number }).published,
+            publishedBytes: (report.shards as { publishedBytes?: number }).publishedBytes,
+            failed: (report.shards as { failed?: unknown[] }).failed?.slice(0, 3),
+            families: (
+              report.shards as { families?: Array<Record<string, unknown>> }
+            ).families?.map(
+              (family) =>
+                `${String(family.name)} ${String(family.objects)} obj ${String(
+                  Math.round(Number(family.bytes ?? 0) / 1024 / 1024),
+                )} MiB`,
+            ),
+          },
     departureShards: report.departureShards,
     counts: report.counts,
     // Named rather than included whole: a source that is down is the thing worth seeing.
