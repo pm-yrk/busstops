@@ -1033,6 +1033,7 @@ export class NetworkReader {
      */
     placeLines: number;
     routeTiles: number;
+    textChars: number;
   } {
     let records = 0;
     for (const shard of this.shards.values()) records += shard.records.length;
@@ -1044,6 +1045,23 @@ export class NetworkReader {
       services: this.servicesCache?.size ?? 0,
       placeLines: this.placeLinesCache?.length ?? 0,
       routeTiles: this.routeTilesCache?.size ?? 0,
+      /*
+       * Every string this reader is holding, not only the shard cache.
+       *
+       * `chars` above counts one cache of several, and reporting it as the isolate's residency is
+       * how two rounds of this diagnosis went looking at request sizes. It read zero through a
+       * peak walk in which a journey died — truthfully, because the shard cache was empty and the
+       * megabytes were in the national text caches and the departure reader next door.
+       *
+       * 1102 is "exceeded resource limits", which is memory as well as CPU, so what an isolate is
+       * carrying is a candidate cause and not background information. This is the figure to watch
+       * it with: a sum, so a cache nobody thought of still shows up in it.
+       */
+      textChars:
+        this.cachedShardChars +
+        (this.servicesTextCache?.length ?? 0) +
+        (this.operatorsTextCache?.length ?? 0) +
+        (this.placeLinesCache?.reduce((total, line) => total + line.length, 0) ?? 0),
     };
   }
 

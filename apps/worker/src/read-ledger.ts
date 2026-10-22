@@ -118,6 +118,16 @@ export interface IsolateResidency {
   shardsAfter: number;
   charsAfter: number;
   recordsAfter: number;
+  /**
+   * Every string the isolate is holding, across all of its caches, before this request ran.
+   *
+   * `charsBefore` is the shard cache alone, and reporting that as the isolate's residency is how
+   * two rounds of this diagnosis went looking at request sizes instead. It read zero through a
+   * peak walk in which a journey died — truthfully, because the shard cache was empty and the
+   * megabytes were in the national text caches and the departure reader. 1102 is "exceeded
+   * resource limits", memory as well as CPU, so this is a candidate cause rather than context.
+   */
+  isolateTextBefore?: number;
   /** Whole national datasets the isolate keeps: operators, services, places, route tiles. */
   singletons: Record<string, number>;
 }

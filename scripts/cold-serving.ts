@@ -150,6 +150,8 @@ interface Reading {
    * them was in the number being read.
    */
   departureCharsResident?: number;
+  /** Every string the isolate held before this request, across all of its caches. */
+  isolateTextBefore?: number;
 }
 
 const readings: Reading[] = [];
@@ -235,6 +237,7 @@ async function ask(city: string, endpoint: string, path: string, pass: Pass): Pr
           requestsServed: asNumber(at(diagnostics, "residency", "requestsServed")) ?? 0,
           subrequests: asNumber(at(diagnostics, "subrequests")) ?? 0,
           departureCharsResident: asNumber(at(diagnostics, "departureCharsResident")) ?? 0,
+          isolateTextBefore: asNumber(at(diagnostics, "residency", "isolateTextBefore")) ?? 0,
           reusedParse:
             typeof at(diagnostics, "reusedParse") === "boolean"
               ? (at(diagnostics, "reusedParse") as boolean)
@@ -433,6 +436,7 @@ function isolateReach(pass: Pass): Record<string, unknown> {
     maxResidentRecords: Math.max(0, ...rows.map((row) => row.residentRecordsBefore ?? 0)),
     maxSubrequests: Math.max(0, ...rows.map((row) => row.subrequests ?? 0)),
     maxDepartureResident: Math.max(0, ...rows.map((row) => row.departureCharsResident ?? 0)),
+    maxIsolateText: Math.max(0, ...rows.map((row) => row.isolateTextBefore ?? 0)),
     distinctStops: [...new Set(rows.map((row) => row.path))].length,
     liveParsesReused: rows.filter((row) => row.reusedParse === true).length,
   };
@@ -539,6 +543,7 @@ async function main(): Promise<void> {
     subrequests: row.subrequests ?? null,
     reusedParse: row.reusedParse ?? null,
     departureResident: row.departureCharsResident ?? null,
+    isolateText: row.isolateTextBefore ?? null,
     residentBefore: row.residentCharsBefore ?? null,
     recordsBefore: row.residentRecordsBefore ?? null,
     ...(row.platform === undefined ? {} : { platform: row.platform.slice(0, 40) }),

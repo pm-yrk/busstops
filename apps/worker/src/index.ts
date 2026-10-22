@@ -477,6 +477,8 @@ function beginResidency(ledger: ReadLedger, handler = "unnamed"): () => void {
       shardsAfter: after?.shards ?? 0,
       charsAfter: after?.chars ?? 0,
       recordsAfter: after?.records ?? 0,
+      /* Every cache, including the departure reader's, which is the one that was invisible. */
+      isolateTextBefore: (before?.textChars ?? 0) + (departures2?.cachedChars ?? 0),
       singletons: {
         operators: after?.operators ?? 0,
         services: after?.services ?? 0,
