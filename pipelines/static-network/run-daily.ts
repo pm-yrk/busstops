@@ -698,6 +698,32 @@ async function main(): Promise<number> {
       `${shardResult.published} object(s); one version may hold ` +
       `${(MAX_PUBLISH_BYTES / 1024 / 1024).toFixed(0)} MiB of R2's 10 GiB free allowance.`,
   );
+  /*
+   * Annotated here, not only in the digest at the end.
+   *
+   * The digest is written on the way out of `main`, and a step that is killed never gets there.
+   * Run 39777041235 is why this moved: it published a complete artifact and was then killed in
+   * service-date pruning, so the one measurement the run existed to produce — where the publish
+   * spent its time, family by family — went missing along with everything after it. These are
+   * the most expensive numbers in the pipeline to obtain, and the run that loses them is exactly
+   * the run that was long enough to need them.
+   */
+  annotateReport("static network publish", {
+    outcome: shardResult.index === null ? "index_withheld" : "index_published",
+    version,
+    objects: shardResult.published,
+    publishedBytes: shardResult.publishedBytes,
+    failed: shardResult.failed.slice(0, 3),
+    truncated: shardResult.truncated.length,
+    oversized: shardResult.oversized.length,
+    families: shardResult.families.map(
+      (family) =>
+        `${family.name} ${String(family.objects)} obj ` +
+        `${String(Math.round(family.bytes / 1024 / 1024))} MiB ` +
+        `${(family.ms / 60000).toFixed(1)} min` +
+        (family.failed > 0 ? ` ${String(family.failed)} FAILED` : ""),
+    ),
+  });
   if (shardResult.index === null) {
     console.error(
       `Shard publish incomplete (${shardResult.failed.length} failed); the edge keeps the ` +
