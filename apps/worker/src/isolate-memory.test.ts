@@ -92,6 +92,64 @@ async function publishedReader() {
   };
 }
 
+/**
+ * The same fixture, published on a grid this process was not started with.
+ *
+ * This is the one inconsistency a reader cannot detect for itself. `readTiles` keeps only the
+ * tiles the index lists, so a reader asking for ids on the wrong grid requests nothing at all and
+ * the viewport comes back empty while reporting that everything is normal. The reader takes the
+ * grid from the index's declared layout for exactly that reason, and the declaration and the
+ * filing come from one argument so they cannot disagree — this is what proves it end to end.
+ */
+async function publishedReaderOnGrid(mapStopTileDegrees: number) {
+  const recording = recordingStore();
+  await publishNetworkShards(recording.store, network(), { version: "v1", mapStopTileDegrees });
+  return {
+    reader: new NetworkReader(recording.store),
+    reads: recording.reads,
+    store: recording.store,
+  };
+}
+
+describe("a map projection written on a grid the reader was not compiled with", () => {
+  const BBOX = { west: -1.7, south: 53.7, east: -1.4, north: 53.9 };
+
+  it("still draws the viewport, on each grid a build may be asked for", async () => {
+    const onTheDefault = await publishedReader();
+    const expected = await onTheDefault.reader.mapStopsInBoundingBox(BBOX, 400);
+    expect(expected?.stops.length ?? 0).toBeGreaterThan(0);
+
+    for (const grid of [0.25, 0.125, 0.0625]) {
+      const { reader, reads } = await publishedReaderOnGrid(grid);
+      const drawn = await reader.mapStopsInBoundingBox(BBOX, 400);
+      expect(drawn, `grid ${String(grid)} returned no projection at all`).not.toBeNull();
+      expect(
+        [...drawn!.stops].map((stop) => stop.id).sort(),
+        `grid ${String(grid)} drew a different set of markers`,
+      ).toEqual([...expected!.stops].map((stop) => stop.id).sort());
+      // And it read the family it was supposed to, rather than falling back to the stop tiles.
+      expect(reads.some((key) => key.includes("network/map-stops"))).toBe(true);
+    }
+  });
+
+  it("files the rows in fewer, smaller objects as the grid gets finer", async () => {
+    const counts = [];
+    for (const grid of [0.25, 0.0625]) {
+      const { store } = await publishedReaderOnGrid(grid);
+      const keys = await store.list("");
+      counts.push(keys.filter((key) => key.includes("network/map-stops")).length);
+    }
+    expect(counts[0]!).toBeGreaterThan(0);
+    /*
+     * The trade, stated. A finer grid is more objects to write and the national publish is
+     * write-bound, which is why the grid is a number a build is given rather than a constant: the
+     * serving saving and the publish cost move in opposite directions and only a real run says
+     * which way the balance falls.
+     */
+    expect(counts[1]!).toBeGreaterThan(counts[0]!);
+  });
+});
+
 describe("the edge never reads a national dataset", () => {
   it("serves a viewport without opening the national stop, pattern or search objects", async () => {
     const { reader, reads } = await publishedReader();

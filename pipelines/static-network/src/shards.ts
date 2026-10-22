@@ -483,8 +483,17 @@ export function mapStopTileDegreesFromEnv(raw: string | undefined): number {
   return allowed.find((size) => Math.abs(size - asked) < 1e-9) ?? STOP_TILE_DEGREES;
 }
 
-export function tileForMapStop(stop: Stop): string {
-  return tileIdFor(stop.locationCoordinate, MAP_STOP_TILE_DEGREES);
+/**
+ * The tile a stop's projected row is filed in.
+ *
+ * The grid is a parameter rather than only a constant so a publish can be asked for one, and so a
+ * test can write an artifact on a grid other than the one the process was started with. A
+ * module-level constant cannot be tested at a second value, and "the publisher and the reader
+ * agree about the grid" is the property most worth testing end to end — the failure it guards
+ * against is a viewport that reads no stops at all and reports no degradation.
+ */
+export function tileForMapStop(stop: Stop, sizeDegrees: number = MAP_STOP_TILE_DEGREES): string {
+  return tileIdFor(stop.locationCoordinate, sizeDegrees);
 }
 
 export function mapStopTilesForBoundingBox(
@@ -1004,11 +1013,18 @@ export interface ArtifactLayout {
  */
 export const ARTIFACT_FORMAT_VERSION = 2;
 
-export function currentArtifactLayout(): ArtifactLayout {
+/**
+ * @param mapStopTileDegrees the grid this publish filed the map projection on, when it is not the
+ * grid this process was started with. A layout that names a different grid than the publish used
+ * is the one inconsistency a reader cannot detect, so the two come from one argument.
+ */
+export function currentArtifactLayout(
+  mapStopTileDegrees: number = MAP_STOP_TILE_DEGREES,
+): ArtifactLayout {
   return {
     formatVersion: ARTIFACT_FORMAT_VERSION,
     stopTileDegrees: STOP_TILE_DEGREES,
-    mapStopTileDegrees: MAP_STOP_TILE_DEGREES,
+    mapStopTileDegrees,
     patternTileDegrees: PATTERN_TILE_DEGREES,
     tripTileDegrees: TRIP_TILE_DEGREES,
     tripWindowHours: TRIP_WINDOW_HOURS,

@@ -103,6 +103,15 @@ export interface ShardPublishResult {
 export interface ShardPublishOptions {
   version: string;
   now?: () => Date;
+  /**
+   * The grid to file the map projection on, when it is not the one this process was started with.
+   *
+   * A build is given this number (`MAP_STOP_TILE_DEGREES` in the environment) because the cost of
+   * a finer square is wall clock and the only way to know whether a publish fits in the time is
+   * to run one. It is passed through to the layout the index declares, from the same argument that
+   * decides where the rows go, so the declaration cannot disagree with the publish.
+   */
+  mapStopTileDegrees?: number;
 }
 
 /**
@@ -360,7 +369,7 @@ export async function publishNetworkShards(
    */
   const namesByStop = routeNamesByStop(network);
 
-  const mapStopShards = groupMapStopsByTile(network, namesByStop);
+  const mapStopShards = groupMapStopsByTile(network, namesByStop, options.mapStopTileDegrees);
   const mapStopTiles = [...mapStopShards.keys()].sort();
   await publishFamily(
     "map-stops",
@@ -484,7 +493,7 @@ export async function publishNetworkShards(
     // compiled-in constants on both sides and they were trusted to agree because they came from
     // one codebase; the two are deployed independently, and when the trip grid halved the planner
     // reported England as having no timetable rather than reporting that it could not read one.
-    layout: currentArtifactLayout(),
+    layout: currentArtifactLayout(options.mapStopTileDegrees),
     publishedAt: now().toISOString(),
     partialCoverage: network.counts.danglingStopReferences > 0 || network.counts.parseErrors > 0,
     stopTiles,
@@ -687,6 +696,7 @@ function groupPatternsByService(network: BuiltNetwork): Map<number, RoutePattern
 function groupMapStopsByTile(
   network: BuiltNetwork,
   namesByStop: ReadonlyMap<string, ReadonlySet<string>>,
+  mapStopTileDegrees?: number,
 ): Map<string, MapStopRow[]> {
   const byTile = new Map<string, MapStopRow[]>();
   for (const stop of network.stops) {
@@ -700,8 +710,8 @@ function groupMapStopsByTile(
       ...(stop.indicator === undefined ? {} : { d: stop.indicator }),
       ...(names && names.size > 0 ? { r: [...names].sort() } : {}),
     };
-    /* The projection's own grid, four times finer than the stop tiles. See MAP_STOP_TILE_DEGREES. */
-    const tile = tileForMapStop(stop);
+    /* The projection's own grid, which the index declares. See MAP_STOP_TILE_DEGREES. */
+    const tile = tileForMapStop(stop, mapStopTileDegrees);
     const rows = byTile.get(tile);
     if (rows) rows.push(row);
     else byTile.set(tile, [row]);
