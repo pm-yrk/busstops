@@ -13,7 +13,7 @@
  *   node scripts/verify-deployment.mjs <api-url> [site-url]
  */
 
-import { annotateResults } from "./annotate.mjs";
+import { annotate, annotateResults } from "./annotate.mjs";
 
 const [, , apiUrlArg, siteUrlArg] = process.argv;
 
@@ -1377,9 +1377,75 @@ await check("a route page gives its stops in travel order", async () => {
  * way a browser would. It is a passenger check, not a stress check, because a page that cannot
  * load its own pieces together is broken for a person, whatever a paced client sees.
  */
+/**
+ * Two requests for the same viewport at the same instant: exactly one of them parses the feed.
+ *
+ * The parse is the expensive half of a live map on the free plan. A local benchmark puts SIRI-VM
+ * at about a hundred milliseconds per mebibyte and an invocation gets ten milliseconds of CPU —
+ * and the Worker's own numbers cannot show it, because `Date.now()` in Workers advances only
+ * across I/O, so every one of these parses has reported `parse=0ms` while costing several times
+ * the budget. That is most of why the deployed 1102s went unattributed for so long.
+ *
+ * The fetch was already shared. The *parse* was not: the cache held the finished parse, which
+ * helps the caller that arrives a second later and does nothing for the one that arrives in the
+ * same millisecond, which is the kind a page load produces. Both missed an empty cache, both
+ * shared the fetch, and then both normalised the same XML independently.
+ *
+ * So this fires the identical request twice with no pacing and asks the two responses who did the
+ * work. It is asserted on the deployment rather than in a unit test because what is being
+ * protected is Cloudflare's CPU accounting, which a Node test runner does not have.
+ */
+await check("two simultaneous map requests share one live-feed parse", async () => {
+  const path = `/v1/map?bbox=${BBOX}&zoom=15`;
+  const both = await Promise.all([getJson(path), getJson(path)]);
+
+  const answered = both.filter((one) => one.response.ok);
+  assert(
+    answered.length === 2,
+    `one of the two simultaneous requests did not answer: ` +
+      both.map((one) => one.response.status).join(", "),
+  );
+
+  const diagnostics = both.map((one) => one.body?.meta?.diagnostics ?? {});
+  const declared = diagnostics.filter((one) => typeof one.reusedParse === "boolean");
+  assert(
+    declared.length === 2,
+    "the map did not report `reusedParse`, so this cannot be proved either way from outside",
+  );
+
+  const parsed = diagnostics.filter((one) => one.reusedParse === false).length;
+  const shared = diagnostics.filter((one) => one.reusedParse === true).length;
+
+  /*
+   * One parse and one reuse is the proof. Two parses is the defect this exists to catch. Two
+   * reuses means an earlier request in this run had already parsed the same viewport within the
+   * feed's eight-second window — which is the cache doing its older job, so it is reported rather
+   * than failed: the duplicate-parse case is what must never appear.
+   */
+  assert(
+    parsed <= 1,
+    `both simultaneous requests parsed the live feed independently, which is the duplicated CPU ` +
+      `this is meant to remove`,
+  );
+
+  const vehicles = both.map((one) => one.body?.data?.vehicles?.length ?? 0);
+  assert(
+    vehicles[0] === vehicles[1],
+    `the two shared the parse but disagreed about it: ${vehicles.join(" vs ")} vehicle(s)`,
+  );
+
+  return (
+    `${parsed} parse(s) and ${shared} reuse(s) across two simultaneous identical requests; ` +
+    `${vehicles[0]} vehicle(s) each; ` +
+    `subrequests ${diagnostics.map((one) => one.subrequests ?? "?").join("/")}, ` +
+    `chars ${diagnostics.map((one) => one.charsDecoded ?? "?").join("/")}`
+  );
+});
+
 await check("a page's worth of requests at once, the way a browser opens one", async () => {
   const PAGE_LOADS = 4;
   const lines = [];
+  const perRequest = [];
   let platformErrors = 0;
   let requests = 0;
 
@@ -1410,6 +1476,25 @@ await check("a page's worth of requests at once, the way a browser opens one", a
             typeof text === "string" &&
             /<html|error 1102|exceeded resource limits/i.test(text);
           if (platform) platformErrors += 1;
+          /*
+           * What this request cost, per request, which is the only way to say which endpoint is
+           * still the offender when a load does fail. `subrequests` is what the platform counts —
+           * every object read plus each live fetch, against the fifty an invocation gets — and
+           * `reusedParse` says whether this caller parsed the live feed or shared somebody
+           * else's. The parse is the expensive half on the free plan and reports `parse=0ms`,
+           * because a Worker's clock does not advance across pure computation.
+           */
+          const diagnostics = body?.meta?.diagnostics ?? {};
+          const cost = {
+            label,
+            chars: diagnostics.charsDecoded ?? null,
+            objects: diagnostics.objectsRead ?? null,
+            subrequests: diagnostics.subrequests ?? null,
+            reusedParse: diagnostics.reusedParse ?? null,
+            degradation: body?.meta?.degradation ?? null,
+            result: platform ? "platform" : response.ok ? "ok" : `HTTP ${response.status}`,
+          };
+          perRequest.push(cost);
           return {
             label,
             ok: response.ok,
@@ -1424,6 +1509,15 @@ await check("a page's worth of requests at once, the way a browser opens one", a
         } catch (error) {
           // A bare TypeError from fetch is what a killed isolate looks like to a client too.
           platformErrors += 1;
+          perRequest.push({
+            label,
+            chars: null,
+            objects: null,
+            subrequests: null,
+            reusedParse: null,
+            degradation: null,
+            result: `threw: ${String(error?.message ?? error)}`,
+          });
           return {
             label,
             ok: false,
@@ -1441,6 +1535,19 @@ await check("a page's worth of requests at once, the way a browser opens one", a
         (failed.length > 0 ? ` — ${failed.map((f) => `${f.label}: ${f.detail}`).join(", ")}` : ""),
     );
   }
+
+  /*
+   * The per-request table, annotated whether the check passes or fails.
+   *
+   * A pass is as worth keeping as a failure here: the numbers are what a later regression is read
+   * against, and "it was fine last time" is not a measurement. One row per line, because the
+   * annotation splitter divides on line boundaries.
+   */
+  annotate(
+    platformErrors === 0 ? "notice" : "failure",
+    `page load burst (${platformErrors} of ${requests} answered by the platform)`,
+    perRequest.map((row) => JSON.stringify(row)).join("\n"),
+  );
 
   assert(
     platformErrors === 0,
