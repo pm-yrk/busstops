@@ -12,17 +12,19 @@ import {
 } from "./shards.js";
 
 /**
- * The map projection is filed on its own grid, and a reader has to ask for it on that grid.
+ * The map projection is filed on its own named grid, and a reader has to ask for it on the grid
+ * the artifact was written on rather than on the one the reader was compiled with.
  *
- * The record was already as thin as it usefully gets — a published `Stop` carries provenance,
- * quality flags and amenities, and none of them are in the projection — so what was left to
- * reduce was the square. A quarter of a degree is about 28km by 17km here and a city viewport is
- * a tenth of that, which is how a Manchester map came to walk 2.18 MiB of projection to draw four
- * hundred markers.
+ * The grid is currently the same size as the stop tiles. Finer squares are the only lever left on
+ * a viewport that walks 2.18 MiB of projection to draw four hundred markers — the records are
+ * already as thin as they usefully get — but the national publish is write-bound and both a
+ * sixteenth and an eighth of a degree timed the bootstrap out with nothing published at all, so
+ * the constant is back where the build can afford it. What these tests protect is the machinery
+ * that makes changing it a one-line change, and the compatibility rule that makes it safe.
  *
- * The failure this guards against is not a slow map but an empty one: ask the finer family for a
- * quarter-degree tile id and the object was never written, so the viewport reads no stops at all
- * and says so honestly, which is the worst kind of wrong.
+ * The failure guarded against is not a slow map but an empty one: ask a family for a tile id on
+ * the wrong grid and the object was never written, so the viewport reads no stops at all and
+ * reports no degradation while doing it, which is the worst kind of wrong.
  */
 
 const LEEDS = { west: -1.62, south: 53.75, east: -1.46, north: 53.84 };
@@ -32,33 +34,29 @@ function stopAt(coordinate: Coordinate): Stop {
 }
 
 describe("the grid the map projection is filed on", () => {
-  it("is finer than the stop tiles, and says so in the layout", () => {
-    expect(MAP_STOP_TILE_DEGREES).toBeLessThan(STOP_TILE_DEGREES);
+  it("is never coarser than the stop tiles, and says so in the layout", () => {
+    expect(MAP_STOP_TILE_DEGREES).toBeLessThanOrEqual(STOP_TILE_DEGREES);
     /*
-     * Declared, so a reader meeting an artifact written on the old grid can tell rather than
-     * guess. An artifact that predates the field declares nothing and the reader falls back.
+     * Declared, so a reader meeting an artifact written on another grid can tell rather than
+     * guess. An artifact that predates the field declares nothing and the reader falls back to
+     * the stop grid, which is what every artifact published so far was written on.
      */
     expect(currentArtifactLayout().mapStopTileDegrees).toBe(MAP_STOP_TILE_DEGREES);
   });
 
-  it("covers a city viewport in a smaller total area", () => {
+  it("covers a city viewport in no more area than the full stop records do", () => {
     const coarse = stopTilesForBoundingBox(LEEDS);
     const fine = mapStopTilesForBoundingBox(LEEDS);
     /*
-     * Area, not tile count. A Leeds viewport happens to span two squares on either grid — the
-     * count is an accident of where the lines fall — while the area each square covers, and so
-     * the text walked to draw the markers in it, is four times smaller. The saving was never in
-     * the number of objects.
+     * Area, not tile count. A Leeds viewport spans two squares on the quarter-degree grid and
+     * four on an eighth — the count is an accident of where the lines fall — while the area each
+     * square covers, and so the text walked to draw the markers in it, is what the saving is
+     * made of. The two are equal today and the inequality is the direction of travel: whatever
+     * this constant is set to, the projection must never be filed on squares bigger than the
+     * family it exists to avoid reading.
      */
     const area = (tiles: string[], size: number) => tiles.length * size * size;
-    /*
-     * Strictly less, and not by a target number. The grid was a sixteenth of a degree first and
-     * the national build would not pay for it — write-bound, and 7,400 objects timed the
-     * bootstrap out — so the figure is what the build affords rather than what reads best. A test
-     * that pinned a ratio would have to be edited every time that trade is remeasured, which
-     * makes it a statement about today's constant rather than about the property.
-     */
-    expect(area(fine, MAP_STOP_TILE_DEGREES)).toBeLessThan(area(coarse, STOP_TILE_DEGREES));
+    expect(area(fine, MAP_STOP_TILE_DEGREES)).toBeLessThanOrEqual(area(coarse, STOP_TILE_DEGREES));
   });
 
   /*
@@ -81,17 +79,21 @@ describe("the grid the map projection is filed on", () => {
   /*
    * The compatibility case, which is the one that would fail silently.
    *
-   * The Worker deploys before the data is rebuilt, so for a while a reader that knows the finer
-   * grid is serving an artifact written on the coarser one. `readTiles` keeps only the tiles the
-   * index lists, so asking that artifact for a sixteenth-of-a-degree id requests nothing at all
-   * and the viewport comes back with no stops on it — an empty map that reports no degradation.
-   * The reader takes the grid from the artifact's own declared layout for exactly this reason,
-   * and these are the two ids it has to be able to produce.
+   * The Worker deploys before the data is rebuilt, so for a while a reader that knows a new grid
+   * is serving an artifact written on the old one. `readTiles` keeps only the tiles the index
+   * lists, so asking that artifact for an id on the reader's grid requests nothing at all and the
+   * viewport comes back with no stops on it. The reader takes the grid from the artifact's own
+   * declared layout for exactly this reason, which only works if the tile namer can be asked for
+   * a grid it was not compiled with — including the quarter-degree grid every published artifact
+   * so far was written on.
    */
-  it("can name a coarse tile for an artifact written before the finer grid", () => {
-    const onTheOldGrid = mapStopTilesForBoundingBox(LEEDS, STOP_TILE_DEGREES);
-    expect(onTheOldGrid).toEqual(stopTilesForBoundingBox(LEEDS));
-    expect(mapStopTilesForBoundingBox(LEEDS)).not.toEqual(onTheOldGrid);
+  it("can name tiles on whichever grid the artifact declares, not just its own", () => {
+    expect(mapStopTilesForBoundingBox(LEEDS, STOP_TILE_DEGREES)).toEqual(
+      stopTilesForBoundingBox(LEEDS),
+    );
+    const finer = mapStopTilesForBoundingBox(LEEDS, STOP_TILE_DEGREES / 4);
+    expect(finer).not.toEqual(mapStopTilesForBoundingBox(LEEDS, STOP_TILE_DEGREES));
+    expect(finer.length).toBeGreaterThan(1);
   });
 
   /* Route detail reads the projection from the route's shape rather than from a viewport. */

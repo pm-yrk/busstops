@@ -440,22 +440,26 @@ export const MAP_STOPS_PREFIX = "network/map-stops";
  * draw at most four hundred markers. The over-read is geometric, not per-record, and the only
  * lever on it is the size of the square.
  *
- * An eighth of a degree is about 14km by 8km: a quarter of the area, so a city viewport walks
- * roughly a quarter of the text while the bytes stored stay the same — the same stops, in more
- * and smaller objects.
+ * **It is currently the same grid, and that is a measured retreat rather than an oversight.**
  *
- * It was a sixteenth first, which is a sixteenth of the area and the better serving number. The
- * build would not pay for it: the national publish is write-bound, and taking this family from
- * about 460 objects to roughly 7,400 timed the bootstrap out at its 110-minute limit with nothing
- * published at all. A quarter of the objects buys most of the saving, which is the trade the
- * measurement supports rather than the one that reads best.
+ * A sixteenth of a degree took the family from about 460 objects to roughly 7,400 and timed the
+ * national bootstrap out at its 110-minute step limit with nothing published at all. An eighth of
+ * a degree is a quarter of the objects and most of the saving, and it timed out too — at 110
+ * minutes to the second, twice. The run before either of them, carrying only the stop-services
+ * family's thousand extra objects, finished its build and failed later at the index.
+ *
+ * So the publish is at its ceiling and this family's retiling is what tips it over, which makes
+ * the serving saving zero: an artifact that is never published serves nothing. The constant is
+ * back at the stop grid and the machinery around it is deliberately kept — the layout declares
+ * the grid, and the reader takes the grid from the artifact rather than from its own constant —
+ * so changing this number is all that is needed on the day the build can afford it.
  *
  * Its own constant rather than a change to `STOP_TILE_DEGREES`, because the stop tiles carry the
  * full records that the locator and the board read by id and nothing about those wants retiling.
  * It is declared in the layout, so a reader can never pair its own grid with an artifact written
  * on a different one.
  */
-export const MAP_STOP_TILE_DEGREES = 0.125;
+export const MAP_STOP_TILE_DEGREES = STOP_TILE_DEGREES;
 
 export function tileForMapStop(stop: Stop): string {
   return tileIdFor(stop.locationCoordinate, MAP_STOP_TILE_DEGREES);
