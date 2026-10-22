@@ -2465,6 +2465,50 @@ describe("the departure board reads the published index", () => {
     return store;
   }
 
+  /*
+   * The same structural rule for the board that has buses on it, which is the one people open.
+   *
+   * The quiet path was the obvious case and not the expensive one. A busy board's departures name
+   * their patterns, so the read was already an id test per line rather than a full parse — and
+   * that was never where the cost was: the tile's text has to be walked either way, and the
+   * deployed ledger measured 2.03 MiB of it for a Manchester board. The direct lookup answers the
+   * same question for every board, so no board has a reason to open the pattern index.
+   */
+  it("names a busy board's routes without opening the pattern index either", async () => {
+    const store = await storeWithDepartures([departureRow(6, "72"), departureRow(25, "16")]);
+    const reads: string[] = [];
+    const recording = {
+      get: async (key: string) => {
+        reads.push(key);
+        return store.get(key);
+      },
+      put: (key: string, value: string) => store.put(key, value),
+      delete: (key: string) => store.delete(key),
+      list: (prefix: string) => store.list(prefix),
+    };
+    const env = makeEnv(recording as unknown as InMemoryObjectStore);
+    resetWorkerState();
+
+    const response = await worker.fetch(get(`/v1/stops/${ATCO}`), env, ctx);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      data: {
+        departures: unknown[];
+        routes: Array<{ publicName: string }>;
+        routesComplete: boolean;
+      };
+    };
+
+    // The premise: this is the busy path. With nothing due it is the other test.
+    expect(body.data.departures.length, "the stop under test has buses due").toBeGreaterThan(0);
+    expect(body.data.routes.length).toBeGreaterThan(0);
+    expect(body.data.routesComplete).toBe(true);
+
+    const scanned = reads.filter((key) => key.includes(PATTERN_INDEX_PREFIX));
+    expect(reads.filter((key) => key.includes(STOP_SERVICES_PREFIX)).length).toBeGreaterThan(0);
+    expect(scanned, `a busy board opened the pattern index: ${scanned.join(", ")}`).toEqual([]);
+  });
+
   it("shows the rows that are due, in order, with what a board renders", async () => {
     const store = await storeWithDepartures([departureRow(25, "16"), departureRow(6, "72")]);
     const env = makeEnv(store);

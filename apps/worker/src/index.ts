@@ -1207,43 +1207,59 @@ router.get("/v1/stops/:id", async (_request, { env, params }) => {
   const namedPatternIds = new Set(departureRows.map((row) => row.p).filter(Boolean));
 
   /*
-   * A stop with nothing due now asks by its own id, not by where it is.
+   * Every board asks by its own id, not by where it is, and not by what happens to be due.
    *
-   * The geographic fallback below is what the deployed cold ledger caught: `boxAround` is 1,500
-   * metres against an eighth-of-a-degree grid, so it opens one pattern-index tile, and a
-   * Manchester board decoded 2.03 MiB of that one tile to produce a list of route names. A byte
-   * budget cannot help — it is checked between tiles and there is only ever one. `stop-services`
-   * is the same answer with the geography taken out: one bucket chosen by a hash of the stop id,
-   * one line parsed out of it, service ids only.
+   * `patternsByIdsNearStop` was already the cheap half of this: the departures name their
+   * patterns, so it tests an id per line instead of parsing a tile. The line test is not where
+   * the cost is. `boxAround` is 1,500 metres against an eighth-of-a-degree grid, so the read
+   * opens one pattern-index tile and a dense one is megabytes of text that has to be walked
+   * whether or not anything is parsed out of it — the deployed ledger measured a Manchester board
+   * at 2.03 MiB and a bus tap in Birmingham at 3.30 MiB of the same family. A byte budget cannot
+   * help: it is checked between tiles and there is only ever one.
    *
-   * It is tried first and the pattern read stays behind it, because an artifact published before
-   * the family existed has no buckets and a board must fall back rather than describe a stop as
-   * having no services.
+   * `stop-services` is the same answer with the geography taken out — one bucket chosen by a hash
+   * of the stop id, one line parsed out of it, service ids only, 56 KB measured. And it is the
+   * better answer as well as the smaller one: the patterns a board's departures name are the
+   * routes with a bus due in the next ninety minutes, so the old list quietly dropped a route
+   * whose last bus had gone. This names every route that calls here.
+   *
+   * The pattern read stays behind it, because an artifact published before the family existed has
+   * no buckets and a board must fall back rather than describe a stop as having no services.
    */
-  const directServices =
-    namedPatternIds.size === 0
-      ? await boardLedger.stage("stop-services", () =>
-          network!.servicesCallingAtStop(stop.id, Date.now(), boardLedger),
-        )
-      : { serviceIds: [], available: false };
+  const directServices = await boardLedger.stage("stop-services", () =>
+    network!.servicesCallingAtStop(stop.id, Date.now(), boardLedger),
+  );
   mark("board:stop-services:done", {
     available: directServices.available,
     services: directServices.serviceIds.length,
   });
 
-  const patternRead =
-    namedPatternIds.size === 0 && directServices.available
-      ? /*
-         * Nothing read, and nothing needed: the service ids are the answer the patterns were only
-         * ever being opened to produce. `complete` is true because a direct lookup either found
-         * the stop's line or established that it has none.
-         */
-        { patterns: [], complete: true, source: "stop_services_index" }
-      : await boardLedger.stage("patterns", () =>
-          namedPatternIds.size > 0
-            ? network!.patternsByIdsNearStop(stop, namedPatternIds, Date.now(), boardLedger)
-            : network!.patternsCallingAtStop(stop, Date.now(), boardLedger),
-        );
+  /*
+   * Trusted unless this board's own departures contradict it.
+   *
+   * `available` says the artifact carries the family, not that it carries a row for this stop —
+   * a stop nothing calls at has no row, and that is the right answer for it. But a stop with
+   * buses due in the next ninety minutes and no row is a disagreement between two parts of the
+   * same artifact, and the honest response to that is not to publish "no routes, and that list is
+   * complete". So the departures settle it: when they name patterns and the index names no
+   * services, the geographic read answers and pays for itself.
+   */
+  const directUsable =
+    directServices.available &&
+    (directServices.serviceIds.length > 0 || namedPatternIds.size === 0);
+
+  const patternRead = directUsable
+    ? /*
+       * Nothing read, and nothing needed: the service ids are the answer the patterns were only
+       * ever being opened to produce. `complete` is true because a direct lookup either found the
+       * stop's lines or established that it has none.
+       */
+      { patterns: [], complete: true, source: "stop_services_index" }
+    : await boardLedger.stage("patterns", () =>
+        namedPatternIds.size > 0
+          ? network!.patternsByIdsNearStop(stop, namedPatternIds, Date.now(), boardLedger)
+          : network!.patternsCallingAtStop(stop, Date.now(), boardLedger),
+      );
   const patterns = patternRead.patterns;
   mark("board:patterns:done", {
     patterns: patterns.length,
@@ -1300,10 +1316,9 @@ router.get("/v1/stops/:id", async (_request, { env, params }) => {
    * From whichever path produced the ids. The patterns were only ever opened to find out which
    * services call here, so a board that looked that up directly has the same answer without them.
    */
-  const routes =
-    directServices.serviceIds.length > 0
-      ? routesFromServiceIds(new Set(directServices.serviceIds), services, operators)
-      : routesServingStop(patterns, stop.id, services, operators);
+  const routes = directUsable
+    ? routesFromServiceIds(new Set(directServices.serviceIds), services, operators)
+    : routesServingStop(patterns, stop.id, services, operators);
   const snapshot = await boardLedger.stage("disruptions", async () =>
     disruptions ? ((await disruptions.snapshot()) ?? null) : null,
   );
