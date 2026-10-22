@@ -420,8 +420,11 @@ jobs:
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          # Enough for the whole backlog at the account's measured rate, inside the step's limit.
-          # 48,228 objects at the 4.52 a second the last pass measured is about 178 minutes.
+          # Generous, but the time budget is not what bounds this: the first apply pass stopped
+          # with `stoppedBecause: "per-run cap reached"` after exactly 20,000 deletes, having
+          # spent 85 of its 190 allowed minutes. So the backlog takes a pass per 20,000 objects
+          # however long each one is given — 48,228 removable meant three — and the budget's job
+          # is only to keep a pass inside the step's limit at the account's four deletes a second.
           PRUNE_TIME_BUDGET_MS: "11400000"
           # How many published versions to keep, newest first. Two by default: the live one and
           # one to roll back to.
