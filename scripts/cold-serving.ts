@@ -480,6 +480,15 @@ async function main(): Promise<void> {
       await peak(pass, PEAK_REQUESTS);
       const reach = isolateReach(pass);
       peaks.push(reach);
+      /*
+       * Annotated as each pass finishes, not only at the end.
+       *
+       * The report is written on the way out of `main`, and a walk that is killed never gets
+       * there — which is exactly the walk worth reading, because a pass full of forty-five-second
+       * client timeouts takes several times as long as a healthy one and is the first to run out
+       * of step. The pipeline's publish digest was lost the same way once already.
+       */
+      annotate("notice", `peak pass ${pass}`, JSON.stringify(reach, null, 1));
       console.log(
         `${pass}: ${String(reach.ok)}/${String(reach.requests)} ok across ` +
           `${String(reach.cities)} cities, ${String(reach.platformErrors)} platform error(s); ` +
