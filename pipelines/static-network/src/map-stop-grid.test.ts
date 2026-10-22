@@ -4,6 +4,7 @@ import type { Coordinate, Stop } from "@busstops/contracts";
 import {
   MAP_STOP_TILE_DEGREES,
   STOP_TILE_DEGREES,
+  mapStopTileDegreesFromEnv,
   currentArtifactLayout,
   mapStopTilesForBoundingBox,
   stopTilesForBoundingBox,
@@ -94,6 +95,38 @@ describe("the grid the map projection is filed on", () => {
     const finer = mapStopTilesForBoundingBox(LEEDS, STOP_TILE_DEGREES / 4);
     expect(finer).not.toEqual(mapStopTilesForBoundingBox(LEEDS, STOP_TILE_DEGREES));
     expect(finer.length).toBeGreaterThan(1);
+  });
+
+  /*
+   * The grid is a number the build is given, and a build given nonsense must not invent a grid.
+   *
+   * Only squares that nest inside a stop tile are accepted. A grid that does not divide the
+   * quarter degree files a stop in a tile that no bounding-box walk names, and the symptom is a
+   * viewport returning fewer markers than it should while reporting no degradation — which is
+   * exactly the silent failure the declared-layout machinery exists to prevent. So an
+   * unrecognised value falls back to the grid every published artifact was written on, rather
+   * than to the nearest thing that looks like it.
+   */
+  describe("the grid a build is asked for", () => {
+    it("takes the nesting squares and nothing else", () => {
+      expect(mapStopTileDegreesFromEnv("0.25")).toBe(STOP_TILE_DEGREES);
+      expect(mapStopTileDegreesFromEnv("0.125")).toBe(STOP_TILE_DEGREES / 2);
+      expect(mapStopTileDegreesFromEnv("0.0625")).toBe(STOP_TILE_DEGREES / 4);
+    });
+
+    it("falls back to the stop grid rather than approximating an odd one", () => {
+      // Absent, blank, nonsense, and numbers that do not divide a stop tile.
+      for (const asked of [undefined, "", "   ", "fine", "0", "-0.125", "0.1", "0.2", "0.03125"]) {
+        expect(mapStopTileDegreesFromEnv(asked)).toBe(STOP_TILE_DEGREES);
+      }
+    });
+
+    it("is what the compiled constant and the declared layout both report", () => {
+      expect(MAP_STOP_TILE_DEGREES).toBe(
+        mapStopTileDegreesFromEnv(process.env.MAP_STOP_TILE_DEGREES),
+      );
+      expect(currentArtifactLayout().mapStopTileDegrees).toBe(MAP_STOP_TILE_DEGREES);
+    });
   });
 
   /* Route detail reads the projection from the route's shape rather than from a viewport. */

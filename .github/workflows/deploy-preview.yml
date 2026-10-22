@@ -47,6 +47,19 @@ on:
         # that fires on every run is a warning nobody reads. Two workflows' dispatch defaults said
         # four as well, which would have published a date the horizon no longer covers.
         default: "3"
+      map_stop_grid:
+        description: "Square the map projection is filed on: 0.25 (as published) | 0.125 | 0.0625"
+        type: choice
+        # A dispatch rather than a deploy, because the cost of a finer grid is wall clock and the
+        # only way to know whether a publish fits in the time is to run one. The reader takes the
+        # grid from the artifact's own declared layout, so whatever a run writes is readable by
+        # the Worker already deployed — which is what makes trying one safe.
+        #
+        # 0.25 is what every artifact so far was written on: about 460 objects, and a Manchester
+        # map walking 2.18 MiB of projection to draw four hundred markers. 0.125 is a quarter of
+        # the area and roughly four times the objects; 0.0625 is a sixteenth and sixteen times.
+        options: ["0.25", "0.125", "0.0625"]
+        default: "0.25"
       prune_artifacts:
         description: "Network artifact retention: report | apply | skip"
         type: choice
@@ -630,6 +643,10 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           FORCE_REBUILD: "true"
           PRUNE_SERVICE_DATES: "true"
+          # Validated in the pipeline, not here: an unrecognised square falls back to the stop
+          # grid rather than to an approximation of itself, because a grid that does not divide a
+          # stop tile files stops in squares no viewport asks for.
+          MAP_STOP_TILE_DEGREES: ${{ inputs.map_stop_grid }}
           SERVICE_DATE_HORIZON_DAYS: ${{ inputs.horizon_days || '3' }}
           # Headroom for the indexes the streamed build holds — stops, routes, the calendar and
           # the trips inside the horizon — not for file contents: the GTFS archive is read as a

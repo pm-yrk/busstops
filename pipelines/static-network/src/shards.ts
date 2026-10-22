@@ -1,6 +1,11 @@
 import type { Coordinate, RoutePattern, Stop } from "@busstops/contracts";
 import type { BoundingBox } from "@busstops/contracts";
-import { tileIdFor, tilesForBoundingBox, tilesForCoordinates } from "@busstops/pipeline-core";
+import {
+  numberFromEnv,
+  tileIdFor,
+  tilesForBoundingBox,
+  tilesForCoordinates,
+} from "@busstops/pipeline-core";
 import type { SearchIndexEntry } from "./search-index.js";
 import { DEPARTURE_BUCKETS, TRIP_WINDOW_HOURS, TRIP_WINDOWS } from "./departures-index.js";
 
@@ -440,26 +445,43 @@ export const MAP_STOPS_PREFIX = "network/map-stops";
  * draw at most four hundred markers. The over-read is geometric, not per-record, and the only
  * lever on it is the size of the square.
  *
- * **It is currently the same grid, and that is a measured retreat rather than an oversight.**
+ * **It is a build-time choice, not a compiled-in one, because the cost is wall clock.**
  *
  * A sixteenth of a degree took the family from about 460 objects to roughly 7,400 and timed the
- * national bootstrap out at its 110-minute step limit with nothing published at all. An eighth of
- * a degree is a quarter of the objects and most of the saving, and it timed out too — at 110
- * minutes to the second, twice. The run before either of them, carrying only the stop-services
- * family's thousand extra objects, finished its build and failed later at the index.
+ * national bootstrap out at its step limit with nothing published at all. An eighth of a degree
+ * is a quarter of those objects and most of the saving, and it timed out too — at 110 minutes to
+ * the second, twice — because the step's limit had been chosen when a bootstrap took 43 minutes
+ * and the build had since grown to 99. Raising that limit is what makes a finer grid affordable;
+ * the grid itself was never the problem, and an artifact that is never published serves nothing.
  *
- * So the publish is at its ceiling and this family's retiling is what tips it over, which makes
- * the serving saving zero: an artifact that is never published serves nothing. The constant is
- * back at the stop grid and the machinery around it is deliberately kept — the layout declares
- * the grid, and the reader takes the grid from the artifact rather than from its own constant —
- * so changing this number is all that is needed on the day the build can afford it.
+ * So which square to write is a number the build is given, and the reader takes the grid from the
+ * artifact's declared layout rather than from a constant of its own. That is what makes trying
+ * one a dispatch rather than a deploy: a run can be asked for a finer grid, the publish either
+ * fits in the time or it does not, and whatever it wrote is readable either way. The default is
+ * the stop grid — the one every published artifact so far was written on — so a build nobody has
+ * made a decision about keeps doing what the last one did.
  *
- * Its own constant rather than a change to `STOP_TILE_DEGREES`, because the stop tiles carry the
+ * Its own number rather than a change to `STOP_TILE_DEGREES`, because the stop tiles carry the
  * full records that the locator and the board read by id and nothing about those wants retiling.
  * It is declared in the layout, so a reader can never pair its own grid with an artifact written
  * on a different one.
  */
-export const MAP_STOP_TILE_DEGREES = STOP_TILE_DEGREES;
+export const MAP_STOP_TILE_DEGREES = mapStopTileDegreesFromEnv(process.env.MAP_STOP_TILE_DEGREES);
+
+/**
+ * The grid a build was asked for, or the stop grid when it was not asked for a usable one.
+ *
+ * Only the squares that nest inside a stop tile are accepted. A grid that does not divide the
+ * quarter degree would file a stop in a tile no bounding-box walk names, and the symptom of that
+ * is a viewport that returns fewer markers than it should while reporting no degradation at all —
+ * the failure mode this family's whole compatibility story exists to prevent. An unrecognised
+ * value is therefore the default rather than an approximation of itself.
+ */
+export function mapStopTileDegreesFromEnv(raw: string | undefined): number {
+  const asked = numberFromEnv(raw, STOP_TILE_DEGREES);
+  const allowed = [STOP_TILE_DEGREES, STOP_TILE_DEGREES / 2, STOP_TILE_DEGREES / 4];
+  return allowed.find((size) => Math.abs(size - asked) < 1e-9) ?? STOP_TILE_DEGREES;
+}
 
 export function tileForMapStop(stop: Stop): string {
   return tileIdFor(stop.locationCoordinate, MAP_STOP_TILE_DEGREES);
