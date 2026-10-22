@@ -58,6 +58,7 @@ import {
 } from "@busstops/pipeline-core";
 import {
   MAP_STOP_TILE_DEGREES,
+  MAP_STOPS_PREFIX,
   MAX_SHARD_BYTES,
   MAX_SHARD_RECORDS,
   SHARDED,
@@ -373,14 +374,38 @@ async function main(): Promise<number> {
     return 1;
   }
 
+  /*
+   * Verified from one listing rather than from five and a half thousand reads.
+   *
+   * The listing gives each object's size, and the size is a stronger check than a line count: the
+   * exact byte length of every tile is known before anything is written, so an object that is
+   * present and the right length to the byte is an object that wrote whole. Reading them all back
+   * would double the operations this job spends, and at the account's measured rate of about four
+   * and a half a second that is the difference between finishing and being killed partway.
+   *
+   * A store that cannot list with sizes falls back to reading, because an unverified swap is not
+   * on offer.
+   */
   const verifyFailures: Array<{ tile: string; expected: number; found: number | null }> = [];
-  await mapWithConcurrency(outputs, CONCURRENCY, async (tile) => {
-    const body = await store.get(objectKeyFor(mapStopsDataset(tile.tile), record.version));
-    const found = body === null ? null : body.split("\n").filter((line) => line.length > 0).length;
-    if (found !== tile.rows.length) {
-      verifyFailures.push({ tile: tile.tile, expected: tile.rows.length, found });
+  const listed = store.listDetailed ? await store.listDetailed(`data/${MAP_STOPS_PREFIX}/`) : null;
+  if (listed) {
+    const sizes = new Map(listed.map((object) => [object.key, object.sizeBytes]));
+    for (const tile of outputs) {
+      const key = objectKeyFor(mapStopsDataset(tile.tile), record.version);
+      const found = sizes.get(key) ?? null;
+      if (found !== tile.bytes) {
+        verifyFailures.push({ tile: tile.tile, expected: tile.bytes, found });
+      }
     }
-  });
+  } else {
+    await mapWithConcurrency(outputs, CONCURRENCY, async (tile) => {
+      const body = await store.get(objectKeyFor(mapStopsDataset(tile.tile), record.version));
+      const found = body === null ? null : utf8Bytes(body);
+      if (found !== tile.bytes) {
+        verifyFailures.push({ tile: tile.tile, expected: tile.bytes, found });
+      }
+    });
+  }
 
   if (verifyFailures.length > 0) {
     report({
@@ -391,8 +416,8 @@ async function main(): Promise<number> {
       failureCount: verifyFailures.length,
     });
     console.error(
-      `::error::${String(verifyFailures.length)} tile(s) did not read back as written. The index ` +
-        `was not touched.`,
+      `::error::${String(verifyFailures.length)} tile(s) are absent or not the length they were ` +
+        `written at. The index was not touched.`,
     );
     return 1;
   }
