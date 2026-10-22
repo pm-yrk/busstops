@@ -134,6 +134,14 @@ interface Reading {
   /** Parsed records the isolate was already holding. This is the memory, not the characters. */
   residentRecordsBefore?: number;
   requestsServed?: number;
+  /**
+   * What the platform counts: every object read, plus each live fetch, against the fifty an
+   * invocation gets. The finer projection grid made this a bound worth watching rather than
+   * assuming, and a walk that only recorded bytes could not see it at all.
+   */
+  subrequests?: number;
+  /** Whether this request parsed the live feed or shared a parse already in flight. */
+  reusedParse?: boolean | null;
 }
 
 const readings: Reading[] = [];
@@ -217,6 +225,11 @@ async function ask(city: string, endpoint: string, path: string, pass: Pass): Pr
           residentCharsBefore: asNumber(at(diagnostics, "residency", "charsBefore")) ?? 0,
           residentRecordsBefore: asNumber(at(diagnostics, "residency", "recordsBefore")) ?? 0,
           requestsServed: asNumber(at(diagnostics, "residency", "requestsServed")) ?? 0,
+          subrequests: asNumber(at(diagnostics, "subrequests")) ?? 0,
+          reusedParse:
+            typeof at(diagnostics, "reusedParse") === "boolean"
+              ? (at(diagnostics, "reusedParse") as boolean)
+              : null,
         }),
   });
   return json;
@@ -230,7 +243,7 @@ async function ask(city: string, endpoint: string, path: string, pass: Pass): Pr
  * city's own answers, so nothing is hard coded and a city whose search fails is reported as such
  * rather than skipped.
  */
-async function walk(city: (typeof CITIES)[number], pass: Pass): Promise<void> {
+async function walk(city: (typeof CITIES)[number], pass: Pass, round = 0): Promise<void> {
   const pace = () => new Promise((resolve) => setTimeout(resolve, 1_000));
   const bbox = encodeURIComponent(bboxParam(city.bbox));
 
@@ -253,14 +266,19 @@ async function walk(city: (typeof CITIES)[number], pass: Pass): Promise<void> {
   await pace();
   const map = await ask(city.name, "map", `/v1/map?bbox=${bbox}&zoom=13`, pass);
 
-  /* A stop this city actually has, preferring the viewport's own over a name match elsewhere. */
+  /*
+   * A different stop on each round, which matters once the walk goes round twice.
+   *
+   * A peak pass that asked the same five boards ten times would measure the shard cache, not the
+   * serving cost: by the second visit the isolate has the bucket and the parse never happens
+   * again. Taking the round's own offset into the nearby list keeps every board a first contact
+   * while staying inside the city the viewport is about.
+   */
+  const nearbyStops = asArray(at(nearby, "data", "results")).filter(
+    (row) => at(row, "kind") === "stop",
+  );
   const stopId =
-    asText(
-      at(
-        asArray(at(nearby, "data", "results")).find((row) => at(row, "kind") === "stop"),
-        "id",
-      ),
-    ) ||
+    asText(at(nearbyStops[round % Math.max(1, nearbyStops.length)], "id")) ||
     asText(
       at(
         asArray(at(search, "data", "results")).find((row) => at(row, "kind") === "stop"),
@@ -363,7 +381,7 @@ async function peak(pass: Pass, atLeast: number): Promise<void> {
   while (made < atLeast) {
     const city = CITIES[round % CITIES.length]!;
     const before = readings.length;
-    await walk(city, pass);
+    await walk(city, pass, round);
     made += readings.length - before;
     round += 1;
     /*
@@ -404,6 +422,9 @@ function isolateReach(pass: Pass): Record<string, unknown> {
     maxCharsDecoded: Math.max(0, ...rows.map((row) => row.charsDecoded ?? 0)),
     maxResidentChars: Math.max(0, ...rows.map((row) => row.residentCharsBefore ?? 0)),
     maxResidentRecords: Math.max(0, ...rows.map((row) => row.residentRecordsBefore ?? 0)),
+    maxSubrequests: Math.max(0, ...rows.map((row) => row.subrequests ?? 0)),
+    distinctStops: [...new Set(rows.map((row) => row.path))].length,
+    liveParsesReused: rows.filter((row) => row.reusedParse === true).length,
   };
 }
 
@@ -505,6 +526,8 @@ async function main(): Promise<void> {
     ms: row.ms,
     chars: row.charsDecoded ?? null,
     served: row.requestsServed ?? null,
+    subrequests: row.subrequests ?? null,
+    reusedParse: row.reusedParse ?? null,
     residentBefore: row.residentCharsBefore ?? null,
     recordsBefore: row.residentRecordsBefore ?? null,
     ...(row.platform === undefined ? {} : { platform: row.platform.slice(0, 40) }),
