@@ -208,7 +208,8 @@ export class LiveService {
   private readonly clients = new Map<string, SourceClient>();
 
   /**
-   * The parsed feed, not just the in-flight fetch.
+   * The parsed feed, not just the in-flight fetch — and the parse *in progress*, not only a
+   * finished one.
    *
    * `coalesce` deduplicates concurrent requests and drops the entry the moment one settles, so
    * every `/v1/map` re-fetched *and* re-parsed the feed. On the free plan that is the expensive
@@ -216,8 +217,20 @@ export class LiveService {
    * whole CPU budget for an invocation is ten. The Worker's own diagnostics could never show it —
    * `Date.now()` in Workers advances only across I/O, so every one of these parses has been
    * reporting `parse=0ms` while costing several times the budget.
+   *
+   * Holding the finished parse fixed the second request that arrived a second later and did
+   * nothing for the second request that arrived in the same millisecond, which is the one a page
+   * load actually produces. Both missed an empty cache, both shared the fetch through `coalesce`,
+   * and then both parsed the same XML independently — so the deployed burst instrument saw a
+   * Leeds viewport answer 1102 on its second attempt while a paced walk of sixty-six requests
+   * passed. What is held is therefore the promise: whoever asks second awaits the first parse
+   * instead of repeating it.
+   *
+   * This is not an admission gate. Nothing is rejected, delayed or queued; two requests that want
+   * the identical feed stop doing the identical work twice, and the second gets an answer at
+   * least as fresh as the one it would have parsed for itself.
    */
-  private readonly normalized = new Map<string, NormalizedFeed>();
+  private readonly normalized = new Map<string, { at: number; feed: Promise<NormalizedFeed> }>();
 
   constructor(private readonly deps: LiveServiceDeps) {}
 
@@ -314,58 +327,83 @@ export class LiveService {
          */
         const bounded = timeoutMs !== MAP_QUERY_LIMITS.timeoutMs;
 
-        const fresh = this.normalized.get(cacheKey);
-        const reused = fresh !== undefined && now.getTime() - fresh.at < NORMALIZED_FEED_TTL_MS;
+        const held = this.normalized.get(cacheKey);
+        const reused = held !== undefined && now.getTime() - held.at < NORMALIZED_FEED_TTL_MS;
 
         let normalized: NormalizedFeed;
         if (reused) {
-          mark("siri:cache-hit", { chars: fresh.chars, cached: true });
-          normalized = fresh;
+          /*
+           * Either a parse that finished or one still running; awaiting covers both, and a
+           * settled promise resolves without yielding the thread to anything else.
+           */
+          mark("siri:cache-hit", { cached: true });
+          normalized = await held.feed;
         } else {
           /*
-           * Three stamps around the one stage nothing has been able to see inside.
-           *
-           * A request the platform kills reports nothing, so the only way to learn whether it
-           * died waiting on the socket or partway through turning 0.4 MiB of XML into objects is
-           * to leave a mark before each and let the next request carry it out. `parseMs` cannot
-           * answer this — a Worker's clock does not advance across pure computation — and the
-           * distinction is the whole question: waiting costs no CPU, parsing costs nothing else.
+           * Registered before it is awaited, so a request arriving in the same millisecond finds
+           * it. This is the whole point: holding only the finished parse helped the request that
+           * came a second later and not the one that came at the same instant, which is the one a
+           * page load produces.
            */
-          mark("siri:fetch:begin", { bounded, cached: false, timeoutMs });
-          const fetchStartedAt = Date.now();
-          const xml = await client.coalesce(cacheKey, () =>
-            client.fetchText(url, { timeoutMs, ...(bounded ? { maxAttempts: 1 } : {}) }),
-          );
-          /*
-           * A stamp of its own between the socket and the parser.
-           *
-           * Without it, `siri:parse:begin` was the first evidence the fetch had returned at all,
-           * so "died on the socket" and "died in the gap after it" were the same reading. This
-           * also carries the fetch's own duration into the breadcrumb, which is one of the
-           * correlates a pattern across several deaths needs and which a killed request could
-           * never report from its own ledger.
-           */
-          mark("siri:fetch:done", {
-            chars: xml.length,
-            elapsedMs: Date.now() - fetchStartedAt,
-          });
-          mark("siri:parse:begin", { chars: xml.length });
-          const parsed = normalizeSiriVm(xml, {
-            retrievedAt: now.toISOString(),
-            vehicleSalt: this.vehicleSalt(),
-            now,
-          });
-          mark("siri:parse:done", {
-            chars: xml.length,
-            observations: parsed.observations.length,
-          });
-          normalized = { parsed, chars: xml.length, at: now.getTime() };
+          const work = (async (): Promise<NormalizedFeed> => {
+            /*
+             * Three stamps around the one stage nothing has been able to see inside.
+             *
+             * A request the platform kills reports nothing, so the only way to learn whether it
+             * died waiting on the socket or partway through turning 0.4 MiB of XML into objects
+             * is to leave a mark before each and let the next request carry it out. `parseMs`
+             * cannot answer this — a Worker's clock does not advance across pure computation —
+             * and the distinction is the whole question: waiting costs no CPU, parsing costs
+             * nothing else.
+             */
+            mark("siri:fetch:begin", { bounded, cached: false, timeoutMs });
+            const fetchStartedAt = Date.now();
+            const xml = await client.coalesce(cacheKey, () =>
+              client.fetchText(url, { timeoutMs, ...(bounded ? { maxAttempts: 1 } : {}) }),
+            );
+            /*
+             * A stamp of its own between the socket and the parser.
+             *
+             * Without it, `siri:parse:begin` was the first evidence the fetch had returned at
+             * all, so "died on the socket" and "died in the gap after it" were the same reading.
+             * This also carries the fetch's own duration into the breadcrumb, which is one of the
+             * correlates a pattern across several deaths needs and which a killed request could
+             * never report from its own ledger.
+             */
+            mark("siri:fetch:done", {
+              chars: xml.length,
+              elapsedMs: Date.now() - fetchStartedAt,
+            });
+            mark("siri:parse:begin", { chars: xml.length });
+            const parsed = normalizeSiriVm(xml, {
+              retrievedAt: now.toISOString(),
+              vehicleSalt: this.vehicleSalt(),
+              now,
+            });
+            mark("siri:parse:done", {
+              chars: xml.length,
+              observations: parsed.observations.length,
+            });
+            return { parsed, chars: xml.length, at: now.getTime() };
+          })();
+
           /*
            * One feed per viewport, and only the newest. The key carries the bounding box, so a
            * sweep across five cities would otherwise leave five parses resident for nothing.
            */
           this.normalized.clear();
-          this.normalized.set(cacheKey, normalized);
+          this.normalized.set(cacheKey, { at: now.getTime(), feed: work });
+          try {
+            normalized = await work;
+          } catch (error) {
+            /*
+             * A failed parse must not be inherited. Left in place, every request for the next
+             * eight seconds would await the same rejection and report the feed as down when a
+             * retry would have answered.
+             */
+            if (this.normalized.get(cacheKey)?.feed === work) this.normalized.delete(cacheKey);
+            throw error;
+          }
         }
 
         const fetchMs = Date.now() - fetchBegan;
