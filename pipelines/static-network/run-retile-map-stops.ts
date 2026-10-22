@@ -342,9 +342,35 @@ async function main(): Promise<number> {
    * order: an object that failed to write, or wrote short, must be found while the old artifact is
    * still the live one.
    */
+  /*
+   * Resumable, because this job has already been killed once partway through.
+   *
+   * The account writes at about four objects a second, so five and a half thousand tiles is half
+   * an hour of wall clock and the first attempt hit its limit with the writes done and the
+   * verification unfinished. Re-running then repeated every write for nothing. A listing says
+   * which objects are already there at exactly the length they would be written at — the same
+   * check the verification uses — so a second attempt pays only for what is missing, and an
+   * interrupted retiling is worth resuming rather than restarting.
+   *
+   * Content, not just presence: the tiles are named from the grid, so a tile that exists at the
+   * wrong length is one a previous attempt wrote differently, and that must be overwritten.
+   */
+  const before = store.listDetailed ? await store.listDetailed(`data/${MAP_STOPS_PREFIX}/`) : null;
+  const alreadyWritten = new Map((before ?? []).map((object) => [object.key, object.sizeBytes]));
+  const toWrite = outputs.filter(
+    (tile) =>
+      alreadyWritten.get(objectKeyFor(mapStopsDataset(tile.tile), record.version)) !== tile.bytes,
+  );
+  if (toWrite.length < outputs.length) {
+    console.log(
+      `${String(outputs.length - toWrite.length)} tile(s) are already written at the right ` +
+        `length; ${String(toWrite.length)} to go.`,
+    );
+  }
+
   const writeFailures: Array<{ tile: string; reason: string }> = [];
   const writeBegan = Date.now();
-  await mapWithConcurrency(outputs, CONCURRENCY, async (tile) => {
+  await mapWithConcurrency(toWrite, CONCURRENCY, async (tile) => {
     try {
       await store.put(
         objectKeyFor(mapStopsDataset(tile.tile), record.version),
@@ -458,7 +484,14 @@ async function main(): Promise<number> {
     return 1;
   }
 
-  report({ outcome: "applied", applied: true, ...plan, writeMs });
+  report({
+    outcome: "applied",
+    applied: true,
+    ...plan,
+    writeMs,
+    written: toWrite.length,
+    alreadyPresent: outputs.length - toWrite.length,
+  });
   console.log(
     `Published: the map projection is now ${String(outputs.length)} tile(s) on ` +
       `${String(target)}°, written in ${(writeMs / 1000).toFixed(0)}s. The ` +
