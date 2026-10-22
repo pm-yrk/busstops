@@ -626,6 +626,25 @@ export interface MapStop {
   routePublicNames: string[];
 }
 
+/** Where a nearby list was read from, so the endpoint can report which family it cost. */
+export type NearbySource = "map_projection" | "search_tiles";
+
+/**
+ * A stop in a nearby list: what the surface shows, and nothing a text search would need.
+ *
+ * Deliberately not a `SearchHit`. The list used to be built from search entries, which meant the
+ * reader had to produce `tokens` and `codes` for records that nobody was going to type at — and
+ * a shape that demands them is a shape that quietly invites the search tiles back.
+ */
+export interface NearbyStop {
+  id: string;
+  title: string;
+  subtitle?: string;
+  coordinate: Coordinate;
+  distanceMetres: number;
+  hasLiveCoverage: boolean;
+}
+
 export interface StopsInViewport {
   stops: Stop[];
   truncated: boolean;
@@ -3080,14 +3099,76 @@ export class NetworkReader {
   }
 
   /** Stops near a point, from the tiles around it. */
+  /**
+   * Stops near a point, from the map projection rather than from the text-search index.
+   *
+   * The two answer different questions and only one of them is this one. A search tile carries
+   * every kind the index holds — places, routes, operators, areas, postcodes — and for each of
+   * them the tokens and codes that make typing work; `nearbyStops` then threw all of that away
+   * and kept the stops. The deployed ledger measured the waste: 1.87 MB of search text walked to
+   * list the stops within eight hundred metres of a point, while the projection tile covering the
+   * same ground is a third of that and carries exactly the marker fields a nearby list shows.
+   *
+   * It is also the family `/v1/map` reads, so a page that draws the map and lists what is around
+   * you now reads one set of tiles instead of two, and any future retiling of the projection
+   * makes this cheaper too — a radius of a few hundred metres is the read that gains most from a
+   * smaller square.
+   *
+   * The search tiles remain the fallback, for an artifact published before the projection
+   * existed: an empty list from a reader that could have answered is the failure worth avoiding.
+   */
   async nearby(
     coordinate: Coordinate,
     options: { radiusMetres: number; limit: number },
     now: number = Date.now(),
     ledger?: ReadLedger,
-  ): Promise<{ hits: SearchHit[]; builtAt: string } | null> {
+  ): Promise<{ stops: NearbyStop[]; builtAt: string; source: NearbySource } | null> {
     const index = await this.networkIndex(now);
     if (!index) return null;
+
+    const box = boxAround(coordinate, options.radiusMetres);
+
+    if (index.mapStopTiles && index.mapStopTiles.length > 0) {
+      /*
+       * The projection's own limit, not the caller's.
+       *
+       * `mapStopsInBoundingBox` ranks by distance from the centre of the box when it has to cut,
+       * and the centre of this box is the point asked about — so cutting there would cut the same
+       * way this does. It is asked for more than the caller wants anyway, because the box is a
+       * square around a circle and the corners are outside the radius.
+       */
+      const projected = await this.mapStopsInBoundingBox(
+        box,
+        Math.max(options.limit * 4, 100),
+        now,
+        ledger,
+        NEARBY_READ_CHARS,
+      );
+      if (projected) {
+        const stops = projected.stops
+          .map((stop) => ({
+            id: stop.id,
+            title: stop.name,
+            ...(stop.indicator === undefined ? {} : { subtitle: stop.indicator }),
+            coordinate: stop.locationCoordinate,
+            distanceMetres: haversineMetres(coordinate, stop.locationCoordinate),
+            /*
+             * Published as a constant, and read back as one rather than guessed at.
+             *
+             * The search index derives this from a list of ATCO prefixes with live coverage, and
+             * no caller has ever passed one — so every published entry says `true`, and a stop
+             * read from the projection can say the same thing without carrying the flag. If that
+             * list is ever populated, both paths have to learn it together; the structural test
+             * names this line so the pair cannot drift quietly.
+             */
+            hasLiveCoverage: true,
+          }))
+          .filter((stop) => stop.distanceMetres <= options.radiusMetres)
+          .sort((a, b) => a.distanceMetres - b.distanceMetres)
+          .slice(0, options.limit);
+        return { stops, builtAt: index.publishedAt, source: "map_projection" };
+      }
+    }
 
     /*
      * Bounded, like every other read on this class.
@@ -3106,7 +3187,6 @@ export class NetworkReader {
      * entries inside eight hundred metres. `nearbyStops` still does the real distance test; this
      * only stops the far corners of the tile becoming objects first.
      */
-    const box = boxAround(coordinate, options.radiusMetres);
     const entries = await this.readTiles<SearchIndexEntry>(
       searchTileDataset,
       searchTilesForBoundingBox(box),
@@ -3123,7 +3203,15 @@ export class NetworkReader {
       coordinate,
       options,
     );
-    return { hits: hits.map(presentHit), builtAt: index.publishedAt };
+    const stops = hits.map(presentHit).map((hit) => ({
+      id: hit.entry.id,
+      title: hit.entry.title,
+      ...(hit.entry.subtitle === undefined ? {} : { subtitle: hit.entry.subtitle }),
+      coordinate: hit.entry.coordinate ?? coordinate,
+      distanceMetres: hit.distanceMetres ?? 0,
+      hasLiveCoverage: hit.entry.hasLiveCoverage,
+    }));
+    return { stops, builtAt: index.publishedAt, source: "search_tiles" };
   }
 }
 

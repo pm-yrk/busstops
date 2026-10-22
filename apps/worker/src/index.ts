@@ -2800,12 +2800,13 @@ router.get("/v1/nearby", async (_request, { env, url }) => {
     Math.max(100, Number(url.searchParams.get("radius") ?? "800")),
   );
 
-  // Read from the search tiles around the point, not from a national index, and on a ledger —
+  // Read from the map projection's tiles around the point — the marker fields a nearby list
+  // shows, rather than the text-search payload it used to walk to find them — and on a ledger:
   // this was the last read on the reader with no budget on it, and run 44 answered 1102 for it.
   const nearbyLedger = new ReadLedger(NEARBY_BUDGET_MS);
   const endNearbyResidency = beginResidency(nearbyLedger, "nearby");
   const found = network
-    ? await nearbyLedger.stage("search-tiles", () =>
+    ? await nearbyLedger.stage("stops", () =>
         network!.nearby({ lat, lon }, { radiusMetres, limit: 25 }, Date.now(), nearbyLedger),
       )
     : null;
@@ -2818,7 +2819,7 @@ router.get("/v1/nearby", async (_request, { env, url }) => {
     );
   }
 
-  const hits = found.hits;
+  const hits = found.stops;
   endNearbyResidency();
 
   return json(
@@ -2828,19 +2829,22 @@ router.get("/v1/nearby", async (_request, { env, url }) => {
         observedAt: found.builtAt,
         coverage: 1,
         governorState: state,
-        diagnostics: { ...nearbyLedger.toJSON() },
+        diagnostics: { ...nearbyLedger.toJSON(), nearbySource: found.source },
         now: new Date(),
         safeMode: safeModeActive(state),
       }),
       data: {
-        results: hits.map((hit) => ({
-          kind: hit.entry.kind,
-          id: hit.entry.id,
-          title: hit.entry.title,
-          ...(hit.entry.subtitle === undefined ? {} : { subtitle: hit.entry.subtitle }),
-          ...(hit.entry.coordinate === undefined ? {} : { coordinate: hit.entry.coordinate }),
-          ...(hit.distanceMetres === undefined ? {} : { distanceMetres: hit.distanceMetres }),
-          hasLiveCoverage: hit.entry.hasLiveCoverage,
+        results: hits.map((stop) => ({
+          // Always a stop. The surface asks what is around a point, and a postcode or a cathedral
+          // is not something you can wait at — the kind is kept in the response because the client
+          // reads one shape for search results and nearby results alike.
+          kind: "stop" as const,
+          id: stop.id,
+          title: stop.title,
+          ...(stop.subtitle === undefined ? {} : { subtitle: stop.subtitle }),
+          coordinate: stop.coordinate,
+          distanceMetres: stop.distanceMetres,
+          hasLiveCoverage: stop.hasLiveCoverage,
         })),
       },
     },

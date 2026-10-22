@@ -1470,22 +1470,55 @@ describe("answering without reading geometry", () => {
 
     const close = new ReadLedger(5_000);
     const near = await reader.nearby(here, { radiusMetres: 300, limit: 25 }, Date.now(), close);
-    expect(near?.hits.length).toBeGreaterThan(0);
+    expect(near?.stops.length).toBeGreaterThan(0);
 
     /*
      * `records` counts what the parse built. A byte cap bounds what is read and not what is
      * decoded out of it, so before the box was handed to the parse this was the whole tile
      * however small the radius was.
      */
-    const parsed = close.toJSON().families.search?.records ?? 0;
+    const parsed = close.toJSON().families.stops?.records ?? 0;
     expect(parsed).toBeGreaterThan(0);
 
     const wide = new ReadLedger(5_000);
     await reader.nearby(here, { radiusMetres: 40_000, limit: 25 }, Date.now(), wide);
-    const parsedWide = wide.toJSON().families.search?.records ?? 0;
+    const parsedWide = wide.toJSON().families.stops?.records ?? 0;
 
     // A bigger radius legitimately costs more; the point is that a small one does not cost the same.
     expect(parsed).toBeLessThan(parsedWide);
+  });
+
+  /*
+   * Structural, not timing: a nearby list must not pay for the text-search index.
+   *
+   * A search tile carries places, routes, operators, areas and postcodes, and tokens and codes
+   * for all of them, so listing the stops within eight hundred metres cost 1.87 MB of text that
+   * existed to make typing work. The projection tile over the same ground carries the marker
+   * fields and nothing else. CI cannot measure Cloudflare's CPU, so what is asserted is which
+   * family was opened — the part that does not depend on this machine.
+   */
+  it("lists what is nearby without opening the text-search index", async () => {
+    const { reader } = await publishedReader();
+    const ledger = new ReadLedger(5_000);
+    const near = await reader.nearby(
+      { lat: 53.7996, lon: -1.56 },
+      { radiusMetres: 800, limit: 25 },
+      Date.now(),
+      ledger,
+    );
+
+    expect(near?.source).toBe("map_projection");
+    expect(near?.stops.length).toBeGreaterThan(0);
+    // Named, positioned and ordered: a list that cannot be rendered or walked is not an answer.
+    expect(near!.stops[0]!.title.length).toBeGreaterThan(0);
+    expect(near!.stops[0]!.coordinate.lat).toBeGreaterThan(0);
+    const distances = near!.stops.map((stop) => stop.distanceMetres);
+    expect(distances).toEqual([...distances].sort((a, b) => a - b));
+    expect(Math.max(...distances)).toBeLessThanOrEqual(800);
+
+    const families = ledger.toJSON().families;
+    expect(families.stops?.chars ?? 0).toBeGreaterThan(0);
+    expect(families.search).toBeUndefined();
   });
 
   it("draws a viewport from one projected family instead of two general ones", async () => {
