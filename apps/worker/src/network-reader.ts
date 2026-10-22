@@ -350,6 +350,73 @@ export function searchLineFilter(words: readonly string[]): LineFilter | undefin
 const NEARBY_READ_CHARS = 2 * 1024 * 1024;
 
 /**
+ * How many projection tiles one request may open. **A subrequest budget, not a byte trade-off.**
+ *
+ * The projection is filed on a sixteenth of a degree, which is the whole point of it — a city
+ * viewport reads twelve small squares instead of four big ones. But `maxBboxAreaSquareDegrees` is
+ * 1.5, and 1.5 square degrees of sixteenths is 384 tiles, against the fifty subrequests a Workers
+ * Free invocation gets in total. A viewport that is large but perfectly legal would therefore stop
+ * being slow and start being impossible, which is a worse failure than the one the finer grid was
+ * chosen to fix. The same arithmetic catches a long route's corridor: a cross-country shape spans
+ * far more sixteenths than quarters.
+ *
+ * So the read is bounded by count as well as by bytes, and the surplus is reported as truncation —
+ * which the map and route detail already carry through to the degradation the response states.
+ * Thirty-two leaves about eighteen subrequests for the index, the live feed and everything else,
+ * the same division the service-bucket cap above makes.
+ *
+ * Which thirty-two is not arbitrary: they are taken nearest the middle of what was asked for, for
+ * the reason the stop cap gives — an arbitrary slice would drop the centre of the screen.
+ */
+const MAP_STOP_TILES_PER_REQUEST = 32;
+
+/** The middle of a set of points, for ranking the tiles of a shape that is longer than one read. */
+function midpointOf(points: readonly Coordinate[]): Coordinate {
+  if (points.length === 0) return { lat: 0, lon: 0 };
+  let lat = 0;
+  let lon = 0;
+  for (const point of points) {
+    lat += point.lat;
+    lon += point.lon;
+  }
+  return { lat: lat / points.length, lon: lon / points.length };
+}
+
+/**
+ * The tiles nearest the middle of a bounding box, at most `limit` of them.
+ *
+ * Tile ids are `"<latIndex>_<lonIndex>"`, so the centre is comparable in index space without
+ * reconstructing coordinates — and index space is the right space anyway, because it is uniform
+ * in tiles rather than in degrees.
+ */
+function tilesNearestCentre(
+  tiles: readonly string[],
+  sizeDegrees: number,
+  centre: Coordinate,
+  limit: number,
+): { tiles: string[]; dropped: number } {
+  if (tiles.length <= limit) return { tiles: [...tiles], dropped: 0 };
+
+  const centreLat = Math.floor(centre.lat / sizeDegrees);
+  const centreLon = Math.floor(centre.lon / sizeDegrees);
+  const ranked = [...tiles]
+    .map((tile) => {
+      const [lat, lon] = tile.split("_");
+      const dLat = Number(lat) - centreLat;
+      const dLon = Number(lon) - centreLon;
+      return {
+        tile,
+        distance: Number.isFinite(dLat + dLon) ? dLat * dLat + dLon * dLon : Infinity,
+      };
+    })
+    .sort((a, b) => a.distance - b.distance)
+    .slice(0, limit)
+    .map((entry) => entry.tile);
+
+  return { tiles: ranked, dropped: tiles.length - limit };
+}
+
+/**
  * How many corridor stops a plan may hold. Measured, not chosen: a Leeds to Leeds Bradford
  * Airport corridor reported 3,774, and the planner refuses above `JOURNEY_LIMITS.maxStops`
  * anyway — this is the read's own bound, set well above a real corridor so that reaching it means
@@ -1240,7 +1307,7 @@ export class NetworkReader {
      * before the index existed still needs the old path.
      */
     options: { patterns?: "tiles" | "skip"; patternBudgetChars?: number } = {},
-  ): Promise<NetworkSlice & { complete: boolean }> {
+  ): Promise<NetworkSlice & { complete: boolean; tooWide: boolean }> {
     /*
      * Stops and patterns are on different grids — a pattern is written to every tile it crosses,
      * so its grid is finer — and asking each for its own is what keeps the two from drifting.
@@ -1279,15 +1346,18 @@ export class NetworkReader {
       ledger,
       stopBudgetChars,
     );
-    const stops =
-      projected ??
-      (await this.stopsInTiles(
+    const stops = projected ?? {
+      /* The general family, for an artifact with no projection. It is filed on the stop grid, so
+       * a corridor spans a quarter of the squares and the per-request tile cap does not bite. */
+      ...(await this.stopsInTiles(
         stopTilesForBoundingBox(bbox),
         now,
         ledger,
         stopBudgetChars,
         withinBoundingBox(bbox),
-      ));
+      )),
+      tooWide: false,
+    };
     const patterns =
       options.patterns === "skip"
         ? { geometries: [] as PatternGeometry[], complete: true }
@@ -1321,6 +1391,12 @@ export class NetworkReader {
       ),
       services,
       complete: !stops.truncated && patterns.complete,
+      /*
+       * Carried separately so the planner can say the useful thing. A corridor that needs more
+       * objects than one invocation may open is a request for a journey this planner is not for,
+       * which is a different sentence from "we could not read the whole timetable".
+       */
+      tooWide: stops.tooWide,
     };
   }
 
@@ -1359,13 +1435,20 @@ export class NetworkReader {
     now: number = Date.now(),
     ledger?: ReadLedger,
     budgetChars?: number,
-  ): Promise<{ stops: MapStop[]; truncated: boolean } | null> {
+  ): Promise<{ stops: MapStop[]; truncated: boolean; tooWide: boolean } | null> {
     const index = await this.networkIndex(now);
     if (!index?.mapStopTiles || index.mapStopTiles.length === 0) return null;
 
+    const grid = this.mapStopGrid(index);
+    const wanted = tilesNearestCentre(
+      mapStopTilesForBoundingBox(bbox, grid),
+      grid,
+      { lat: (bbox.north + bbox.south) / 2, lon: (bbox.east + bbox.west) / 2 },
+      MAP_STOP_TILES_PER_REQUEST,
+    );
     const read = await this.readTiles<MapStopRow>(
       mapStopsDataset,
-      mapStopTilesForBoundingBox(bbox, this.mapStopGrid(index)),
+      wanted.tiles,
       index.mapStopTiles,
       index.version,
       now,
@@ -1394,7 +1477,21 @@ export class NetworkReader {
         routePublicNames: row.r ?? [],
       }));
 
-    if (inside.length <= limit) return { stops: inside, truncated: read.truncated };
+    /*
+     * Truncated if the byte budget cut the read, if the viewport wanted more tiles than one
+     * invocation may open, or if more stops came back than the caller asked for. All three are
+     * the same statement to a passenger — this is not all of them — and the map turns it into
+     * visible degradation rather than a quietly short answer.
+     */
+    const truncated = read.truncated || wanted.dropped > 0;
+    /*
+     * "The box needs more objects than one request may open" is a different statement from "the
+     * read hit its byte budget", and the planner says something different about each: one is
+     * "these points are too far apart for this planner", which is true and useful, and the other
+     * is "we could not read it all", which sounds like a fault. The caller cannot tell them apart
+     * from a single flag, so it gets both.
+     */
+    if (inside.length <= limit) return { stops: inside, truncated, tooWide: wanted.dropped > 0 };
 
     // Nearest the middle, for the reason `stopsInBoundingBox` gives: an arbitrary slice would
     // drop the centre of the screen.
@@ -1404,7 +1501,7 @@ export class NetworkReader {
       .sort((a, b) => a.distance - b.distance)
       .slice(0, limit)
       .map((entry) => entry.stop);
-    return { stops: ranked, truncated: true };
+    return { stops: ranked, truncated: true, tooWide: wanted.dropped > 0 };
   }
 
   async stopsInBoundingBox(
@@ -1728,18 +1825,32 @@ export class NetworkReader {
      * Returns null when the artifact has no projection, and the general tiles answer below. The
      * filter is the same one: a line is matched by id or ATCO code before it is parsed.
      */
-    const projected = await this.mapStopsForTiles(
-      /*
-       * On the projection's own grid, which is finer than the general stop tiles.
-       *
-       * Both are derived from the same shapes; asking the projection for a quarter-degree tile
-       * id would ask for an object that was never written and read a route with no stops on it.
-       */
+    /*
+     * On the projection's own grid, which is finer than the general stop tiles.
+     *
+     * Both are derived from the same shapes; asking the projection for a quarter-degree tile id
+     * would ask for an object that was never written and read a route with no stops on it.
+     *
+     * And bounded by count, because a corridor spans far more sixteenths of a degree than
+     * quarters: a cross-country shape asks for more objects than the fifty subrequests an
+     * invocation gets, which would turn a long route from expensive into impossible. Nearest the
+     * middle of the route rather than the start, so what survives is the part of the line a
+     * reader is most likely looking at, and the surplus is reported — `routeDetailComplete`
+     * already carries a truncated stop read through to what the response says about itself.
+     */
+    const corridor = tilesNearestCentre(
       stopTilesForShapes(
         geometries.map((geometry) => geometry.shape),
         0.01,
         this.mapStopGrid(index),
       ),
+      this.mapStopGrid(index),
+      midpointOf(geometries.flatMap((geometry) => geometry.shape)),
+      MAP_STOP_TILES_PER_REQUEST,
+    );
+
+    const projected = await this.mapStopsForTiles(
+      corridor.tiles,
       index,
       now,
       budgetChars ?? this.requestChars,
@@ -1755,8 +1866,9 @@ export class NetworkReader {
       ledger?.count({ stops: stopsById.size });
       return {
         stopsById,
-        truncated: projected.truncated,
-        tilesRequested: tiles.length,
+        /* The corridor's own cap counts as truncation, the same as a cut byte budget does. */
+        truncated: projected.truncated || corridor.dropped > 0,
+        tilesRequested: corridor.tiles.length,
         requested: keys.length,
         resolved: stopsById.size,
       };

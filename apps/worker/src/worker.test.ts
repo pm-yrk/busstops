@@ -2466,15 +2466,25 @@ describe("the departure board reads the published index", () => {
   }
 
   /*
-   * The same structural rule for the board that has buses on it, which is the one people open.
+   * The board with buses on it asks its departures, and that is a measured retreat.
    *
-   * The quiet path was the obvious case and not the expensive one. A busy board's departures name
-   * their patterns, so the read was already an id test per line rather than a full parse — and
-   * that was never where the cost was: the tile's text has to be walked either way, and the
-   * deployed ledger measured 2.03 MiB of it for a Manchester board. The direct lookup answers the
-   * same question for every board, so no board has a reason to open the pattern index.
+   * The direct lookup is the better answer for every board — one hashed bucket against a
+   * pattern-index tile that is megabytes in a city — and this handler asked it on every board for
+   * one deployment. The deployment said no: Leeds City Bus Station went from four of four samples
+   * answering with three routes named from three service buckets to four of four answering 1102,
+   * and Norwich Tombland and Birmingham Coach Station went the same way.
+   *
+   * The cause is the thing that makes the index better. It names every route that calls at a stop
+   * rather than only the ones with a bus due, and an interchange has fifty — which is upwards of
+   * thirty-two service buckets, each a subrequest, against the fifty an invocation gets for its
+   * index, departure shards, operators, live feed, weather and disruptions as well.
+   *
+   * So this pins where the line currently sits, and why: a board whose departures name patterns
+   * resolves its routes from those, and does not spend a bucket per route in the country. Moving
+   * it needs the route's name and operator inside the index itself, which is a change to what is
+   * published rather than to what is asked.
    */
-  it("names a busy board's routes without opening the pattern index either", async () => {
+  it("resolves a busy board's routes from its departures, not from a bucket per route", async () => {
     const store = await storeWithDepartures([departureRow(6, "72"), departureRow(25, "16")]);
     const reads: string[] = [];
     const recording = {
@@ -2492,21 +2502,28 @@ describe("the departure board reads the published index", () => {
     const response = await worker.fetch(get(`/v1/stops/${ATCO}`), env, ctx);
     expect(response.status).toBe(200);
     const body = (await response.json()) as {
-      data: {
-        departures: unknown[];
-        routes: Array<{ publicName: string }>;
-        routesComplete: boolean;
-      };
+      data: { departures: unknown[]; routes: Array<{ publicName: string }> };
     };
 
-    // The premise: this is the busy path. With nothing due it is the other test.
+    // The premise: this is the busy path. With nothing due it is the test above.
     expect(body.data.departures.length, "the stop under test has buses due").toBeGreaterThan(0);
-    expect(body.data.routes.length).toBeGreaterThan(0);
-    expect(body.data.routesComplete).toBe(true);
+    /*
+     * The route list itself is not asserted here. These rows are fabricated with a pattern id the
+     * fixture's pattern index does not carry, so the board correctly names no routes from them —
+     * which is a property of the fixture, not of the handler. What the route list contains is
+     * covered against a published network above; what this test is about is the bill.
+     */
 
-    const scanned = reads.filter((key) => key.includes(PATTERN_INDEX_PREFIX));
-    expect(reads.filter((key) => key.includes(STOP_SERVICES_PREFIX)).length).toBeGreaterThan(0);
-    expect(scanned, `a busy board opened the pattern index: ${scanned.join(", ")}`).toEqual([]);
+    /*
+     * The bound that matters, and it is a count of objects rather than of bytes: whatever a board
+     * does to name its routes, it must not approach the fifty subrequests an invocation gets.
+     */
+    const buckets = reads.filter((key) => key.includes("network/services-bucket/"));
+    expect(
+      buckets.length,
+      `a busy board opened ${String(buckets.length)} service bucket(s)`,
+    ).toBeLessThan(16);
+    expect(reads.filter((key) => key.includes(STOP_SERVICES_PREFIX))).toEqual([]);
   });
 
   it("shows the rows that are due, in order, with what a board renders", async () => {

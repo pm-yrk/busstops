@@ -1036,11 +1036,21 @@ describe("a reader that finds out how big tiles are before asking for more", () 
  * three tiles the route's own shape already knew.
  */
 describe("a route's stops", () => {
-  async function publishedSprawl(spread: "local" | "national" = "local") {
+  /**
+   * Three spreads, because the read has two different bounds and they need separating.
+   *
+   * `local` fits in one tile, so neither bound applies. `regional` spans several — enough for a
+   * byte budget to be checked between them, which is the only place it is checked — while staying
+   * under the cap on how many objects one invocation may open. `national` is past that cap, which
+   * is the other bound and is a count rather than a size.
+   */
+  async function publishedSprawl(spread: "local" | "regional" | "national" = "local") {
     const at = (i: number) =>
       spread === "local"
         ? { lat: 53.7 + (i % 40) / 400, lon: -1.6 + (i % 40) / 400 }
-        : { lat: 51 + (i % 50) / 20, lon: -4 + (i % 40) / 10 };
+        : spread === "regional"
+          ? { lat: 53.6 + (i % 40) / 80, lon: -1.8 + (i % 40) / 60 }
+          : { lat: 51 + (i % 50) / 20, lon: -4 + (i % 40) / 10 };
     const sprawling = network();
     const seed = sprawling.stops[0]!;
     const pattern = sprawling.patterns[0]!;
@@ -1215,12 +1225,22 @@ describe("a route's stops", () => {
   });
 
   it("books what it read on the caller's ledger, and reports a capped read as incomplete", async () => {
-    const { reader, serviceId } = await publishedSprawl("national");
+    /*
+     * Local, because a national one is now bounded by something other than the budget.
+     *
+     * An invocation gets fifty subrequests in total, so a corridor is capped at the tiles one
+     * request may open — and a shape spanning three degrees of latitude asks for far more than
+     * that. It therefore reports itself truncated whatever budget it is given, which would make
+     * this test's first assertion impossible rather than wrong. The cap has its own test below;
+     * what this one is about is the *budget* surfacing as `truncated`, and a local route is where
+     * that can still be seen on its own.
+     */
+    const { reader, serviceId } = await publishedSprawl("regional");
     const patterns = await reader.patternsForService(serviceId);
 
     const whole = await reader.stopsForGeometries(patterns.geometries);
     expect(whole.truncated).toBe(false);
-    expect(whole.tilesRequested).toBeGreaterThan(4);
+    expect(whole.tilesRequested).toBeGreaterThan(1);
 
     /*
      * The same route through a reader that cannot afford it. A budget that stops the read must
@@ -1229,7 +1249,7 @@ describe("a route's stops", () => {
      * this flag exists to prevent.
      */
     const ledger = new ReadLedger(60_000);
-    const fresh = await publishedSprawl("national");
+    const fresh = await publishedSprawl("regional");
     const freshPatterns = await fresh.reader.patternsForService(fresh.serviceId);
     const capped = await fresh.reader.stopsForGeometries(
       freshPatterns.geometries,
@@ -1242,6 +1262,35 @@ describe("a route's stops", () => {
     expect(capped.resolved).toBeLessThan(whole.resolved);
     expect(ledger.toJSON().families.stops?.read).toBeGreaterThan(0);
     expect(ledger.reason).toBeNull();
+  });
+
+  /*
+   * The other bound on the same read, and the one that is not about bytes at all.
+   *
+   * A Workers Free invocation gets fifty subrequests in total, and each tile is one. The map
+   * projection is filed on a sixteenth of a degree precisely so a city viewport reads small
+   * squares — but a cross-country shape spans hundreds of them, which would take a long route
+   * from expensive to impossible. Before the cap the read simply asked for all of them.
+   *
+   * What it must not do is come back short and call that the whole route: a coach route drawn
+   * with two thirds of its line missing, presented as the line, is the failure `truncated` exists
+   * to prevent.
+   */
+  it("caps a cross-country corridor at the tiles one request may open, and says so", async () => {
+    const { reader, serviceId } = await publishedSprawl("national");
+    const patterns = await reader.patternsForService(serviceId);
+
+    const ledger = new ReadLedger(60_000);
+    const read = await reader.stopsForGeometries(patterns.geometries, Date.now(), ledger, 32 << 20);
+
+    expect(read.truncated, "a corridor bigger than the budget must not read as complete").toBe(
+      true,
+    );
+    /* The bound is a count of objects, not a number of bytes: the budget here was 32 MiB. */
+    expect(read.tilesRequested).toBeLessThanOrEqual(32);
+    expect(ledger.toJSON().families.stops?.read ?? 0).toBeLessThanOrEqual(32);
+    // And it is a cap, not a failure: what it did read is usable.
+    expect(read.resolved).toBeGreaterThan(0);
   });
 });
 

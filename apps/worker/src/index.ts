@@ -1207,28 +1207,34 @@ router.get("/v1/stops/:id", async (_request, { env, params }) => {
   const namedPatternIds = new Set(departureRows.map((row) => row.p).filter(Boolean));
 
   /*
-   * Every board asks by its own id, not by where it is, and not by what happens to be due.
+   * A stop with nothing due asks by its own id. A stop with departures asks by their patterns.
    *
-   * `patternsByIdsNearStop` was already the cheap half of this: the departures name their
-   * patterns, so it tests an id per line instead of parsing a tile. The line test is not where
-   * the cost is. `boxAround` is 1,500 metres against an eighth-of-a-degree grid, so the read
-   * opens one pattern-index tile and a dense one is megabytes of text that has to be walked
-   * whether or not anything is parsed out of it — the deployed ledger measured a Manchester board
-   * at 2.03 MiB and a bus tap in Birmingham at 3.30 MiB of the same family. A byte budget cannot
-   * help: it is checked between tiles and there is only ever one.
+   * `stop-services` is the better *answer* for both — one bucket chosen by a hash of the stop id,
+   * one line parsed out of it, where the geographic read opens a pattern-index tile and a dense
+   * one is megabytes of text that has to be walked whether anything is parsed out of it or not.
+   * So this handler asked it on every board for one deployment, and the deployment said no.
    *
-   * `stop-services` is the same answer with the geography taken out — one bucket chosen by a hash
-   * of the stop id, one line parsed out of it, service ids only, 56 KB measured. And it is the
-   * better answer as well as the smaller one: the patterns a board's departures name are the
-   * routes with a bus due in the next ninety minutes, so the old list quietly dropped a route
-   * whose last bus had gone. This names every route that calls here.
+   * What it measured: Leeds City Bus Station went from four of four samples answering with three
+   * routes named from three service buckets, to four of four answering 1102. Norwich Tombland and
+   * Birmingham Coach Station the same. The reason is the thing that makes the index the better
+   * answer — it names *every* route that calls at a stop, not only the ones with a bus due — and
+   * an interchange has fifty of them. Fifty service ids is upwards of thirty-two service buckets,
+   * each one a subrequest, against the fifty an invocation gets in total for its index, its
+   * departure shards, its operators, its live feed, its weather and its disruptions. The question
+   * got better and the bill got bigger than the platform allows.
    *
-   * The pattern read stays behind it, because an artifact published before the family existed has
-   * no buckets and a board must fall back rather than describe a stop as having no services.
+   * So it is asked where it is affordable and where the alternative is worst: the stop whose own
+   * departures name no patterns, which is the stop whose geographic read costs the most and buys
+   * the least. Making it the answer for every board needs the route's name and operator in the
+   * index itself, so that naming fifty routes is one read rather than fifty-one — which is a
+   * change to what is published, not to what is asked.
    */
-  const directServices = await boardLedger.stage("stop-services", () =>
-    network!.servicesCallingAtStop(stop.id, Date.now(), boardLedger),
-  );
+  const directServices =
+    namedPatternIds.size === 0
+      ? await boardLedger.stage("stop-services", () =>
+          network!.servicesCallingAtStop(stop.id, Date.now(), boardLedger),
+        )
+      : { serviceIds: [], available: false };
   mark("board:stop-services:done", {
     available: directServices.available,
     services: directServices.serviceIds.length,
@@ -1756,12 +1762,23 @@ router.get("/v1/journeys", async (_request, { env, url }) => {
           serviceDate,
           options: [],
           explanation: null,
-          unavailableReason:
-            "We could not read the whole network along this corridor inside one request, so any " +
-            "journey we showed you might be missing the bus you actually want. Try a shorter " +
-            "journey, or try again shortly.",
+          /*
+           * Two different sentences, because they are two different situations.
+           *
+           * A corridor that needs more objects than one invocation may open is a request for a
+           * journey this planner is not built for, and saying so is both true and actionable. "We
+           * could not read the whole network" is for the case where the read was cut short by its
+           * byte budget — a limit of ours, on a request that was reasonable — and reads as a
+           * fault, which is right for that one and misleading for the other.
+           */
+          unavailableReason: slice.tooWide
+            ? "These points are too far apart for this planner. It is built for local journeys, " +
+              "not cross-country ones."
+            : "We could not read the whole network along this corridor inside one request, so any " +
+              "journey we showed you might be missing the bus you actually want. Try a shorter " +
+              "journey, or try again shortly.",
           diagnostics: {
-            code: "incomplete_read" as const,
+            code: (slice.tooWide ? "too_far" : "incomplete_read") as "too_far" | "incomplete_read",
             layout: (journeyIndex.layout ? "compatible" : "undeclared") as
               "compatible" | "undeclared" | "mismatch",
             corridorTiles: 0,
