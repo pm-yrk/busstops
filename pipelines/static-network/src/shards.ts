@@ -430,6 +430,41 @@ export const ROUTE_PATTERN_BUCKETS = 512;
  */
 export const MAP_STOPS_PREFIX = "network/map-stops";
 
+/**
+ * The map projection's own grid, four times finer than the stop tiles it used to share.
+ *
+ * The record is already as thin as it can usefully be — a published `Stop` carries provenance,
+ * quality flags, amenities and the rest, and none of that is here. What was left is the *tile*:
+ * a quarter of a degree is about 28km by 17km at this latitude, and a city viewport is a tenth of
+ * that, so the deployed cold ledger measured a Manchester map walking 2.18 MiB of projection to
+ * draw at most four hundred markers. The over-read is geometric, not per-record, and the only
+ * lever on it is the size of the square.
+ *
+ * A sixteenth of a degree is about 7km by 4km. A city viewport spans six to eight of them instead
+ * of one to four much larger ones, so the text walked comes down by roughly five times while the
+ * bytes stored stay the same — the same stops, in more and smaller objects. Nationally that takes
+ * the family from a few hundred objects to a few thousand, which is a build-time write cost and
+ * no storage cost worth the name.
+ *
+ * Its own constant rather than a change to `STOP_TILE_DEGREES`, because the stop tiles carry the
+ * full records that the locator and the board read by id and nothing about those wants retiling.
+ * It is declared in the layout, so a reader can never pair its own grid with an artifact written
+ * on a different one.
+ */
+export const MAP_STOP_TILE_DEGREES = 0.0625;
+
+export function tileForMapStop(stop: Stop): string {
+  return tileIdFor(stop.locationCoordinate, MAP_STOP_TILE_DEGREES);
+}
+
+export function mapStopTilesForBoundingBox(
+  bbox: BoundingBox,
+  /** The grid the artifact being read declares. See `NetworkReader.mapStopGrid`. */
+  sizeDegrees: number = MAP_STOP_TILE_DEGREES,
+): string[] {
+  return centreOut(bbox, sizeDegrees);
+}
+
 export interface MapStopRow {
   /** Stop id, what a marker navigates by. */
   i: string;
@@ -845,6 +880,8 @@ export const searchTilesForBoundingBox = stopTilesForBoundingBox;
 export function stopTilesForShapes(
   shapes: Iterable<readonly Coordinate[]>,
   marginDegrees = 0.01,
+  /** Which grid to name. The map projection has its own, finer one. */
+  sizeDegrees: number = STOP_TILE_DEGREES,
 ): string[] {
   const tiles = new Set<string>();
   // Half the margin: the furthest a skipped point can be from a point that was used, and well
@@ -854,7 +891,7 @@ export function stopTilesForShapes(
   const use = (point: Coordinate) => {
     for (const lat of [point.lat - marginDegrees, point.lat + marginDegrees]) {
       for (const lon of [point.lon - marginDegrees, point.lon + marginDegrees]) {
-        tiles.add(tileIdFor({ lat, lon }, STOP_TILE_DEGREES));
+        tiles.add(tileIdFor({ lat, lon }, sizeDegrees));
       }
     }
   };
@@ -913,6 +950,14 @@ export interface ArtifactLayout {
   /** Bumped when the shape of a shard changes, as opposed to the grid it is filed on. */
   formatVersion: number;
   stopTileDegrees: number;
+  /**
+   * The map projection's grid, which is finer than the stop tiles and is its own number.
+   *
+   * Optional, because an artifact published before the projection had its own grid declares no
+   * such field and a reader meeting one must fall back rather than report a mismatch it cannot
+   * act on.
+   */
+  mapStopTileDegrees?: number;
   patternTileDegrees: number;
   tripTileDegrees: number;
   tripWindowHours: number;
@@ -933,6 +978,7 @@ export function currentArtifactLayout(): ArtifactLayout {
   return {
     formatVersion: ARTIFACT_FORMAT_VERSION,
     stopTileDegrees: STOP_TILE_DEGREES,
+    mapStopTileDegrees: MAP_STOP_TILE_DEGREES,
     patternTileDegrees: PATTERN_TILE_DEGREES,
     tripTileDegrees: TRIP_TILE_DEGREES,
     tripWindowHours: TRIP_WINDOW_HOURS,

@@ -39,6 +39,8 @@ import {
   searchTilesForBoundingBox,
   stopLocatorDataset,
   stopTileDataset,
+  mapStopTilesForBoundingBox,
+  STOP_TILE_DEGREES,
   stopTilesForBoundingBox,
   stopTilesForShapes,
   tokenize,
@@ -1315,6 +1317,23 @@ export class NetworkReader {
    * the text costs about three milliseconds a mebibyte before an object is built, and a viewport
    * was reading 7.00 MiB across two families to draw four hundred markers.
    */
+  /**
+   * Which grid this artifact's map projection is filed on.
+   *
+   * The Worker deploys before the data is rebuilt, so for a while a reader that knows about the
+   * finer grid is serving an artifact written on the coarser one. Asking that artifact for a
+   * sixteenth-of-a-degree tile id names an object that was never written: `readTiles` keeps only
+   * the tiles the index lists, so the request would quietly read nothing and the viewport would
+   * come back with no stops on it. A map that is empty and says nothing is a worse answer than a
+   * map that is slow.
+   *
+   * So the grid comes from the artifact's own declared layout, and an artifact that predates the
+   * declaration is read on the grid it was written on.
+   */
+  private mapStopGrid(index: NetworkIndexRecord): number {
+    return index.layout?.mapStopTileDegrees ?? STOP_TILE_DEGREES;
+  }
+
   async mapStopsInBoundingBox(
     bbox: { west: number; south: number; east: number; north: number },
     limit: number,
@@ -1327,7 +1346,7 @@ export class NetworkReader {
 
     const read = await this.readTiles<MapStopRow>(
       mapStopsDataset,
-      stopTilesForBoundingBox(bbox),
+      mapStopTilesForBoundingBox(bbox, this.mapStopGrid(index)),
       index.mapStopTiles,
       index.version,
       now,
@@ -1691,7 +1710,17 @@ export class NetworkReader {
      * filter is the same one: a line is matched by id or ATCO code before it is parsed.
      */
     const projected = await this.mapStopsForTiles(
-      tiles,
+      /*
+       * On the projection's own grid, which is finer than the general stop tiles.
+       *
+       * Both are derived from the same shapes; asking the projection for a quarter-degree tile
+       * id would ask for an object that was never written and read a route with no stops on it.
+       */
+      stopTilesForShapes(
+        geometries.map((geometry) => geometry.shape),
+        0.01,
+        this.mapStopGrid(index),
+      ),
       index,
       now,
       budgetChars ?? this.requestChars,

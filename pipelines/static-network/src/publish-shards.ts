@@ -42,6 +42,7 @@ import {
   patternIndexTileDataset,
   patternIndexShardLines,
   stopRoutesDataset,
+  tileForMapStop,
   STOP_SERVICES_BUCKETS,
   stopServicesBucketFor,
   stopServicesDataset,
@@ -699,7 +700,8 @@ function groupMapStopsByTile(
       ...(stop.indicator === undefined ? {} : { d: stop.indicator }),
       ...(names && names.size > 0 ? { r: [...names].sort() } : {}),
     };
-    const tile = tileForStop(stop);
+    /* The projection's own grid, four times finer than the stop tiles. See MAP_STOP_TILE_DEGREES. */
+    const tile = tileForMapStop(stop);
     const rows = byTile.get(tile);
     if (rows) rows.push(row);
     else byTile.set(tile, [row]);
