@@ -118,6 +118,40 @@ a board that merged them would link a passenger to somebody else's timetable. An
 is derived from **whether the bucket was actually read**: zero characters means the object was
 absent, and then "no row for this stop" is not a statement about the stop.
 
+## What 1102 actually is, which took four wrong diagnoses to find
+
+Cloudflare's own limits page says it plainly, and reading it earlier would have saved most of a
+day:
+
+> Each isolate can consume up to 128 MB of memory, including the JavaScript heap. **This limit is
+> per-isolate, not per-invocation.** A single isolate can handle many concurrent requests. When an
+> isolate exceeds 128 MB, the Workers runtime lets in-flight requests complete and creates a new
+> isolate for subsequent requests. During extremely high load, the runtime may cancel some
+> incoming requests to maintain stability.
+
+1102 is "exceeded resource limits", and the dashboard splits it into `exceededCpu` and
+`exceededMemory`. Everything measured here fits the second: the ceiling accumulates **across
+requests on one isolate**, so an isolate that has served about a hundred passenger requests — each
+allocating hundreds of kilobytes to several megabytes of strings and object graphs — reaches it,
+and the runtime then sheds requests irrespective of what the current one costs.
+
+That is why every size-based theory kept failing to predict the failures. A paced walk measured, on
+two consecutive deployments:
+
+|                       |   peak-1 |   peak-2 |
+| --------------------- | -------: | -------: |
+| Requests, one isolate | 54 of 54 | 33 of 52 |
+| `isolateServedMax`    |       54 |      103 |
+
+An 87,543-character `nearby` fails at `served=106` while a 5,008,974-character read succeeds at
+`served<60`, and `residency.chars` is zero at both — because the megabytes are V8's, not ours.
+
+The remedies Cloudflare lists are, in order: stream bodies instead of buffering entire payloads;
+avoid large in-memory objects; profile. This ADR's decisions are all the second one, and they
+moved the cliff from request 28 to request 54 of a pass. The first one is not done: every shard
+read is `await object.text()`, so a pattern tile is a single three-to-five-megabyte string
+allocation. That is the next measured offender and the documented fix for it.
+
 ## Consequences
 
 The tests that protect this are structural, and deliberately so: CI time is not Cloudflare CPU, and
