@@ -80,6 +80,44 @@ published serves nothing, which made the serving saving of those runs exactly ze
 are free and unlimited on a public repository; the job allows 240 and the steps after the bootstrap
 take about 35, so 165 keeps what the limit is for while leaving the retiling affordable.
 
+## The follow-up the first attempt earned
+
+Looking a stop's services up by id removed the geographic scan and moved the cost rather than
+removing it. A board then held service ids, and every id lives in its own hashed service bucket —
+so asking the index on every board took Leeds City Bus Station from four of four samples answering
+with three routes to four of four answering 1102, and Norwich Tombland and Birmingham Coach Station
+with it. The cause is the thing that made the index better: it names every route that calls at a
+stop rather than only the ones with a bus due, and an interchange has fifty of those. Fifty ids is
+upwards of thirty-two objects, each a subrequest against the fifty an invocation gets in total for
+its index, its departure shards, its operators, its live feed, its weather and its disruptions.
+
+So the names travel with the ids. `network/stop-serving-routes` carries, per stop, each serving
+route's canonical service id, its public name, and an index into a table of operators held once per
+bucket. Measured against the live artifact before publishing:
+
+|                |                         `stop-services` |     enriched |
+| -------------- | --------------------------------------: | -----------: |
+| Stops          |                                 282,161 |      282,161 |
+| Entries        |                                 766,504 |      766,504 |
+| Buckets        |                                   1,024 |        1,024 |
+| Bytes          |                              42,041,939 |   61,437,503 |
+| Median bucket  |                                  41,057 |       59,935 |
+| Largest bucket |                                       — |       73,063 |
+| A board's read | 1 bucket **+ up to 32 service buckets** | **1 bucket** |
+
+Eighteen and a half mebibytes more, and the busiest stop in England has ninety-four routes in one
+seventy-three-kilobyte object. The per-bucket operator table is what keeps that number small: a
+median bucket holds a hundred and eighty-two distinct operators, each of which would otherwise
+repeat a thirty-six-character id on every route at every stop it serves.
+
+Three things about it are deliberate. It is a **new family rather than a new version of the old
+one**, because the Worker ships before the data does and an old Worker meeting enriched rows inside
+`stop-services` would read each entry's array where it expected an id and show a stop as having no
+routes at all. Identity is **not collapsed by public name**, because several operators run a "1" and
+a board that merged them would link a passenger to somebody else's timetable. And `routesComplete`
+is derived from **whether the bucket was actually read**: zero characters means the object was
+absent, and then "no row for this stop" is not a statement about the stop.
+
 ## Consequences
 
 The tests that protect this are structural, and deliberately so: CI time is not Cloudflare CPU, and
