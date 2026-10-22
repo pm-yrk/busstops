@@ -1042,11 +1042,20 @@ jobs:
       # parse them. So this walks five cities once each, in turn, and never revisits one — every
       # reading is against artifacts nothing has opened. It runs before the passenger probe
       # because the passenger probe is what would warm them.
+      #
+      # And then twice more, round-robin, for at least fifty requests in one sequence: the
+      # acceptance criterion is a Worker that survives normal peak use, and the two came apart
+      # once already. A run that went 66 of 66 was served by an isolate that recycled at request
+      # 26; the run that failed had one isolate serve all 53 and began answering 1102 partway
+      # through. Thirty requests cannot see that, so the peak passes keep going past it.
       - name: Cold first contact, city by city
+        # Its own limit: sixty-six paced requests, two forty-five-second idles and a hundred more.
+        timeout-minutes: 25
         run: |
           set -o pipefail
           npx tsx scripts/cold-serving.ts \
             --worker "${{ needs.preview.outputs.worker_url }}" \
+            --peak 50 \
             --json cold-serving.json 2>&1 | tee cold-serving.log
 
       # A request through the Worker and an independent request straight to BODS, in the same

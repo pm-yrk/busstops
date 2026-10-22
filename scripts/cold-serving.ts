@@ -15,7 +15,7 @@
  * not touched. The warm pass follows, deliberately repeating the first city, so the two numbers
  * sit side by side.
  *
- *   npx tsx scripts/cold-serving.ts --worker https://... [--json report.json]
+ *   npx tsx scripts/cold-serving.ts --worker https://... [--json report.json] [--peak 50]
  */
 
 import { writeFileSync } from "node:fs";
@@ -29,6 +29,13 @@ function arg(name: string): string | undefined {
 
 const WORKER = (arg("worker") ?? process.env.WORKER_URL ?? "").replace(/\/+$/, "");
 const JSON_OUT = arg("json");
+/*
+ * How many requests the peak passes must make, twice over. Zero skips them.
+ *
+ * Fifty-plus because that is the number that failed: one isolate served 53 and started answering
+ * 1102 at request 26. A pass that stops short of it proves the thing that already passed.
+ */
+const PEAK_REQUESTS = Math.max(0, Number(arg("peak") ?? process.env.PEAK_REQUESTS ?? "0"));
 
 if (!WORKER) {
   console.error("Usage: cold-serving.ts --worker <worker url> [--json <file>]");
@@ -93,12 +100,23 @@ const asText = (value: unknown): string =>
 const asNumber = (value: unknown): number | undefined =>
   typeof value === "number" && Number.isFinite(value) ? value : undefined;
 
+/**
+ * Which walk a reading belongs to.
+ *
+ * `peak` is a third shape and not a longer warm pass. Cold and warm each make about thirty
+ * requests, which is fewer than one isolate is asked to serve on a real evening — and the run
+ * that failed did so at request 26 of 53 on a single isolate, so a walk that stops at thirty
+ * cannot see the failure at all. A peak pass keeps going, round-robin across the cities at the
+ * same human pace, until it has made at least as many requests as the number that broke.
+ */
+type Pass = "cold" | "warm" | "peak-1" | "peak-2";
+
 /** One stage line of a read ledger, flattened so a table can be printed from it. */
 interface Reading {
   city: string;
   endpoint: string;
   path: string;
-  pass: "cold" | "warm";
+  pass: Pass;
   status: number | null;
   ms: number;
   /** Cloudflare's own words when the Worker did not answer. */
@@ -120,12 +138,7 @@ interface Reading {
 
 const readings: Reading[] = [];
 
-async function ask(
-  city: string,
-  endpoint: string,
-  path: string,
-  pass: "cold" | "warm",
-): Promise<unknown> {
+async function ask(city: string, endpoint: string, path: string, pass: Pass): Promise<unknown> {
   const started = Date.now();
   let status: number | null = null;
   let body = "";
@@ -217,7 +230,7 @@ async function ask(
  * city's own answers, so nothing is hard coded and a city whose search fails is reported as such
  * rather than skipped.
  */
-async function walk(city: (typeof CITIES)[number], pass: "cold" | "warm"): Promise<void> {
+async function walk(city: (typeof CITIES)[number], pass: Pass): Promise<void> {
   const pace = () => new Promise((resolve) => setTimeout(resolve, 1_000));
   const bbox = encodeURIComponent(bboxParam(city.bbox));
 
@@ -288,7 +301,7 @@ async function walk(city: (typeof CITIES)[number], pass: "cold" | "warm"): Promi
   );
 }
 
-function summarise(pass: "cold" | "warm"): Array<Record<string, unknown>> {
+function summarise(pass: Pass): Array<Record<string, unknown>> {
   const byEndpoint = new Map<string, Reading[]>();
   for (const reading of readings.filter((row) => row.pass === pass)) {
     byEndpoint.set(reading.endpoint, [...(byEndpoint.get(reading.endpoint) ?? []), reading]);
@@ -331,6 +344,69 @@ function familyTotals(rows: Reading[]): Record<string, number> {
   return totals;
 }
 
+/**
+ * A busy evening's worth of requests, in one sequence, with nothing warmed first.
+ *
+ * The acceptance criterion is not a cheaper ledger, it is a Worker that does not run out of
+ * resources during normal peak use — and the two came apart once already. A run that went 66 of
+ * 66 was served by an isolate that recycled at request 26; the run that failed had one isolate
+ * serve all 53, and it started answering 1102 partway through. So what this pass measures is not
+ * the per-request cost but how far a *single* isolate gets, and the number that matters is the
+ * largest `requestsServed` any reading reported alongside the errors at that point.
+ *
+ * Round-robin rather than city by city, because that is the honest shape: a real isolate serves
+ * whoever arrives, so its residency is the union of everywhere, not one city's tiles.
+ */
+async function peak(pass: Pass, atLeast: number): Promise<void> {
+  let made = 0;
+  let round = 0;
+  while (made < atLeast) {
+    const city = CITIES[round % CITIES.length]!;
+    const before = readings.length;
+    await walk(city, pass);
+    made += readings.length - before;
+    round += 1;
+    /*
+     * A guard against a walk that answers nothing. `walk` derives its stop and route ids from the
+     * city's own answers, so an artifact that cannot answer search makes each round shorter — and
+     * without this the loop would spin asking two questions at a time for a very long while.
+     */
+    if (round > atLeast) break;
+  }
+}
+
+/** What one isolate was asked to do, and whether it stayed up while doing it. */
+function isolateReach(pass: Pass): Record<string, unknown> {
+  const rows = readings.filter((row) => row.pass === pass);
+  const served = rows.map((row) => row.requestsServed ?? 0);
+  const failures = rows.filter((row) => row.platform !== undefined);
+  /*
+   * How many isolates answered, counted from the residency counter rather than guessed.
+   *
+   * `requestsServed` is the isolate's own tally, so it climbs while one isolate is answering and
+   * drops back when a new one takes over. Counting the drops counts the handovers, and a walk
+   * spread over several isolates is a weaker result than the same walk on one — the whole point
+   * is to find out what happens when it is *not* spread.
+   */
+  let handovers = 0;
+  for (let i = 1; i < served.length; i += 1) {
+    if (served[i]! < served[i - 1]!) handovers += 1;
+  }
+  return {
+    pass,
+    requests: rows.length,
+    cities: [...new Set(rows.map((row) => row.city))].length,
+    ok: rows.filter((row) => row.status === 200).length,
+    platformErrors: failures.length,
+    platformSaid: [...new Set(failures.map((row) => row.platform))].slice(0, 3),
+    isolateServedMax: Math.max(0, ...served),
+    isolates: handovers + 1,
+    maxCharsDecoded: Math.max(0, ...rows.map((row) => row.charsDecoded ?? 0)),
+    maxResidentChars: Math.max(0, ...rows.map((row) => row.residentCharsBefore ?? 0)),
+    maxResidentRecords: Math.max(0, ...rows.map((row) => row.residentRecordsBefore ?? 0)),
+  };
+}
+
 async function main(): Promise<void> {
   console.log(`Deployed API: ${WORKER}`);
   console.log("");
@@ -346,6 +422,37 @@ async function main(): Promise<void> {
   console.log("=".repeat(78));
 
   for (const city of CITIES) await walk(city, "warm");
+
+  const peaks: Array<Record<string, unknown>> = [];
+  if (PEAK_REQUESTS > 0) {
+    for (const pass of ["peak-1", "peak-2"] as const) {
+      /*
+       * Idle first, so the pass starts on an isolate that has not been warmed for it.
+       *
+       * Cloudflare evicts an idle isolate within a minute or so, and the walk that precedes this
+       * has just touched five cities' tiles — measuring peak behaviour on *that* isolate would
+       * be measuring the warm pass again with a longer tail. Forty-five seconds of nothing is
+       * the cheapest way to ask for a fresh one, and if the platform hands back the same isolate
+       * the reading says so: `requestsServed` carries on from where it left off.
+       */
+      await new Promise((resolve) => setTimeout(resolve, 45_000));
+      console.log("");
+      console.log("=".repeat(78));
+      console.log(
+        `${pass}: ${PEAK_REQUESTS}+ requests in one sequence, round-robin, nothing prewarmed`,
+      );
+      console.log("=".repeat(78));
+      await peak(pass, PEAK_REQUESTS);
+      const reach = isolateReach(pass);
+      peaks.push(reach);
+      console.log(
+        `${pass}: ${String(reach.ok)}/${String(reach.requests)} ok across ` +
+          `${String(reach.cities)} cities, ${String(reach.platformErrors)} platform error(s); ` +
+          `one isolate served up to ${String(reach.isolateServedMax)} request(s) over ` +
+          `${String(reach.isolates)} isolate(s)`,
+      );
+    }
+  }
 
   const cold = summarise("cold");
   const warm = summarise("warm");
@@ -408,11 +515,17 @@ async function main(): Promise<void> {
     worker: WORKER,
     cold,
     warm,
+    peaks,
     trace,
     readings,
   };
   if (JSON_OUT) writeFileSync(JSON_OUT, JSON.stringify(report, null, 1));
   annotate("notice", "cold serving", JSON.stringify({ cold, warm }, null, 1));
+  if (peaks.length > 0) {
+    // Its own annotation: this is the acceptance measurement, and it must not be the part that
+    // GitHub truncates away when the per-endpoint summary happens to be long.
+    annotate("notice", "peak passenger walk", JSON.stringify(peaks, null, 1));
+  }
   /*
    * One row per line, because the splitter divides on line boundaries.
    *
@@ -432,6 +545,12 @@ async function main(): Promise<void> {
   console.log("");
   console.log(`COLD_PLATFORM_ERRORS=${failures.filter((row) => row.pass === "cold").length}`);
   console.log(`WARM_PLATFORM_ERRORS=${failures.filter((row) => row.pass === "warm").length}`);
+  const peakFailures = failures.filter((row) => row.pass.startsWith("peak"));
+  console.log(`PEAK_PLATFORM_ERRORS=${peakFailures.length}`);
+  console.log(`PEAK_REQUESTS=${readings.filter((row) => row.pass.startsWith("peak")).length}`);
+  console.log(
+    `PEAK_ISOLATE_SERVED_MAX=${Math.max(0, ...peaks.map((row) => Number(row.isolateServedMax ?? 0)))}`,
+  );
 }
 
 /* Called rather than awaited at the top level, so a transform error is a transform error. */
