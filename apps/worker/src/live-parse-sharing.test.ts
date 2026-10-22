@@ -93,6 +93,52 @@ describe("concurrent requests for one live feed", () => {
     expect(retried.observations.length).toBeGreaterThan(0);
   });
 
+  /*
+   * Sharing a parse must not mean inheriting somebody else's patience.
+   *
+   * The map asks for the feed with about 1,800ms, route detail with as little as 300, and a
+   * scheduled collector with no bound at all. An unbounded await on a promise another request
+   * created let a caller wait far past its own budget for a fetch it did not start — and the
+   * deployed peak walk caught exactly that: a forty-five-second hang followed by failures on the
+   * same isolate, which is the shape of a queue and not of a Worker out of CPU.
+   */
+  it("gives up on a shared parse at its own deadline, not the starter's", async () => {
+    let release: (() => void) | undefined;
+    const fetchImpl = (async () => {
+      /* Never settles until the test says so: the slow upstream the first caller is waiting on. */
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return new Response(siriXml, { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const live = new LiveService({
+      env: { BODS_API_KEY: "test-key" } as unknown as WorkerEnv,
+      now: () => new Date("2026-09-02T08:00:05Z"),
+      fetchImpl,
+    });
+
+    /* The starter, with a long budget, left in flight. */
+    const starter = live.vehiclesInBoundingBox(BBOX, 30_000);
+    /* And a second caller that can only afford a fraction of it. */
+    const began = Date.now();
+    const impatient = await live.vehiclesInBoundingBox(BBOX, 150);
+    const waited = Date.now() - began;
+
+    expect(waited, "the second caller waited on the first one's clock").toBeLessThan(2_000);
+    /*
+     * And it says the source did not answer rather than reporting an empty feed as a read: "zero
+     * buses with a 200" is the failure this file exists to have stopped producing.
+     */
+    expect(impatient.observations).toHaveLength(0);
+    expect(impatient.failedSources).toContain("bods");
+
+    /* The work was abandoned by the waiter, not cancelled: the starter still gets its answer. */
+    release?.();
+    const started = await starter;
+    expect(started.observations.length).toBeGreaterThan(0);
+  });
+
   it("still reuses a finished parse for a request that arrives later", async () => {
     const { live, fetches } = serviceWith();
 

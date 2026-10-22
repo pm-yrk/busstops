@@ -197,6 +197,30 @@ export function summariseVehicleSource(
  */
 const NORMALIZED_FEED_TTL_MS = 8_000;
 
+/**
+ * Awaits a promise somebody else started, for no longer than this caller can afford.
+ *
+ * Rejects rather than resolving empty, because the caller's `catch` already knows how to report a
+ * source that did not answer — and an empty feed reported as a successful read is the "zero buses
+ * with a 200" failure this whole file exists to have stopped doing.
+ */
+async function withDeadline<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`shared live-feed parse exceeded ${String(timeoutMs)}ms`)),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 interface NormalizedFeed {
   /** The whole parse, so a reuse answers exactly what a fresh parse would have. */
   parsed: ReturnType<typeof normalizeSiriVm>;
@@ -335,9 +359,20 @@ export class LiveService {
           /*
            * Either a parse that finished or one still running; awaiting covers both, and a
            * settled promise resolves without yielding the thread to anything else.
+           *
+           * Bounded by *this* caller's deadline, not by the one that started the work. Sharing a
+           * parse must not mean inheriting somebody else's patience: the map asks with about
+           * 1,800ms, route detail with as little as 300, and a scheduled collector with no bound
+           * at all — so an unbounded await let a request wait far past its own budget on a fetch
+           * it did not start. The deployed peak walk caught it as a forty-five-second hang
+           * followed by failures on the same isolate, which is the shape of a queue rather than
+           * of a Worker out of CPU.
+           *
+           * Abandoning the wait does not abandon the work: the promise belongs to the request
+           * that created it and settles for whoever is still waiting.
            */
           mark("siri:cache-hit", { cached: true });
-          normalized = await held.feed;
+          normalized = await withDeadline(held.feed, timeoutMs);
         } else {
           /*
            * Registered before it is awaited, so a request arriving in the same millisecond finds

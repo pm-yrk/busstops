@@ -54,12 +54,24 @@ interface CachedShard {
  * A published timetable does not change during a day, so the age limit is generous; the byte
  * budget is what actually bounds this. The text is cached rather than the parsed rows, because
  * the parse is now per-stop and two passengers at different stops in the same bucket share the
- * download but not the work. Both limits are far below the isolate's 128 MiB, because a request
- * needs room to work on top of whatever is resident.
+ * download but not the work.
+ *
+ * **One shard, not four, and the reason is the wrong budget.** These limits were set against the
+ * isolate's 128 MiB of memory, and what kills these requests is CPU — so what matters is not
+ * whether the resident text fits but how much room a request has to work on top of it. The
+ * deployed peak walk caught the difference: a journey died at its pattern read reporting
+ * `departureShardsResident=2` and `departureChars=4441456`, four and a quarter mebibytes of
+ * somebody else's departure text held in the isolate before this request began. The shard cache
+ * next door was already fixed to keep nothing for the same reason; this one kept its old number.
+ *
+ * A departure shard is a couple of mebibytes, so one is the most that can be held without the
+ * next request starting from a worse position than a cold one. It keeps the case the cache was
+ * written for — consecutive passengers at the same stop, which is what a board refresh is — and
+ * gives up the case it was guessing at, which was four unrelated buckets at once.
  */
 const TTL_MS = 10 * 60 * 1000;
-const MAX_CACHED_SHARDS = 4;
-const MAX_CACHED_CHARS = 6 * 1024 * 1024;
+const MAX_CACHED_SHARDS = 1;
+const MAX_CACHED_CHARS = 3 * 1024 * 1024;
 
 export class DepartureReader {
   private readonly shards = new Map<string, CachedShard>();

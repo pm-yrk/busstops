@@ -244,6 +244,45 @@ describe("reading the departures due at a stop", () => {
       );
       await reader.forStop(ATCO, [date], at(`${date}T09:00:00Z`), at(`${date}T10:00:00Z`), VERSION);
     }
-    expect(reader.cachedChars).toBeLessThan(6 * 1024 * 1024);
+    /*
+     * Bounded against the budget that actually fails, which is CPU and not the isolate's 128 MiB.
+     *
+     * What matters is not whether the resident text fits but how much room the *next* request has
+     * to work on top of it. The deployed peak walk caught a journey dying at its pattern read
+     * with `departureShardsResident=2` and `departureChars=4441456` — four and a quarter
+     * mebibytes of somebody else's departure text held before that request began — so the bound
+     * is one shard now, and this asserts the shape rather than the old number.
+     */
+    expect(reader.cachedShardCount).toBe(1);
+    expect(reader.cachedChars).toBeLessThan(3 * 1024 * 1024);
+  });
+
+  /*
+   * And the case the cache exists for still works: a board refreshed at the same stop must not
+   * re-download its shard. Giving up four unrelated buckets is the trade; giving up this would
+   * make the cache pointless.
+   */
+  it("still spares a second read at the same stop", async () => {
+    const store = new InMemoryObjectStore();
+    const reads: string[] = [];
+    const recording = {
+      get: async (key: string) => {
+        reads.push(key);
+        return store.get(key);
+      },
+      put: store.put.bind(store),
+      delete: store.delete.bind(store),
+      list: store.list.bind(store),
+    };
+    await publishShard(store, [row(ATCO, "2026-09-02T09:05:00Z", "72")], "2026-09-02");
+
+    const reader = new DepartureReader(recording as unknown as InMemoryObjectStore);
+    const window = [at("2026-09-02T09:00:00Z"), at("2026-09-02T10:00:00Z")] as const;
+    await reader.forStop(ATCO, ["2026-09-02"], window[0], window[1], VERSION);
+    const afterFirst = reads.length;
+    const again = await reader.forStop(ATCO, ["2026-09-02"], window[0], window[1], VERSION);
+
+    expect(reads.length, "the second read came from the cache").toBe(afterFirst);
+    expect(again.rows.length).toBeGreaterThan(0);
   });
 });
