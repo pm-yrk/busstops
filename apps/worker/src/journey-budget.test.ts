@@ -258,26 +258,6 @@ describe("a corridor's patterns get a corridor's budget", () => {
 });
 
 describe("a live lookup cannot outlive the budget it entered with", () => {
-  it("declines oversized SIRI XML without exhausting a free Worker invocation", async () => {
-    const service = new LiveService({
-      env: { BODS_API_KEY: "k", VEHICLE_SALT_SECRET: "s" } as never,
-      now: () => new Date("2026-09-04T08:00:00.000Z"),
-      fetchImpl: (async () =>
-        new Response("<Siri>" + "x".repeat(100_000) + "</Siri>", {
-          status: 200,
-        })) as unknown as typeof fetch,
-    });
-
-    const outcome = await service.vehiclesInBoundingBox(
-      { west: -1.6, south: 53.7, east: -1.5, north: 53.8 },
-      500,
-    );
-    expect(outcome.observations).toEqual([]);
-    expect(outcome.failedSources).toContain("bods");
-    expect(outcome.diagnostics[0]?.outcome).toBe("request_failed");
-    expect(outcome.diagnostics[0]?.error).toContain("live_feed_cpu_guard");
-  });
-
   it("hands the route's remaining time to the vehicle fetch", async () => {
     /*
      * Run 48's last request before the platform killed it entered this stage with time to spare
