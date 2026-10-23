@@ -73,6 +73,10 @@ describe("wrangler environments", () => {
     expect(new Set(buckets).size).toBe(buckets.length);
   });
 
+  it("disables expensive live vehicle parsing in both free-tier environments", () => {
+    expect(config.match(/liveVehicles/g)).toHaveLength(2);
+  });
+
   it("enables observability in both environments", () => {
     expect(config).toMatch(/^\[observability\]\nenabled = true/m);
     expect(config).toMatch(/^\[env\.preview\.observability\]\nenabled = true/m);
