@@ -197,6 +197,16 @@ export function summariseVehicleSource(
  */
 const NORMALIZED_FEED_TTL_MS = 8_000;
 
+/**
+ * Workers Free allows only 10ms of CPU per request. National SIRI-VM parsing
+ * can exceed that limit on a cold request even when the viewport is small.
+ * Fail this OPTIONAL live layer safely instead of losing the map/stop response
+ * to Cloudflare error 1102. Process larger feeds outside the Worker instead.
+ *
+ * A conservative ceiling, not a guarantee of actual CPU time; keep monitoring.
+ */
+const MAX_SIRI_NORMALISE_CHARS = 32 * 1024;
+
 interface NormalizedFeed {
   /** The whole parse, so a reuse answers exactly what a fresh parse would have. */
   parsed: ReturnType<typeof normalizeSiriVm>;
@@ -349,6 +359,13 @@ export class LiveService {
             chars: xml.length,
             elapsedMs: Date.now() - fetchStartedAt,
           });
+          if (xml.length > MAX_SIRI_NORMALISE_CHARS) {
+            mark("siri:parse:skipped", {
+              chars: xml.length,
+              limit: MAX_SIRI_NORMALISE_CHARS,
+            });
+            throw new Error("live_feed_cpu_guard: oversized SIRI response");
+          }
           mark("siri:parse:begin", { chars: xml.length });
           const parsed = normalizeSiriVm(xml, {
             retrievedAt: now.toISOString(),
