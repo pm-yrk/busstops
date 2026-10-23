@@ -196,6 +196,12 @@ export function LiveMapPage() {
 
   const stops = response?.data.stops ?? [];
   const vehicles = response?.data.vehicles ?? [];
+  // The edge explicitly marks stops without live coverage when its free-tier CPU
+  // safety switch disables live vehicle parsing. Do not call this "no buses".
+  const livePositionsPaused =
+    response !== null &&
+    stops.length > 0 &&
+    stops.every((stop) => stop.hasLiveCoverage === false);
 
   return (
     <div className="live-map">
@@ -242,6 +248,13 @@ export function LiveMapPage() {
 
       <div className="live-map__body">
         {response && <ServiceBanner meta={response.meta} />}
+
+        {livePositionsPaused && (
+          <p className="live-map__notice small" role="status">
+            Live bus positions are temporarily paused. Stops and published timetable information
+            remain available.
+          </p>
+        )}
 
         {loading && !response && <LoadingBus label="Loading the live map" />}
 
@@ -373,11 +386,17 @@ export function LiveMapPage() {
                           emptyVehicleReason(response.meta.sources, response.meta.degradation) ===
                           "london_has_no_positions"
                             ? "London does not put buses on the map"
-                            : "No buses in view"
+                            : livePositionsPaused
+                              ? "Live bus positions paused"
+                              : "No buses in view"
                         }
-                        description={describeEmptyVehicles(
-                          emptyVehicleReason(response.meta.sources, response.meta.degradation),
-                        )}
+                        description={
+                          livePositionsPaused
+                            ? "Live tracking is paused to protect the service. Stop locations and scheduled departures are still available."
+                            : describeEmptyVehicles(
+                                emptyVehicleReason(response.meta.sources, response.meta.degradation),
+                              )
+                        }
                       />
                     ) : (
                       <ul className="live-map__list">
