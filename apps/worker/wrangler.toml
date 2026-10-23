@@ -21,9 +21,12 @@ workers_dev = true
 [observability]
 enabled = true
 
+# Free-tier safety profile. The live feed must be pre-processed outside Workers
+# before the edge can enable vehicle parsing without risking CPU limit errors.
+# This is intentionally set for both preview and production; no paid tier.
 [vars]
 GOVERNOR_MODE = "green"
-FEATURE_FLAGS_JSON = "{}"
+FEATURE_FLAGS_JSON = '{"liveVehicles":false}'
 # The Pages origin allowed to call this Worker from a browser. Cloudflare Pages URLs are
 # deterministic — `<project>.pages.dev` for production and `<branch>.<project>.pages.dev` for a
 # branch — so CORS can be configured before Pages has ever been deployed, with no lookup and
@@ -47,7 +50,7 @@ enabled = true
 
 [env.preview.vars]
 GOVERNOR_MODE = "green"
-FEATURE_FLAGS_JSON = "{}"
+FEATURE_FLAGS_JSON = '{"liveVehicles":false}'
 PUBLIC_BASE_URL = "https://preview.busstops.pages.dev"
 
 [[env.preview.r2_buckets]]

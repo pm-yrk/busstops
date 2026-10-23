@@ -534,6 +534,16 @@ router.get("/v1/sources/health", async (_request, { env }) => {
  */
 router.get("/v1/diagnostics/live", async (_request, { env, url }) => {
   const state = governorState(env);
+  // Do not run an expensive BODS XML parse through a diagnostic back door
+  // while the free-tier safety profile has live vehicle processing paused.
+  if (!readFeatureFlags(env).liveVehicles) {
+    return errorResponse(
+      "upstream_unavailable",
+      "Live vehicle tracking is temporarily paused to protect free-tier CPU limits.",
+      503,
+      60,
+    );
+  }
   const bboxResult = parseBoundingBox(url);
   if (!bboxResult.ok) return errorResponse("bad_request", bboxResult.message, 400);
   const bbox = bboxResult.bbox;
@@ -1836,6 +1846,16 @@ router.get("/v1/journeys", async (_request, { env, url }) => {
  */
 router.get("/v1/vehicles/:ref", async (_request, { env, params, url }) => {
   const state = governorState(env);
+  // Do not run an expensive BODS XML parse through a diagnostic back door
+  // while the free-tier safety profile has live vehicle processing paused.
+  if (!readFeatureFlags(env).liveVehicles) {
+    return errorResponse(
+      "upstream_unavailable",
+      "Live vehicle tracking is temporarily paused to protect free-tier CPU limits.",
+      503,
+      60,
+    );
+  }
   const now = new Date();
 
   const bboxResult = parseBoundingBox(url);

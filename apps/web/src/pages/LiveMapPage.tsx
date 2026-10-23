@@ -196,6 +196,7 @@ export function LiveMapPage() {
 
   const stops = response?.data.stops ?? [];
   const vehicles = response?.data.vehicles ?? [];
+  const livePositionsPaused = stops.length > 0 && stops.every((stop) => !stop.hasLiveCoverage);
 
   return (
     <div className="live-map">
@@ -242,6 +243,12 @@ export function LiveMapPage() {
 
       <div className="live-map__body">
         {response && <ServiceBanner meta={response.meta} />}
+
+        {response && livePositionsPaused && (
+          <p className="live-map__notice small" role="status">
+            Live bus positions are paused; published timetables and stop locations remain available.
+          </p>
+        )}
 
         {loading && !response && <LoadingBus label="Loading the live map" />}
 
@@ -356,7 +363,7 @@ export function LiveMapPage() {
             */}
             {response && (
               <>
-                {layers.vehicles && (
+                {layers.vehicles && !livePositionsPaused && (
                   <section aria-labelledby="vehicles-heading" className="live-map__section">
                     <PixelSectionHeading
                       mark="bus"
