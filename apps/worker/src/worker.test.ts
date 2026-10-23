@@ -468,6 +468,23 @@ describe("GET /v1/map", () => {
     expect(body.data.vehicles).toEqual([]);
   });
 
+  it("prevents direct live diagnostic and vehicle requests bypassing the free-tier kill switch", async () => {
+    const store = await publishedStore();
+    const env = makeEnv(store, { FEATURE_FLAGS_JSON: '{"liveVehicles":false}' });
+    resetWorkerState();
+
+    for (const path of [
+      "/v1/diagnostics/live?bbox=-1.6,53.7,-1.5,53.85",
+      "/v1/vehicles/vehicle-123?bbox=-1.6,53.7,-1.5,53.85",
+    ]) {
+      const response = await worker.fetch(get(path), env, ctx);
+      expect(response.status).toBe(503);
+      const body = (await response.json()) as { error: { code: string; message: string } };
+      expect(body.error.code).toBe("upstream_unavailable");
+      expect(body.error.message).toContain("paused");
+    }
+  });
+
   it("caps the number of stops returned and says it truncated", async () => {
     const store = await publishedStore();
     const response = await worker.fetch(
