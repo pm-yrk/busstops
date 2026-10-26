@@ -44,6 +44,7 @@ import {
   type PatternTripRow,
 } from "@busstops/pipeline-static-network";
 import { normalizeSiriVm } from "@busstops/adapters";
+import { buildGraph, plan, type Trip } from "@busstops/journey";
 
 const JSON_OUT = (() => {
   const index = process.argv.indexOf("--json");
@@ -162,10 +163,20 @@ async function main(): Promise<number> {
   /* ---------------------------------------------------------- the live feed */
   const bodsKey = process.env.BODS_API_KEY;
   if (bodsKey) {
+    /*
+     * `west,south,east,north`, which is the order the Worker sends and the order BODS reads.
+     *
+     * The first version of this script sent `west,east,south,north` — the convention several
+     * other APIs use — and BODS answered with 19,254,654 characters and 18,184 vehicles spanning
+     * latitude 0 to 53.5 and longitude −2.3 to 1.76. So it timed a national feed and reported the
+     * SIRI parse as 956 of a request's 996 milliseconds, which was a measurement of this script's
+     * own bug. `scripts/measure-bods-bbox.ts` settled it against the real feed: the order below
+     * returns 563,015 characters and 437 vehicles, every one of them inside the viewport.
+     */
     const url =
       `https://data.bus-data.dft.gov.uk/api/v1/datafeed/?api_key=${bodsKey}` +
-      `&boundingBox=${String(VIEWPORT.west)},${String(VIEWPORT.east)},` +
-      `${String(VIEWPORT.south)},${String(VIEWPORT.north)}`;
+      `&boundingBox=${VIEWPORT.west.toFixed(5)},${VIEWPORT.south.toFixed(5)},` +
+      `${VIEWPORT.east.toFixed(5)},${VIEWPORT.north.toFixed(5)}`;
     try {
       const response = await fetch(url, { signal: AbortSignal.timeout(30_000) });
       const xml = await response.text();
@@ -270,6 +281,68 @@ async function main(): Promise<number> {
   stages.push(
     stage("journey: parse every pattern row", patternParse.ms, patternChars, patternParse.value),
   );
+
+  /* ---------------------------------------------------------- the journey's search */
+  /*
+   * The two stages nothing had ever timed, and the ones the tail's numbers point at.
+   *
+   * Cloudflare recorded a journey spending 831ms of CPU and another invocation 1,198ms. The reads
+   * above come to about thirty-five milliseconds between them and the live parse to twenty-eight,
+   * so several hundred milliseconds are unaccounted for — and building a graph over a corridor's
+   * trips and searching it is the only computation left that could hold them.
+   */
+  const trips: Trip[] = [];
+  for (const body of tripBodies) {
+    for (let start = 0; start < body.length;) {
+      const newline = body.indexOf("\n", start);
+      const end = newline < 0 ? body.length : newline;
+      if (end > start) {
+        const row = JSON.parse(body.slice(start, end)) as PatternTripRow;
+        /*
+         * A trip needs its pattern's stop sequence to become a graph edge, and this script does
+         * not resolve patterns — so the stop ids are the row's own times indexed against a
+         * synthetic sequence. The shape and the size are what is being timed, not the itinerary.
+         */
+        trips.push({
+          id: row.j,
+          routeId: row.p,
+          stopTimes: row.t.map((seconds, i) => ({
+            stopId: `${row.p}:${String(i)}`,
+            arrivalSeconds: seconds,
+            departureSeconds: seconds,
+          })),
+        } as unknown as Trip);
+      }
+      if (newline < 0) break;
+      start = newline + 1;
+    }
+  }
+  const graphStops = [
+    ...new Map(
+      trips.flatMap((trip) =>
+        trip.stopTimes.map((call, i) => [
+          call.stopId,
+          {
+            id: call.stopId,
+            name: call.stopId,
+            coordinate: { lat: FROM.lat + i * 0.0005, lon: FROM.lon + i * 0.0005 },
+          },
+        ]),
+      ),
+    ).values(),
+  ];
+
+  const built = timed(() => buildGraph({ stops: graphStops as never, trips }));
+  stages.push(stage("journey: build the graph", built.ms, undefined, trips.length));
+
+  const planned = timed(() =>
+    plan(built.value, {
+      origin: FROM,
+      destination: TO,
+      departAtSeconds: from - midnight,
+    }),
+  );
+  stages.push(stage("journey: search it", planned.ms, undefined, planned.value.options.length));
 
   const total = stages.reduce((sum, one) => sum + one.ms, 0);
   const report = {
