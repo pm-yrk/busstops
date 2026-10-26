@@ -76,10 +76,59 @@ export interface FamilyCost {
   records: number;
   /** Milliseconds spent inside this family's reads. */
   ms: number;
+  /**
+   * What the streamed reads of this family actually consumed, where they were streamed.
+   *
+   * `chars` above was the length of the whole object, because the whole object was what a read
+   * produced. A streamed read decodes only as far as it needs to, so the two numbers can differ
+   * and the difference is the saving. Absent on a family read from a store that cannot stream.
+   */
+  stream?: StreamCost;
+}
+
+/**
+ * The part of a read that `chars` cannot describe.
+ *
+ * Cloudflare's remedy for an isolate that exceeds 128 MB is to stream large payloads instead of
+ * buffering them, and the figure that says whether that is actually happening is not the object's
+ * size — it is the largest buffer the read held at once. A reader that "streams" and concatenates
+ * every chunk reports the same `chars` as one that does not; it reports a very different
+ * `maxBufferChars`.
+ */
+export interface StreamCost {
+  /** Objects of this family read from a stream. */
+  objects: number;
+  /** Chunks consumed. */
+  chunks: number;
+  /** Non-empty lines walked. */
+  linesScanned: number;
+  /** Lines a filter kept, and therefore parsed. The rest never became objects. */
+  linesParsed: number;
+  /** Rows handed back. */
+  rowsRetained: number;
+  /** The largest buffer held at once across these reads: one chunk plus one partial line. */
+  maxBufferChars: number;
+  /** The longest partial line carried across a chunk boundary. */
+  maxCarryChars: number;
+  /** Reads that stopped before the end of the body, so the rest was never decoded. */
+  stoppedEarly: number;
 }
 
 function emptyCost(): FamilyCost {
   return { requested: 0, read: 0, cached: 0, missing: 0, failed: 0, chars: 0, records: 0, ms: 0 };
+}
+
+function emptyStreamCost(): StreamCost {
+  return {
+    objects: 0,
+    chunks: 0,
+    linesScanned: 0,
+    linesParsed: 0,
+    rowsRetained: 0,
+    maxBufferChars: 0,
+    maxCarryChars: 0,
+    stoppedEarly: 0,
+  };
 }
 
 export interface LedgerCounts {
@@ -265,6 +314,16 @@ export class ReadLedger {
       records?: number;
       ms?: number;
       outcome: "read" | "cached" | "missing" | "failed";
+      /** Present when this read came off a stream rather than out of one buffered string. */
+      stream?: {
+        chunks: number;
+        linesScanned: number;
+        linesParsed: number;
+        rowsRetained: number;
+        maxBufferChars: number;
+        maxCarryChars: number;
+        stoppedEarly: boolean;
+      };
     },
   ): void {
     const cost = this.families.get(family) ?? emptyCost();
@@ -273,6 +332,19 @@ export class ReadLedger {
     cost.chars += entry.chars ?? 0;
     cost.records += entry.records ?? 0;
     cost.ms += entry.ms ?? 0;
+    if (entry.stream) {
+      const stream = cost.stream ?? emptyStreamCost();
+      stream.objects += 1;
+      stream.chunks += entry.stream.chunks;
+      stream.linesScanned += entry.stream.linesScanned;
+      stream.linesParsed += entry.stream.linesParsed;
+      stream.rowsRetained += entry.stream.rowsRetained;
+      /* Maxima, not sums: the question is the largest buffer ever held, not their total. */
+      stream.maxBufferChars = Math.max(stream.maxBufferChars, entry.stream.maxBufferChars);
+      stream.maxCarryChars = Math.max(stream.maxCarryChars, entry.stream.maxCarryChars);
+      if (entry.stream.stoppedEarly) stream.stoppedEarly += 1;
+      cost.stream = stream;
+    }
     this.families.set(family, cost);
     // Only a read spends compute. A cache hit returns objects that are already built, which is the
     // whole reason the two outcomes are counted apart.

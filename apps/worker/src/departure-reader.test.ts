@@ -245,15 +245,17 @@ describe("reading the departures due at a stop", () => {
       await reader.forStop(ATCO, [date], at(`${date}T09:00:00Z`), at(`${date}T10:00:00Z`), VERSION);
     }
     /*
-     * Bounded against the budget that actually fails, which is CPU and not the isolate's 128 MiB.
+     * Bounded, and bounded in what the isolate actually holds.
      *
-     * What matters is not whether the resident text fits but how much room the *next* request has
-     * to work on top of it. The deployed peak walk caught a journey dying at its pattern read
-     * with `departureShardsResident=2` and `departureChars=4441456` — four and a quarter
-     * mebibytes of somebody else's departure text held before that request began — so the bound
-     * is one shard now, and this asserts the shape rather than the old number.
+     * The deployed peak walk caught a journey dying at its pattern read with
+     * `departureShardsResident=2` and `departureChars=4441456` — four and a quarter mebibytes of
+     * somebody else's departure *text* held before that request had begun. What is kept now is
+     * one stop's rows rather than a shard's text, so forty reads of forty shards leave kilobytes
+     * where they used to leave megabytes, and both bounds are asserted: the number of boards and
+     * the rows across them. The second is the one an unusual stop cannot inflate.
      */
-    expect(reader.cachedShardCount).toBe(1);
+    expect(reader.cachedShardCount).toBeLessThanOrEqual(16);
+    expect(reader.cachedRows).toBeLessThanOrEqual(8_000);
     expect(reader.cachedChars).toBeLessThan(3 * 1024 * 1024);
   });
 

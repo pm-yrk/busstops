@@ -116,6 +116,24 @@ export class R2ObjectStore implements ObjectStore {
     return response.text();
   }
 
+  /**
+   * The body as a stream. Same request, without `text()` collecting it into one string.
+   *
+   * Here for the jobs that scan a published object looking for a few rows, and so that the
+   * streaming readers can be exercised against the real store rather than only against a fixture.
+   */
+  async getStream(key: string): Promise<ReadableStream<Uint8Array> | null> {
+    const response = await this.request(this.objectUrl(key), { method: "GET" });
+    if (response.status === 404) return null;
+    if (!response.ok) {
+      throw new Error(`R2 get failed for ${key}: ${response.status}`);
+    }
+    if (response.body === null) {
+      throw new Error(`R2 get for ${key} returned no body`);
+    }
+    return response.body;
+  }
+
   async put(key: string, value: string): Promise<void> {
     const response = await this.request(this.objectUrl(key), {
       method: "PUT",

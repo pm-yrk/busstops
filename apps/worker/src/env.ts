@@ -6,7 +6,17 @@ import type { ObjectStore } from "@busstops/pipeline-core";
  */
 
 export interface R2BucketLike {
-  get(key: string): Promise<{ text(): Promise<string> } | null>;
+  /**
+   * `body` alongside `text()` because the large reads take the stream.
+   *
+   * The native R2 object has always had both; this interface only ever declared `text()`, which
+   * is how every serving read came to buffer a whole object into one string. Optional on the type
+   * so a test double may omit it, and the readers check before using it.
+   */
+  get(key: string): Promise<{
+    text(): Promise<string>;
+    body?: ReadableStream<Uint8Array> | null;
+  } | null>;
   put(key: string, value: string): Promise<unknown>;
   delete(key: string): Promise<unknown>;
   list(options?: { prefix?: string }): Promise<{ objects: Array<{ key: string }> }>;
@@ -33,6 +43,28 @@ export class R2BindingStore implements ObjectStore {
   async get(key: string): Promise<string | null> {
     const object = await this.bucket.get(key);
     return object ? object.text() : null;
+  }
+
+  /**
+   * The object's body, for a reader that wants its lines rather than the whole string.
+   *
+   * This is the one line of code that decides whether a pattern tile arrives as a
+   * three-megabyte allocation or as a sequence of chunks. Cloudflare's own first remedy for a
+   * Worker that exceeds its 128 MB isolate is to stream large payloads rather than buffer them,
+   * and until this existed there was nothing underneath the readers that could.
+   *
+   * Null when the object is absent. A `get` that produced an object with no body is not an
+   * absence and must not be reported as one — the caller would record "no rows here", which is a
+   * claim about the network rather than about the read.
+   */
+  async getStream(key: string): Promise<ReadableStream<Uint8Array> | null> {
+    const object = await this.bucket.get(key);
+    if (object === null) return null;
+    const body = object.body;
+    if (body === null || body === undefined) {
+      throw new Error(`R2 object ${key} has no body to stream`);
+    }
+    return body;
   }
   async put(key: string, value: string): Promise<void> {
     await this.bucket.put(key, value);

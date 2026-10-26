@@ -341,6 +341,47 @@ export function decodeDepartureShardForStop(text: string, atcoCode: string): Dep
   return expand(header, atcoCode, calls);
 }
 
+/**
+ * The same read, in the three pieces a streaming reader needs.
+ *
+ * `decodeDepartureShardForStop` above wants the shard as one string, which is how a board came to
+ * hold two to four megabytes of somebody else's departures: the deployed peak walk caught a
+ * journey dying at its pattern read with `departureCharsResident=4441456`. A streaming reader
+ * never has the whole string, so it needs to recognise the two lines it wants as they go past and
+ * expand them afterwards — which is exactly what these three are for.
+ *
+ * Kept beside the buffered decoder rather than replacing it, because the pipeline's own checks
+ * read whole shards from disk where buffering costs nothing and clarity is worth more.
+ */
+
+/** The shard's header, which is its first line. Throws on a format this reader cannot speak. */
+export function departureShardHeader(line: string): ShardHeader {
+  return parseHeader(line, line.length);
+}
+
+/**
+ * How a stop's line begins: its own JSON-quoted code, at the start of the line.
+ *
+ * The prefix is the whole test. A filter that searched the line for the code would also match a
+ * stop that happens to be the destination of a call at some other stop.
+ */
+export function departureStopLinePrefix(atcoCode: string): string {
+  return `[${JSON.stringify(atcoCode)},`;
+}
+
+/** The rows a stop's line carries, given the header that names its routes and destinations. */
+export function expandDepartureStopLine(
+  header: ShardHeader,
+  atcoCode: string,
+  line: string,
+): DepartureRow[] {
+  const [, calls] = JSON.parse(line) as EncodedStopLine;
+  return expand(header, atcoCode, calls);
+}
+
+/** Opaque to callers; they get one from `departureShardHeader` and hand it straight back. */
+export type DepartureShardHeader = ShardHeader;
+
 /** The whole shard. For the pipeline's own checks and for tests; the edge reads one stop. */
 export function decodeDepartureShard(text: string): DepartureRow[] {
   const lines = text.split("\n");

@@ -1457,6 +1457,74 @@ await check("two simultaneous map requests share one live-feed parse", async () 
   );
 });
 
+/**
+ * The big reads stream, said by the deployment rather than by a fixture.
+ *
+ * The unit tests prove it structurally — `text()` throws for the migrated families and the
+ * endpoints still answer — but a fixture's objects are kilobytes and the claim is about
+ * megabytes. This asks the deployed Worker, over the real artifact, what the largest buffer any
+ * one of a request's reads held was. A reader that consumes a stream and concatenates every chunk
+ * decodes exactly as many characters as `text()` does and allocates exactly as much, so
+ * `charsDecoded` cannot tell the two apart and this number is the only thing that can.
+ */
+await check("the heavy reads hold a chunk and a line, not an object", async () => {
+  const paths = [
+    [`/v1/map?bbox=${BBOX}&zoom=15`, "map"],
+    ["/v1/nearby?lat=53.7996&lon=-1.5491&radius=800", "nearby"],
+    ["/v1/search?q=leeds", "search"],
+  ];
+
+  const lines = [];
+  let worstBuffer = 0;
+  let sawStreaming = false;
+
+  for (const [path, label] of paths) {
+    const { response, body } = await getJson(path);
+    assert(response.ok, `${label} answered HTTP ${response.status}`);
+    const families = body?.meta?.diagnostics?.families ?? {};
+
+    let buffer = 0;
+    let carry = 0;
+    let scanned = 0;
+    let parsed = 0;
+    let streamedObjects = 0;
+    for (const cost of Object.values(families)) {
+      const stream = cost?.stream;
+      if (!stream) continue;
+      streamedObjects += stream.objects ?? 0;
+      buffer = Math.max(buffer, stream.maxBufferChars ?? 0);
+      carry = Math.max(carry, stream.maxCarryChars ?? 0);
+      scanned += stream.linesScanned ?? 0;
+      parsed += stream.linesParsed ?? 0;
+    }
+    if (streamedObjects > 0) sawStreaming = true;
+    worstBuffer = Math.max(worstBuffer, buffer);
+    lines.push(
+      `${label}: ${body?.meta?.diagnostics?.charsDecoded ?? "?"} chars decoded across ` +
+        `${streamedObjects} streamed object(s), largest buffer ${buffer}, longest carried line ` +
+        `${carry}, ${parsed} of ${scanned} lines parsed`,
+    );
+  }
+
+  /*
+   * Reported rather than asserted when nothing streamed: an artifact whose families this
+   * deployment reads another way is a fact about the artifact, and a check that failed on it
+   * would be failing for the wrong reason.
+   */
+  assert(sawStreaming, "no read reported streaming at all, so this cannot be proved from outside");
+  /*
+   * Two mebibytes is the line cap, so a buffer above it is not one chunk and one line — it is an
+   * object. The measured maxima before this change were 3,728,562 and 5,008,974 characters.
+   */
+  assert(
+    worstBuffer > 0 && worstBuffer < 2 * 1024 * 1024,
+    `the largest buffer held by a single read was ${worstBuffer} characters, which is an object ` +
+      `rather than a chunk and a line`,
+  );
+
+  return lines.join("; ");
+});
+
 await check("a page's worth of requests at once, the way a browser opens one", async () => {
   const PAGE_LOADS = 4;
   const lines = [];

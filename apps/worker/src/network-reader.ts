@@ -9,10 +9,12 @@ import type {
 import { compareRouteNames, type RouteStop } from "./network-queries.js";
 import {
   ArtifactStore,
+  canStream,
   objectKeyFor,
   type ObjectStore,
   haversineMetres,
 } from "@busstops/pipeline-core";
+import { readFilteredLinesStreaming, type StreamLineStats } from "./stream-lines.js";
 import {
   DATASETS,
   SHARDED,
@@ -506,7 +508,22 @@ const INDEX_TTL_MS = 5 * 60 * 1000;
  * record's own keys are pulled out by position and tested against a set — two bounded scans and
  * two lookups, whatever the size of the request.
  */
-export type LineFilter = (body: string, start: number, end: number) => boolean;
+/**
+ * `index` is the line's ordinal in the object, counted over non-empty lines from zero.
+ *
+ * Added when these reads were put onto a stream. A header line used to be recognised by sitting at
+ * offset zero of the body, and streaming makes that wrong rather than merely imprecise: when a
+ * chunk boundary falls just after a newline the next line genuinely begins at offset zero of the
+ * buffer that holds it, so a filter testing the offset would keep an arbitrary row and treat it as
+ * the header. Every other filter ignores the parameter, and TypeScript lets them.
+ *
+ * Optional so that the places applying a filter to a line they already hold as its own string —
+ * the gazetteer, and the filters' own tests — need not invent an ordinal. Both reads that stream
+ * pass it. A filter that wanted it and did not get it sees `undefined`, which fails its test and
+ * costs it the header; that is a visible incompleteness rather than a wrong answer, and
+ * `stop-serving-routes.test.ts` holds the case where it would show.
+ */
+export type LineFilter = (body: string, start: number, end: number, index?: number) => boolean;
 
 /**
  * Whether one stored line mentions a stop id, tested without building anything.
@@ -995,43 +1012,99 @@ export class NetworkReader {
     }
 
     const began = Date.now();
-    let raw: string | null;
-    try {
-      raw = await this.store.get(objectKeyFor(dataset, version));
-    } catch (error) {
-      track?.ledger.record(track.family, { outcome: "failed", ms: Date.now() - began });
-      throw error;
-    }
+    const objectKey = objectKeyFor(dataset, version);
 
-    const records: T[] = [];
-    if (raw !== null && keep) {
-      /*
-       * Walked rather than split. `split` would copy the whole body into forty thousand
-       * substrings before the filter saw any of them, which is the allocation this path exists to
-       * avoid; only the records that survive the test are ever built.
-       */
-      for (let start = 0; start < raw.length;) {
-        const newline = raw.indexOf("\n", start);
-        const end = newline < 0 ? raw.length : newline;
-        if (end > start && keep(raw, start, end)) {
-          records.push(JSON.parse(raw.slice(start, end)) as T);
+    /*
+     * Streamed when the store can, which in the Worker it always can.
+     *
+     * This used to be `await this.store.get(key)` — one string the size of the object, built
+     * before a single line of it was looked at, and a pattern tile in a dense city is three to
+     * five megabytes of it. Cloudflare's 128 MB ceiling is **per isolate rather than per
+     * invocation**, so those allocations accumulate across requests and the runtime sheds
+     * whatever arrives once an isolate is full, irrespective of what that request itself costs.
+     * It is why a paced walk passed fifty-four requests and then lost a third of the next fifty,
+     * and why an 87,543-character `nearby` died at served=106 while a 5,008,974-character read
+     * had passed on the same deployment a minute earlier.
+     *
+     * The buffered path is kept for a store that cannot stream — the in-memory one in a few older
+     * tests — and is the same code it always was.
+     */
+    let records: T[];
+    let chars: number;
+    let missing = false;
+    let streamed: StreamLineStats | null = null;
+
+    if (canStream(this.store)) {
+      let body: ReadableStream<Uint8Array> | null;
+      try {
+        body = await this.store.getStream(objectKey);
+      } catch (error) {
+        track?.ledger.record(track.family, { outcome: "failed", ms: Date.now() - began });
+        throw error;
+      }
+      if (body === null) {
+        missing = true;
+        records = [];
+        chars = 0;
+      } else {
+        try {
+          const result = await readFilteredLinesStreaming<T>(body, { keep, key: objectKey });
+          records = result.records;
+          streamed = result.stats;
+          chars = result.stats.chars;
+        } catch (error) {
+          /*
+           * A body that failed mid-read, or one line of it longer than the cap. Both are faults
+           * and both are reported as a failed read rather than as an empty object: a caller that
+           * saw zero records would record "nothing is filed here", which is a claim about the
+           * network rather than about the read.
+           */
+          track?.ledger.record(track.family, { outcome: "failed", ms: Date.now() - began });
+          throw error;
         }
-        if (newline < 0) break;
-        start = newline + 1;
       }
-    } else if (raw !== null) {
-      // No filter: every record is wanted, so the split costs nothing that is not needed anyway.
-      for (const line of raw.split("\n")) {
-        if (line.length > 0) records.push(JSON.parse(line) as T);
+    } else {
+      let raw: string | null;
+      try {
+        raw = await this.store.get(objectKey);
+      } catch (error) {
+        track?.ledger.record(track.family, { outcome: "failed", ms: Date.now() - began });
+        throw error;
       }
+      records = [];
+      if (raw !== null && keep) {
+        /*
+         * Walked rather than split. `split` would copy the whole body into forty thousand
+         * substrings before the filter saw any of them, which is the allocation this path exists
+         * to avoid; only the records that survive the test are ever built.
+         */
+        let line = 0;
+        for (let start = 0; start < raw.length;) {
+          const newline = raw.indexOf("\n", start);
+          const end = newline < 0 ? raw.length : newline;
+          if (end > start) {
+            if (keep(raw, start, end, line)) records.push(JSON.parse(raw.slice(start, end)) as T);
+            line += 1;
+          }
+          if (newline < 0) break;
+          start = newline + 1;
+        }
+      } else if (raw !== null) {
+        // No filter: every record is wanted, so the split costs nothing not needed anyway.
+        for (const text of raw.split("\n")) {
+          if (text.length > 0) records.push(JSON.parse(text) as T);
+        }
+      }
+      missing = raw === null;
+      chars = raw?.length ?? 0;
     }
 
-    const chars = raw?.length ?? 0;
     track?.ledger.record(track.family, {
-      outcome: raw === null ? "missing" : "read",
+      outcome: missing ? "missing" : "read",
       chars,
       records: records.length,
       ms: Date.now() - began,
+      stream: streamed === null ? undefined : streamed,
     });
     // See `keep`: a partial parse must never be cached as though it were the whole tile.
     if (!keep && retain) this.shards.set(key, { records, chars, usedAt: now });
@@ -1128,8 +1201,6 @@ export class NetworkReader {
        */
       textChars:
         this.cachedShardChars +
-        (this.servicesTextCache?.length ?? 0) +
-        (this.operatorsTextCache?.length ?? 0) +
         (this.placeLinesCache?.reduce((total, line) => total + line.length, 0) ?? 0),
     };
   }
@@ -2126,37 +2197,93 @@ export class NetworkReader {
       const bodies = await Promise.all(
         batch.map(async ([bucket, ids]) => {
           const began = Date.now();
+          const objectKey = objectKeyFor(patternIndexDataset(bucket), index.version);
           try {
-            const raw = await this.store.get(
-              objectKeyFor(patternIndexDataset(bucket), index.version),
-            );
+            /*
+             * The bucket's wanted rows, built as its lines go past.
+             *
+             * This read the bucket as one string and then ran `decodePatternIndexFor` once per
+             * wanted id — so a bucket was scanned from the top as many times as the request
+             * wanted patterns from it, and the string itself was held whole while that happened.
+             * Streaming walks it once and tests each line's own id against the set.
+             */
+            const wanted = new Set(ids);
+            let chunks = 0;
+            let scanned = 0;
+            let carry = 0;
+            let buffered = 0;
+            let bodyChars = 0;
+            const rows: Array<[string, PatternIndexRow]> = [];
+            let missing = false;
+
+            if (canStream(this.store)) {
+              const body = await this.store.getStream(objectKey);
+              if (body === null) missing = true;
+              else {
+                const result = await readFilteredLinesStreaming<[string, PatternIndexRow]>(body, {
+                  key: objectKey,
+                  keep: (buffer, lineStart, lineEnd) => {
+                    const id = patternIdInIndexLine(buffer, lineStart, lineEnd);
+                    return id !== null && wanted.has(id);
+                  },
+                  /* A row that will not parse is a pattern this reader has no stops for. */
+                  onParseError: "skip",
+                });
+                rows.push(...result.records);
+                bodyChars = result.stats.chars;
+                chunks = result.stats.chunks;
+                scanned = result.stats.linesScanned;
+                carry = result.stats.maxCarryChars;
+                buffered = result.stats.maxBufferChars;
+              }
+            } else {
+              const raw = await this.store.get(objectKey);
+              if (raw === null) missing = true;
+              else {
+                bodyChars = raw.length;
+                for (const id of ids) {
+                  const row = decodePatternIndexFor(raw, id);
+                  if (row) rows.push([row.id, row]);
+                }
+              }
+            }
+
             ledger?.record("patterns", {
-              outcome: raw === null ? "missing" : "read",
-              chars: raw?.length ?? 0,
-              records: ids.length,
+              outcome: missing ? "missing" : "read",
+              chars: bodyChars,
+              records: rows.length,
               ms: Date.now() - began,
+              stream:
+                chunks === 0
+                  ? undefined
+                  : {
+                      chunks,
+                      linesScanned: scanned,
+                      linesParsed: rows.length,
+                      rowsRetained: rows.length,
+                      maxBufferChars: buffered,
+                      maxCarryChars: carry,
+                      stoppedEarly: false,
+                    },
             });
-            return { raw, ids };
+            return { rows, chars: bodyChars, missing, failed: false as const };
           } catch {
             ledger?.record("patterns", { outcome: "failed", ms: Date.now() - began });
-            return { raw: null, ids, failed: true as const };
+            return { rows: [], chars: 0, missing: true, failed: true as const };
           }
         }),
       );
       start += batch.length;
 
       for (const body of bodies) {
-        if (body.raw === null) {
+        if (body.missing) {
           // A bucket the index promised and the store could not produce is a gap, not an absence.
-          if ("failed" in body) complete = false;
+          if (body.failed) complete = false;
           continue;
         }
-        chars += body.raw.length;
+        chars += body.chars;
         read += 1;
-        for (const id of body.ids) {
-          const row = decodePatternIndexFor(body.raw, id);
-          if (row) patterns.set(row.id, toRoutePattern(row));
-        }
+        for (const [, row] of body.rows) patterns.set(row.id, toRoutePattern(row));
       }
 
       if (ledger && !ledger.withinBudget && start < entries.length) {
@@ -2326,9 +2453,40 @@ export class NetworkReader {
     if (index.routePatternBuckets && index.routePatternBuckets > 0) {
       const bucket = routePatternsBucketFor(serviceId, index.routePatternBuckets);
       const began = Date.now();
-      let raw: string | null;
+      const objectKey = objectKeyFor(routePatternsDataset(bucket), index.version);
+      /*
+       * One service's line out of the bucket, found as the lines go past and then nothing else
+       * read at all.
+       *
+       * The bucket held every service that hashes there, with the geometry of every one of their
+       * patterns, and this buffered all of it to take one line — the largest route-patterns read
+       * measured on the deployment was 939,225 characters to draw one route. Stopping at the
+       * wanted line cancels the body, so the rest is never even decoded.
+       */
+      let streamedLines: PatternTileLine[] | null | undefined;
+      let streamedChars = 0;
+      let streamedStats: StreamLineStats | null = null;
+      let raw: string | null = null;
       try {
-        raw = await this.store.get(objectKeyFor(routePatternsDataset(bucket), index.version));
+        if (canStream(this.store)) {
+          const body = await this.store.getStream(objectKey);
+          if (body === null) {
+            streamedLines = undefined;
+          } else {
+            const needle = `[${JSON.stringify(serviceId)},`;
+            const result = await readFilteredLinesStreaming<[string, PatternTileLine[]]>(body, {
+              key: objectKey,
+              keep: (buffer, lineStart, lineEnd) =>
+                buffer.startsWith(needle, lineStart) && lineStart + needle.length <= lineEnd,
+              take: () => "keep-and-stop",
+            });
+            streamedChars = result.stats.chars;
+            streamedStats = result.stats;
+            streamedLines = result.records[0]?.[1] ?? null;
+          }
+        } else {
+          raw = await this.store.get(objectKeyFor(routePatternsDataset(bucket), index.version));
+        }
       } catch {
         ledger?.record("route-patterns", { outcome: "failed", ms: Date.now() - began });
         // The object exists as far as the index is concerned and could not be read. That is not
@@ -2337,7 +2495,8 @@ export class NetworkReader {
         return { geometries: [], complete: false, source: "unavailable" };
       }
 
-      if (raw === null) {
+      /* `undefined` from the streamed path, `null` from the buffered one: the object is absent. */
+      if (streamedLines === undefined && raw === null) {
         ledger?.record("route-patterns", { outcome: "missing", ms: Date.now() - began });
         /*
          * Absent for two quite different reasons, and only the index can tell them apart.
@@ -2354,12 +2513,25 @@ export class NetworkReader {
         return { geometries: [], complete: false, source: "unavailable" };
       }
 
-      const lines = decodeRoutePatternsForService(raw, serviceId);
+      const lines =
+        raw === null ? (streamedLines ?? null) : decodeRoutePatternsForService(raw, serviceId);
       ledger?.record("route-patterns", {
         outcome: "read",
-        chars: raw.length,
+        chars: raw === null ? streamedChars : raw.length,
         records: lines?.length ?? 0,
         ms: Date.now() - began,
+        stream:
+          streamedStats === null
+            ? undefined
+            : {
+                chunks: streamedStats.chunks,
+                linesScanned: streamedStats.linesScanned,
+                linesParsed: streamedStats.linesParsed,
+                rowsRetained: streamedStats.rowsRetained,
+                maxBufferChars: streamedStats.maxBufferChars,
+                maxCarryChars: streamedStats.maxCarryChars,
+                stoppedEarly: streamedStats.stoppedEarly,
+              },
       });
       // The bucket was written and this service is not in it: the publish says it has no patterns
       // with geometry. A complete answer, and an empty one.
@@ -2613,8 +2785,8 @@ export class NetworkReader {
       ledger
         ? { ledger, family: "services", budgetReason: "stop_serving_routes_budget" }
         : undefined,
-      (body, start, end) =>
-        start === 0 || (body.startsWith(needle, start) && start + needle.length <= end),
+      (body, start, end, line) =>
+        line === 0 || (body.startsWith(needle, start) && start + needle.length <= end),
       /* One stop's line out of a bucket: a partial parse must never be cached as the whole one. */
       false,
     );
@@ -2805,14 +2977,14 @@ export class NetworkReader {
     const lines = await this.placeLines();
     const keep = placeLineFilter(words);
     const entries: SearchIndexEntry[] = [];
-    for (const line of lines) {
+    for (const [ordinal, line] of lines.entries()) {
       /*
        * Tested on the whole line, which here *is* the record — `placeLines` splits the object into
        * lines and holds them, so each string is one place and the filter's bounds are its own
        * ends. No filter means the query had nothing to narrow by, and then every landmark is a
        * candidate, which is the same rule the stop index follows.
        */
-      if (keep && !keep(line, 0, line.length)) continue;
+      if (keep && !keep(line, 0, line.length, ordinal)) continue;
       try {
         entries.push(placeAsSearchEntry(JSON.parse(line) as PlaceRecord));
       } catch {
@@ -3072,27 +3244,67 @@ export class NetworkReader {
   }
 
   /**
-   * The national services text, held without being parsed.
+   * The national objects, scanned rather than held.
    *
-   * `readCurrent` does two expensive things before a caller sees a record: it runs an FNV-1a hash
-   * over the whole multi-megabyte object, and it `JSON.parse`s all 13,593 services. Both are pure
-   * computation, which is the one resource a Workers Free invocation is short of — ten
-   * milliseconds of it — and a departure board wants about ten of those services.
+   * These were read once per isolate and kept as text: 4,669,154 characters of services and an
+   * operators table beside them, on the reasoning that text is cheap to hold and the saving is the
+   * parse. That reasoning was about CPU and it was right about CPU — `readCurrent` hashes the
+   * whole object and parses all 13,593 services before a caller sees one, and a board wants about
+   * ten of them. But the limit that actually sheds these requests is 128 MB **per isolate across
+   * requests**, so a string held for a hypothetical later reader is charged against every request
+   * that follows it.
    *
-   * So the bytes are fetched once per isolate and kept as text. Text is nearly free to hold and
-   * free to keep: the cost being avoided is the parse, not the transfer.
+   * So the object is streamed and only the wanted rows are built. The characters are paid for
+   * again on a second read, which is a subrequest and no compute, and the national objects are a
+   * fallback path in any case: the bucketed families answer first, and this is what is left for an
+   * artifact published before they existed.
+   *
+   * Null means no manifest or no object — "we cannot say" — which every caller keeps distinct from
+   * an empty result.
    */
-  private servicesTextCache: string | null = null;
-
-  private async servicesText(): Promise<string | null> {
-    if (this.servicesTextCache !== null) return this.servicesTextCache;
+  private async nationalRows<T>(
+    dataset: string,
+    keep: LineFilter,
+    enough?: (retained: number) => boolean,
+  ): Promise<{ rows: T[]; chars: number } | null> {
     const artifacts = new ArtifactStore(this.store);
-    const manifest = await artifacts.readManifest(DATASETS.services);
+    const manifest = await artifacts.readManifest(dataset);
     if (!manifest) return null;
-    const raw = await this.store.get(manifest.objectKey);
-    if (raw === null) return null;
-    this.servicesTextCache = raw;
-    return raw;
+
+    if (!canStream(this.store)) {
+      const raw = await this.store.get(manifest.objectKey);
+      if (raw === null) return null;
+      const rows: T[] = [];
+      let line = 0;
+      for (let start = 0; start < raw.length;) {
+        const newline = raw.indexOf("\n", start);
+        const end = newline < 0 ? raw.length : newline;
+        if (end > start) {
+          if (keep(raw, start, end, line)) {
+            try {
+              rows.push(JSON.parse(raw.slice(start, end)) as T);
+            } catch {
+              /* A line that will not parse is a record this reader has no answer for. */
+            }
+            if (enough?.(rows.length) === true) break;
+          }
+          line += 1;
+        }
+        if (newline < 0) break;
+        start = newline + 1;
+      }
+      return { rows, chars: raw.length };
+    }
+
+    const body = await this.store.getStream(manifest.objectKey);
+    if (body === null) return null;
+    const result = await readFilteredLinesStreaming<T>(body, {
+      key: manifest.objectKey,
+      keep,
+      onParseError: "skip",
+      take: (_row, retained) => (enough?.(retained + 1) === true ? "keep-and-stop" : "keep"),
+    });
+    return { rows: result.records, chars: result.stats.chars };
   }
 
   /**
@@ -3279,35 +3491,27 @@ export class NetworkReader {
     const bucketed = await this.servicesFromBuckets(ids, ledger);
     if (bucketed !== null) return bucketed.services;
 
-    const text = await this.servicesText();
-    if (text === null) return found;
+    const read = await this.nationalRows<ServiceRoute>(
+      DATASETS.services,
+      (body, start, end) => {
+        const id = valueAt(body, start, end, "id");
+        return id !== null && ids.has(id);
+      },
+      (retained) => retained >= ids.size,
+    );
+    if (read === null) return found;
     /*
      * The figure the partitioned family exists to replace. Recorded so a run can state the old
-     * cost and the new one side by side rather than asserting an improvement.
+     * cost and the new one side by side rather than asserting an improvement. `chars` is what was
+     * decoded rather than the object's size — the scan stops once every wanted id is found, so on
+     * a lucky request the two differ by most of the object.
      */
     ledger?.artifactNote({
       servicesPath: "whole_object",
       servicesWanted: ids.size,
-      servicesObjectChars: text.length,
+      servicesObjectChars: read.chars,
     });
-
-    let start = 0;
-    while (start < text.length && found.size < ids.size) {
-      let end = text.indexOf("\n", start);
-      if (end < 0) end = text.length;
-      if (end > start) {
-        const id = valueAt(text, start, end, "id");
-        if (id !== null && ids.has(id)) {
-          try {
-            found.set(id, JSON.parse(text.slice(start, end)) as ServiceRoute);
-          } catch {
-            // A line that will not parse is a line this reader has no service for; the caller
-            // already copes with a service it cannot name.
-          }
-        }
-      }
-      start = end + 1;
-    }
+    for (const service of read.rows) found.set(service.id, service);
     return found;
   }
 
@@ -3321,19 +3525,6 @@ export class NetworkReader {
    * 631 — and run 81's breadcrumb puts the cold board's death immediately after
    * `board:services:done`, which is exactly where `await network.operators()` sits.
    */
-  private operatorsTextCache: string | null = null;
-
-  private async operatorsText(): Promise<string | null> {
-    if (this.operatorsTextCache !== null) return this.operatorsTextCache;
-    const artifacts = new ArtifactStore(this.store);
-    const manifest = await artifacts.readManifest(DATASETS.operators);
-    if (!manifest) return null;
-    const raw = await this.store.get(manifest.objectKey);
-    if (raw === null) return null;
-    this.operatorsTextCache = raw;
-    return raw;
-  }
-
   /** Only the operators asked for, built by one pass over the text. */
   async operatorsByIds(ids: ReadonlySet<string>): Promise<Map<string, Operator>> {
     const found = new Map<string, Operator>();
@@ -3348,25 +3539,16 @@ export class NetworkReader {
       return found;
     }
 
-    const text = await this.operatorsText();
-    if (text === null) return found;
-
-    let start = 0;
-    while (start < text.length && found.size < ids.size) {
-      let end = text.indexOf("\n", start);
-      if (end < 0) end = text.length;
-      if (end > start) {
-        const id = valueAt(text, start, end, "id");
-        if (id !== null && ids.has(id)) {
-          try {
-            found.set(id, JSON.parse(text.slice(start, end)) as Operator);
-          } catch {
-            // A line that will not parse is an operator this reader cannot name; the caller copes.
-          }
-        }
-      }
-      start = end + 1;
-    }
+    const read = await this.nationalRows<Operator>(
+      DATASETS.operators,
+      (body, start, end) => {
+        const id = valueAt(body, start, end, "id");
+        return id !== null && ids.has(id);
+      },
+      (retained) => retained >= ids.size,
+    );
+    if (read === null) return found;
+    for (const operator of read.rows) found.set(operator.id, operator);
     return found;
   }
 
@@ -3380,23 +3562,12 @@ export class NetworkReader {
       return found;
     }
 
-    const text = await this.servicesText();
-    if (text === null) return found;
-
-    let start = 0;
-    while (start < text.length) {
-      let end = text.indexOf("\n", start);
-      if (end < 0) end = text.length;
-      if (end > start && valueAt(text, start, end, "operatorId") === operatorId) {
-        try {
-          const service = JSON.parse(text.slice(start, end)) as ServiceRoute;
-          found.set(service.id, service);
-        } catch {
-          // As above: an unparseable line is not a service.
-        }
-      }
-      start = end + 1;
-    }
+    const read = await this.nationalRows<ServiceRoute>(
+      DATASETS.services,
+      (body, start, end) => valueAt(body, start, end, "operatorId") === operatorId,
+    );
+    if (read === null) return found;
+    for (const service of read.rows) found.set(service.id, service);
     return found;
   }
 

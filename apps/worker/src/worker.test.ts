@@ -74,12 +74,46 @@ const naptanCsv = readFileSync(join(fixturesDir, "naptan-stops.csv"), "utf8");
 const txcXml = readFileSync(join(fixturesDir, "transxchange-service.xml"), "utf8");
 const siriXml = readFileSync(join(fixturesDir, "bods-siri-vm.xml"), "utf8");
 
-/** Wraps the in-memory object store in the R2 binding shape the Worker expects. */
+/**
+ * A body in several chunks, as R2 delivers one.
+ *
+ * Built here rather than taken from the store, so that the recording and failing doubles further
+ * down this file — which implement `get` and nothing else — stream exactly as the plain store
+ * does. Deliberately more than one chunk: a fixture delivered whole exercises none of what a
+ * streaming reader exists to handle, and a reader that quietly buffered would pass every test in
+ * this suite.
+ */
+function chunked(value: string): ReadableStream<Uint8Array> {
+  const bytes = new TextEncoder().encode(value);
+  const size = Math.max(1, Math.ceil(bytes.length / 5));
+  let offset = 0;
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (offset >= bytes.length) {
+        controller.close();
+        return;
+      }
+      controller.enqueue(bytes.slice(offset, offset + size));
+      offset += size;
+    },
+  });
+}
+
+/**
+ * Wraps the in-memory object store in the R2 binding shape the Worker expects.
+ *
+ * `body` as well as `text()`, because the serving reads take the stream: a double that offered
+ * only `text()` would send every read down the buffered fallback and this whole suite would pass
+ * without once exercising the path production uses. The stream is chunked rather than enqueued
+ * whole for the same reason — `InMemoryObjectStore.getStream` splits it, so a line split across a
+ * boundary and a multi-byte character on one are both exercised by ordinary fixtures.
+ */
 function bucketFrom(store: InMemoryObjectStore): R2BucketLike {
   return {
     async get(key) {
       const value = await store.get(key);
-      return value === null ? null : { text: async () => value };
+      if (value === null) return null;
+      return { text: async () => value, body: chunked(value) };
     },
     async put(key, value) {
       await store.put(key, value);
@@ -2676,5 +2710,217 @@ describe("the departure board reads the published index", () => {
     expect(body.data.departures).toEqual([]);
     // Not zero: nothing failed, there is simply nothing due.
     expect(body.meta.coverage).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * The serving reads take the stream, proved by taking `text()` away from them.
+ *
+ * Every one of these objects used to arrive as a single string: `R2BindingStore.get` called
+ * `object.text()`, so a pattern tile in a dense city was one three-to-five-megabyte allocation
+ * before a line of it had been looked at. Cloudflare's 128 MB ceiling is **per isolate rather
+ * than per invocation**, which is why those allocations explain what request sizes could not — an
+ * isolate passed fifty-four paced requests and then lost a third of the next fifty, and an
+ * 87,543-character `nearby` died at `served=106` while a 5,008,974-character read had passed on
+ * the same deployment a minute before.
+ *
+ * A test that merely asserted the answers would pass just as well against the buffered reads, so
+ * this removes the alternative: `text()` throws for every family that was migrated, and the body
+ * streams. A read that quietly goes back to buffering fails here, loudly, on the endpoint that
+ * did it.
+ *
+ * The small objects keep `text()` on purpose. A manifest, the index record and the gazetteer are
+ * hundreds of bytes to a few hundred kilobytes read once, and a stream parser for those would be
+ * cost with no saving — the rule is to stream what is large and line-oriented, not to stream for
+ * consistency.
+ */
+const STREAMED_FAMILIES = [
+  "data/network/map-stops/",
+  "data/network/patterns-tile/",
+  "data/network/pattern-index/",
+  "data/network/pattern-trips/",
+  "data/network/route-patterns/",
+  "data/network/route-tiles/",
+  "data/network/stops-tile/",
+  "data/network/stop-detail/",
+  "data/network/stop-locator/",
+  "data/network/stop-services/",
+  "data/network/stop-serving-routes/",
+  "data/network/search-tile/",
+  "data/network/search-prefix/",
+  "data/network/departures/",
+  "data/network/services/",
+  "data/network/operators/",
+];
+
+function streamOnlyBucket(store: InMemoryObjectStore, buffered: string[] = []): R2BucketLike {
+  const bucket = bucketFrom(store);
+  return {
+    ...bucket,
+    async get(key: string) {
+      const value = await store.get(key);
+      if (value === null) return null;
+      const mustStream =
+        STREAMED_FAMILIES.some((family) => key.startsWith(family)) &&
+        !buffered.some((allowed) => key.startsWith(allowed));
+      return {
+        text: async () => {
+          if (mustStream) {
+            throw new Error(`${key} was read with text(); this family must be streamed`);
+          }
+          return value;
+        },
+        body: chunked(value),
+      };
+    },
+  } as R2BucketLike;
+}
+
+describe("the serving reads stream their objects", () => {
+  const streamed = async (overrides: Partial<WorkerEnv> = {}) => {
+    const store = await publishedStore();
+    return {
+      store,
+      env: makeEnv(store, { ARTIFACTS: streamOnlyBucket(store), ...overrides }),
+    };
+  };
+
+  it("draws a map viewport without buffering a projection tile", async () => {
+    const { env } = await streamed();
+    resetWorkerState();
+    const response = await worker.fetch(
+      get("/v1/map?bbox=-1.60,53.78,-1.52,53.82&zoom=15"),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { data: { stops: unknown[] } };
+    expect(body.data.stops.length, "a viewport with no stops would prove nothing").toBeGreaterThan(
+      0,
+    );
+  });
+
+  it("answers a stop board without buffering its departure shard or serving-route bucket", async () => {
+    /*
+     * A shard published for today, because the stop handler reads the real clock: a fixture at a
+     * fixed instant is a board permanently outside its own window, which is how an earlier version
+     * of this test passed while asserting nothing.
+     */
+    const atco = "450010001";
+    const clock = new Date();
+    const today = clock.toISOString().slice(0, 10);
+    const store = await publishedStore();
+    await store.put(
+      objectKeyFor(departureShardDataset(today, departureBucketFor(atco)), "v1"),
+      encodeDepartureShard(today, [
+        {
+          s: atco,
+          t: Math.floor(clock.getTime() / 1000) + 6 * 60,
+          r: "72",
+          d: "Armley Road",
+          j: "VJ-72",
+          p: "00000000-0000-5000-8000-000000000002",
+          k: 1,
+        },
+      ]),
+    );
+    const env = makeEnv(store, { ARTIFACTS: streamOnlyBucket(store) });
+    resetWorkerState();
+
+    const response = await worker.fetch(get(`/v1/stops/${atco}`), env, ctx);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      data: { departures: unknown[]; routes: unknown[]; routesComplete: boolean };
+      meta: { degradation: string };
+    };
+    expect(body.data.departures.length).toBeGreaterThan(0);
+    expect(body.data.routes.length).toBeGreaterThan(0);
+    /* The streamed read must not quietly turn a bucket it read into an incomplete answer. */
+    expect(body.data.routesComplete).toBe(true);
+    expect(body.meta.degradation).toBe("normal");
+  });
+
+  it("draws a route without buffering its pattern bucket", async () => {
+    const { env } = await streamed();
+    resetWorkerState();
+    const search = await worker.fetch(get("/v1/search?q=leeds"), env, ctx);
+    const hits = (await search.json()) as {
+      data: { results: Array<{ id: string; kind: string }> };
+    };
+    const route = hits.data.results.find((hit) => hit.kind === "route");
+    expect(route, "the search must find a route, or this proves nothing").toBeDefined();
+
+    const response = await worker.fetch(get(`/v1/routes/${route!.id}`), env, ctx);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      data: { variants: Array<{ stops: unknown[] }> };
+    };
+    expect(body.data.variants.length).toBeGreaterThan(0);
+    expect(body.data.variants[0]!.stops.length).toBeGreaterThan(1);
+  });
+
+  it("searches and lists what is nearby without buffering a search tile", async () => {
+    const { env } = await streamed();
+    resetWorkerState();
+
+    const search = await worker.fetch(get("/v1/search?q=armley"), env, ctx);
+    expect(search.status).toBe(200);
+    const hits = (await search.json()) as { data: { results: unknown[] } };
+    expect(hits.data.results.length).toBeGreaterThan(0);
+
+    const nearby = await worker.fetch(get("/v1/nearby?lat=53.7996&lon=-1.56&radius=800"), env, ctx);
+    expect(nearby.status).toBe(200);
+    const list = (await nearby.json()) as { data: { results: unknown[] } };
+    expect(list.data.results.length).toBeGreaterThan(0);
+  });
+
+  it("plans a journey without buffering a pattern-trips shard", async () => {
+    const store = await publishedStore();
+    const network = completeNetwork();
+    await publishPatternTrips(store, network);
+    const env = makeEnv(store, { ARTIFACTS: streamOnlyBucket(store) });
+
+    const pattern = network.patterns[0]!;
+    const boardingStop = network.stops.find((stop) => stop.id === pattern.stopSequence[0])!;
+    const alightingStop = network.stops.find(
+      (stop) => stop.id === pattern.stopSequence[pattern.stopSequence.length - 1],
+    )!;
+    const departAt =
+      (Date.parse(network.journeys[0]!.stopTimes[0]!.scheduledDeparture) -
+        Date.parse("2026-09-02T00:00:00.000Z")) /
+        1000 -
+      600;
+
+    resetWorkerState();
+    const response = await worker.fetch(
+      get(
+        `/v1/journeys?fromLat=${boardingStop.locationCoordinate.lat}&fromLon=${boardingStop.locationCoordinate.lon}` +
+          `&toLat=${alightingStop.locationCoordinate.lat}&toLon=${alightingStop.locationCoordinate.lon}` +
+          `&date=2026-09-02&departAt=${Math.round(departAt)}`,
+      ),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { data: { options: unknown[] } };
+    expect(body.data.options.length).toBeGreaterThan(0);
+  });
+
+  /*
+   * And the negative control. Without it, every assertion above would pass against a Worker that
+   * buffered everything — because the only thing proving otherwise is that `text()` throws, and a
+   * `text()` that was never going to be reached proves nothing about the code that avoided it.
+   */
+  it("would fail if a read went back to text(): the guard really does throw", async () => {
+    const store = await publishedStore();
+    const bucket = streamOnlyBucket(store);
+    const binding = new R2BindingStore(bucket);
+    const [tile] = await store.list("data/network/map-stops/");
+    expect(tile, "the fixture must publish a projection tile").toBeDefined();
+
+    await expect(binding.get(tile!)).rejects.toThrow("must be streamed");
+    /* And the same object streams perfectly well. */
+    const body = await binding.getStream(tile!);
+    expect(body).not.toBeNull();
   });
 });

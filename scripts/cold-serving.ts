@@ -152,6 +152,22 @@ interface Reading {
   departureCharsResident?: number;
   /** Every string the isolate held before this request, across all of its caches. */
   isolateTextBefore?: number;
+  /**
+   * The largest buffer any one of this request's streamed reads held at once.
+   *
+   * The number that says whether the reads are actually streaming. `charsDecoded` cannot: a reader
+   * that consumes a stream and concatenates every chunk decodes exactly as many characters as one
+   * that calls `text()`, and allocates exactly as much. This is one chunk plus one partial line,
+   * so a read that went back to buffering shows up here as megabytes.
+   */
+  maxBufferChars?: number;
+  /** The longest partial line carried across a chunk boundary, across this request's reads. */
+  maxCarryChars?: number;
+  /** Lines walked, and the few of them that a filter kept and therefore parsed. */
+  linesScanned?: number;
+  linesParsed?: number;
+  /** Reads that stopped before the end of a body, so the rest was never decoded at all. */
+  readsStoppedEarly?: number;
 }
 
 const readings: Reading[] = [];
@@ -203,6 +219,12 @@ async function ask(city: string, endpoint: string, path: string, pass: Pass): Pr
   const families: Record<string, { chars: number; read: number; cached: number; records: number }> =
     {};
   const raw = at(diagnostics, "families");
+  /* Maxima across the families, because the question is the largest buffer, not their total. */
+  let maxBufferChars = 0;
+  let maxCarryChars = 0;
+  let linesScanned = 0;
+  let linesParsed = 0;
+  let readsStoppedEarly = 0;
   if (raw && typeof raw === "object") {
     for (const [name, cost] of Object.entries(raw as Record<string, unknown>)) {
       families[name] = {
@@ -211,6 +233,14 @@ async function ask(city: string, endpoint: string, path: string, pass: Pass): Pr
         cached: asNumber(at(cost, "cached")) ?? 0,
         records: asNumber(at(cost, "records")) ?? 0,
       };
+      maxBufferChars = Math.max(
+        maxBufferChars,
+        asNumber(at(cost, "stream", "maxBufferChars")) ?? 0,
+      );
+      maxCarryChars = Math.max(maxCarryChars, asNumber(at(cost, "stream", "maxCarryChars")) ?? 0);
+      linesScanned += asNumber(at(cost, "stream", "linesScanned")) ?? 0;
+      linesParsed += asNumber(at(cost, "stream", "linesParsed")) ?? 0;
+      readsStoppedEarly += asNumber(at(cost, "stream", "stoppedEarly")) ?? 0;
     }
   }
 
@@ -238,6 +268,11 @@ async function ask(city: string, endpoint: string, path: string, pass: Pass): Pr
           subrequests: asNumber(at(diagnostics, "subrequests")) ?? 0,
           departureCharsResident: asNumber(at(diagnostics, "departureCharsResident")) ?? 0,
           isolateTextBefore: asNumber(at(diagnostics, "residency", "isolateTextBefore")) ?? 0,
+          maxBufferChars,
+          maxCarryChars,
+          linesScanned,
+          linesParsed,
+          readsStoppedEarly,
           reusedParse:
             typeof at(diagnostics, "reusedParse") === "boolean"
               ? (at(diagnostics, "reusedParse") as boolean)
@@ -437,6 +472,15 @@ function isolateReach(pass: Pass): Record<string, unknown> {
     maxSubrequests: Math.max(0, ...rows.map((row) => row.subrequests ?? 0)),
     maxDepartureResident: Math.max(0, ...rows.map((row) => row.departureCharsResident ?? 0)),
     maxIsolateText: Math.max(0, ...rows.map((row) => row.isolateTextBefore ?? 0)),
+    /*
+     * The streaming figures, which are the ones this pass exists to compare across deployments.
+     * `maxBufferChars` is the claim: one chunk and one line rather than one object.
+     */
+    maxBufferChars: Math.max(0, ...rows.map((row) => row.maxBufferChars ?? 0)),
+    maxCarryChars: Math.max(0, ...rows.map((row) => row.maxCarryChars ?? 0)),
+    maxLinesScanned: Math.max(0, ...rows.map((row) => row.linesScanned ?? 0)),
+    maxLinesParsed: Math.max(0, ...rows.map((row) => row.linesParsed ?? 0)),
+    readsStoppedEarly: rows.reduce((total, row) => total + (row.readsStoppedEarly ?? 0), 0),
     distinctStops: [...new Set(rows.map((row) => row.path))].length,
     liveParsesReused: rows.filter((row) => row.reusedParse === true).length,
   };

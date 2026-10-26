@@ -1,10 +1,12 @@
 import type { Coordinate, RoutePattern, ServiceRoute } from "@busstops/contracts";
 import {
+  canStream,
   corridorBoundingBox,
   objectKeyFor,
   withinBoundingBox,
   type ObjectStore,
 } from "@busstops/pipeline-core";
+import { readFilteredLinesStreaming } from "./stream-lines.js";
 import { buildGraph, plan, type JourneyGraph, type PlanResult, type Trip } from "@busstops/journey";
 import {
   checkArtifactLayout,
@@ -653,14 +655,66 @@ export class JourneyService {
     while (start < datasets.length) {
       const batch = datasets.slice(start, start + batchSize);
       const readBegan = Date.now();
+      /*
+       * Read, filtered and parsed inside the batch, rather than collected as text and filtered
+       * after.
+       *
+       * This held `raw` for every shard in the batch and then ran `raw.split("\n")` over each —
+       * the largest published pattern-trips shard is 8,109,406 bytes, so a batch of four was
+       * thirty-two megabytes of strings and then thirty-two megabytes of substrings on top. The
+       * isolate's 128 MB ceiling is **per isolate, not per invocation**, so those allocations are
+       * charged against every request that follows on the same isolate, which is why a journey
+       * could die reporting a few cheap megabytes of its own.
+       *
+       * Nothing about which trips survive changes: the same pattern test off the raw text, the
+       * same `keep` on the parsed row, in the same order.
+       */
       const results = await Promise.all(
         batch.map(async (dataset) => {
           const cacheKey = `${request.version}:${dataset}:${from}:${to}`;
           const cached = this.cache.get(cacheKey);
           if (cached) return { kind: "cached", dataset, cached } as const;
+          const objectKey = objectKeyFor(dataset, request.version);
           try {
-            const raw = await this.store.get(objectKeyFor(dataset, request.version));
-            return { kind: "body", dataset, raw } as const;
+            if (!canStream(this.store)) {
+              const raw = await this.store.get(objectKey);
+              return { kind: "buffered", dataset, raw } as const;
+            }
+            const body = await this.store.getStream(objectKey);
+            if (body === null) return { kind: "buffered", dataset, raw: null } as const;
+
+            let filtered = 0;
+            const read = await readFilteredLinesStreaming<PatternTripRow>(body, {
+              key: objectKey,
+              keep: (buffer, lineStart, lineEnd) => {
+                if (patternIds === null) return true;
+                /*
+                 * The pattern test off the text, before anything is built. Five sixths of what
+                 * this read used to construct was discarded one statement later. A line whose
+                 * shape the scan does not recognise falls through to the parse rather than being
+                 * dropped: removing a bus from a journey because a scan was confused is far worse
+                 * than parsing one row too many.
+                 */
+                const pattern = patternIdInTripLine(buffer.slice(lineStart, lineEnd));
+                if (pattern !== null && !patternIds.has(pattern)) {
+                  filtered += 1;
+                  return false;
+                }
+                return true;
+              },
+              take: (row) => {
+                if (keep(row)) return "keep";
+                filtered += 1;
+                return "drop";
+              },
+            });
+            return {
+              kind: "streamed",
+              dataset,
+              rows: read.records,
+              chars: read.stats.chars,
+              filtered,
+            } as const;
           } catch (error) {
             return { kind: "error", dataset, error } as const;
           }
@@ -690,6 +744,25 @@ export class JourneyService {
                 ? `${result.error.name}: ${result.error.message}`
                 : "unreadable",
           });
+          continue;
+        }
+        if (result.kind === "streamed") {
+          shardsRead += 1;
+          opened += 1;
+          chars += result.chars;
+          tripsFiltered += result.filtered;
+          /*
+           * Timed as read rather than split between read and parse. A streamed read interleaves
+           * the two by construction — the filter runs on a chunk while the next one is in flight
+           * — so attributing part of it to a parse clock would be an invention. `parseMs` stays
+           * for the buffered path, where the two really are separate.
+           */
+          this.cache.set(`${request.version}:${result.dataset}:${from}:${to}`, {
+            rows: result.rows,
+            chars: result.chars,
+          });
+          this.evict();
+          for (const row of result.rows) rows.push(row);
           continue;
         }
         if (result.raw === null) {

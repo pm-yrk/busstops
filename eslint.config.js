@@ -31,6 +31,12 @@ const nodeGlobals = {
   setInterval: "readonly",
   clearInterval: "readonly",
   structuredClone: "readonly",
+  // Web streams. In Node since 18 and in Workers from the start; the streaming line
+  // reader is written against the same interface on both.
+  ReadableStream: "readonly",
+  WritableStream: "readonly",
+  TransformStream: "readonly",
+  TextDecoderStream: "readonly",
 };
 
 /** Browser globals used by apps/web. */

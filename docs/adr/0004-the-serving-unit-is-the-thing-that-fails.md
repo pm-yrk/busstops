@@ -148,9 +148,9 @@ An 87,543-character `nearby` fails at `served=106` while a 5,008,974-character r
 
 The remedies Cloudflare lists are, in order: stream bodies instead of buffering entire payloads;
 avoid large in-memory objects; profile. This ADR's decisions are all the second one, and they
-moved the cliff from request 28 to request 54 of a pass. The first one is not done: every shard
-read is `await object.text()`, so a pattern tile is a single three-to-five-megabyte string
-allocation. That is the next measured offender and the documented fix for it.
+moved the cliff from request 28 to request 54 of a pass. The first one is taken in
+[ADR 0005](0005-stream-the-line-oriented-reads.md): every shard read was `await object.text()`, so
+a pattern tile was a single three-to-five-megabyte string allocation.
 
 ## Consequences
 

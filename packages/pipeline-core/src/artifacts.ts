@@ -44,6 +44,29 @@ export interface ObjectStore {
    * not, rather than estimating a projection from numbers it invented.
    */
   listDetailed?(prefix: string): Promise<StoredObject[]>;
+  /**
+   * The object's body as a stream, for a reader that wants its lines rather than its text.
+   *
+   * Optional, and the reason it is optional is the reason it exists. Cloudflare's first listed
+   * remedy for a Worker that exceeds its 128 MB isolate is to stream large payloads instead of
+   * buffering them, and `get` cannot do that: it returns one string the size of the object. A
+   * store that can hand back a body implements this and the large reads take it; a store that
+   * cannot — or an object small enough that it makes no difference — keeps `get`.
+   *
+   * Null means the object is absent, exactly as `get` does. A throw means it exists and could not
+   * be read, which is a different answer and every caller here keeps them apart.
+   */
+  getStream?(key: string): Promise<ReadableStream<Uint8Array> | null>;
+}
+
+/** An object store that can stream a body. Narrowed from `ObjectStore` by `canStream`. */
+export interface StreamingObjectStore extends ObjectStore {
+  getStream(key: string): Promise<ReadableStream<Uint8Array> | null>;
+}
+
+/** Whether this store can hand back bodies as streams, so a caller can take the cheaper path. */
+export function canStream(store: ObjectStore): store is StreamingObjectStore {
+  return typeof store.getStream === "function";
 }
 
 export class InMemoryObjectStore implements ObjectStore {
@@ -55,6 +78,33 @@ export class InMemoryObjectStore implements ObjectStore {
   async get(key: string): Promise<string | null> {
     return this.objects.get(key) ?? null;
   }
+
+  /**
+   * The same body, as a stream, in several chunks.
+   *
+   * Chunked deliberately rather than enqueued whole: a fixture that delivers an object in one
+   * piece exercises none of what a streaming reader exists to handle — no line split across a
+   * boundary, no multi-byte character on one — and would let a reader that silently buffered pass
+   * every test in the suite.
+   */
+  async getStream(key: string): Promise<ReadableStream<Uint8Array> | null> {
+    const body = this.objects.get(key);
+    if (body === undefined) return null;
+    const bytes = new TextEncoder().encode(body);
+    const size = Math.max(1, Math.ceil(bytes.length / 7));
+    let offset = 0;
+    return new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (offset >= bytes.length) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(bytes.slice(offset, offset + size));
+        offset += size;
+      },
+    });
+  }
+
   async put(key: string, value: string): Promise<void> {
     this.objects.set(key, value);
     this.uploadedAt.set(key, this.now().toISOString());
