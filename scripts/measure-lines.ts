@@ -153,6 +153,59 @@ async function main(): Promise<number> {
 
   const measurements: FamilyMeasurement[] = [];
 
+  /*
+   * The families whose keys carry no version, which the grouping above cannot see.
+   *
+   * `recent-traces/<bucket>.jsonl` is written by the live collector at fixed keys and overwritten
+   * each run, because it is a rolling window rather than a publish. A bus tap reads one of the 64,
+   * so whether it belongs in the streaming work is a question about its size — and leaving it out
+   * of the table because its keys have a different shape would be the one measurement missing from
+   * the argument.
+   */
+  for (const prefix of ["recent-traces/"]) {
+    const flat = await store.listDetailed(prefix);
+    if (flat.length === 0) continue;
+    const bySize = [...flat].sort((a, b) => b.sizeBytes - a.sizeBytes);
+    const picks = bySize.slice(0, SAMPLE_LARGEST);
+    const middle = bySize[Math.floor(bySize.length / 2)];
+    if (middle && !picks.includes(middle)) picks.push(middle);
+
+    console.log(
+      `${prefix}: ${String(flat.length)} object(s), largest ${String(bySize[0]?.sizeBytes ?? 0)} B`,
+    );
+    const opened = await mapWithConcurrency(picks, 4, async (object) => {
+      try {
+        const body = await store.get(object.key);
+        return body === null ? null : { key: object.key, ...lineStats(body) };
+      } catch (error) {
+        console.log(`  could not read ${object.key}: ${String(error)}`);
+        return null;
+      }
+    });
+    const read = opened.filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+    let maxLineChars = 0;
+    let maxLineIn: string | null = null;
+    for (const entry of read) {
+      if (entry.max > maxLineChars) {
+        maxLineChars = entry.max;
+        maxLineIn = entry.key;
+      }
+    }
+    measurements.push({
+      family: prefix.replace(/\/$/, ""),
+      objects: flat.length,
+      bytes: flat.reduce((total, o) => total + o.sizeBytes, 0),
+      maxObjectBytes: bySize[0]?.sizeBytes ?? 0,
+      medianObjectBytes: median(flat.map((o) => o.sizeBytes)),
+      sampled: read.length,
+      maxLineChars,
+      maxLineIn,
+      medianLineChars: median(read.map((entry) => entry.median)),
+      linesInLargest: read[0]?.count ?? 0,
+      exhaustive: read.length === flat.length,
+    });
+  }
+
   for (const [family, objects] of [...grouped].sort((a, b) => a[0].localeCompare(b[0]))) {
     /*
      * One version's worth. A tiled family writes a version per publish, so taking the newest

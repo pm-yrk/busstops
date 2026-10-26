@@ -37,6 +37,20 @@ const JSON_OUT = arg("json");
  */
 const PEAK_REQUESTS = Math.max(0, Number(arg("peak") ?? process.env.PEAK_REQUESTS ?? "0"));
 
+/**
+ * Which passes to walk. `--only peak` skips the cold and warm walks.
+ *
+ * For taking several acceptance samples of one frozen build. Acceptance is about the peak passes —
+ * fifty-plus requests in a sequence, twice, giving one isolate the chance to pass a hundred served
+ * — and the cold and warm walks ahead of them are a different measurement that has been green for
+ * several deployments. Three samples with them is seventy-five minutes of a job; three without is
+ * closer to thirty, and the sample is identical either way because each pass idles for
+ * forty-five seconds first to ask the platform for a fresh isolate.
+ */
+const ONLY = arg("only") ?? "all";
+/** The label a sample carries into its annotations, so three samples are told apart. */
+const SAMPLE = arg("sample") ?? "";
+
 if (!WORKER) {
   console.error("Usage: cold-serving.ts --worker <worker url> [--json <file>]");
   process.exit(2);
@@ -488,19 +502,24 @@ function isolateReach(pass: Pass): Record<string, unknown> {
 
 async function main(): Promise<void> {
   console.log(`Deployed API: ${WORKER}`);
+  if (SAMPLE) console.log(`Sample: ${SAMPLE}`);
   console.log("");
-  console.log("=".repeat(78));
-  console.log("Cold: each city once, in turn, nothing revisited");
-  console.log("=".repeat(78));
+  if (ONLY !== "peak") {
+    console.log("=".repeat(78));
+    console.log("Cold: each city once, in turn, nothing revisited");
+    console.log("=".repeat(78));
+  }
 
-  for (const city of CITIES) await walk(city, "cold");
+  if (ONLY !== "peak") {
+    for (const city of CITIES) await walk(city, "cold");
 
-  console.log("");
-  console.log("=".repeat(78));
-  console.log("Warm: the same walk again, against an isolate that has now seen it");
-  console.log("=".repeat(78));
+    console.log("");
+    console.log("=".repeat(78));
+    console.log("Warm: the same walk again, against an isolate that has now seen it");
+    console.log("=".repeat(78));
 
-  for (const city of CITIES) await walk(city, "warm");
+    for (const city of CITIES) await walk(city, "warm");
+  }
 
   const peaks: Array<Record<string, unknown>> = [];
   if (PEAK_REQUESTS > 0) {
@@ -532,7 +551,11 @@ async function main(): Promise<void> {
        * client timeouts takes several times as long as a healthy one and is the first to run out
        * of step. The pipeline's publish digest was lost the same way once already.
        */
-      annotate("notice", `peak pass ${pass}`, JSON.stringify(reach, null, 1));
+      annotate(
+        "notice",
+        SAMPLE ? `peak pass ${pass} sample ${SAMPLE}` : `peak pass ${pass}`,
+        JSON.stringify({ sample: SAMPLE || null, ...reach }, null, 1),
+      );
       console.log(
         `${pass}: ${String(reach.ok)}/${String(reach.requests)} ok across ` +
           `${String(reach.cities)} cities, ${String(reach.platformErrors)} platform error(s); ` +
@@ -612,11 +635,17 @@ async function main(): Promise<void> {
     readings,
   };
   if (JSON_OUT) writeFileSync(JSON_OUT, JSON.stringify(report, null, 1));
-  annotate("notice", "cold serving", JSON.stringify({ cold, warm }, null, 1));
+  if (ONLY !== "peak") {
+    annotate("notice", "cold serving", JSON.stringify({ cold, warm }, null, 1));
+  }
   if (peaks.length > 0) {
     // Its own annotation: this is the acceptance measurement, and it must not be the part that
     // GitHub truncates away when the per-endpoint summary happens to be long.
-    annotate("notice", "peak passenger walk", JSON.stringify(peaks, null, 1));
+    annotate(
+      "notice",
+      SAMPLE ? `peak passenger walk sample ${SAMPLE}` : "peak passenger walk",
+      JSON.stringify(peaks, null, 1),
+    );
   }
   /*
    * One row per line, because the splitter divides on line boundaries.

@@ -55,12 +55,36 @@ interface Attempt {
   label: string;
   status: number | null;
   platform: boolean;
+  /**
+   * Which error Cloudflare's own page names, which is not a detail.
+   *
+   * `exceededResources` in the metrics covers **1102 and 1027** — "Worker exceeded resource
+   * limits" and "Daily request limit exceeded". The free plan allows 100,000 requests a day, and
+   * a preview Worker that has been walked and probed and burst-tested all day is a candidate for
+   * the second. The first run of this script recorded only that the platform had answered, which
+   * cannot tell those two apart — and they have nothing in common except the metrics row they land
+   * in.
+   */
+  platformSaid?: string;
   cfRay: string | null;
   ms: number;
   served: number | null;
   chars: number | null;
   subrequests: number | null;
   note?: string;
+}
+
+/** The error code and headline from one of Cloudflare's own error pages. */
+function namedError(html: string): string {
+  const code = /\berror\s*(10\d\d)\b/i.exec(html)?.[1];
+  const title = /<title[^>]*>([^<]{0,120})<\/title>/i.exec(html)?.[1]?.trim();
+  const headline = /(exceeded resource limits|daily request limit|worker threw exception)/i.exec(
+    html,
+  )?.[1];
+  return [code === undefined ? null : `error ${code}`, headline ?? null, title ?? null]
+    .filter((part): part is string => part !== null)
+    .join(" · ")
+    .slice(0, 160);
 }
 
 const attempts: Attempt[] = [];
@@ -90,6 +114,7 @@ async function ask(path: string, label: string): Promise<void> {
     let chars: number | null = null;
     let subrequests: number | null = null;
     let platform = false;
+    let said: string | undefined;
     try {
       const body = JSON.parse(text) as Record<string, unknown>;
       const meta = body.meta as Record<string, unknown> | undefined;
@@ -100,13 +125,15 @@ async function ask(path: string, label: string): Promise<void> {
       subrequests = typeof diagnostics?.subrequests === "number" ? diagnostics.subrequests : null;
     } catch {
       /* Cloudflare's own error page is HTML, which is the signature being hunted. */
-      platform = /error 1102|exceeded resource limits|<html/i.test(text);
+      platform = /error 10\d\d|exceeded resource limits|<html/i.test(text);
+      if (platform) said = namedError(text) || text.replace(/\s+/g, " ").trim().slice(0, 120);
     }
     attempts.push({
       path,
       label,
       status: response.status,
       platform,
+      platformSaid: said,
       cfRay,
       ms: Date.now() - began,
       served,
@@ -375,6 +402,63 @@ async function outcomes(
   };
 }
 
+/* ------------------------------------------------------------------ plan and quota */
+
+/**
+ * What ceiling this Worker is actually running under, and how much of today's quota is spent.
+ *
+ * Two questions the first run left open, and both change what `exceededResources` means.
+ *
+ * The metrics value covers **1102 and 1027**: "exceeded resource limits" and "daily request limit
+ * exceeded". The free plan allows 100,000 requests a day and this preview Worker is walked,
+ * probed and burst-tested repeatedly, so the day's own total is a number this diagnosis needs
+ * rather than a curiosity.
+ *
+ * And the documented free-plan CPU limit is 10 ms per request, while the first run's tail recorded
+ * invocations spending 400 to 720 ms of CPU and returning `ok`. One of those is not true of this
+ * deployment, and the Worker's own settings say which.
+ */
+async function platformContext(): Promise<Record<string, unknown>> {
+  const context: Record<string, unknown> = {};
+  const api = async (path: string) => {
+    try {
+      const response = await fetch(`https://api.cloudflare.com/client/v4${path}`, {
+        headers: { Authorization: `Bearer ${TOKEN}` },
+        signal: AbortSignal.timeout(20_000),
+      });
+      const text = await response.text();
+      if (!response.ok) return { error: `HTTP ${String(response.status)}: ${text.slice(0, 200)}` };
+      return JSON.parse(text) as { result?: unknown };
+    } catch (error) {
+      return { error: String(error) };
+    }
+  };
+
+  const settings = await api(
+    `/accounts/${ACCOUNT}/workers/scripts/${encodeURIComponent(SCRIPT_NAME)}/settings`,
+  );
+  context.scriptSettings = "error" in settings ? settings : (settings.result ?? null);
+  const account = await api(`/accounts/${ACCOUNT}/workers/account-settings`);
+  context.accountSettings = "error" in account ? account : (account.result ?? null);
+
+  /* Today's requests across the account's Workers, against the free plan's hundred thousand. */
+  const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const day = await outcomes(since, new Date().toISOString(), "status");
+  context.last24Hours = day.ok
+    ? {
+        totalRequests: (day.rows ?? []).reduce((total, row) => total + (row.sum?.requests ?? 0), 0),
+        byStatus: (day.rows ?? []).map((row) => ({
+          status: row.dimensions?.status,
+          requests: row.sum?.requests,
+          errors: row.sum?.errors,
+        })),
+        freePlanDailyRequests: 100_000,
+      }
+    : { reason: day.reason };
+
+  return context;
+}
+
 /* ------------------------------------------------------------------ */
 
 function endpointOf(event: TailEvent): string {
@@ -427,7 +511,7 @@ async function main(): Promise<number> {
   for (const failure of platformFailures.slice(0, 8)) {
     console.log(
       `  FAIL ${failure.label} status=${String(failure.status)} ms=${String(failure.ms)} ` +
-        `cf-ray=${failure.cfRay ?? "(none)"}`,
+        `cf-ray=${failure.cfRay ?? "(none)"} said=${failure.platformSaid ?? "(nothing)"}`,
     );
   }
 
@@ -441,10 +525,13 @@ async function main(): Promise<number> {
     failures: platformFailures.slice(0, 10).map((a) => ({
       endpoint: a.label,
       status: a.status,
+      said: a.platformSaid ?? null,
       cfRay: a.cfRay,
       ms: a.ms,
       note: a.note,
     })),
+    /* Distinct, because "all 1102" and "some 1027" are different findings. */
+    platformSaid: [...new Set(platformFailures.map((a) => a.platformSaid ?? "(nothing)"))],
     heaviestSuccess: attempts
       .filter((a) => !a.platform)
       .sort((a, b) => (b.chars ?? 0) - (a.chars ?? 0))
@@ -570,6 +657,12 @@ async function main(): Promise<number> {
   if (report.reason) console.log(`analytics reason: ${String(report.reason)}`);
   console.log(JSON.stringify(report.tail, null, 1));
   if (report.outcomes) console.log(JSON.stringify(report.outcomes, null, 1));
+
+  if (ACCOUNT && TOKEN) {
+    report.platform = await platformContext();
+    console.log("");
+    console.log(JSON.stringify(report.platform, null, 1));
+  }
 
   if (JSON_OUT) writeFileSync(JSON_OUT, JSON.stringify(report, null, 1));
   annotate("notice", "1102 classification", JSON.stringify(report, null, 1));
