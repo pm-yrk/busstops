@@ -108,38 +108,52 @@ So `scripts/measure-serving-cpu.ts` times the stages in Node, against the object
 holds and the feed the live upstream serves. A runner's CPU is not Cloudflare's; what transfers is
 the ratio and the order of magnitude.
 
-| Stage                               |           CPU |     Characters | ms per MiB |
-| ----------------------------------- | ------------: | -------------: | ---------: |
-| map: walk the projection lines      |       1.38 ms |        616,598 |       2.34 |
-| map: parse the rows it keeps        |       3.38 ms |        616,598 |       5.74 |
-| **map: normalise the SIRI-VM feed** | **956.31 ms** | **19,272,814** |      52.03 |
-| journey: walk the trip shards       |       0.50 ms |      8,385,789 |       0.06 |
-| journey: parse every trip row       |      28.73 ms |      8,385,789 |       3.59 |
-| journey: walk the pattern rows      |       0.21 ms |      3,377,942 |       0.07 |
-| journey: parse every pattern row    |       5.38 ms |      3,377,942 |       1.67 |
+| Stage                            |      CPU | Characters | ms per MiB |
+| -------------------------------- | -------: | ---------: | ---------: |
+| map: walk the projection lines   |  1.38 ms |    616,598 |       2.34 |
+| map: parse the rows it keeps     |  3.38 ms |    616,598 |       5.74 |
+| journey: walk the trip shards    |  0.50 ms |  8,385,789 |       0.06 |
+| journey: parse every trip row    | 28.73 ms |  8,385,789 |       3.59 |
+| journey: walk the pattern rows   |  0.21 ms |  3,377,942 |       0.07 |
+| journey: parse every pattern row |  5.38 ms |  3,377,942 |       1.67 |
+| SIRI-VM normalisation            |        — |          — |  **52.03** |
 
-**Ninety-six per cent of a request's CPU is one XML parse.** 956 of 996 milliseconds. Everything
-else put together is forty — and that forty includes parsing _every_ row of an eight-megabyte
-corridor of trip shards, which no request actually does.
+The reads are cheap, and that is the finding. A map viewport's entire projection read — walking
+616,598 characters and building the 3,006 rows inside the box — is **4.8 milliseconds of the ten
+allowed**. Parsing _every_ row of an eight-megabyte corridor of trip shards, which no request
+actually does, is twenty-nine. Every decision in ADR 0004 and ADR 0005 was about these reads, and
+they are not where the hundredfold is.
 
-Which reframes the whole exercise. Every decision in ADR 0004 and ADR 0005 was about the artifact
-reads, and the artifact reads are cheap: a map viewport's entire projection read is 4.8 ms of the
-10 ms allowed. The fine grid, the enriched serving index, the streaming — all of that is real and
-all of it operates on the forty milliseconds, not on the 956.
+### The number this ADR got wrong first time
 
-The feed is also the wrong size. 19,272,814 characters came back for a 0.16° by 0.10° box around
-Manchester, carrying 7,008 vehicle observations. A city-sized box does not contain seven thousand
-buses, so either BODS is ignoring the bounding box or it is being sent in an order BODS does not
-read — `bodsDatafeedUrl` sends `west,south,east,north`. Bounding-box ordering is inconsistent
-between APIs and asserting one from memory is how this project has been wrong before, so
-`scripts/measure-bods-bbox.ts` asks the real feed every plausible order and lets the latitudes and
-longitudes that come back decide.
+The first run of this measurement reported the SIRI-VM parse at **956 of a request's 996
+milliseconds** and this ADR said so. That was a measurement of the script's own bug. It asked BODS
+for `west,east,south,north` — the convention several other APIs use — and BODS answered with
+19,254,654 characters and 18,184 vehicles spanning latitude 0 to 53.5 and longitude −2.3 to 1.76. A
+nonsense box, and a national feed timed as though it were a city's.
 
-That measurement decides which of two very different situations this is. If a correctly ordered box
-returns a city's worth of XML, the parse falls with it and 52 ms per mebibyte becomes affordable. If
-BODS returns the nation whatever it is asked, then normalising the feed inside the request that
-serves it cannot be made to fit, and live positions have to be normalised somewhere else — which
-the scheduled collector already does for its own purposes.
+`scripts/measure-bods-bbox.ts` settled it against the real feed by asking every plausible order and
+letting the positions that came back decide:
+
+| Order sent                                          |       Chars | Vehicles | Inside the box | Latitude range  |
+| --------------------------------------------------- | ----------: | -------: | -------------: | --------------- |
+| **`west,south,east,north`** (what the Worker sends) | **563,015** |  **437** |        **437** | 53.4204–53.5193 |
+| `west,east,south,north`                             |  19,254,654 |   18,184 |            438 | 0–53.5196       |
+| `south,west,north,east`                             |         668 |        0 |              0 | —               |
+| no bounding box                                     |    HTTP 403 |        — |              — | —               |
+
+**The Worker's order is correct.** BODS honours it exactly: 437 vehicles, every one inside the box
+asked for. So a Manchester viewport's live feed is 563,015 characters — 0.54 MiB — which at the
+measured 52 ms per mebibyte is about **28 ms**, not 956.
+
+That leaves `/v1/map` at roughly 33 ms against a 10 ms budget: over by three times, not a hundred.
+And it leaves the journey's measured 831 ms almost entirely unaccounted for by anything timed
+above, which points at the two stages nothing had ever timed — building a graph over a corridor's
+trips and searching it. Those are now in the measurement.
+
+The correction is recorded rather than quietly edited because it is the sixth time in this
+investigation that a number has been asserted from a convention instead of measured, and the whole
+point of this ADR is that the platform was eventually asked.
 
 ## What would actually fit
 
