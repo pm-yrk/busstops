@@ -695,6 +695,16 @@ jobs:
           else
             echo "Report only. Add [prune-apply] to the commit message to delete."
           fi
+          # `[keep-1]` gives up the rollback version, which is the only way inside the free
+          # allowance: two national versions are 13,458,793,099 bytes against 10,737,418,240, so
+          # removing every removable object still leaves the bucket over. It is a marker rather
+          # than a default because it is a decision — until the live version has passed
+          # acceptance, the previous one is what a rollback would roll back to.
+          if printf '%s' "$HEAD_COMMIT_MESSAGE" | grep -q '\[keep-1\]'; then
+            KEEP_NETWORK_VERSIONS=1
+            export KEEP_NETWORK_VERSIONS
+            echo "Keeping one published version: the live one. The rollback version goes."
+          fi
           npx tsx pipelines/static-network/run-prune.ts $APPLY 2>&1 | tee prune.log
 
       - name: Summarise

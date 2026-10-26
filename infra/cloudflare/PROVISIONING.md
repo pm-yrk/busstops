@@ -301,6 +301,12 @@ it to `1` is what brings it inside, and it is a deliberate act — it gives up t
 back to the previous artifact, so it belongs after a new one has passed acceptance rather than as
 routine housekeeping.
 
+Because it is a decision rather than a setting, the evidence workflow takes it from the commit
+message: `[keep-1]` alongside `[prune-apply]` keeps the live version alone for that run and says
+so in the log. The repository variable stays available for a standing change, but a one-off
+cleanup should be readable in the history that caused it rather than in a setting nobody can see
+from the diff.
+
 ---
 
 ## 9. Keeping it free
