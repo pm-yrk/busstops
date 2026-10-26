@@ -115,7 +115,20 @@ export function planNetworkPrune(
    * not be the thing that quietly drops it from the keep list.
    */
   const keepNames = new Set<string>([options.liveVersion]);
-  if (options.previousVersion !== null) keepNames.add(options.previousVersion);
+  /*
+   * The rollback version, kept by name rather than by age — and only when there is room for it.
+   *
+   * It used to be added unconditionally, which made `keepVersions: 1` a no-op: the set already
+   * held two names before the window below was applied, so asking to keep one version kept two
+   * and the bucket stayed over R2's free allowance however many objects were deleted. Two national
+   * versions are 13,458,793,099 bytes against 10,737,418,240, so "keep one" has to mean one or it
+   * cannot do the only job it exists for.
+   *
+   * Named rather than sorted because the manifest knows which version a rollback would go to, and
+   * the newest-by-name rule below would pick a different one if a publish ever landed out of
+   * order.
+   */
+  if (options.previousVersion !== null && keepVersions >= 2) keepNames.add(options.previousVersion);
 
   /*
    * Any remaining room in the window goes to the newest versions by name. Versions are ISO

@@ -63,6 +63,40 @@ describe("planning which national publishes to delete", () => {
     }
   });
 
+  /*
+   * Asking to keep one version has to keep one, or it cannot do the only job it exists for.
+   *
+   * The rollback target was added to the keep set unconditionally, before the window was applied,
+   * so `keepVersions: 1` kept two. That made the whole cleanup a no-op in the one case it was
+   * written for: two national publishes are 13,458,793,099 bytes against R2's 10,737,418,240 free
+   * allowance, so deleting every *other* removable object still leaves the bucket over, and a run
+   * that reported `remainingAfterRun: 0` alongside `withinFreeStorageAfter: false` looked like a
+   * limit of the allowance rather than a bug in the plan.
+   */
+  it("gives up the rollback target when asked to keep one version", () => {
+    const inventory = [...publish(V1), ...publish(V2), ...publish(V3)];
+    const plan = planNetworkPrune(inventory, {
+      liveVersion: V3,
+      previousVersion: V2,
+      keepVersions: 1,
+    });
+
+    expect(plan.keep.map((entry) => entry.version)).toEqual([V3]);
+    expect(plan.remove.map((entry) => entry.version)).toEqual([V1, V2]);
+    /* And the live version is still untouchable, which is the guard this must not weaken. */
+    expect(keysToRemove(inventory, plan).some((key) => key.includes(V3))).toBe(false);
+  });
+
+  it("still keeps the rollback target when there is room for it", () => {
+    const inventory = [...publish(V1), ...publish(V2), ...publish(V3)];
+    const plan = planNetworkPrune(inventory, {
+      liveVersion: V3,
+      previousVersion: V2,
+      keepVersions: 2,
+    });
+    expect(plan.keep.map((entry) => entry.version)).toEqual([V2, V3]);
+  });
+
   it("keeps the rollback target even when it is not the newest after the live one", () => {
     const inventory = [...publish(V1), ...publish(V2), ...publish(V3)];
     // Rolled back: the live publish is the older one and it replaced V1, not V2.
