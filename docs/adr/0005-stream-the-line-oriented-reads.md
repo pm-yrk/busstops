@@ -1,6 +1,10 @@
 # ADR 0005 — The serving reads stream; they do not buffer the object
 
-Status: accepted, 2026-10-26.
+Status: accepted, 2026-10-26. Superseded as a _diagnosis_ by
+[ADR 0006](0006-the-limit-is-cpu-and-it-is-ten-milliseconds.md), which asked Cloudflare what 1102
+actually was and got `exceededCpu` — not memory. The decision below stands: it removes real work
+and it was the platform's own first listed remedy for the limit this was believed to be. It is not
+the fix for the limit it turns out to be.
 
 ## Context
 
@@ -42,6 +46,50 @@ That last reasoning was about CPU and it was right about CPU. `readCurrent` hash
 and parses all 13,593 services before a caller sees one, and a board wants about ten. It was wrong
 about the ceiling: a string held for a hypothetical later reader is charged against every request
 that follows it on that isolate.
+
+## Every read, and what it buffered
+
+Measured against the live artifact by `scripts/measure-lines.ts`, which lists the bucket and opens
+the largest objects of each family. "Keeps" is what the caller actually retains out of what it
+opened — the column that decides whether a stream is worth writing.
+
+| Read path                          | Family                | Format            | Median object |      Largest object | Keeps                                                 | Streamed |
+| ---------------------------------- | --------------------- | ----------------- | ------------: | ------------------: | ----------------------------------------------------- | -------- |
+| `JourneyService` trip shards       | `pattern-trips`       | JSONL             |        24,705 |           8,348,894 | trips on a corridor pattern inside a four-hour window | yes      |
+| `readShardSized` (pattern tiles)   | `patterns-tile`       | JSONL             |       129,679 |           4,435,597 | the patterns near one bus, or a viewport's slice      | yes      |
+| `readShardSized` (stop tiles)      | `stops-tile`          | JSONL             |       259,404 |           3,959,337 | the stops in a box                                    | yes      |
+| `DepartureReader`                  | `departures`          | JSONL + header    |     2,131,979 |           2,761,566 | **one stop's line of about thirty thousand**          | yes      |
+| `patternsByIds`                    | `pattern-index`       | JSONL + header    |        82,981 |           1,859,002 | the rows a journey named by id                        | yes      |
+| `readShardSized` (search tiles)    | `search-tile`         | JSONL             |       114,178 |           1,832,340 | the entries matching typed words                      | yes      |
+| `readShardSized` (search prefixes) | `search-prefix`       | JSONL             |         4,590 |           1,643,827 | the same                                              | yes      |
+| `routeTiles`                       | `route-tiles`         | JSONL             |             — |           1,102,481 | which tiles one service touches                       | yes      |
+| `readShardSized` (map projection)  | `map-stops`           | JSONL             |         3,873 |           1,009,071 | a viewport's stops, on the fine grid                  | yes      |
+| `routePatternsForService`          | `route-patterns`      | JSONL             |       341,008 |             744,295 | **one service's line**, then stop                     | yes      |
+| `servicesByIds` fallback           | `services`            | JSONL             |             — |           4,887,895 | about ten services of 13,593                          | yes      |
+| `operatorsByIds` fallback          | `operators`           | JSONL             |             — |             219,256 | the operators of about two routes                     | yes      |
+| `servicesFromBuckets`              | `services-bucket`     | JSONL             |        19,004 |              30,109 | the ids in that bucket                                | yes      |
+| `servingRoutesAtStop`              | `stop-serving-routes` | JSONL + header    |        59,935 |              73,063 | one stop's line and the header                        | yes      |
+| `stopServices`                     | `stop-services`       | JSONL             |        41,024 |              51,312 | one stop's line                                       | yes      |
+| `stopLocator`                      | `stop-locator`        | JSONL             |       138,230 |             144,238 | one stop's row                                        | yes      |
+| `serviceNames`                     | `service-names`       | JSONL             |             — |             881,452 | **all of it**, as a resident map                      | no       |
+| `placeEntriesMatching`             | `places/gazetteer`    | JSONL             |             — |             665,828 | the landmarks a query could mean                      | no       |
+| `recentTrace`                      | `recent-traces`       | JSONL + header    |             — |   one of 64 buckets | one vehicle's points                                  | no       |
+| `networkIndex`                     | `network/index`       | **one JSON line** |             — |             144,948 | all of it, and it is one record                       | no       |
+| manifests                          | `manifests/*`         | one JSON object   |             — | a few hundred bytes | all of it                                             | no       |
+
+The four that stay buffered are deliberate and each for its own reason. The index is a single
+144,948-character line: there is no line-oriented saving to be had from an object with one line in
+it. A manifest is a few hundred bytes read once. The gazetteer is 665,828 bytes and the
+service-name projection 881,452, both read once per isolate and then answered from memory — and
+streaming them would mean re-reading on every search and every map request, which trades a
+measured per-request cost for a smaller resident one. That is a trade worth making when the object
+is megabytes and the request keeps a handful of rows; it is not worth making here, and the honest
+thing is to say so with the numbers rather than to stream everything and call it consistency.
+
+Two numbers in that table are the ones that justify the work. A board buffered a **2,131,979-byte**
+median departure shard to read one line out of about thirty thousand, and then kept the whole
+string resident for the next passenger. A journey's planner held a batch of trip shards whose
+largest published member is **8,348,894 bytes** and ran `split("\n")` over each of them.
 
 ## Decision
 

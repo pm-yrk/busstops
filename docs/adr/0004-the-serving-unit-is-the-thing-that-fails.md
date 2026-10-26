@@ -130,13 +130,13 @@ day:
 > incoming requests to maintain stability.
 
 1102 is "exceeded resource limits", and the dashboard splits it into `exceededCpu` and
-`exceededMemory`. Everything measured here fits the second: the ceiling accumulates **across
-requests on one isolate**, so an isolate that has served about a hundred passenger requests — each
-allocating hundreds of kilobytes to several megabytes of strings and object graphs — reaches it,
-and the runtime then sheds requests irrespective of what the current one costs.
+`exceededMemory`. The reasoning in this ADR took it to be the second, because the ceiling
+accumulates across requests on one isolate and that fitted every observation. **It is the first,
+and Cloudflare was eventually asked rather than reasoned about** — see
+[ADR 0006](0006-the-limit-is-cpu-and-it-is-ten-milliseconds.md). The paragraph below stands as the
+measurement it was; the conclusion drawn from it did not survive being checked.
 
-That is why every size-based theory kept failing to predict the failures. A paced walk measured, on
-two consecutive deployments:
+A paced walk measured, on two consecutive deployments:
 
 |                       |   peak-1 |   peak-2 |
 | --------------------- | -------: | -------: |
@@ -144,7 +144,9 @@ two consecutive deployments:
 | `isolateServedMax`    |       54 |      103 |
 
 An 87,543-character `nearby` fails at `served=106` while a 5,008,974-character read succeeds at
-`served<60`, and `residency.chars` is zero at both — because the megabytes are V8's, not ours.
+`served<60`, and `residency.chars` is zero at both. That is real and still unexplained by any
+request-size theory; what explains it is the per-isolate CPU slack described in ADR 0006, not the
+heap.
 
 The remedies Cloudflare lists are, in order: stream bodies instead of buffering entire payloads;
 avoid large in-memory objects; profile. This ADR's decisions are all the second one, and they
