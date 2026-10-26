@@ -638,14 +638,10 @@ async function main(): Promise<void> {
   if (ONLY !== "peak") {
     annotate("notice", "cold serving", JSON.stringify({ cold, warm }, null, 1));
   }
-  if (peaks.length > 0) {
+  if (peaks.length > 0 && !SAMPLE) {
     // Its own annotation: this is the acceptance measurement, and it must not be the part that
     // GitHub truncates away when the per-endpoint summary happens to be long.
-    annotate(
-      "notice",
-      SAMPLE ? `peak passenger walk sample ${SAMPLE}` : "peak passenger walk",
-      JSON.stringify(peaks, null, 1),
-    );
+    annotate("notice", "peak passenger walk", JSON.stringify(peaks, null, 1));
   }
   /*
    * One row per line, because the splitter divides on line boundaries.
@@ -653,13 +649,26 @@ async function main(): Promise<void> {
    * A single `JSON.stringify` of the whole trace is one very long line, and GitHub cuts an
    * annotation off at about four kibibytes — so the first attempt at this arrived truncated
    * mid-number and would not parse, which is the same failure the splitter was written for.
+   *
+   * Not when sampling. GitHub keeps at most **ten notices per step**, and the trace is eight of
+   * them: three samples in one step meant the first sample's trace crowded out the second and
+   * third samples' peak figures entirely, which are the only numbers an acceptance run exists to
+   * produce. The log and the uploaded artifact still carry the trace; the annotation channel is
+   * the scarce one and the peak rows get it.
    */
-  annotate("notice", "cold serving trace", trace.map((row) => JSON.stringify(row)).join("\n"));
+  if (!SAMPLE) {
+    annotate("notice", "cold serving trace", trace.map((row) => JSON.stringify(row)).join("\n"));
+  }
   if (failures.length > 0) {
     annotate(
       "failure",
-      `cold serving (${failures.length} platform error(s))`,
-      failures.map((row) => `${row.pass} ${row.city} ${row.endpoint}: ${row.platform}`).join("\n"),
+      SAMPLE
+        ? `sample ${SAMPLE}: ${failures.length} platform error(s)`
+        : `cold serving (${failures.length} platform error(s))`,
+      failures
+        .slice(0, 40)
+        .map((row) => `${row.pass} ${row.city} ${row.endpoint}: ${row.platform}`)
+        .join("\n"),
     );
   }
 

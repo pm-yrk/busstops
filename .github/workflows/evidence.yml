@@ -602,6 +602,12 @@ jobs:
           URL: ${{ steps.worker.outputs.url }}
         run: |
           set -o pipefail
+          # Let the deploy settle before the first sample. The classification job that may have
+          # run before this one deliberately burns the Worker's CPU slack, and a sample taken
+          # seconds later measures that rather than this build: the first attempt at this job ran
+          # at 21:01:48 against a burst that ended at 21:01:11 and reported 38 of 54 where the
+          # deployment before it had reported 54 of 54.
+          sleep 90
           for SAMPLE in 1 2 3; do
             if [ "$SAMPLE" != "1" ]; then
               echo "::group::Redeploying before sample $SAMPLE"
@@ -803,6 +809,60 @@ jobs:
             verify.log
             probe.log
             deployment-probe.json
+          retention-days: 14
+          if-no-files-found: ignore
+
+  # Does BODS honour the bounding box this Worker sends, and how much XML comes back?
+  #
+  # This is the measured blocker. Timing a passenger request's stages against the live artifact and
+  # the live feed put 956 of 996 milliseconds — ninety-six per cent — on normalising SIRI-VM, with
+  # everything else together at forty: the whole map projection read is under five milliseconds and
+  # parsing every trip row in an eight-megabyte corridor is twenty-nine. A Workers Free invocation
+  # gets ten milliseconds, so the live feed is the only stage whose order of magnitude matters.
+  #
+  # And the feed it timed was 19,272,814 characters for one Manchester viewport carrying 7,008
+  # observations. A city-sized box cannot hold seven thousand buses, so either BODS is ignoring the
+  # box or it is being sent in an order BODS does not read. Bounding-box ordering is inconsistent
+  # across APIs and BODS's own documentation is not reachable from here, so every plausible order is
+  # tried against the real feed and the positions that come back decide it.
+  bods_bbox:
+    name: Does BODS honour the bounding box
+    if: contains(github.event.head_commit.message, '[bods]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - run: npm ci --no-audit --no-fund
+
+      - name: Ask BODS the same question four ways
+        env:
+          BODS_API_KEY: ${{ secrets.BODS_API_KEY }}
+        run: |
+          set -o pipefail
+          npx tsx scripts/measure-bods-bbox.ts --json bods-bbox.json 2>&1 | tee bods-bbox.log
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "## The BODS bounding box"
+            echo
+            echo '```'
+            sed -n '1,120p' bods-bbox.log 2>/dev/null || echo "no bods-bbox.log was written"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-bods-bbox
+          path: |
+            bods-bbox.json
+            bods-bbox.log
           retention-days: 14
           if-no-files-found: ignore
 
