@@ -403,6 +403,92 @@ jobs:
   #
   # Here rather than on the deploy workflow so three hours of housekeeping does not hold the
   # concurrency slot the serving measurements need.
+  # Asks Cloudflare which resource limit a 1102 was: memory, or CPU.
+  #
+  # Error 1102 covers both and says neither. Four diagnoses of these failures were made from
+  # request behaviour alone — cold path, cache accumulation, request rate, request size — and each
+  # one predicted failures that did not happen and missed ones that did. The platform does
+  # distinguish them, so this job asks it: a `wrangler tail` is attached to the deployed Worker
+  # before a burst of the heaviest passenger reads, and each invocation's `outcome` is read off the
+  # tail. The GraphQL analytics API is asked the same question afterwards as a cross-check, and
+  # Account Analytics is a token scope the deploy credential may not carry — so a refusal there is
+  # reported as "unavailable" rather than filled in from the behaviour.
+  #
+  # Its own marker and its own job: it deploys the Worker because the tail must watch the code
+  # under test, and it runs for minutes rather than hours.
+  classify_1102:
+    name: Classify a real 1102 from Cloudflare
+    if: contains(github.event.head_commit.message, '[classify]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - run: npm ci --no-audit --no-fund
+
+      - name: Deploy the preview Worker
+        id: worker
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -o pipefail
+          npx --no-install wrangler deploy \
+            --config apps/worker/wrangler.toml \
+            --env "$WORKER_ENV" 2>&1 | tee deploy.log
+          URL=$(grep -oE 'https://[a-z0-9.-]+\.workers\.dev' deploy.log | head -1)
+          [ -n "$URL" ] || { echo "::error::No Worker URL in the wrangler output."; exit 1; }
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for the Worker
+        run: |
+          for attempt in 1 2 3 4 5 6; do
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 \
+              "${{ steps.worker.outputs.url }}/v1/sources/health" || echo 000)
+            if [ "$CODE" = "200" ]; then
+              echo "Worker healthy on attempt $attempt"
+              exit 0
+            fi
+            echo "Attempt $attempt: HTTP $CODE"
+            sleep 10
+          done
+          echo "::error::The Worker did not become healthy."
+          exit 1
+
+      - name: Provoke, and ask what it was
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -o pipefail
+          npx tsx scripts/classify-worker-outcomes.ts \
+            --worker "${{ steps.worker.outputs.url }}" \
+            --json classification.json 2>&1 | tee classification.log
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "## What the 1102s were"
+            echo
+            echo '```'
+            sed -n '1,160p' classification.log 2>/dev/null || echo "no classification.log"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-classification
+          path: |
+            classification.json
+            classification.log
+          retention-days: 14
+          if-no-files-found: ignore
+
   prune_artifacts:
     name: Prune superseded network artifacts
     if: contains(github.event.head_commit.message, '[prune]')
