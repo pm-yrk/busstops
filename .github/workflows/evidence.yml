@@ -564,7 +564,13 @@ jobs:
   # same walk — which is the whole point.
   acceptance:
     name: Three acceptance samples of this commit
-    if: contains(github.event.head_commit.message, '[acceptance]')
+    # After the classification, never beside it. Both jobs deploy the same preview Worker and then
+    # load it deliberately, so running them together would have each one measuring the other's
+    # traffic — and a contaminated acceptance sample is worse than a slow one, because it looks
+    # exactly like a real one. `always()` so a skipped or failed classification does not cancel
+    # the samples; the ordering is what is wanted, not the outcome.
+    needs: classify_1102
+    if: always() && contains(github.event.head_commit.message, '[acceptance]')
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
