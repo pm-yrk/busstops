@@ -650,6 +650,64 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
+  # Where a passenger request's CPU actually goes, stage by stage, on real published data.
+  #
+  # Cloudflare's tail says what kills these requests and the limit it does it at — `exceededCpu`,
+  # ten milliseconds, with the surviving invocations spending between 74 and 1,198 of them. It does
+  # not say which part of a request spends them, and a Worker cannot measure that from inside:
+  # `Date.now()` in Workers advances only across I/O, so every one of these stages has always
+  # reported zero milliseconds while costing a hundred times the budget. That is most of why five
+  # diagnoses in a row looked at bytes instead of compute.
+  #
+  # A runner's CPU is not Cloudflare's and the script says so. What transfers is the ratio between
+  # stages and the order of magnitude, which is what decides where a hundredfold reduction could
+  # come from. It is the same method that produced this project's SIRI-VM figure.
+  measure_cpu:
+    name: Measure where a request's CPU goes
+    if: contains(github.event.head_commit.message, '[cpu]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - run: npm ci --no-audit --no-fund
+
+      - name: Measure
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          # The live feed, because the map's own parse of it is a candidate for most of its CPU
+          # and the only honest way to time that is on a real one.
+          BODS_API_KEY: ${{ secrets.BODS_API_KEY }}
+          NODE_OPTIONS: "--max-old-space-size=8192"
+        run: |
+          set -o pipefail
+          npx tsx scripts/measure-serving-cpu.ts --json serving-cpu.json 2>&1 | tee serving-cpu.log
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "## Where a request's CPU goes"
+            echo
+            echo '```'
+            sed -n '1,160p' serving-cpu.log 2>/dev/null || echo "no serving-cpu.log was written"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-serving-cpu
+          path: |
+            serving-cpu.json
+            serving-cpu.log
+          retention-days: 14
+          if-no-files-found: ignore
+
   prune_artifacts:
     name: Prune superseded network artifacts
     if: contains(github.event.head_commit.message, '[prune]')
