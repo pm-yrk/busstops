@@ -708,6 +708,104 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
+  # The passenger regression suite and the five-city walk, against the deployed Worker.
+  #
+  # Normally these run inside the deploy-preview workflow, after a build. They are here as their
+  # own marker so a frozen Worker can be re-verified without rebuilding anything: the artifact in
+  # the bucket does not change, the Pages preview is already deployed at a fixed URL, and what is
+  # under test is the Worker this commit deploys.
+  #
+  # `verify-deployment.mjs` is the regression suite — search, postcode search, nearby, the live
+  # map, a stop board, the routes serving a stop, departures, route detail, ordered stops, journey
+  # planning, degradation messages, the shared live parse, the page-load burst, and the CSP and
+  # cross-origin checks that need the app's own origin. `probe-deployment.ts` is the city walk:
+  # Leeds, Manchester, Birmingham, Bristol and York, each through the whole passenger path
+  # including the selected bus, Stops Ahead and the recent trail.
+  regress:
+    name: Passenger regression suite and the city walk
+    needs: acceptance
+    if: always() && contains(github.event.head_commit.message, '[regress]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - run: npm ci --no-audit --no-fund
+
+      - name: Deploy the preview Worker
+        id: worker
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -o pipefail
+          npx --no-install wrangler deploy \
+            --config apps/worker/wrangler.toml \
+            --env "$WORKER_ENV" 2>&1 | tee deploy.log
+          URL=$(grep -oE 'https://[a-z0-9.-]+\.workers\.dev' deploy.log | head -1)
+          [ -n "$URL" ] || { echo "::error::No Worker URL in the wrangler output."; exit 1; }
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for the Worker
+        run: |
+          for attempt in 1 2 3 4 5 6; do
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 \
+              "${{ steps.worker.outputs.url }}/v1/sources/health" || echo 000)
+            [ "$CODE" = "200" ] && exit 0
+            echo "Attempt $attempt: HTTP $CODE"
+            sleep 10
+          done
+          echo "::error::The Worker did not become healthy."
+          exit 1
+
+      - name: The regression suite
+        id: verify
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          node scripts/verify-deployment.mjs \
+            "${{ steps.worker.outputs.url }}" \
+            "https://preview.busstops.pages.dev" 2>&1 | tee verify.log
+
+      - name: The city walk
+        if: always()
+        continue-on-error: true
+        env:
+          BODS_API_KEY: ${{ secrets.BODS_API_KEY }}
+        run: |
+          set -o pipefail
+          npx tsx scripts/probe-deployment.ts \
+            --worker "${{ steps.worker.outputs.url }}" \
+            --json deployment-probe.json 2>&1 | tee probe.log
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "## Regression suite"
+            echo '```'
+            tail -n 80 verify.log 2>/dev/null || echo "no verify.log was written"
+            echo '```'
+            echo "## City walk"
+            echo '```'
+            tail -n 120 probe.log 2>/dev/null || echo "no probe.log was written"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-regress
+          path: |
+            verify.log
+            probe.log
+            deployment-probe.json
+          retention-days: 14
+          if-no-files-found: ignore
+
   prune_artifacts:
     name: Prune superseded network artifacts
     if: contains(github.event.head_commit.message, '[prune]')
