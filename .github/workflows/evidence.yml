@@ -416,6 +416,62 @@ jobs:
   #
   # Its own marker and its own job: it deploys the Worker because the tail must watch the code
   # under test, and it runs for minutes rather than hours.
+  # What a serving read buffers, per family, and the longest line in published data.
+  #
+  # Both numbers are inputs to replacing whole-object buffering with streaming, and neither had
+  # been measured. The family sizes decide the order the migration is worth doing in — a manifest
+  # of a few hundred bytes is not worth a stream parser, and a pattern tile of several megabytes
+  # is. The longest line decides the one constant a streaming reader cannot do without: it carries
+  # a partial line across chunk boundaries, so a line that never ends grows that carry buffer to
+  # the size of the object, which is precisely the allocation being removed. A cap picked by guess
+  # is either a cliff under real data or no guard at all.
+  #
+  # Reads the live version and writes nothing.
+  measure_lines:
+    name: Measure what each family buffers, and its longest line
+    if: contains(github.event.head_commit.message, '[lines]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - run: npm ci --no-audit --no-fund
+
+      - name: Measure
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          # One object at a time is held, and the largest published object is a few megabytes.
+          # Headroom rather than a requirement; the runner's memory is already paid for.
+          NODE_OPTIONS: "--max-old-space-size=8192"
+        run: |
+          set -o pipefail
+          npx tsx scripts/measure-lines.ts --json lines.json 2>&1 | tee lines.log
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "## What each family buffers"
+            echo
+            echo '```'
+            sed -n '1,200p' lines.log 2>/dev/null || echo "no lines.log was written"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-lines
+          path: |
+            lines.json
+            lines.log
+          retention-days: 14
+          if-no-files-found: ignore
+
   classify_1102:
     name: Classify a real 1102 from Cloudflare
     if: contains(github.event.head_commit.message, '[classify]')
