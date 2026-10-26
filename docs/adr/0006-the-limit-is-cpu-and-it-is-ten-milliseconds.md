@@ -98,6 +98,49 @@ _before a single `JSON.parse`_, and the measurements above say the real figure p
 hundred times the budget's intent. The budget is not protecting anything; it is permitting a
 request that cannot fit.
 
+## Where the milliseconds go
+
+A Worker cannot measure this from inside: `Date.now()` in Workers advances only across I/O, so
+every stage below has always reported zero milliseconds while costing a hundred times the budget.
+That is most of why five diagnoses in a row looked at bytes instead of compute.
+
+So `scripts/measure-serving-cpu.ts` times the stages in Node, against the objects the live artifact
+holds and the feed the live upstream serves. A runner's CPU is not Cloudflare's; what transfers is
+the ratio and the order of magnitude.
+
+| Stage                               |           CPU |     Characters | ms per MiB |
+| ----------------------------------- | ------------: | -------------: | ---------: |
+| map: walk the projection lines      |       1.38 ms |        616,598 |       2.34 |
+| map: parse the rows it keeps        |       3.38 ms |        616,598 |       5.74 |
+| **map: normalise the SIRI-VM feed** | **956.31 ms** | **19,272,814** |      52.03 |
+| journey: walk the trip shards       |       0.50 ms |      8,385,789 |       0.06 |
+| journey: parse every trip row       |      28.73 ms |      8,385,789 |       3.59 |
+| journey: walk the pattern rows      |       0.21 ms |      3,377,942 |       0.07 |
+| journey: parse every pattern row    |       5.38 ms |      3,377,942 |       1.67 |
+
+**Ninety-six per cent of a request's CPU is one XML parse.** 956 of 996 milliseconds. Everything
+else put together is forty — and that forty includes parsing _every_ row of an eight-megabyte
+corridor of trip shards, which no request actually does.
+
+Which reframes the whole exercise. Every decision in ADR 0004 and ADR 0005 was about the artifact
+reads, and the artifact reads are cheap: a map viewport's entire projection read is 4.8 ms of the
+10 ms allowed. The fine grid, the enriched serving index, the streaming — all of that is real and
+all of it operates on the forty milliseconds, not on the 956.
+
+The feed is also the wrong size. 19,272,814 characters came back for a 0.16° by 0.10° box around
+Manchester, carrying 7,008 vehicle observations. A city-sized box does not contain seven thousand
+buses, so either BODS is ignoring the bounding box or it is being sent in an order BODS does not
+read — `bodsDatafeedUrl` sends `west,south,east,north`. Bounding-box ordering is inconsistent
+between APIs and asserting one from memory is how this project has been wrong before, so
+`scripts/measure-bods-bbox.ts` asks the real feed every plausible order and lets the latitudes and
+longitudes that come back decide.
+
+That measurement decides which of two very different situations this is. If a correctly ordered box
+returns a city's worth of XML, the parse falls with it and 52 ms per mebibyte becomes affordable. If
+BODS returns the nation whatever it is asked, then normalising the feed inside the request that
+serves it cannot be made to fit, and live positions have to be normalised somewhere else — which
+the scheduled collector already does for its own purposes.
+
 ## What would actually fit
 
 Not recorded here as a plan, because this ADR is about what was measured. But the arithmetic bounds
