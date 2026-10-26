@@ -143,8 +143,9 @@ async function main(): Promise<number> {
   const mapScan = timed(() => mapBodies.reduce((total, body) => total + walk(body, inBox), 0));
   stages.push(stage("map: walk the projection lines", mapScan.ms, mapChars, mapScan.value));
 
+  const mapRows: MapStopRow[] = [];
   const mapParse = timed(() => {
-    const rows: MapStopRow[] = [];
+    const rows = mapRows;
     for (const body of mapBodies) {
       for (let start = 0; start < body.length;) {
         const newline = body.indexOf("\n", start);
@@ -290,59 +291,75 @@ async function main(): Promise<number> {
    * above come to about thirty-five milliseconds between them and the live parse to twenty-eight,
    * so several hundred milliseconds are unaccounted for — and building a graph over a corridor's
    * trips and searching it is the only computation left that could hold them.
+   *
+   * **Sized to what the planner actually builds**, which the first attempt at this was not: it
+   * gave every trip its own synthetic stops, produced twelve thousand of them, and `buildGraph`
+   * walks every pair within transfer range — so the runner died with SIGABRT on 144 million pairs
+   * and measured nothing. The deployed breadcrumbs say what a real corridor is: `slice.stops=222`
+   * and `patterns.wanted=35`. So the graph is built over real stop coordinates from the projection
+   * and the trips of a bounded number of patterns, and the caps are reported with the timings
+   * because a graph search's cost is mostly a function of its size.
    */
+  const CORRIDOR_STOPS = 250;
+  const CORRIDOR_PATTERNS = 40;
+
+  const graphStops = mapRows.slice(0, CORRIDOR_STOPS).map((row) => ({
+    id: row.i,
+    name: row.n,
+    coordinate: { lat: row.y, lon: row.x },
+  }));
+
+  const patterns = new Set<string>();
   const trips: Trip[] = [];
   for (const body of tripBodies) {
-    for (let start = 0; start < body.length;) {
+    for (let start = 0; start < body.length && trips.length < 4_000;) {
       const newline = body.indexOf("\n", start);
       const end = newline < 0 ? body.length : newline;
       if (end > start) {
         const row = JSON.parse(body.slice(start, end)) as PatternTripRow;
-        /*
-         * A trip needs its pattern's stop sequence to become a graph edge, and this script does
-         * not resolve patterns — so the stop ids are the row's own times indexed against a
-         * synthetic sequence. The shape and the size are what is being timed, not the itinerary.
-         */
-        trips.push({
-          id: row.j,
-          routeId: row.p,
-          stopTimes: row.t.map((seconds, i) => ({
-            stopId: `${row.p}:${String(i)}`,
-            arrivalSeconds: seconds,
-            departureSeconds: seconds,
-          })),
-        } as unknown as Trip);
+        if (!patterns.has(row.p)) {
+          if (patterns.size < CORRIDOR_PATTERNS) patterns.add(row.p);
+        }
+        if (patterns.has(row.p) && graphStops.length > 0) {
+          /*
+           * The times are the published ones; the stops are real stops from the corridor, walked
+           * in order. This times a graph of the right shape and size, not a real itinerary.
+           */
+          const offset = patterns.size;
+          trips.push({
+            id: row.j,
+            routeId: row.p,
+            stopTimes: row.t.map((seconds, i) => ({
+              stopId: graphStops[(offset * 7 + i) % graphStops.length]!.id,
+              arrivalSeconds: seconds,
+              departureSeconds: seconds,
+            })),
+          } as unknown as Trip);
+        }
       }
       if (newline < 0) break;
       start = newline + 1;
     }
   }
-  const graphStops = [
-    ...new Map(
-      trips.flatMap((trip) =>
-        trip.stopTimes.map((call, i) => [
-          call.stopId,
-          {
-            id: call.stopId,
-            name: call.stopId,
-            coordinate: { lat: FROM.lat + i * 0.0005, lon: FROM.lon + i * 0.0005 },
-          },
-        ]),
+
+  if (graphStops.length > 0 && trips.length > 0) {
+    const built = timed(() => buildGraph({ stops: graphStops as never, trips }));
+    stages.push(
+      stage(
+        `journey: build the graph (${String(graphStops.length)} stops, ${String(trips.length)} trips)`,
+        built.ms,
+        undefined,
+        trips.length,
       ),
-    ).values(),
-  ];
+    );
 
-  const built = timed(() => buildGraph({ stops: graphStops as never, trips }));
-  stages.push(stage("journey: build the graph", built.ms, undefined, trips.length));
-
-  const planned = timed(() =>
-    plan(built.value, {
-      origin: FROM,
-      destination: TO,
-      departAtSeconds: from - midnight,
-    }),
-  );
-  stages.push(stage("journey: search it", planned.ms, undefined, planned.value.options.length));
+    const planned = timed(() =>
+      plan(built.value, { origin: FROM, destination: TO, departAtSeconds: from - midnight }),
+    );
+    stages.push(stage("journey: search it", planned.ms, undefined, planned.value.options.length));
+  } else {
+    stages.push(stage("journey: no corridor stops or trips to build a graph from", 0));
+  }
 
   const total = stages.reduce((sum, one) => sum + one.ms, 0);
   const report = {
