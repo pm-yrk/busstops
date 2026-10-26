@@ -41,6 +41,17 @@
  * work is done by parsing fewer rows (see `patternIdInTripLine` and `searchLineFilter`). But bytes
  * are the only thing a budget can count before the fact, and a dense viewport that comes back with
  * the stops nearest the middle and says so is a map. Cloudflare's error page is not.
+ *
+ * **And this budget does not bound what it was meant to bound.** Cloudflare's own tail, finally
+ * asked, reports `exceededCpu` at exactly ten milliseconds, with the invocations that survive
+ * spending between 74 and 1,198 — see
+ * [ADR 0006](../../../docs/adr/0006-the-limit-is-cpu-and-it-is-ten-milliseconds.md). Three
+ * mebibytes of walking is already nine milliseconds before a single `JSON.parse`, so a request
+ * inside this budget is routinely a hundred times over the limit. The number is left where it is
+ * on purpose: lowering it would not reduce the CPU a request spends, it would only make more
+ * responses incomplete, and trading passenger coverage for a prettier number is not a fix. What
+ * is needed is a serving path that computes almost nothing, which is a design change rather than
+ * a constant.
  */
 export const REQUEST_TEXT_BUDGET_CHARS = 3 * 1024 * 1024;
 

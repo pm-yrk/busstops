@@ -421,10 +421,15 @@ function beginResidency(ledger: ReadLedger, handler = "unnamed"): () => void {
      *
      * `residentChars` is the `NetworkReader`'s, and every dying request all day reported it as
      * zero — correctly, because the board's reads are filtered and filtered reads cache no
-     * records. Meanwhile `DepartureReader` holds up to four departure shards and six mebibytes of
-     * text of its own, and with a real timetable a shard is about 4.6 MB where with an expired one
-     * it is absent. So "nothing is resident" was true of one reader and badly misleading about the
-     * isolate, which is the sort of gap that sends a day's diagnosis the wrong way.
+     * records. Meanwhile `DepartureReader` held whole departure shards of its own — several
+     * mebibytes with a real timetable, nothing with an expired one. So "nothing is resident" was
+     * true of one reader and badly misleading about the isolate, which is the sort of gap that
+     * sends a day's diagnosis the wrong way.
+     *
+     * Both figures now describe *boards* rather than shards: what the reader keeps is one stop's
+     * rows, so the count is boards resident and the characters are an estimate from their rows.
+     * The names are kept because a breadcrumb's history is worth more than its tidiness, and the
+     * reader's own comments say what the numbers mean.
      */
     departureShardsResident: departures2?.cachedShardCount ?? 0,
     departureChars: departures2?.cachedChars ?? 0,
