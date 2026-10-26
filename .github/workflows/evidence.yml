@@ -476,7 +476,12 @@ jobs:
     name: Classify a real 1102 from Cloudflare
     if: contains(github.event.head_commit.message, '[classify]')
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Forty-five, because thirty was not enough and the overrun was not the measurement. The
+    # script printed its whole report and then sat there: `npx wrangler tail` is a shell wrapping
+    # a node process wrapping wrangler's own, and the tail's stdout kept the event loop alive
+    # after the child this spawned had been signalled. Fixed in the script; the limit stays
+    # generous because a provoked burst of eighty-four heavy requests is minutes of wall clock.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

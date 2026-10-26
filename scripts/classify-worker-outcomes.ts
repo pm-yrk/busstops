@@ -47,7 +47,7 @@ const TOKEN = process.env.CLOUDFLARE_API_TOKEN ?? "";
 const JSON_OUT = arg("json");
 
 /** Enough concurrent heavy reads to put an isolate under real pressure, for long enough to log. */
-const BURSTS = Number(arg("bursts") ?? "14");
+const BURSTS = Number(arg("bursts") ?? "10");
 const CONCURRENCY = Number(arg("concurrency") ?? "6");
 
 interface Attempt {
@@ -190,7 +190,13 @@ function startTail(): Tail {
       "--format",
       "json",
     ],
-    { stdio: ["ignore", "pipe", "pipe"], env: process.env },
+    /*
+     * Its own process group, so stopping it stops the whole tree. `npx wrangler tail` is a shell
+     * wrapping a node process wrapping wrangler's own; signalling only the child this spawned
+     * leaves the last of those running, which the first run's "Terminate orphan process" lines
+     * showed plainly.
+     */
+    { stdio: ["ignore", "pipe", "pipe"], env: process.env, detached: true },
   ) as ChildProcessWithoutNullStreams;
 
   const tail: Tail = {
@@ -198,10 +204,17 @@ function startTail(): Tail {
     lines: 0,
     stderr: [],
     stop: async () => {
-      child.kill("SIGINT");
+      const signal = (what: "SIGINT" | "SIGKILL") => {
+        try {
+          if (child.pid !== undefined) process.kill(-child.pid, what);
+        } catch {
+          /* Already gone, which is the outcome being asked for. */
+        }
+      };
+      signal("SIGINT");
       await new Promise<void>((resolve) => {
         const give = setTimeout(() => {
-          child.kill("SIGKILL");
+          signal("SIGKILL");
           resolve();
         }, 5_000);
         child.on("exit", () => {
@@ -212,17 +225,35 @@ function startTail(): Tail {
     },
   };
 
+  /*
+   * Accumulated across lines, because `--format json` does not mean one record per line.
+   *
+   * It pretty-prints: an opening `{` on its own line, the fields indented, a closing `}` on its
+   * own line. The first version of this read each line as a document and threw all of them away,
+   * reporting "the tail delivered no invocation records" while the log in front of it plainly
+   * contained `"outcome": "ok"` and `"cpuTime": 9`. So a record is everything between a `{` at
+   * column zero and the matching `}` at column zero.
+   */
+  let pending: string[] | null = null;
   createInterface({ input: child.stdout }).on("line", (line) => {
     tail.lines += 1;
-    const trimmed = line.trim();
-    if (!trimmed.startsWith("{")) {
-      tail.stderr.push(`stdout: ${trimmed.slice(0, 200)}`);
+    if (pending === null) {
+      if (line.startsWith("{")) {
+        pending = [line];
+        return;
+      }
+      const trimmed = line.trim();
+      if (trimmed.length > 0) tail.stderr.push(`stdout: ${trimmed.slice(0, 200)}`);
       return;
     }
+    pending.push(line);
+    if (!line.startsWith("}")) return;
+    const document = pending.join("\n");
+    pending = null;
     try {
-      tail.events.push(JSON.parse(trimmed) as TailEvent);
+      tail.events.push(JSON.parse(document) as TailEvent);
     } catch {
-      tail.stderr.push(`unparseable tail line: ${trimmed.slice(0, 200)}`);
+      tail.stderr.push(`unparseable tail record: ${document.slice(0, 200)}`);
     }
   });
   createInterface({ input: child.stderr }).on("line", (line) => {
@@ -245,13 +276,24 @@ interface GraphQlResult {
       accounts?: Array<{
         workersInvocationsAdaptive?: Array<{
           sum?: { requests?: number; errors?: number };
-          dimensions?: { outcome?: string; scriptName?: string };
+          dimensions?: { status?: string; outcome?: string; scriptName?: string };
           quantiles?: { cpuTimeP99?: number; wallTimeP99?: number };
         }>;
       }>;
     };
   };
 }
+
+/**
+ * What the dimension separating the two 1102s is called, which took a run to find out.
+ *
+ * The dashboard labels it "Invocation Status" and the tail calls the same thing `outcome`, so
+ * `outcome` is what this asked for — and the API answered `unknown field "outcome"`. That is a
+ * schema error rather than a permission error, which was itself worth the run: the token can
+ * query the dataset. `status` is the field. Both are tried, newest name first, and the report says
+ * which one answered rather than leaving the next reader to find out the same way.
+ */
+const OUTCOME_FIELDS = ["status", "outcome"] as const;
 
 type Rows = NonNullable<
   NonNullable<NonNullable<GraphQlResult["data"]>["viewer"]>["accounts"]
@@ -267,7 +309,8 @@ type Rows = NonNullable<
 async function outcomes(
   startedAt: string,
   endedAt: string,
-): Promise<{ ok: true; rows: Rows } | { ok: false; reason: string }> {
+  field: string,
+): Promise<{ ok: true; rows: Rows; field: string } | { ok: false; reason: string }> {
   const query = `
     query Outcomes($accountTag: string!, $start: Time!, $end: Time!, $script: string!) {
       viewer {
@@ -277,7 +320,7 @@ async function outcomes(
             filter: { datetime_geq: $start, datetime_leq: $end, scriptName: $script }
           ) {
             sum { requests errors }
-            dimensions { outcome scriptName }
+            dimensions { ${field} scriptName }
             quantiles { cpuTimeP99 wallTimeP99 }
           }
         }
@@ -325,7 +368,11 @@ async function outcomes(
         .join("; ")}`,
     };
   }
-  return { ok: true, rows: parsed.data?.viewer?.accounts?.[0]?.workersInvocationsAdaptive ?? [] };
+  return {
+    ok: true,
+    rows: parsed.data?.viewer?.accounts?.[0]?.workersInvocationsAdaptive ?? [],
+    field,
+  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -412,6 +459,18 @@ async function main(): Promise<number> {
       records: tail.events.length,
       byOutcome: Object.fromEntries(byOutcome),
       /* The named invocations. This is the part of the report the question actually asks for. */
+      /*
+       * Every invocation's CPU and wall time, summarised. The first run's tail carried
+       * `"cpuTime": 9` against a ten-millisecond limit, which is a different story from the one
+       * the memory reading tells — so this is reported whether or not anything failed.
+       */
+      cpuTimeMax: Math.max(0, ...tail.events.map((event) => event.cpuTime ?? 0)),
+      cpuTimes: tail.events
+        .map((event) => event.cpuTime)
+        .filter((ms): ms is number => typeof ms === "number")
+        .sort((a, b) => b - a)
+        .slice(0, 12),
+      wallTimeMax: Math.max(0, ...tail.events.map((event) => event.wallTime ?? 0)),
       notOk: notOk.slice(0, 12).map((event) => ({
         outcome: event.outcome,
         endpoint: endpointOf(event),
@@ -445,34 +504,62 @@ async function main(): Promise<number> {
      * Analytics lags ingestion, so this waits rather than concluding from an empty answer — an
      * empty result and a refused query mean very different things and must not read the same.
      */
-    let attemptsLeft = 6;
-    while (attemptsLeft > 0) {
-      const last = await outcomes(probeWindow.startedAt, new Date().toISOString());
-      if (last.ok) {
-        const rows = last.rows ?? [];
-        if (rows.length > 0) {
+    /*
+     * The field name first, then ingestion lag. A schema error is not something waiting fixes, so
+     * the names are tried immediately and only a working query is retried for an empty answer.
+     */
+    let field: string | null = null;
+    for (const candidate of OUTCOME_FIELDS) {
+      const attempt = await outcomes(probeWindow.startedAt, new Date().toISOString(), candidate);
+      if (attempt.ok) {
+        field = candidate;
+        if (attempt.rows && attempt.rows.length > 0) {
           report.classification = "retrieved";
-          report.outcomes = rows.map((row) => ({
-            outcome: row.dimensions?.outcome,
+          report.outcomeField = candidate;
+          report.outcomes = attempt.rows.map((row) => ({
+            outcome: row.dimensions?.status ?? row.dimensions?.outcome,
             requests: row.sum?.requests,
             errors: row.sum?.errors,
             cpuTimeP99: row.quantiles?.cpuTimeP99,
             wallTimeP99: row.quantiles?.wallTimeP99,
           }));
-          break;
         }
-        report.classification = "empty";
-        report.reason =
-          "the analytics API answered with no invocations for this window; it may still be " +
-          "ingesting, or the script name may not match";
-      } else {
-        report.classification = "unavailable";
-        report.reason = last.reason;
-        /* A refusal is a scope, not a delay. Retrying it would only make the log longer. */
-        if (/refused the query|HTTP 40/.test(last.reason)) break;
+        break;
       }
+      report.classification = "unavailable";
+      report.reason = attempt.reason;
+      report.outcomeField = candidate;
+      /* A permission or a transport problem is not a field name; stop trying names. */
+      if (!/unknown field/i.test(attempt.reason)) break;
+    }
+
+    /* A working query with nothing in it: wait for ingestion rather than conclude from empty. */
+    let attemptsLeft = field === null || report.classification === "retrieved" ? 0 : 3;
+    while (attemptsLeft > 0) {
+      await new Promise((resolve) => setTimeout(resolve, 20_000));
       attemptsLeft -= 1;
-      if (attemptsLeft > 0) await new Promise((resolve) => setTimeout(resolve, 30_000));
+      const attempt = await outcomes(probeWindow.startedAt, new Date().toISOString(), field);
+      if (!attempt.ok) {
+        report.classification = "unavailable";
+        report.reason = attempt.reason;
+        break;
+      }
+      if (attempt.rows && attempt.rows.length > 0) {
+        report.classification = "retrieved";
+        report.outcomeField = field;
+        report.outcomes = attempt.rows.map((row) => ({
+          outcome: row.dimensions?.status ?? row.dimensions?.outcome,
+          requests: row.sum?.requests,
+          errors: row.sum?.errors,
+          cpuTimeP99: row.quantiles?.cpuTimeP99,
+          wallTimeP99: row.quantiles?.wallTimeP99,
+        }));
+        break;
+      }
+      report.classification = "empty";
+      report.reason =
+        "the analytics API answered with no invocations for this window; it may still be " +
+        "ingesting, or the script name may not match";
     }
   }
 
@@ -495,9 +582,18 @@ async function main(): Promise<number> {
 
 main()
   .then((code) => {
-    process.exitCode = code;
+    /*
+     * Exited rather than returned, and the reason cost a thirty-minute job.
+     *
+     * The first run printed its whole report and then sat there until the step limit killed it.
+     * `npx wrangler tail` is a shell, a node process and wrangler's own node process; a SIGINT to
+     * the one this spawned does not reach the last of those, and a readline over a live child's
+     * stdout keeps this event loop alive for as long as it exists. Setting `process.exitCode` asks
+     * politely, which is no use against a handle that never closes.
+     */
+    process.exit(code);
   })
   .catch((error: unknown) => {
     console.error("Classifying the Worker's outcomes failed:", error);
-    process.exitCode = 1;
+    process.exit(1);
   });

@@ -87,19 +87,38 @@ function emptyStats(): StreamLineStats {
 /**
  * The longest line a published object may contain, measured rather than guessed.
  *
- * Measured against the live artifact by `scripts/measure-lines.ts`, which opens the largest
- * objects of every family and reports the longest line in each. The guard exists because the carry
- * buffer is the one allocation in a streaming read that can reach the size of the object: an
- * object with no newline in it at all — a truncated write, a JSON array published where JSONL was
- * expected, a body that is actually an error page — would be carried in full, which is the
- * allocation being removed.
+ * The guard exists because the carry buffer is the one allocation in a streaming read that can
+ * reach the size of the object: a body with no newline in it at all — a truncated write, a JSON
+ * array published where JSONL was expected, an error page served as an object — would be carried
+ * in full, which is exactly the allocation being removed.
  *
- * The cap is the measured maximum with an order of magnitude of headroom, so a family growing by
- * half is unremarkable and a missing newline is not. Exceeding it makes the read **fail**: the
- * object is unavailable, and the caller's completeness flag says so. It is deliberately not a
- * truncation, because half a JSON row either throws or, worse, parses into a different row.
+ * `scripts/measure-lines.ts` opened the largest objects of all thirty-two published families
+ * against the live artifact. The longest line in any family a streaming read touches:
+ *
+ * | Family                        | Longest line | Median line | Largest object |
+ * | ----------------------------- | -----------: | ----------: | -------------: |
+ * | `network/route-patterns`      |      121,131 |      13,372 |        744,295 |
+ * | `network/departures`          |      113,503 |       2,028 |      2,761,566 |
+ * | `network/stop-serving-routes` |       12,663 |         142 |         73,063 |
+ * | `network/patterns-tile`       |        8,213 |       2,104 |      4,435,597 |
+ * | `network/pattern-index`       |        5,131 |       2,129 |      1,859,002 |
+ * | `network/pattern-trips`       |        1,843 |         539 |      8,348,894 |
+ * | `network/stop-services`       |        1,056 |         120 |         51,312 |
+ * | `network/map-stops`           |          776 |         144 |      1,009,071 |
+ * | `network/services`            |          379 |         358 |      4,887,895 |
+ * | `network/search-tile`         |          338 |         281 |      1,832,340 |
+ *
+ * A mebibyte is 8.6 times the largest of those, so a family whose rows grew eightfold would still
+ * pass and a missing newline in an eight-megabyte trip shard is caught at an eighth of it. It also
+ * clears the one legitimately enormous line in the artifact — the index record is a single
+ * 144,948-character object — so a body routed here by mistake fails on its shape rather than on
+ * its size.
+ *
+ * Exceeding it makes the read **fail**: the object is unavailable and the caller's completeness
+ * flag says so. Deliberately not a truncation, because half a JSON row either throws or, worse,
+ * parses into a different row.
  */
-export const MAX_LINE_CHARS = 2 * 1024 * 1024;
+export const MAX_LINE_CHARS = 1024 * 1024;
 
 /** A line longer than the cap. Distinct from a parse failure: the object is malformed, not the row. */
 export class OversizedLineError extends Error {

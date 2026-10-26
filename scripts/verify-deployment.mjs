@@ -1513,11 +1513,12 @@ await check("the heavy reads hold a chunk and a line, not an object", async () =
    */
   assert(sawStreaming, "no read reported streaming at all, so this cannot be proved from outside");
   /*
-   * Two mebibytes is the line cap, so a buffer above it is not one chunk and one line — it is an
-   * object. The measured maxima before this change were 3,728,562 and 5,008,974 characters.
+   * A mebibyte is the line cap, so a buffer above it is not one chunk and one line — it is an
+   * object. The measured maxima before this change were 3,728,562 and 5,008,974 characters, and
+   * the longest legitimate line in any streamed family is 121,131.
    */
   assert(
-    worstBuffer > 0 && worstBuffer < 2 * 1024 * 1024,
+    worstBuffer > 0 && worstBuffer < 1024 * 1024,
     `the largest buffer held by a single read was ${worstBuffer} characters, which is an object ` +
       `rather than a chunk and a line`,
   );
