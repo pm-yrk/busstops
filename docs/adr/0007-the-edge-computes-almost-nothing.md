@@ -288,3 +288,58 @@ queries — four shapes in each of the five probe cities — against the deploye
 current planner answered **20 of 20**. `scripts/compare-journey-plans.ts` holds a candidate against
 it and reports the five numbers separately, because a candidate that is 95% identical and loses one
 journey in twenty is not acceptable and a single agreement percentage would hide it.
+
+### The search, after the scan became route-centric
+
+Measured on the published artifact, against the same corridors as the table above:
+
+| Query                  | `plan` before | `plan` after | Offers before | Offers after |
+| ---------------------- | ------------: | -----------: | ------------: | -----------: |
+| Leeds, neighbourhood   |     488.65 ms | **35.24 ms** |     6,810,668 |       32,910 |
+| Manchester, normal     |     294.86 ms | **28.48 ms** |     6,510,009 |       39,313 |
+| Birmingham, cross-city |     947.09 ms | **50.68 ms** |    10,080,270 |       42,750 |
+| Bristol, several       |     197.25 ms |  **9.49 ms** |     4,454,522 |       14,186 |
+| York, park and ride    |      50.13 ms |  **8.15 ms** |       729,135 |        8,165 |
+
+Ten to twenty times faster, and the counters say why: Manchester offers 39,313 alighting labels
+where it offered 6,510,009, and scans 2,673 trips where it scanned 442,670. The answers are the
+same answers — the oracle in `route-scan.test.ts` holds two hundred generated timetables against
+exhaustive enumeration, and it is what caught the overtaking case that made the first version of
+this wrong.
+
+`buildGraph` is **larger** in that run, not smaller: Manchester 519 ms to 567, Birmingham 911 to 964. That run carried the route scan and not the transfer grid, so it pays the quadratic walk and
+the route grouping both. On a synthetic corridor of the same shape the grid takes the graph build
+from 636.8 ms to 42.2 — same 44,226 edges either way — so the next measurement on real corridors is
+what settles where it lands.
+
+### A rewrite that measured slower, and was reverted
+
+The obvious next step looked like interning stops to integers and holding the search's labels in
+typed arrays: the search makes two `Map.get` calls on a thirty-six-character UUID per alighting
+offer, and at 105,894 offers in fifty milliseconds — about 470 nanoseconds each — that is hashing
+rather than arithmetic.
+
+It was built: stop ids numbered once in `buildGraph`, routes carrying `Int32Array` stop indices,
+walking transfers as a flat adjacency of three typed arrays, and the search's three hot lookups as
+array reads with the label objects built only on acceptance. Every test passed, including the
+oracle. Benchmarked over eleven iterations against the maps it replaced, on identical input:
+
+|              | string-keyed maps | integer indices |
+| ------------ | ----------------: | --------------: |
+| `buildGraph` |           44.5 ms |         81.3 ms |
+| `plan`       |          103.0 ms |        133.5 ms |
+| `runRaptor`  |           51.9 ms |         73.8 ms |
+
+**Forty per cent slower, so it is not in the tree.** Part of that was a real mistake — the flat
+transfers were built by walking the grid twice and by calling the object form first, so they
+allocated the 44,226 objects they existed to avoid and the arrays as well — and fixing it recovered
+some of the graph build. Part was reading the typed arrays off a graph object that now carries
+lazily-built maps as getters, which puts it in dictionary mode so every `graph.transferTo` inside a
+loop is a hash lookup; hoisting them into locals recovered six milliseconds of the search. Neither
+closed the gap, and the remainder is not explained by anything I can point at, which is the
+honest state of it.
+
+What that says about the plan is not that integer indices are wrong — a published artifact will
+hand the Worker exactly that, and will not pay to build it — but that they are not worth having
+while the structure is still built per request. The request-time work has taken a journey from
+about 815 ms to about 100, and the rest is the artifact.
