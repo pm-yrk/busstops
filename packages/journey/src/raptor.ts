@@ -136,23 +136,11 @@ function earliestBoardable(
   const ceiling = riding === -1 ? trips.length : riding;
   if (ceiling === 0) return null;
 
-  const boardable = (index: number): readonly TripStopTime[] | null => {
-    const trip = trips[index]!;
-    if (trip.cancelled) return null;
-    if (counters) {
-      counters.tripScans += 1;
-      counters.effectiveStopTimesCalls += 1;
-    }
-    const times = effectiveStopTimes(trip);
-    return times[at]!.departureSeconds >= readyAt ? times : null;
-  };
-
   /*
    * The first index in [0, ceiling) whose departure here is at or after `readyAt`.
    *
-   * `monotone` is computed from the effective times, so the order this relies on already accounts
-   * for any live delay the trips carried when the graph was built, and the probe reads the
-   * effective times for the same reason.
+   * `monotone` is guaranteed by construction — see `RouteGroup.nonOvertaking` — so "boardable
+   * here" is monotone in the index and the first such trip can be found without scanning them all.
    */
   let low = 0;
   let high = ceiling;
@@ -162,10 +150,23 @@ function earliestBoardable(
     if (effectiveStopTimes(trips[mid]!)[at]!.departureSeconds >= readyAt) high = mid;
     else low = mid + 1;
   }
-  /* Then the first of those that is actually running. */
+  /*
+   * Then the first of those that is actually running.
+   *
+   * Written as a loop rather than around a `boardable` helper, because the helper was a closure
+   * created on every call to this function. The V8 profile over forty searches put 383 ms in
+   * esbuild's `__name` wrapper alone — about 9.6 ms a search, a quarter of its cost — from the
+   * 328,600 closures that created, before counting the allocations themselves.
+   */
   for (let index = low; index < ceiling; index++) {
-    const times = boardable(index);
-    if (times !== null) return { index, times };
+    const trip = trips[index]!;
+    if (trip.cancelled) continue;
+    if (counters) {
+      counters.tripScans += 1;
+      counters.effectiveStopTimesCalls += 1;
+    }
+    const times = effectiveStopTimes(trip);
+    if (times[at]!.departureSeconds >= readyAt) return { index, times };
   }
   return null;
 }
