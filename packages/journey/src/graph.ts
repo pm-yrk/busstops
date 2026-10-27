@@ -125,22 +125,36 @@ export function buildGraph(input: BuildGraphInput): JourneyGraph {
   const maxTransferSeconds = input.maxTransferSeconds ?? 600;
 
   const stops = new Map(input.stops.map((stop) => [stop.id, stop]));
-  const tripsByStop = new Map<string, Trip[]>();
-
-  for (const trip of input.trips) {
-    for (const stopTime of trip.stopTimes) {
-      const existing = tripsByStop.get(stopTime.stopId);
-      if (existing) existing.push(trip);
-      else tripsByStop.set(stopTime.stopId, [trip]);
-    }
-  }
 
   const transfers = buildTransfers(input.stops, maxTransferSeconds);
 
+  const trips = [...input.trips];
+  /*
+   * Built on first use, because the search stopped needing it.
+   *
+   * Every trip serving every stop is 238,150 map operations for a Manchester corridor — fifteen
+   * milliseconds of a graph build that has to fit inside a ten-millisecond request — and since the
+   * scan became route-centric nothing on the request path reads it. What does read it is the
+   * exhaustive oracle in the tests and the profiler, and neither is in a hurry. The field stays so
+   * both keep working unchanged.
+   */
+  let tripsByStop: Map<string, Trip[]> | null = null;
   return {
     stops,
-    trips: [...input.trips],
-    tripsByStop,
+    trips,
+    get tripsByStop(): Map<string, Trip[]> {
+      if (tripsByStop !== null) return tripsByStop;
+      const byStop = new Map<string, Trip[]>();
+      for (const trip of trips) {
+        for (const stopTime of trip.stopTimes) {
+          const existing = byStop.get(stopTime.stopId);
+          if (existing) existing.push(trip);
+          else byStop.set(stopTime.stopId, [trip]);
+        }
+      }
+      tripsByStop = byStop;
+      return byStop;
+    },
     ...groupRoutes(input.trips),
     transfers,
   };
@@ -157,19 +171,53 @@ export function groupRoutes(trips: readonly Trip[]): {
   routes: RouteGroup[];
   routesByStop: Map<string, Array<{ route: RouteGroup; at: number }>>;
 } {
-  const bySequence = new Map<string, Trip[]>();
+  /*
+   * Grouped by pattern first, then by sequence inside it, and the order matters for cost.
+   *
+   * The first version keyed on the sequence itself — the stop ids joined — which for a Manchester
+   * corridor is nine and a half thousand strings of about nine hundred characters each, built and
+   * hashed to discover what the pattern id already says. It measured forty milliseconds of a
+   * seventy-five millisecond graph build. Trips sharing a pattern share a sequence unless the
+   * corridor filter cut one of them short, so the pattern groups them and an element-wise
+   * comparison inside the group separates the few that disagree. No string is built.
+   *
+   * Two different patterns that happen to have the same sequence stay separate routes. That costs
+   * one extra route scan and is correct, which is the right way round.
+   */
+  const byPattern = new Map<string, Trip[][]>();
   for (const trip of trips) {
     if (trip.stopTimes.length < 2) continue;
-    const key = trip.stopTimes.map((stopTime) => stopTime.stopId).join("\u0000");
-    const existing = bySequence.get(key);
-    if (existing) existing.push(trip);
-    else bySequence.set(key, [trip]);
+    const buckets = byPattern.get(trip.patternId);
+    if (!buckets) {
+      byPattern.set(trip.patternId, [[trip]]);
+      continue;
+    }
+    let placed = false;
+    for (const bucket of buckets) {
+      const against = bucket[0]!.stopTimes;
+      if (against.length !== trip.stopTimes.length) continue;
+      let same = true;
+      for (let at = 0; at < against.length; at++) {
+        if (against[at]!.stopId !== trip.stopTimes[at]!.stopId) {
+          same = false;
+          break;
+        }
+      }
+      if (same) {
+        bucket.push(trip);
+        placed = true;
+        break;
+      }
+    }
+    if (!placed) buckets.push([trip]);
   }
+  const bySequence: Trip[][] = [];
+  for (const buckets of byPattern.values()) bySequence.push(...buckets);
 
   const routes: RouteGroup[] = [];
   const routesByStop = new Map<string, Array<{ route: RouteGroup; at: number }>>();
 
-  for (const group of bySequence.values()) {
+  for (const group of bySequence) {
     /*
      * Ordered by departure at the first stop, and ties broken on the trip id.
      *

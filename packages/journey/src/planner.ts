@@ -267,17 +267,34 @@ export function plan(graph: JourneyGraph, request: PlanRequest): PlanResult {
   // nearest stop is evaluated on its own rather than hoping an option boarding there happened
   // to survive ranking.
   const nearest = origins[0];
+  /*
+   * Only when the sentence would use it, which is not always and was not checked.
+   *
+   * `arrivalFromSingleStop` is a **second full search**, run to produce one sentence of
+   * explanation, and it ran unconditionally — including when `explainBoardingStop` was about to
+   * return null because the best option already boards at the nearest stop, or because there is
+   * no winner at all. Benchmarked over a corridor of 2,063 stops and 9,526 trips it is about fifty
+   * milliseconds of a hundred-and-sixteen-millisecond plan, against a budget of ten for the whole
+   * request.
+   *
+   * The two conditions below are exactly the two the explanation tests first, so nothing about the
+   * sentence changes: it is the same comparison when there is a comparison to make, and no search
+   * when there is not.
+   */
+  const winner = options[0] ?? null;
+  const explanationNeedsComparison =
+    nearest !== undefined &&
+    winner?.boardingStopId !== null &&
+    winner?.boardingStopId !== undefined &&
+    nearest.stop.id !== winner.boardingStopId;
   const nearestArrivalSeconds =
-    nearest === undefined
+    nearest === undefined || !explanationNeedsComparison
       ? null
       : arrivalFromSingleStop(graph, request, nearest, searchDestinations, maxRounds);
 
-  const explanation = explainBoardingStop({
-    graph,
-    origins,
-    winner: options[0] ?? null,
-    nearestArrivalSeconds,
-  });
+  const explanation = explanationNeedsComparison
+    ? explainBoardingStop({ graph, origins, winner, nearestArrivalSeconds })
+    : null;
 
   return {
     options,
