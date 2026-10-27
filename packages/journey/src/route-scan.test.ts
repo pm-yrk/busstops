@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { bruteForceEarliestArrival } from "./brute-force.js";
-import { buildGraph, groupRoutes, type JourneyStop, type Trip } from "./graph.js";
+import {
+  buildGraph,
+  buildTransfers,
+  groupRoutes,
+  walkSeconds,
+  type JourneyStop,
+  type Trip,
+} from "./graph.js";
 import { bestArrival, runRaptor } from "./raptor.js";
 
 /**
@@ -263,5 +270,88 @@ describe("the route scan against exhaustive enumeration", () => {
       stopTimes: [{ stopId: "A", arrivalSeconds: departAt, departureSeconds: departAt }],
     };
     expect(groupRoutes([stub]).routes).toEqual([]);
+  });
+});
+
+describe("walking transfers from a grid", () => {
+  /** The form it replaces: every pair, measured. */
+  function allPairs(
+    of: readonly JourneyStop[],
+    maxTransferSeconds: number,
+  ): Map<string, Array<{ toStopId: string; walkSeconds: number }>> {
+    const transfers = new Map<string, Array<{ toStopId: string; walkSeconds: number }>>();
+    for (const from of of) {
+      const list: Array<{ toStopId: string; walkSeconds: number }> = [];
+      for (const to of of) {
+        if (from.id === to.id) continue;
+        const seconds = walkSeconds(from.coordinate, to.coordinate);
+        if (seconds <= maxTransferSeconds) list.push({ toStopId: to.id, walkSeconds: seconds });
+      }
+      transfers.set(from.id, list);
+    }
+    return transfers;
+  }
+
+  function scatter(count: number, seed: number, spreadDegrees: number): JourneyStop[] {
+    const random = mulberry32(seed);
+    return Array.from({ length: count }, (_, i) => ({
+      id: `s${String(i).padStart(4, "0")}`,
+      name: `Stop ${String(i)}`,
+      coordinate: {
+        /* Across England's latitudes, so the cell's longitude width is tested where it narrows. */
+        lat: 50.1 + random() * spreadDegrees,
+        lon: -3.2 + random() * spreadDegrees * 1.5,
+      },
+    }));
+  }
+
+  it("produces exactly the edges comparing every pair produces", () => {
+    for (const seed of [1, 2, 3, 17, 99]) {
+      for (const spread of [0.02, 0.5, 5]) {
+        for (const cap of [120, 600, 1800]) {
+          const of = scatter(400, seed, spread);
+          const grid = buildTransfers(of, cap);
+          const naive = allPairs(of, cap);
+          for (const stop of of) {
+            const mine = (grid.get(stop.id) ?? [])
+              .map((t) => `${t.toStopId}@${String(t.walkSeconds)}`)
+              .sort();
+            const theirs = (naive.get(stop.id) ?? [])
+              .map((t) => `${t.toStopId}@${String(t.walkSeconds)}`)
+              .sort();
+            expect(
+              mine,
+              `seed ${String(seed)} spread ${String(spread)} cap ${String(cap)} at ${stop.id}`,
+            ).toEqual(theirs);
+          }
+        }
+      }
+    }
+  });
+
+  it("compares far fewer pairs than there are pairs", () => {
+    /*
+     * The point of the grid, stated as a measurement rather than as an intention: a Birmingham
+     * corridor holds 2,737 stops, and comparing every pair is 7.5 million haversines to produce
+     * 126,952 edges. This is the same shape at a size a test can run.
+     */
+    const of = scatter(1_200, 7, 0.08);
+    const edges = [...buildTransfers(of, 600).values()].reduce(
+      (total, list) => total + list.length,
+      0,
+    );
+    expect(edges).toBeGreaterThan(0);
+    expect(edges).toBeLessThan(of.length * of.length);
+  });
+
+  it("returns an empty map for no stops, rather than dividing by zero", () => {
+    expect([...buildTransfers([], 600).entries()]).toEqual([]);
+  });
+
+  it("gives a lone stop no transfers rather than one to itself", () => {
+    const only: JourneyStop[] = [
+      { id: "only", name: "Only", coordinate: { lat: 53.8, lon: -1.5 } },
+    ];
+    expect(buildTransfers(only, 600).get("only")).toEqual([]);
   });
 });
