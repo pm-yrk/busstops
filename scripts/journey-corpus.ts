@@ -169,6 +169,15 @@ const DEPART_AT_SECONDS = 9 * 3600;
  */
 const MAX_TRANSFER_SECONDS = Number(arg("max-transfer-seconds") ?? "600");
 
+/**
+ * How far either side of the straight line a plan may look, in degrees.
+ *
+ * The other lever with real CPU behind it, and the other one whose cost has to be measured rather
+ * than assumed. A Birmingham corridor at the default width holds 2,737 stops and 13,793 trips; a
+ * narrower one opens less timetable and can lose a journey that goes round rather than through.
+ */
+const CORRIDOR_MARGIN_DEGREES = Number(arg("corridor-margin-degrees") ?? "0.05");
+
 /** One option of one answer, in the form a comparison reads. */
 interface CorpusOption {
   ranking: string;
@@ -230,7 +239,15 @@ async function main(): Promise<number> {
   let answered = 0;
 
   for (const query of QUERIES) {
-    const slice = await loadCorridor(store, index, query, serviceDate, DEPART_AT_SECONDS);
+    const slice = await loadCorridor(
+      store,
+      index,
+      query,
+      serviceDate,
+      DEPART_AT_SECONDS,
+      4,
+      CORRIDOR_MARGIN_DEGREES,
+    );
     if (slice.stops.length === 0 || slice.trips.length === 0) {
       entries.push({
         query: query.name,
@@ -299,6 +316,7 @@ async function main(): Promise<number> {
     serviceDate,
     departAtSeconds: DEPART_AT_SECONDS,
     maxTransferSeconds: MAX_TRANSFER_SECONDS,
+    corridorMarginDegrees: CORRIDOR_MARGIN_DEGREES,
     queries: QUERIES.length,
     answered,
     note:

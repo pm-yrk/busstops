@@ -42,7 +42,14 @@ export interface CorridorSlice {
   midnightSeconds: number;
 }
 
-/** Half the width of the box a plan is allowed to look in, in degrees. */
+/**
+ * Half the width of the box a plan is allowed to look in, in degrees.
+ *
+ * A parameter rather than a constant because it decides how much timetable a journey opens, and
+ * therefore most of what it costs: a Birmingham corridor at this width holds 2,737 stops and
+ * 13,793 trips. A narrower one is cheaper and can lose a journey that goes round rather than
+ * through, so the corpus is recorded at each width and the comparison says which.
+ */
 const CORRIDOR_MARGIN_DEGREES = 0.05;
 
 /** Caps matching the Worker's own per-request tile bounds, so the slice is a servable one. */
@@ -65,12 +72,15 @@ function walkLines<T>(body: string, keep: (line: string) => boolean): T[] {
   return rows;
 }
 
-export function corridorBox(query: CorridorQuery): CorridorSlice["box"] {
+export function corridorBox(
+  query: CorridorQuery,
+  marginDegrees = CORRIDOR_MARGIN_DEGREES,
+): CorridorSlice["box"] {
   return {
-    west: Math.min(query.from.lon, query.to.lon) - CORRIDOR_MARGIN_DEGREES,
-    east: Math.max(query.from.lon, query.to.lon) + CORRIDOR_MARGIN_DEGREES,
-    south: Math.min(query.from.lat, query.to.lat) - CORRIDOR_MARGIN_DEGREES,
-    north: Math.max(query.from.lat, query.to.lat) + CORRIDOR_MARGIN_DEGREES,
+    west: Math.min(query.from.lon, query.to.lon) - marginDegrees,
+    east: Math.max(query.from.lon, query.to.lon) + marginDegrees,
+    south: Math.min(query.from.lat, query.to.lat) - marginDegrees,
+    north: Math.max(query.from.lat, query.to.lat) + marginDegrees,
   };
 }
 
@@ -81,9 +91,10 @@ export async function loadCorridor(
   serviceDate: string,
   departAtSeconds: number,
   windowHours = 4,
+  marginDegrees = CORRIDOR_MARGIN_DEGREES,
 ): Promise<CorridorSlice> {
   const grid = index.layout?.mapStopTileDegrees;
-  const box = corridorBox(query);
+  const box = corridorBox(query, marginDegrees);
   const midnightSeconds = Date.parse(`${serviceDate}T00:00:00Z`) / 1000;
   const from = midnightSeconds + departAtSeconds;
 

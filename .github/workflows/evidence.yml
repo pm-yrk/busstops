@@ -1234,7 +1234,19 @@ jobs:
             --max-transfer-seconds 300 \
             --json journey-corpus-300.json 2>&1 | tee journey-corpus-300.log
 
-      - name: What the tighter walk costs
+      # And the other lever: how far either side of the straight line a plan may look.
+      - name: The same corpus over a narrower corridor
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          NODE_OPTIONS: "--max-old-space-size=8192"
+        run: |
+          set -o pipefail
+          npx tsx scripts/journey-corpus.ts \
+            --corridor-margin-degrees 0.02 \
+            --json journey-corpus-narrow.json 2>&1 | tee journey-corpus-narrow.log
+
+      - name: What each saving costs
         if: always()
         continue-on-error: true
         run: |
@@ -1243,6 +1255,11 @@ jobs:
             --baseline journey-corpus.json \
             --candidate journey-corpus-300.json \
             --json journey-corpus-300-comparison.json 2>&1 | tee journey-corpus-300-comparison.log
+          npx tsx scripts/compare-journey-plans.ts \
+            --baseline journey-corpus.json \
+            --candidate journey-corpus-narrow.json \
+            --json journey-corpus-narrow-comparison.json 2>&1 \
+            | tee journey-corpus-narrow-comparison.log
 
       - name: Summarise
         if: always()
@@ -1261,6 +1278,14 @@ jobs:
             echo '```'
             cat journey-corpus-300-comparison.log 2>/dev/null || echo "not compared"
             echo '```'
+            echo "## The same corpus over a narrower corridor"
+            echo '```'
+            sed -n '1,200p' journey-corpus-narrow.log 2>/dev/null || echo "not recorded"
+            echo '```'
+            echo "## What the narrower corridor costs"
+            echo '```'
+            cat journey-corpus-narrow-comparison.log 2>/dev/null || echo "not compared"
+            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
@@ -1274,6 +1299,10 @@ jobs:
             journey-corpus-300.log
             journey-corpus-300-comparison.json
             journey-corpus-300-comparison.log
+            journey-corpus-narrow.json
+            journey-corpus-narrow.log
+            journey-corpus-narrow-comparison.json
+            journey-corpus-narrow-comparison.log
           retention-days: 14
           if-no-files-found: ignore
 
