@@ -17,34 +17,10 @@
  */
 
 import { writeFileSync } from "node:fs";
-import {
-  ArtifactStore,
-  annotateReport,
-  objectKeyFor,
-  r2StoreFromEnv,
-} from "@busstops/pipeline-core";
-import {
-  SHARDED,
-  mapStopTilesForBoundingBox,
-  mapStopsDataset,
-  patternIndexTileDataset,
-  patternTilesForBoundingBox,
-  patternTripsDataset,
-  tripTilesForBoundingBox,
-  tripWindowsFor,
-  type MapStopRow,
-  type NetworkIndexRecord,
-  type PatternIndexRow,
-  type PatternTripRow,
-} from "@busstops/pipeline-static-network";
-import {
-  buildGraph,
-  newSearchCounters,
-  plan,
-  runRaptor,
-  type JourneyStop,
-  type Trip,
-} from "@busstops/journey";
+import { ArtifactStore, annotateReport, r2StoreFromEnv } from "@busstops/pipeline-core";
+import { SHARDED, type NetworkIndexRecord } from "@busstops/pipeline-static-network";
+import { buildGraph, newSearchCounters, plan, runRaptor } from "@busstops/journey";
+import { loadCorridor } from "./lib/journey-corridor.js";
 
 const arg = (name: string): string | undefined => {
   const at = process.argv.indexOf(`--${name}`);
@@ -100,21 +76,6 @@ function timed<T>(run: () => T, iterations = 5): { ms: number; value: T } {
   return { ms: times[Math.floor(times.length / 2)]!, value };
 }
 
-function walkLines<T>(body: string, keep: (line: string) => boolean): T[] {
-  const rows: T[] = [];
-  for (let start = 0; start < body.length;) {
-    const newline = body.indexOf("\n", start);
-    const end = newline < 0 ? body.length : newline;
-    if (end > start) {
-      const line = body.slice(start, end);
-      if (keep(line)) rows.push(JSON.parse(line) as T);
-    }
-    if (newline < 0) break;
-    start = newline + 1;
-  }
-  return rows;
-}
-
 async function main(): Promise<number> {
   const resolved = r2StoreFromEnv(process.env);
   if (!resolved.ok) {
@@ -129,77 +90,14 @@ async function main(): Promise<number> {
     return 1;
   }
 
-  const grid = index.layout?.mapStopTileDegrees;
   const serviceDate = new Date().toISOString().slice(0, 10);
-  const midnight = Date.parse(`${serviceDate}T00:00:00Z`) / 1000;
   const departAtSeconds = 9 * 3600;
-  const from = midnight + departAtSeconds;
 
   const results: Array<Record<string, unknown>> = [];
 
   for (const query of QUERIES) {
-    const corridor = {
-      west: Math.min(query.from.lon, query.to.lon) - 0.05,
-      east: Math.max(query.from.lon, query.to.lon) + 0.05,
-      south: Math.min(query.from.lat, query.to.lat) - 0.05,
-      north: Math.max(query.from.lat, query.to.lat) + 0.05,
-    };
-
-    /* The corridor's stops, from the projection the planner itself reads. */
-    const stops: JourneyStop[] = [];
-    for (const tile of mapStopTilesForBoundingBox(corridor, grid).slice(0, 24)) {
-      const body = await store.get(objectKeyFor(mapStopsDataset(tile), index.version));
-      if (body === null) continue;
-      for (const row of walkLines<MapStopRow>(body, () => true)) {
-        if (
-          row.y >= corridor.south &&
-          row.y <= corridor.north &&
-          row.x >= corridor.west &&
-          row.x <= corridor.east
-        ) {
-          stops.push({ id: row.i, name: row.n, coordinate: { lat: row.y, lon: row.x } });
-        }
-      }
-    }
-
-    /* The corridor's patterns, so a trip's stop sequence is the real one. */
-    const stopSequenceByPattern = new Map<string, string[]>();
-    for (const tile of patternTilesForBoundingBox(corridor).slice(0, 8)) {
-      const body = await store.get(objectKeyFor(patternIndexTileDataset(tile), index.version));
-      if (body === null) continue;
-      for (const row of walkLines<[string, PatternIndexRow]>(body, (line) =>
-        line.startsWith("["),
-      )) {
-        stopSequenceByPattern.set(row[1].id, row[1].stopSequence);
-      }
-    }
-
-    /* The corridor's trips, in the windows a four-hour plan spans. */
-    const trips: Trip[] = [];
-    let tripChars = 0;
-    const windows = tripWindowsFor(from, from + 4 * 3600, serviceDate);
-    for (const tile of tripTilesForBoundingBox(corridor).slice(0, 8)) {
-      for (const window of windows) {
-        const body = await store.get(
-          objectKeyFor(patternTripsDataset(serviceDate, tile, window), index.version),
-        );
-        if (body === null) continue;
-        tripChars += body.length;
-        for (const row of walkLines<PatternTripRow>(body, () => true)) {
-          const sequence = stopSequenceByPattern.get(row.p);
-          if (!sequence || sequence.length !== row.t.length) continue;
-          trips.push({
-            id: row.j,
-            routeId: row.p,
-            stopTimes: row.t.map((seconds, i) => ({
-              stopId: sequence[i]!,
-              arrivalSeconds: seconds - midnight,
-              departureSeconds: seconds - midnight,
-            })),
-          } as unknown as Trip);
-        }
-      }
-    }
+    const slice = await loadCorridor(store, index, query, serviceDate, departAtSeconds);
+    const { stops, trips, tripChars } = slice;
 
     if (stops.length === 0 || trips.length === 0) {
       results.push({ query: query.name, skipped: "no corridor stops or trips published" });

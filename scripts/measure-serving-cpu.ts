@@ -43,7 +43,7 @@ import {
   type NetworkIndexRecord,
   type PatternTripRow,
 } from "@busstops/pipeline-static-network";
-import { normalizeSiriVm } from "@busstops/adapters";
+import { normalizeSiriVm, scanSiriVehicles } from "@busstops/adapters";
 import { NearestLines, tileFloorMetres } from "../apps/worker/src/nearest-lines.js";
 import { haversineMetres } from "@busstops/pipeline-core";
 import { buildGraph, plan, type Trip } from "@busstops/journey";
@@ -63,6 +63,32 @@ function timed<T>(run: () => T): { ms: number; value: T } {
   const began = process.hrtime.bigint();
   const value = run();
   return { ms: Number(process.hrtime.bigint() - began) / 1e6, value };
+}
+
+/**
+ * The median of several runs, after a warm-up, for comparing two forms of the same answer.
+ *
+ * The single-run timer above is right for a stage that happens once in a request and whose cost is
+ * dominated by the bytes it touches. It is wrong for a comparison, and it said so: the first run of
+ * this script's two viewport forms reported the one that reads a third of the bytes as the *slower*
+ * of the two, because the eager form ran on code paths that two earlier stages had already warmed
+ * and the selected form ran cold on a heap, a haversine and a tile bound the process had never
+ * executed. Cloudflare's own tail measured the same pair at 38 ms and 16.
+ *
+ * So a comparison warms both and takes a median, and the two are interleaved rather than run in
+ * sequence, because a long first run also leaves a different garbage-collection state behind.
+ */
+function medianOf<T>(run: () => T, iterations = 7): { ms: number; value: T } {
+  run();
+  const times: number[] = [];
+  let value!: T;
+  for (let i = 0; i < iterations; i += 1) {
+    const began = process.hrtime.bigint();
+    value = run();
+    times.push(Number(process.hrtime.bigint() - began) / 1e6);
+  }
+  times.sort((a, b) => a - b);
+  return { ms: times[Math.floor(times.length / 2)]!, value };
 }
 
 /** Walk every line and keep the ones a predicate wants, without splitting the body. */
@@ -180,7 +206,7 @@ async function main(): Promise<number> {
   const insideBox = (lat: number, lon: number) =>
     lat >= VIEWPORT.south && lat <= VIEWPORT.north && lon >= VIEWPORT.west && lon <= VIEWPORT.east;
 
-  const eager = timed(() => {
+  const eager = medianOf(() => {
     const rows: MapStopRow[] = [];
     for (const body of mapBodies) {
       for (let start = 0; start < body.length;) {
@@ -217,7 +243,10 @@ async function main(): Promise<number> {
 
   let openedChars = 0;
   let opened = 0;
-  const selected = timed(() => {
+  const selected = medianOf(() => {
+    /* Reset per run, so a median of seven does not report seven runs' worth of tiles. */
+    openedChars = 0;
+    opened = 0;
     const nearest = new NearestLines(MARKERS, viewportCentre);
     for (let at = 0; at < nearestTiles.length; at += 2) {
       const batch = nearestTiles
@@ -290,7 +319,22 @@ async function main(): Promise<number> {
     try {
       const response = await fetch(url, { signal: AbortSignal.timeout(30_000) });
       const xml = await response.text();
-      const parsed = timed(() =>
+      /*
+       * The scan first, because it is what the request path runs.
+       *
+       * This stage used to time `normalizeSiriVm` only, and kept reporting a hundred milliseconds
+       * for a parse no passenger request has made since the scan replaced it — a measurement of
+       * the code that was removed. Both are timed now: the scan because it is deployed, the
+       * normaliser because it is still what the collector runs and because the ratio between them
+       * is the claim this change was made on.
+       */
+      const scanned = medianOf(() =>
+        scanSiriVehicles(xml, { vehicleSalt: "measurement", nowMs: Date.now() }),
+      );
+      stages.push(
+        stage("map: scan the SIRI-VM feed", scanned.ms, xml.length, scanned.value.vehicles.length),
+      );
+      const parsed = medianOf(() =>
         normalizeSiriVm(xml, {
           retrievedAt: new Date().toISOString(),
           /* A throwaway salt: this measures the parse, and the salt only affects the output's ids. */
@@ -299,7 +343,7 @@ async function main(): Promise<number> {
       );
       stages.push(
         stage(
-          "map: normalise the SIRI-VM feed",
+          "map: normalise the SIRI-VM feed (the collector's path, not the request's)",
           parsed.ms,
           xml.length,
           parsed.value.observations.length,

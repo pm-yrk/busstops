@@ -1052,6 +1052,51 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
+  # The baseline a replacement planner is compared against: what the deployed one answers today.
+  journey_corpus:
+    name: Record what the current planner answers
+    if: contains(github.event.head_commit.message, '[corpus]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - run: npm ci --no-audit --no-fund
+
+      - name: Plan every query in the corpus
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          NODE_OPTIONS: "--max-old-space-size=8192"
+        run: |
+          set -o pipefail
+          npx tsx scripts/journey-corpus.ts \
+            --json journey-corpus.json 2>&1 | tee journey-corpus.log
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "## The journey golden corpus"
+            echo
+            echo '```'
+            sed -n '1,200p' journey-corpus.log 2>/dev/null || echo "no journey-corpus.log"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-journey-corpus
+          path: |
+            journey-corpus.json
+            journey-corpus.log
+          retention-days: 14
+          if-no-files-found: ignore
+
   prune_artifacts:
     name: Prune superseded network artifacts
     if: contains(github.event.head_commit.message, '[prune]')
