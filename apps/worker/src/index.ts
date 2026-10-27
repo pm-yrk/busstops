@@ -1550,6 +1550,29 @@ router.get("/v1/journeys", async (_request, { env, url }) => {
   const state = governorState(env);
   const now = new Date();
 
+  /*
+   * The flag that was declared and never read.
+   *
+   * `FeatureFlags.journeyPlanner` has existed since the flags did and nothing consulted it, which
+   * came out the hard way: the acceptance job was changed to run its peak passes once with the
+   * planner switched off, to test whether the planner's CPU is what takes the other endpoints down
+   * with it — and the comparison pass reported the planner failing nine requests of ten, because
+   * it had not been switched off at all. A measurement of nothing, reported as a measurement.
+   *
+   * So it is honoured here, and honoured the way a passenger should see it: a clear refusal with a
+   * reason, cached briefly, rather than a plan that is quietly missing or a page that fails to
+   * load. It is also the only switch there is for an endpoint that is known to exceed the free
+   * CPU limit, which makes it worth having for its own sake.
+   */
+  if (!readFeatureFlags(env).journeyPlanner) {
+    return errorResponse(
+      "feature_unavailable",
+      "Journey planning is switched off at the moment. Live buses, stops and departures are unaffected.",
+      503,
+      60,
+    );
+  }
+
   const originLat = Number(url.searchParams.get("fromLat"));
   const originLon = Number(url.searchParams.get("fromLon"));
   const destinationLat = Number(url.searchParams.get("toLat"));

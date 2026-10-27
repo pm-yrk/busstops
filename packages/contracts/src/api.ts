@@ -634,6 +634,15 @@ export const ApiErrorSchema = z.object({
       "not_found",
       "rate_limited",
       "upstream_unavailable",
+      /*
+       * A feature switched off deliberately, which is not the same as an upstream that is down.
+       *
+       * The difference matters to the passenger and to whoever is reading the logs: "we have
+       * turned journey planning off" is a decision with a reason behind it, and "the timetable is
+       * unavailable" is a fault. Reporting the first as the second is how an operational choice
+       * gets investigated as an outage.
+       */
+      "feature_unavailable",
       "bbox_too_large",
       "timeout",
       "safe_mode",

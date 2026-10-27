@@ -2985,3 +2985,65 @@ describe("the serving reads stream their objects", () => {
     expect(body).not.toBeNull();
   });
 });
+
+/**
+ * The feature flags, and whether anything reads them.
+ *
+ * `journeyPlanner` was declared with the flags and consulted nowhere, and that came out the hard
+ * way: the acceptance job was changed to run its peak passes once with the planner switched off —
+ * to test whether the planner's CPU is what takes the other endpoints down with it — and the
+ * comparison reported the planner failing nine requests of ten, because it had never been switched
+ * off. A measurement of nothing, reported as a measurement.
+ */
+describe("the feature flags are switches rather than declarations", () => {
+  it("refuses journey planning with a reason when the flag is off", async () => {
+    const store = await publishedStore();
+    const env = makeEnv(store, { FEATURE_FLAGS_JSON: '{"journeyPlanner":false}' });
+    resetWorkerState();
+    initialiseWorker(env, () => new Date("2026-09-02T08:00:05Z"));
+
+    const response = await worker.fetch(
+      get("/v1/journeys?fromLat=53.7965&fromLon=-1.5478&toLat=53.8115&toLon=-1.6205"),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(503);
+    const body = (await response.json()) as { error?: { code?: string; message?: string } };
+    /* Switched off deliberately is not the same answer as an upstream that is down. */
+    expect(body.error?.code).toBe("feature_unavailable");
+    expect(body.error?.message).toMatch(/switched off/i);
+    /* And it says what still works, because a passenger wants to know. */
+    expect(body.error?.message).toMatch(/live buses/i);
+  });
+
+  it("plans a journey when the flag is left alone", async () => {
+    const store = await publishedStore();
+    const env = makeEnv(store);
+    resetWorkerState();
+    initialiseWorker(env, () => new Date("2026-09-02T08:00:05Z"));
+
+    const response = await worker.fetch(
+      get("/v1/journeys?fromLat=53.7965&fromLon=-1.5478&toLat=53.8115&toLon=-1.6205"),
+      env,
+      ctx,
+    );
+    /* Whatever it answers, it is not the refusal above. */
+    expect(response.status).not.toBe(503);
+  });
+
+  it("still draws the map with live vehicles switched off", async () => {
+    const store = await publishedStore();
+    const env = makeEnv(store, { FEATURE_FLAGS_JSON: '{"liveVehicles":false}' });
+    resetWorkerState();
+    initialiseWorker(env, () => new Date("2026-09-02T08:00:05Z"));
+
+    const response = await worker.fetch(get("/v1/map?bbox=-1.7,53.7,-1.4,53.9&zoom=14"), env, ctx);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      data: { stops: unknown[]; vehicles: unknown[] };
+    };
+    /* The comparison walk this enables depends on exactly this: stops still drawn, no buses. */
+    expect(body.data.vehicles).toEqual([]);
+    expect(body.data.stops.length).toBeGreaterThan(0);
+  });
+});

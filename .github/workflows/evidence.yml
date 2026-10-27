@@ -664,6 +664,20 @@ jobs:
             [ "$CODE" = "200" ] && break
             sleep 10
           done
+          # The flag has to have taken effect, or this walk measures the deployment it is being
+          # compared against. The first attempt at this comparison did exactly that: the flag was
+          # declared in the Worker and read nowhere, and the pass reported the planner failing
+          # nine requests of ten with it supposedly off.
+          BODY=$(curl -s --max-time 20 \
+            "$URL/v1/journeys?fromLat=53.7965&fromLon=-1.5478&toLat=53.8115&toLon=-1.6205" || echo '')
+          case "$BODY" in
+            *feature_unavailable*) echo "The journey planner is off; the comparison is valid." ;;
+            *)
+              echo "::error::The journeyPlanner flag did not take effect, so this comparison would"
+              echo "::error::measure the same deployment twice. Response was: $(echo "$BODY" | head -c 300)"
+              exit 1
+              ;;
+          esac
           sleep 90
           npx tsx scripts/cold-serving.ts \
             --worker "$URL" \
@@ -1064,6 +1078,18 @@ jobs:
             [ "$CODE" = "200" ] && break
             sleep 10
           done
+          # Proof the flag landed, for the reason the journey comparison needs it: a map that still
+          # reports buses is the same deployment, and comparing it with itself measures noise.
+          VEHICLES=$(curl -s --max-time 25 \
+            "${{ steps.worker.outputs.url }}/v1/map?bbox=-2.32,53.42,-2.16,53.52&zoom=13" \
+            | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["data"]["vehicles"]))' \
+            2>/dev/null || echo "unknown")
+          if [ "$VEHICLES" != "0" ]; then
+            echo "::error::The liveVehicles flag did not take effect ($VEHICLES vehicles), so this"
+            echo "::error::walk would measure the same deployment twice."
+            exit 1
+          fi
+          echo "The live feed is off; the comparison is valid."
           npx tsx scripts/measure-worker-cpu.ts \
             --worker "${{ steps.worker.outputs.url }}" \
             --endpoints map \
