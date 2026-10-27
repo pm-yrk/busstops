@@ -66,6 +66,43 @@ export function opaqueVehicleRef(sourceVehicleId: string, rotationSalt: string):
   return fnv1a64(`${rotationSalt}:${sourceVehicleId}`).toString(36);
 }
 
+/**
+ * The same hash, with the salt folded in once instead of once per vehicle.
+ *
+ * FNV-1a is sequential: the state after `"<salt>:"` depends only on the salt, so hashing a
+ * viewport's worth of vehicles need not walk those characters three hundred times. The salt is a
+ * base-36 64-bit value, about thirteen characters, and a vehicle code about ten — so the naive
+ * form spends well over half its time on the prefix.
+ *
+ * It matters because of where it runs. `scanSiriVehicles` was measured at 4.2 ms for a
+ * 437-vehicle viewport, of which about 2.4 ms was this hash, against a ten-millisecond budget for
+ * the whole invocation. Privacy is not negotiable here — source vehicle codes persist for months
+ * and republishing them would let anyone follow one vehicle across days
+ * (docs/14_SECURITY.md "Privacy") — so the hash stays and gets cheaper instead.
+ *
+ * Bit-identical by construction rather than by coincidence, and `identity-hash.test.ts` holds it
+ * against `opaqueVehicleRef` over a corpus and arbitrary strings.
+ */
+export function vehicleRefHasher(rotationSalt: string): (sourceVehicleId: string) => string {
+  const prefix = `${rotationSalt}:`;
+  let seeded = 0xcbf29ce484222325n;
+  const prime = 0x100000001b3n;
+  const mask = 0xffffffffffffffffn;
+  for (let i = 0; i < prefix.length; i++) {
+    seeded ^= BigInt(prefix.charCodeAt(i));
+    seeded = (seeded * prime) & mask;
+  }
+
+  return (sourceVehicleId: string) => {
+    let hash = seeded;
+    for (let i = 0; i < sourceVehicleId.length; i++) {
+      hash ^= BigInt(sourceVehicleId.charCodeAt(i));
+      hash = (hash * prime) & mask;
+    }
+    return hash.toString(36);
+  };
+}
+
 /** Salt that rotates daily, so vehicle references cannot be correlated across service days. */
 export function dailyRotationSalt(serviceDate: string, secret: string): string {
   return fnv1a64(`${secret}:${serviceDate}`).toString(36);

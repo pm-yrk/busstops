@@ -6,17 +6,17 @@ import type {
   MapVehicleSummary,
   ResponseMeta,
   SourceHealth,
-  VehicleObservation,
 } from "@busstops/contracts";
 import { MAP_QUERY_LIMITS, attributionsFor, getSourceRegistryEntry } from "@busstops/contracts";
 import { passengerName, routeBadgeName } from "@busstops/pipeline-static-network";
-import { SourceClient, ageSeconds } from "@busstops/pipeline-core";
+import { SourceClient } from "@busstops/pipeline-core";
 import {
   bodsDatafeedUrl,
   dailyRotationSalt,
-  normalizeSiriVm,
   normalizeTflArrivals,
+  scanSiriVehicles,
   tflUrl,
+  type LiveVehicle,
 } from "@busstops/adapters";
 import { cacheTtlMultiplier } from "@busstops/governor";
 import type { WorkerEnv } from "./env.js";
@@ -69,11 +69,22 @@ export interface LiveServiceDeps {
 }
 
 export interface VehicleFetchResult {
-  observations: VehicleObservation[];
-  journeyContext: Map<
-    string,
-    { publishedLineName?: string | undefined; destinationName?: string | undefined }
-  >;
+  /**
+   * The live vehicles, as compact records rather than full `VehicleObservation`s.
+   *
+   * Cloudflare classified this Worker's failures as `exceededCpu` against a ten-millisecond free
+   * limit, and `/v1/map` was measured at ninety-six milliseconds of which eighty-eight were
+   * turning SIRI-VM into observations — a DOM of the whole document, a Zod `safeParse` per
+   * vehicle, and then a `deterministicUuid`, a provenance object and an `externalIds` array each.
+   * A map marker reads six fields. `scanSiriVehicles` produces those in a measured 1.72 ms, which
+   * is eighteen times less, and the `journeyContext` side map is gone with it: the route number
+   * and the destination travel on the vehicle instead of in a second `Map` of 437 entries.
+   *
+   * The full observation shape still exists and is still right — for the collector, which runs in
+   * CI where CPU is free and publishes these for the analytics batch, and for the selected-bus
+   * endpoint, which builds exactly one.
+   */
+  vehicles: LiveVehicle[];
   health: SourceHealth[];
   /** Sources that were expected to contribute but failed. */
   failedSources: string[];
@@ -164,18 +175,37 @@ export function describeFetchFailure(error: unknown): string {
 export function summariseVehicleSource(
   source: string,
   accepted: number,
-  rejected: ReadonlyArray<{ reason: string }>,
+  /**
+   * Rejections, either as a list or already counted by reason.
+   *
+   * The list is what the full normaliser produces, one object per rejected record; the counts are
+   * what the scan produces, because a national feed rejects thousands and building an object per
+   * rejection to count it is work with no reader. Both arrive here and both are bucketed the same
+   * way, so the diagnostics a passenger-facing degradation message is built from do not change
+   * shape depending on which reader ran.
+   */
+  rejected: ReadonlyArray<{ reason: string }> | Readonly<Record<string, number>>,
   now: Date,
   recordAgeSeconds: readonly number[] = [],
 ): VehicleSourceDiagnostics {
   void now;
   const rejectedBy: Record<string, number> = {};
-  for (const entry of rejected) {
-    // Bucket by shape: "observation 812s old" would otherwise be a thousand distinct keys.
-    const key = entry.reason.replace(/\d+/g, "N");
-    rejectedBy[key] = (rejectedBy[key] ?? 0) + 1;
+  let rejectedTotal = 0;
+  if (Array.isArray(rejected)) {
+    for (const entry of rejected as ReadonlyArray<{ reason: string }>) {
+      // Bucket by shape: "observation 812s old" would otherwise be a thousand distinct keys.
+      const key = entry.reason.replace(/\d+/g, "N");
+      rejectedBy[key] = (rejectedBy[key] ?? 0) + 1;
+      rejectedTotal += 1;
+    }
+  } else {
+    for (const [reason, count] of Object.entries(rejected as Record<string, number>)) {
+      const key = reason.replace(/\d+/g, "N");
+      rejectedBy[key] = (rejectedBy[key] ?? 0) + count;
+      rejectedTotal += count;
+    }
   }
-  const rawRecords = accepted + rejected.length;
+  const rawRecords = accepted + rejectedTotal;
   const ages = [...recordAgeSeconds].sort((a, b) => a - b);
   return {
     source,
@@ -222,8 +252,8 @@ async function withDeadline<T>(work: Promise<T>, timeoutMs: number): Promise<T> 
 }
 
 interface NormalizedFeed {
-  /** The whole parse, so a reuse answers exactly what a fresh parse would have. */
-  parsed: ReturnType<typeof normalizeSiriVm>;
+  /** The whole scan, so a reuse answers exactly what a fresh scan would have. */
+  parsed: ReturnType<typeof scanSiriVehicles>;
   chars: number;
   at: number;
 }
@@ -311,13 +341,17 @@ export class LiveService {
   async vehiclesInBoundingBox(
     bbox: BoundingBox,
     timeoutMs: number = MAP_QUERY_LIMITS.timeoutMs,
+    /**
+     * Whether the caller is describing one bus rather than drawing a viewport.
+     *
+     * The origin, direction, operator and block are read only for a selected bus: reading them
+     * for every vehicle in a city measured 1.5 ms of a 4 ms budget, spent on five hundred buses'
+     * worth of strings so that one could be described. See `LiveScanOptions.detail`.
+     */
+    detail = false,
   ): Promise<VehicleFetchResult> {
     const now = this.deps.now();
-    const observations: VehicleObservation[] = [];
-    const journeyContext = new Map<
-      string,
-      { publishedLineName?: string; destinationName?: string }
-    >();
+    const vehicles: LiveVehicle[] = [];
     const health: SourceHealth[] = [];
     const failedSources: string[] = [];
     const diagnostics: VehicleSourceDiagnostics[] = [];
@@ -410,14 +444,14 @@ export class LiveService {
               elapsedMs: Date.now() - fetchStartedAt,
             });
             mark("siri:parse:begin", { chars: xml.length });
-            const parsed = normalizeSiriVm(xml, {
-              retrievedAt: now.toISOString(),
+            const parsed = scanSiriVehicles(xml, {
               vehicleSalt: this.vehicleSalt(),
-              now,
+              nowMs: now.getTime(),
+              detail,
             });
             mark("siri:parse:done", {
               chars: xml.length,
-              observations: parsed.observations.length,
+              observations: parsed.vehicles.length,
             });
             return { parsed, chars: xml.length, at: now.getTime() };
           })();
@@ -445,21 +479,11 @@ export class LiveService {
         // Zero on a reuse, and zero on a parse too: see `normalized` — a Worker's clock does not
         // advance across pure computation, so this number has never been able to show the cost.
         const parseMs = 0;
-        observations.push(...normalized.parsed.observations);
-        for (const [ref, context] of normalized.parsed.journeyContext) {
-          journeyContext.set(ref, {
-            ...(context.publishedLineName === undefined
-              ? {}
-              : { publishedLineName: context.publishedLineName }),
-            ...(context.destinationName === undefined
-              ? {}
-              : { destinationName: context.destinationName }),
-          });
-        }
+        vehicles.push(...normalized.parsed.vehicles);
         diagnostics.push({
           ...summariseVehicleSource(
             "bods",
-            normalized.parsed.observations.length,
+            normalized.parsed.vehicles.length,
             normalized.parsed.rejected,
             now,
             normalized.parsed.recordAgeSeconds,
@@ -496,7 +520,7 @@ export class LiveService {
       health.push(client.health(now));
     }
 
-    return { observations, journeyContext, health, failedSources, diagnostics };
+    return { vehicles, health, failedSources, diagnostics };
   }
 
   /** Departures for one stop, from whichever source covers it. */
@@ -621,27 +645,24 @@ export function cacheTtlSeconds(
 }
 
 /** Oldest contributing observation, which is what the freshness label must reflect. */
-export function oldestObservedAt(observations: readonly { observedAt: string }[]): string | null {
-  if (observations.length === 0) return null;
-  return observations.reduce(
-    (oldest, o) => (o.observedAt < oldest ? o.observedAt : oldest),
-    observations[0]!.observedAt,
-  );
+export function oldestObservedAt(vehicles: readonly { observedAtMs: number }[]): string | null {
+  if (vehicles.length === 0) return null;
+  let oldest = vehicles[0]!.observedAtMs;
+  for (const vehicle of vehicles) if (vehicle.observedAtMs < oldest) oldest = vehicle.observedAtMs;
+  return new Date(oldest).toISOString();
 }
 
 export function toMapVehicle(
-  observation: VehicleObservation,
-  context:
-    { publishedLineName?: string | undefined; destinationName?: string | undefined } | undefined,
+  vehicle: LiveVehicle,
   now: Date,
   motionState: MapVehicleSummary["motionState"] = "unknown",
   delaySeconds: number | null = null,
 ): MapVehicleSummary {
   return {
-    vehicleRef: observation.vehicleRef,
-    coordinate: observation.coordinate,
-    bearingDegrees: observation.bearingDegrees ?? null,
-    routePublicName: context?.publishedLineName ? routeBadgeName(context.publishedLineName) : null,
+    vehicleRef: vehicle.vehicleRef,
+    coordinate: { lat: vehicle.lat, lon: vehicle.lon },
+    bearingDegrees: vehicle.bearingDegrees ?? null,
+    routePublicName: vehicle.publishedLineName ? routeBadgeName(vehicle.publishedLineName) : null,
     /*
      * Unknown until the viewport's patterns say otherwise.
      *
@@ -652,9 +673,9 @@ export function toMapVehicle(
      */
     routeId: null,
     routePatternId: null,
-    destinationName: context?.destinationName ? passengerName(context.destinationName) : null,
+    destinationName: vehicle.destinationName ? passengerName(vehicle.destinationName) : null,
     delaySeconds,
-    freshnessSeconds: ageSeconds(observation.observedAt, now),
+    freshnessSeconds: Math.max(0, Math.round((now.getTime() - vehicle.observedAtMs) / 1000)),
     motionState,
   };
 }

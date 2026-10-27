@@ -2254,8 +2254,8 @@ describe("live service helpers", () => {
   it("reports the oldest contributing observation as the freshness anchor", () => {
     expect(
       oldestObservedAt([
-        { observedAt: "2026-09-02T08:00:00.000Z" },
-        { observedAt: "2026-09-02T07:58:00.000Z" },
+        { observedAtMs: Date.parse("2026-09-02T08:00:00.000Z") },
+        { observedAtMs: Date.parse("2026-09-02T07:58:00.000Z") },
       ]),
     ).toBe("2026-09-02T07:58:00.000Z");
     expect(oldestObservedAt([])).toBeNull();

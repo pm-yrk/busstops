@@ -58,8 +58,8 @@ describe("concurrent requests for one live feed", () => {
     ]);
 
     /* Both answered, and with the same feed: sharing must not cost the second caller its data. */
-    expect(first.observations.length).toBeGreaterThan(0);
-    expect(second.observations.length).toBe(first.observations.length);
+    expect(first.vehicles.length).toBeGreaterThan(0);
+    expect(second.vehicles.length).toBe(first.vehicles.length);
 
     const parsed = [first, second].filter((result) => result.diagnostics[0]?.reusedParse === false);
     const shared = [first, second].filter((result) => result.diagnostics[0]?.reusedParse === true);
@@ -83,14 +83,14 @@ describe("concurrent requests for one live feed", () => {
     });
 
     const failed = await live.vehiclesInBoundingBox(BBOX, 2_000);
-    expect(failed.observations).toHaveLength(0);
+    expect(failed.vehicles).toHaveLength(0);
 
     /*
      * The one that matters. A rejected promise left in the cache would be awaited by every
      * request for the next eight seconds, each reporting the feed as down when a retry answers.
      */
     const retried = await live.vehiclesInBoundingBox(BBOX, 2_000);
-    expect(retried.observations.length).toBeGreaterThan(0);
+    expect(retried.vehicles.length).toBeGreaterThan(0);
   });
 
   /*
@@ -130,13 +130,13 @@ describe("concurrent requests for one live feed", () => {
      * And it says the source did not answer rather than reporting an empty feed as a read: "zero
      * buses with a 200" is the failure this file exists to have stopped producing.
      */
-    expect(impatient.observations).toHaveLength(0);
+    expect(impatient.vehicles).toHaveLength(0);
     expect(impatient.failedSources).toContain("bods");
 
     /* The work was abandoned by the waiter, not cancelled: the starter still gets its answer. */
     release?.();
     const started = await starter;
-    expect(started.observations.length).toBeGreaterThan(0);
+    expect(started.vehicles.length).toBeGreaterThan(0);
   });
 
   it("still reuses a finished parse for a request that arrives later", async () => {
@@ -147,7 +147,7 @@ describe("concurrent requests for one live feed", () => {
 
     expect(first.diagnostics[0]?.reusedParse).toBe(false);
     expect(later.diagnostics[0]?.reusedParse).toBe(true);
-    expect(later.observations.length).toBe(first.observations.length);
+    expect(later.vehicles.length).toBe(first.vehicles.length);
     expect(fetches()).toBe(1);
   });
 });

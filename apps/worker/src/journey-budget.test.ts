@@ -500,8 +500,8 @@ describe("a feed is parsed once, not once per request", () => {
     expect(first.diagnostics[0]?.reusedParse).toBe(false);
     expect(second.diagnostics[0]?.reusedParse).toBe(true);
     // And the answer is the same one, not a degraded version of it.
-    expect(second.observations.map((o) => o.vehicleRef)).toEqual(
-      first.observations.map((o) => o.vehicleRef),
+    expect(second.vehicles.map((v) => v.vehicleRef)).toEqual(
+      first.vehicles.map((v) => v.vehicleRef),
     );
   });
 

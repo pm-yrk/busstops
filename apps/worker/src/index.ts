@@ -20,6 +20,7 @@ import {
   recentTraceBucket,
   recentTraceKey,
 } from "@busstops/pipeline-core";
+import { liveVehicleObservation } from "@busstops/adapters";
 import { matchObservation, stopsAheadWindow } from "@busstops/matching";
 
 import { R2BindingStore, readFeatureFlags, type WorkerEnv } from "./env.js";
@@ -601,7 +602,7 @@ router.get("/v1/diagnostics/live", async (_request, { env, url }) => {
     {
       meta: buildMeta({
         sources: live.health,
-        observedAt: oldestObservedAt(live.observations),
+        observedAt: oldestObservedAt(live.vehicles),
         coverage: live.failedSources.length === 0 ? 1 : 0,
         governorState: state,
         now,
@@ -611,7 +612,7 @@ router.get("/v1/diagnostics/live", async (_request, { env, url }) => {
       data: {
         boundingBox: bbox,
         sourcesConsulted: sourcesForBoundingBox(bbox),
-        vehiclesReturned: live.observations.length,
+        vehiclesReturned: live.vehicles.length,
         diagnostics: live.diagnostics,
       },
     },
@@ -832,9 +833,8 @@ router.get("/v1/map", async (_request, { env, url }) => {
    * shapes is the fallback for a feed that publishes no line name, so it is read when there is a
    * bus in that state and not otherwise.
    */
-  const unnamedVehicles = (liveObservations?.observations ?? []).filter(
-    (observation) =>
-      !liveObservations?.journeyContext.get(observation.vehicleRef)?.publishedLineName,
+  const unnamedVehicles = (liveObservations?.vehicles ?? []).filter(
+    (vehicle) => !vehicle.publishedLineName,
   ).length;
   const needsGeometry = !stopRoutes.available || unnamedVehicles > 0;
   const enrichment =
@@ -936,10 +936,10 @@ router.get("/v1/map", async (_request, { env, url }) => {
     const live = liveObservations;
     sources = live.health;
     failedSources = live.failedSources;
-    observedAt = oldestObservedAt(live.observations);
+    observedAt = oldestObservedAt(live.vehicles);
 
-    const capped = live.observations.slice(0, MAP_QUERY_LIMITS.maxVehicles);
-    vehiclesTruncated = live.observations.length > capped.length;
+    const capped = live.vehicles.slice(0, MAP_QUERY_LIMITS.maxVehicles);
+    vehiclesTruncated = live.vehicles.length > capped.length;
 
     const patternsById = new Map(
       geometries.map((geometry) => [geometry.pattern.id, geometry.pattern]),
@@ -968,9 +968,8 @@ router.get("/v1/map", async (_request, { env, url }) => {
       else if (existing !== service.id) serviceIdByName.set(name, null);
     }
 
-    vehicles = capped.map((observation) => {
-      const context = live.journeyContext.get(observation.vehicleRef);
-      const summary = toMapVehicle(observation, context, now);
+    vehicles = capped.map((vehicle) => {
+      const summary = toMapVehicle(vehicle, now);
 
       // Matching only runs when routes for this viewport are published. Without them a vehicle is
       // still shown — just without a route name — rather than being hidden from the map.
@@ -981,7 +980,15 @@ router.get("/v1/map", async (_request, { env, url }) => {
         return resolved ? { ...summary, routeId: resolved } : summary;
       }
 
-      const match = matchObservation(observation, geometries);
+      const match = matchObservation(
+        {
+          coordinate: summary.coordinate,
+          ...(vehicle.bearingDegrees === undefined
+            ? {}
+            : { bearingDegrees: vehicle.bearingDegrees }),
+        },
+        geometries,
+      );
       if (!match.best || match.confidence.level === "low") return summary;
 
       const pattern = patternsById.get(match.best.patternId);
@@ -2050,12 +2057,19 @@ router.get("/v1/vehicles/:ref", async (_request, { env, params, url }) => {
 
   // Bounded like the map and route detail: three retries of a slow upstream is what takes an
   // isolate past its limit, and this endpoint reads the same feed as both of them.
-  const live = await liveService.vehiclesInBoundingBox(bboxResult.bbox, LIVE_LOOKUP_BUDGET_MS);
-  const observation = live.observations.find(
-    (candidate) => candidate.vehicleRef === (params.ref ?? ""),
+  /*
+   * `detail` asked for here and nowhere else: this is the one caller that describes a bus rather
+   * than drawing a viewport, and the box around a single vehicle is a far smaller document than a
+   * city's. See `LiveScanOptions.detail`.
+   */
+  const live = await liveService.vehiclesInBoundingBox(
+    bboxResult.bbox,
+    LIVE_LOOKUP_BUDGET_MS,
+    true,
   );
+  const observed = live.vehicles.find((candidate) => candidate.vehicleRef === (params.ref ?? ""));
 
-  if (!observation) {
+  if (!observed) {
     return errorResponse(
       "not_found",
       "This bus is no longer reporting a position in this area. Vehicle references rotate daily, so an old link will not resolve.",
@@ -2063,7 +2077,24 @@ router.get("/v1/vehicles/:ref", async (_request, { env, params, url }) => {
     );
   }
 
-  const context = live.journeyContext.get(observation.vehicleRef);
+  /*
+   * The one full observation this Worker builds.
+   *
+   * `buildVehicleState` publishes provenance, an ingest stamp and quality flags, so the selected
+   * bus genuinely needs the whole shape — and building it once costs the two hashes that building
+   * it four hundred times could not afford.
+   */
+  const observation = liveVehicleObservation(observed, now.toISOString(), now.getTime());
+  const context = {
+    publishedLineName: observed.publishedLineName,
+    destinationName: observed.destinationName,
+    directionRef: observed.directionRef,
+    operatorRef: observed.operatorRef,
+    originName: observed.originName,
+    blockRef: observed.blockRef,
+    datedVehicleJourneyRef: observed.journeyRef,
+    lineRef: observed.lineRef,
+  };
 
   /*
    * From here on this request is on the clock, like the board and route detail already were.
@@ -2494,6 +2525,8 @@ router.get("/v1/routes/:id", async (_request, { env, params }) => {
     destinationName: string | null;
     delaySeconds: number | null;
     observedAt: string;
+    /** Kept beside the ISO form so the freshness label can be taken without re-parsing it. */
+    observedAtMs: number;
     coordinate: { lat: number; lon: number };
   }> = [];
   let health: Awaited<ReturnType<LiveService["vehiclesInBoundingBox"]>>["health"] = [];
@@ -2558,26 +2591,22 @@ router.get("/v1/routes/:id", async (_request, { env, params }) => {
         liveService!.vehiclesInBoundingBox(cappedBox, Math.max(300, routeLedger.remainingMs)),
       );
       mark("live:done", {
-        observations: live.observations.length,
+        observations: live.vehicles.length,
         failedSources: live.failedSources.length,
       });
       health = live.health;
       failedSources = live.failedSources;
       liveDiagnostics = live.diagnostics;
-      activeVehicles = live.observations
-        .filter((observation) => {
-          const context = live.journeyContext.get(observation.vehicleRef);
-          return context?.publishedLineName === route.publicName;
-        })
+      activeVehicles = live.vehicles
+        .filter((vehicle) => vehicle.publishedLineName === route.publicName)
         .slice(0, 60)
-        .map((observation) => ({
-          vehicleRef: observation.vehicleRef,
-          destinationName: displayDestination(
-            live.journeyContext.get(observation.vehicleRef)?.destinationName,
-          ),
+        .map((vehicle) => ({
+          vehicleRef: vehicle.vehicleRef,
+          destinationName: displayDestination(vehicle.destinationName),
           delaySeconds: null,
-          observedAt: observation.observedAt,
-          coordinate: observation.coordinate,
+          observedAt: new Date(vehicle.observedAtMs).toISOString(),
+          observedAtMs: vehicle.observedAtMs,
+          coordinate: { lat: vehicle.lat, lon: vehicle.lon },
         }));
     }
   }

@@ -8,6 +8,7 @@ export * from "./tfl.js";
 export * from "./tfl-disruptions.js";
 export * from "./bods-siri.js";
 export * from "./bods-situations.js";
+export * from "./siri-scan.js";
 export * from "./transxchange.js";
 export * from "./open-meteo.js";
 export * from "./stop-weather.js";

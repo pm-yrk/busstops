@@ -866,6 +866,137 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
+  # What the live decode costs, and whether BODS offers a cheaper machine format.
+  #
+  # `/v1/map` spent about 96 ms of CPU and 88 of those were turning SIRI-VM into observations,
+  # against the ten milliseconds a Workers Free invocation gets. Before proposing an ingestion
+  # architecture — which is a freshness cost — this measures where the 88 go and whether a
+  # request-time path exists that fits. It also asks BODS for GTFS-RT rather than assuming one way
+  # or the other: protobuf would be cheaper to decode than XML, if this project's key can reach it.
+  #
+  # Reads one live feed and writes nothing.
+  live_decode:
+    name: Measure the live decode, and the formats BODS offers
+    if: contains(github.event.head_commit.message, '[live]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - run: npm ci --no-audit --no-fund
+
+      - name: Measure
+        env:
+          BODS_API_KEY: ${{ secrets.BODS_API_KEY }}
+        run: |
+          set -o pipefail
+          npx tsx scripts/measure-live-decode.ts --json live-decode.json 2>&1 | tee live-decode.log
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "## The live decode, by stage"
+            echo
+            echo '```'
+            sed -n '1,160p' live-decode.log 2>/dev/null || echo "no live-decode.log"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-live-decode
+          path: |
+            live-decode.json
+            live-decode.log
+          retention-days: 14
+          if-no-files-found: ignore
+
+  # Cloudflare's own CPU figure per endpoint and city, which is the only honest success metric.
+  #
+  # The absence of a 1102 is not proof: the platform extends each isolate some flexibility and
+  # enforces the limit once a Worker overspends consistently, so three samples of one frozen build
+  # measured 13 to 32 platform errors per pass where two earlier deployments of near-identical code
+  # measured none. The CPU an invocation actually spent does not drift, and `wrangler tail` reports
+  # it per invocation with the outcome beside it.
+  #
+  # Paced on purpose: this measures what one passenger request costs, not the concurrency at which
+  # the platform starts shedding work — `classify_1102` does that.
+  worker_cpu:
+    name: Cloudflare CPU per endpoint and city
+    needs: [classify_1102, acceptance]
+    if: always() && contains(github.event.head_commit.message, '[cpu-proof]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - run: npm ci --no-audit --no-fund
+
+      - name: Deploy the preview Worker
+        id: worker
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -o pipefail
+          npx --no-install wrangler deploy \
+            --config apps/worker/wrangler.toml \
+            --env "$WORKER_ENV" 2>&1 | tee deploy.log
+          URL=$(grep -oE 'https://[a-z0-9.-]+\.workers\.dev' deploy.log | head -1)
+          [ -n "$URL" ] || { echo "::error::No Worker URL in the wrangler output."; exit 1; }
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for the Worker
+        run: |
+          for attempt in 1 2 3 4 5 6; do
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 \
+              "${{ steps.worker.outputs.url }}/v1/sources/health" || echo 000)
+            [ "$CODE" = "200" ] && exit 0
+            echo "Attempt $attempt: HTTP $CODE"
+            sleep 10
+          done
+          echo "::error::The Worker did not become healthy."
+          exit 1
+
+      - name: Walk the five cities with a tail attached
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -o pipefail
+          npx tsx scripts/measure-worker-cpu.ts \
+            --worker "${{ steps.worker.outputs.url }}" \
+            --json worker-cpu.json 2>&1 | tee worker-cpu.log
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "## Cloudflare CPU per endpoint"
+            echo
+            echo '```'
+            sed -n '1,160p' worker-cpu.log 2>/dev/null || echo "no worker-cpu.log"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-worker-cpu
+          path: |
+            worker-cpu.json
+            worker-cpu.log
+          retention-days: 14
+          if-no-files-found: ignore
+
   prune_artifacts:
     name: Prune superseded network artifacts
     if: contains(github.event.head_commit.message, '[prune]')

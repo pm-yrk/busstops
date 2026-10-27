@@ -35,6 +35,20 @@ export const MATCH_DEFAULTS = {
   stationarySpeedMetresPerSecond: 0.5,
 } as const;
 
+/**
+ * What matching a vehicle to a route actually reads: where it is, and which way it points.
+ *
+ * Narrower than `VehicleObservation` on purpose. The map's live path builds compact records rather
+ * than full observations — a full one carries a `deterministicUuid`, a provenance object and an
+ * `externalIds` array, measured at about 2 ms for a 437-vehicle viewport against an invocation's
+ * ten-millisecond budget — and the matcher never looked at any of that. A `VehicleObservation` is
+ * still assignable here, so the selected-bus path, which builds exactly one, is unchanged.
+ */
+export interface ObservedPosition {
+  coordinate: Coordinate;
+  bearingDegrees?: number;
+}
+
 export interface PatternGeometry {
   pattern: RoutePattern;
   shape: readonly Coordinate[];
@@ -68,7 +82,7 @@ export interface MatchContext {
  * so an impossible match can never be "the best of a bad set".
  */
 export function scoreCandidate(
-  observation: VehicleObservation,
+  observation: ObservedPosition,
   geometry: PatternGeometry,
   context: MatchContext = {},
   limits = MATCH_DEFAULTS,
@@ -147,7 +161,7 @@ export interface MatchResult {
 }
 
 export function matchObservation(
-  observation: VehicleObservation,
+  observation: ObservedPosition,
   geometries: readonly PatternGeometry[],
   context: MatchContext = {},
   limits = MATCH_DEFAULTS,
