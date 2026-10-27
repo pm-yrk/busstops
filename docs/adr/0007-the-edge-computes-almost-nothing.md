@@ -341,5 +341,41 @@ honest state of it.
 
 What that says about the plan is not that integer indices are wrong — a published artifact will
 hand the Worker exactly that, and will not pay to build it — but that they are not worth having
-while the structure is still built per request. The request-time work has taken a journey from
-about 815 ms to about 100, and the rest is the artifact.
+while the structure is still built per request.
+
+### A closure costs a microsecond here, and the profiler is what said so
+
+Three data-structure arguments in a row had been settled by benchmarking whole stages, so the next
+question went to a V8 profile of forty searches instead. It put **383 ms in esbuild's `__name`
+wrapper** — about 9.6 ms a search, a quarter of its cost — and the source was one line:
+`earliestBoardable` built a `boardable` helper on every call, 328,600 closures over the run, each
+of them wrapped.
+
+`__name` is `Object.defineProperty(target, "name", …)`, which is why it costs about a microsecond
+rather than nothing. Written as a loop instead, on the same corridor over eleven iterations:
+
+| Stage       |   Before |   After |
+| ----------- | -------: | ------: |
+| `runRaptor` |  51.9 ms | 32.7 ms |
+| `plan`      | 103.0 ms | 52.6 ms |
+
+`plan` halves because it runs the search twice whenever the boarding explanation needs its
+comparison.
+
+**And it is not a local artefact.** The first assumption was that `__name` comes from tsx and the
+deployed Worker would not have it. Wrangler's own bundle, taken with `--dry-run --outdir`, contains
+454 of them and defines the helper: esbuild keeps function names in both, so a closure created
+inside a hot loop costs the wrapper in production too. The viewport's `NearestLines.offer` took a
+`() => string` for exactly the right reason — a candidate beaten by the admission price should cost
+no slice — and it was costing a microsecond a candidate on a path that offers several hundred per
+request. It takes the bounds now, and the heap counts its own slices so that the property the thunk
+existed for is still under test.
+
+That also puts the reverted typed-array rewrite in a different light: it was judged against a
+search spending a quarter of its time on closure wrapping, which is noise in the middle of the
+comparison. It stays out of the tree — the measurement that rejected it is the measurement that was
+taken — but the question is open again, and the time to ask it is when the structure arrives from an
+artifact rather than being built per request.
+
+The request-time work has taken a Manchester-scale corridor from 1,322.8 ms to 93.5, which is
+fourteen times and nine times the budget. The rest is the artifact.
