@@ -623,9 +623,12 @@ jobs:
               sleep 10
             done
             echo "=== sample $SAMPLE ==="
+            # Every pass, not only the peak ones. An acceptance sample is the whole of what a
+            # passenger does on one build — the five-city walk, the page-load burst, a fifty-plus
+            # peak pass and a second one continuing on the same isolate — and three samples of a
+            # subset of that are three samples of a subset. The job allows two hours.
             npx tsx scripts/cold-serving.ts \
               --worker "$URL" \
-              --only peak \
               --peak 50 \
               --sample "$SAMPLE" \
               --json "acceptance-$SAMPLE.json" 2>&1 | tee "acceptance-$SAMPLE.log"
@@ -640,7 +643,9 @@ jobs:
             for SAMPLE in 1 2 3; do
               echo "### Sample $SAMPLE"
               echo '```'
-              grep -E "^peak-[12]:" "acceptance-$SAMPLE.log" 2>/dev/null \
+              # Every pass's own one-line verdict, and the per-endpoint cold and warm table.
+              grep -E "^(peak-[12]:|COLD_|WARM_|PEAK_|[a-z/]+ +(cold|warm) )" \
+                "acceptance-$SAMPLE.log" 2>/dev/null \
                 || echo "no sample $SAMPLE was recorded"
               echo '```'
             done

@@ -40,12 +40,13 @@ const PEAK_REQUESTS = Math.max(0, Number(arg("peak") ?? process.env.PEAK_REQUEST
 /**
  * Which passes to walk. `--only peak` skips the cold and warm walks.
  *
- * For taking several acceptance samples of one frozen build. Acceptance is about the peak passes —
- * fifty-plus requests in a sequence, twice, giving one isolate the chance to pass a hundred served
- * — and the cold and warm walks ahead of them are a different measurement that has been green for
- * several deployments. Three samples with them is seventy-five minutes of a job; three without is
- * closer to thirty, and the sample is identical either way because each pass idles for
- * forty-five seconds first to ask the platform for a fresh isolate.
+ * Kept for an ad-hoc question about peak behaviour alone, and **no longer what an acceptance
+ * sample uses.** The argument for it was time — three samples with the cold and warm walks is
+ * about seventy-five minutes of a job against thirty without, and the peak passes are where the
+ * failures were — but an acceptance sample is supposed to be the whole of what a passenger does
+ * on one build: the five-city walk, the page-load burst, a fifty-plus peak pass and a second one
+ * continuing on the same isolate. Three samples of a subset of that are three samples of a
+ * subset. The job allows two hours, so the time was never the constraint it was traded against.
  */
 const ONLY = arg("only") ?? "all";
 /** The label a sample carries into its annotations, so three samples are told apart. */
