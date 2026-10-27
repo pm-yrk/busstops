@@ -269,7 +269,12 @@ async function main(): Promise<number> {
     departAtSeconds: DEPART_AT_SECONDS,
     queries: QUERIES.length,
     answered,
-    note: "The deployed planner's own answers, as the baseline a replacement is compared against. Times are seconds after midnight on the service date.",
+    note:
+      "The deployed planner's own answers, as the baseline a replacement is compared against. " +
+      "Times are seconds after midnight on the service date. `routeName` is null throughout " +
+      "because this harness builds its trips from the pattern index without resolving service " +
+      "names, which the planner does not need and the comparison does not read — it is a gap in " +
+      "this script, not a route the product cannot name.",
     entries,
   };
   if (JSON_OUT) writeFileSync(JSON_OUT, `${JSON.stringify(report, null, 1)}\n`);

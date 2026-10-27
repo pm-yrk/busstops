@@ -35,6 +35,21 @@ const WORKER_ENV = arg("env") ?? process.env.WORKER_ENV ?? "preview";
 const JSON_OUT = arg("json");
 const ROUNDS = Number(arg("rounds") ?? "3");
 
+/**
+ * Which endpoints to ask, so one question can be isolated.
+ *
+ * The map's CPU is the sum of its projection read, its live feed and its response, and Cloudflare
+ * reports one number for all three. The only way to split them from outside is to take the same
+ * walk with one of them switched off — `FEATURE_FLAGS_JSON` turns the live feed off without a code
+ * change — and compare. That walk only wants the map.
+ */
+const ENDPOINTS = (arg("endpoints") ?? "")
+  .split(",")
+  .map((name) => name.trim())
+  .filter((name) => name.length > 0);
+const wanted = (endpoint: string): boolean =>
+  ENDPOINTS.length === 0 || ENDPOINTS.includes(endpoint);
+
 /** The five probe cities, with a viewport and a journey inside each. */
 const CITIES = [
   {
@@ -109,6 +124,7 @@ interface TailRecord {
 const readings: Reading[] = [];
 
 async function ask(endpoint: string, city: string, path: string): Promise<void> {
+  if (!wanted(endpoint)) return;
   const began = Date.now();
   try {
     const response = await fetch(`${WORKER}${path}`, { signal: AbortSignal.timeout(30_000) });
@@ -403,6 +419,7 @@ async function main(): Promise<number> {
     outcome: "measured",
     worker: WORKER,
     rounds: ROUNDS,
+    endpoints: ENDPOINTS.length === 0 ? "all" : ENDPOINTS.join(","),
     freeCpuBudgetMs: 10,
     requests: readings.length,
     platformErrors: readings.filter((r) => r.platform).length,

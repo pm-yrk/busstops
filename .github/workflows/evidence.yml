@@ -981,6 +981,45 @@ jobs:
             --rounds 6 \
             --json worker-cpu.json 2>&1 | tee worker-cpu.log
 
+      # The same walk with the live feed switched off, so the map's CPU can be split.
+      #
+      # Cloudflare reports one number for a request, and the map's is the sum of its projection
+      # read, its live feed and its response. `/v1/nearby` reads the same projection and no live
+      # feed and measures at a p50 of 3 to 4 ms against the map's 14 to 16, which is a suggestive
+      # comparison and not a measurement: the boxes and the response sizes differ too. Turning
+      # `liveVehicles` off needs no code change, so the difference between these two walks is the
+      # live path, measured rather than inferred.
+      - name: Walk the map again with the live feed off
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -o pipefail
+          npx --no-install wrangler deploy \
+            --config apps/worker/wrangler.toml --env "$WORKER_ENV" \
+            --var 'FEATURE_FLAGS_JSON:{"liveVehicles":false}' --keep-vars >/dev/null
+          for attempt in 1 2 3 4 5 6; do
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 \
+              "${{ steps.worker.outputs.url }}/v1/sources/health" || echo 000)
+            [ "$CODE" = "200" ] && break
+            sleep 10
+          done
+          npx tsx scripts/measure-worker-cpu.ts \
+            --worker "${{ steps.worker.outputs.url }}" \
+            --endpoints map \
+            --rounds 6 \
+            --json worker-cpu-nolive.json 2>&1 | tee worker-cpu-nolive.log
+
+      # Always, so a failed comparison never leaves the preview with live vehicles switched off.
+      - name: Put the live feed back
+        if: always()
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          npx --no-install wrangler deploy \
+            --config apps/worker/wrangler.toml --env "$WORKER_ENV" >/dev/null
+
       - name: Summarise
         if: always()
         run: |
@@ -989,6 +1028,11 @@ jobs:
             echo
             echo '```'
             sed -n '1,160p' worker-cpu.log 2>/dev/null || echo "no worker-cpu.log"
+            echo '```'
+            echo "## The same map walk with the live feed off"
+            echo
+            echo '```'
+            sed -n '1,80p' worker-cpu-nolive.log 2>/dev/null || echo "no worker-cpu-nolive.log"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -999,6 +1043,8 @@ jobs:
           path: |
             worker-cpu.json
             worker-cpu.log
+            worker-cpu-nolive.json
+            worker-cpu-nolive.log
           retention-days: 14
           if-no-files-found: ignore
 

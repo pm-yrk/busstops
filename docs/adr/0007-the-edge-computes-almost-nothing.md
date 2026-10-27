@@ -203,6 +203,27 @@ whether they were the **first their isolate ever served**, which is the hypothes
 shape: a cold request pays for the index record, a single 144,948-character line, and for an empty
 shard cache, and nothing in the per-endpoint table could tell that apart from an expensive branch.
 
+### Why the live feed stays in the request
+
+The fallback position, if no request-time format could fit, was to move the normalisation out of
+requests entirely: a collector reads BODS, normalises once, publishes a compact current-live
+artifact, and the passenger Worker reads and filters it. It is the right shape, and it is not
+available here at no cost with live freshness. Two measurements settle it:
+
+- **A Cloudflare Cron Trigger on Workers Free gets the same ten milliseconds of CPU** as an HTTP
+  request — Cloudflare's own limits table lists "CPU time per Cron Trigger: Workers Free 10 ms",
+  and an account may have five of them. A collector running there hits exactly the wall it exists
+  to get the passenger path away from, and worse: BODS answers 403 to a request with no bounding
+  box, so national coverage is one fetch and one scan per region rather than one of each.
+- **GitHub's scheduled workflows are the free compute this project already has, and they miss
+  runs.** That is recorded in this repository's own history, not assumed. A collector whose
+  freshness guarantee is "about every five minutes, unless the schedule slips" cannot be what a
+  live bus map reads, and solving CPU by letting positions go stale is not solving it.
+
+The scan fits instead, measured: 1.99 ms locally for the real 505-vehicle feed, against a
+sub-budget of four. So the live feed is fetched per request, and whatever is left between the
+map's measured CPU and the seven-millisecond target is not in it.
+
 ## Part B — the journey planner
 
 Measured, not yet decided, because Part A is not finished and two architectural changes in one
