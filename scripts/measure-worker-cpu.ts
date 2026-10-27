@@ -349,26 +349,49 @@ async function main(): Promise<number> {
       requestsServed: reading.requestsServed ?? null,
     });
   }
+  /*
+   * CPU by how many requests the isolate had already served, in buckets.
+   *
+   * The first version of this split them in two — first request, and everything after — and that
+   * was too blunt to answer the question it was built for. Two walks of the same endpoint reported
+   * a "warm" median of 15 ms and 27 ms, and the second was a shorter walk against a Worker that
+   * had just been deployed, so a larger share of its invocations were second or third in their
+   * isolate rather than fiftieth. Lumping the second request in with the fiftieth hides exactly
+   * the gradient that explains the difference — and that gradient was the conclusion drawn from
+   * the blunt version.
+   */
+  const BUCKETS: ReadonlyArray<{ label: string; from: number; to: number }> = [
+    { label: "first", from: 1, to: 1 },
+    { label: "2nd-5th", from: 2, to: 5 },
+    { label: "6th-20th", from: 6, to: 20 },
+    { label: "21st+", from: 21, to: Number.POSITIVE_INFINITY },
+  ];
   const coldWarm = (endpoint: string) => {
     const rows = paired.filter((row) => row.endpoint === endpoint);
-    /* A request the platform killed reports no ledger, so its warmth is unknown rather than cold. */
-    const cold = rows.filter((row) => row.requestsServed === 1).map((row) => row.cpuMs);
-    const warm = rows
-      .filter((row) => row.requestsServed !== null && row.requestsServed > 1)
-      .map((row) => row.cpuMs);
+    /* A request the platform killed reports no ledger, so its age is unknown rather than cold. */
     const unknown = rows.filter((row) => row.requestsServed === null).map((row) => row.cpuMs);
+    const byIsolateAge: Record<
+      string,
+      { n: number; p50CpuMs: number | null; maxCpuMs: number | null }
+    > = {};
+    for (const bucket of BUCKETS) {
+      const cpu = rows
+        .filter(
+          (row) =>
+            row.requestsServed !== null &&
+            row.requestsServed >= bucket.from &&
+            row.requestsServed <= bucket.to,
+        )
+        .map((row) => row.cpuMs);
+      byIsolateAge[bucket.label] = {
+        n: cpu.length,
+        p50CpuMs: percentile(cpu, 50),
+        maxCpuMs: cpu.length === 0 ? null : Math.max(...cpu),
+      };
+    }
     return {
       pairedInvocations: rows.length,
-      firstInIsolate: {
-        n: cold.length,
-        p50CpuMs: percentile(cold, 50),
-        maxCpuMs: cold.length === 0 ? null : Math.max(...cold),
-      },
-      laterInIsolate: {
-        n: warm.length,
-        p50CpuMs: percentile(warm, 50),
-        maxCpuMs: warm.length === 0 ? null : Math.max(...warm),
-      },
+      byIsolateAge,
       noLedger: { n: unknown.length, maxCpuMs: unknown.length === 0 ? null : Math.max(...unknown) },
     };
   };
@@ -386,7 +409,7 @@ async function main(): Promise<number> {
       outcomes: entry.outcomes,
       /* The bar: the configured limit, not whatever the platform tolerated today. */
       withinBudget: (percentile(entry.cpu, 95) ?? Number.POSITIVE_INFINITY) <= 10,
-      coldVsWarm: coldWarm(endpoint),
+      byIsolateAge: coldWarm(endpoint),
     }))
     .sort((a, b) => (b.maxCpuMs ?? 0) - (a.maxCpuMs ?? 0));
 
