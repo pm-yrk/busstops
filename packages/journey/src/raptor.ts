@@ -1,4 +1,4 @@
-import { boardingIndex, effectiveStopTimes, type JourneyGraph, type Trip } from "./graph.js";
+import { boardingIndexIn, effectiveStopTimes, type JourneyGraph, type Trip } from "./graph.js";
 
 /**
  * Round-based earliest-arrival search (RAPTOR-style).
@@ -177,21 +177,35 @@ export function runRaptor(
     const current = new Map<string, StopLabel>(labelsByRound[round - 1]!);
     const nextMarked = new Set<string>();
 
-    const improve = (stopId: string, label: StopLabel) => {
+    /**
+     * Whether a stop reached at `arrivalSeconds` in this round is worth a label.
+     *
+     * Separated from building the label, which is the whole point. Profiled over real corridors,
+     * this was called 6,510,009 times for a Manchester plan and accepted 24,105 of them — an
+     * accept rate of 0.004 — and the caller built a `StopLabel` *and* a nested `leg` object before
+     * every one of those calls. Thirteen million objects allocated to keep twenty-four thousand,
+     * per journey, on a path allowed ten milliseconds of CPU in total.
+     *
+     * The test is the same test it always was, in the same order, on the same numbers. What
+     * changed is that the answer is now known before anything is built.
+     */
+    const worthLabelling = (stopId: string, arrivalSeconds: number): boolean => {
       if (counters) counters.improveCalls += 1;
       const existing = current.get(stopId);
-      if (existing && existing.arrivalSeconds <= label.arrivalSeconds) return;
+      if (existing && existing.arrivalSeconds <= arrivalSeconds) return false;
       // Pruning against the global best is what keeps the search bounded.
       const globalBest = best.get(stopId);
-      if (
-        globalBest &&
-        globalBest.arrivalSeconds <= label.arrivalSeconds &&
-        globalBest.round <= label.round
-      ) {
-        return;
+      if (globalBest && globalBest.arrivalSeconds <= arrivalSeconds && globalBest.round <= round) {
+        return false;
       }
+      return true;
+    };
+
+    /** Records a label the test above has already accepted. */
+    const accept = (stopId: string, label: StopLabel) => {
       if (counters) counters.improveAccepted += 1;
       current.set(stopId, label);
+      const globalBest = best.get(stopId);
       if (!globalBest || label.arrivalSeconds < globalBest.arrivalSeconds) best.set(stopId, label);
       nextMarked.add(stopId);
     };
@@ -209,18 +223,27 @@ export function runRaptor(
         if (counters) {
           counters.tripScans += 1;
           counters.boardingIndexCalls += 1;
-          /* `boardingIndex` calls it once internally, and the line below calls it again. */
-          counters.effectiveStopTimesCalls += 2;
+          counters.effectiveStopTimesCalls += 1;
         }
-        const index = boardingIndex(trip, stopId, readyAt);
+        /*
+         * One `effectiveStopTimes` per trip, not two.
+         *
+         * `boardingIndex` called it internally and the line below called it again, which the
+         * profile counted as 885,340 calls for a Manchester plan against 442,670 trips scanned —
+         * and for a trip carrying a live delay each call allocates a fresh array of stop-time
+         * objects. The times are computed once here and the boarding index is found from them.
+         */
+        const stopTimes = effectiveStopTimes(trip);
+        const index = trip.cancelled ? null : boardingIndexIn(stopTimes, stopId, readyAt);
         if (index === null) continue;
 
-        const stopTimes = effectiveStopTimes(trip);
         const boarded = stopTimes[index]!;
 
         for (let i = index + 1; i < stopTimes.length; i++) {
           const alight = stopTimes[i]!;
-          improve(alight.stopId, {
+          /* Tested before anything is built; see `worthLabelling`. */
+          if (!worthLabelling(alight.stopId, alight.arrivalSeconds)) continue;
+          accept(alight.stopId, {
             arrivalSeconds: alight.arrivalSeconds,
             round,
             leg: {

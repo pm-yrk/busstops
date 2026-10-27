@@ -124,7 +124,23 @@ export function effectiveStopTimes(trip: Trip): TripStopTime[] {
  */
 export function boardingIndex(trip: Trip, stopId: string, afterSeconds: number): number | null {
   if (trip.cancelled) return null;
-  const stopTimes = effectiveStopTimes(trip);
+  return boardingIndexIn(effectiveStopTimes(trip), stopId, afterSeconds);
+}
+
+/**
+ * The same search, over stop times the caller already has.
+ *
+ * The search loop needs the effective times anyway — to walk the trip's downstream stops — and was
+ * calling `effectiveStopTimes` once here and once there. Profiled over a Manchester corridor that
+ * was 885,340 calls against 442,670 trips scanned, and for a trip carrying a live delay each call
+ * allocates a fresh array of stop-time objects. `boardingIndex` above keeps its signature for
+ * every other caller and for the tests that pin its behaviour.
+ */
+export function boardingIndexIn(
+  stopTimes: readonly TripStopTime[],
+  stopId: string,
+  afterSeconds: number,
+): number | null {
   for (let i = 0; i < stopTimes.length - 1; i++) {
     const stopTime = stopTimes[i]!;
     if (stopTime.stopId === stopId && stopTime.departureSeconds >= afterSeconds) return i;
