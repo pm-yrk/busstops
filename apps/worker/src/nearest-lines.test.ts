@@ -34,14 +34,10 @@ function select(
   limit: number,
 ): { heap: NearestLines; sliced: number } {
   const heap = new NearestLines(limit, CENTRE);
-  let sliced = 0;
   for (const point of points) {
-    heap.offer(heap.distanceTo(point.lat, point.lon), () => {
-      sliced += 1;
-      return point.text;
-    });
+    heap.offer(heap.distanceTo(point.lat, point.lon), point.text, 0, point.text.length);
   }
-  return { heap, sliced };
+  return { heap, sliced: heap.slicedCount };
 }
 
 describe("NearestLines", () => {
@@ -70,22 +66,19 @@ describe("NearestLines", () => {
 
   it("never slices a line it will not keep once the price is set", () => {
     const heap = new NearestLines(2, CENTRE);
-    heap.offer(100, () => "a");
-    heap.offer(200, () => "b");
-    let sliced = false;
-    const kept = heap.offer(500, () => {
-      sliced = true;
-      return "c";
-    });
+    heap.offer(100, "a", 0, 1);
+    heap.offer(200, "b", 0, 1);
+    const before = heap.slicedCount;
+    const kept = heap.offer(500, "c", 0, 1);
     expect(kept).toBe(false);
-    expect(sliced).toBe(false);
+    expect(heap.slicedCount).toBe(before);
   });
 
   it("breaks an exact tie on the line, not on the order it was offered", () => {
     const forwards = new NearestLines(2, CENTRE);
-    for (const text of ["c", "a", "b"]) forwards.offer(500, () => text);
+    for (const text of ["c", "a", "b"]) forwards.offer(500, text, 0, text.length);
     const backwards = new NearestLines(2, CENTRE);
-    for (const text of ["b", "a", "c"]) backwards.offer(500, () => text);
+    for (const text of ["b", "a", "c"]) backwards.offer(500, text, 0, text.length);
     expect(forwards.drain().map((entry) => entry.text)).toEqual(["a", "b"]);
     expect(backwards.drain().map((entry) => entry.text)).toEqual(["a", "b"]);
   });
@@ -93,11 +86,11 @@ describe("NearestLines", () => {
   it("reports the admission price only once it is full", () => {
     const heap = new NearestLines(2, CENTRE);
     expect(heap.admissionMetres).toBe(Infinity);
-    heap.offer(100, () => "a");
+    heap.offer(100, "a", 0, 1);
     expect(heap.admissionMetres).toBe(Infinity);
-    heap.offer(300, () => "b");
+    heap.offer(300, "b", 0, 1);
     expect(heap.admissionMetres).toBe(300);
-    heap.offer(200, () => "c");
+    heap.offer(200, "c", 0, 1);
     expect(heap.admissionMetres).toBe(200);
   });
 

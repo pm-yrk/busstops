@@ -1828,7 +1828,7 @@ export class NetworkReader {
         if (lat < bbox.south || lat > bbox.north || lon < bbox.west || lon > bbox.east) {
           return false;
         }
-        nearest.offer(nearest.distanceTo(lat, lon), () => body.slice(start, end));
+        nearest.offer(nearest.distanceTo(lat, lon), body, start, end);
         return false;
       },
       true,

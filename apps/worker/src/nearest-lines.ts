@@ -34,6 +34,17 @@ export class NearestLines {
   private count = 0;
   /** How many candidates were offered, which is how the caller knows the cap bound the answer. */
   private offered = 0;
+  /**
+   * How many candidate lines were actually copied out of the buffer.
+   *
+   * The whole reason `offer` takes bounds rather than a string: a candidate that cannot beat the
+   * admission price must cost nothing but a comparison. That used to be testable from outside,
+   * because the caller passed a `() => string` thunk and could count the calls — and the thunk
+   * cost about a microsecond a candidate in the deployed Worker, because esbuild keeps function
+   * names and wraps every closure created in an `Object.defineProperty`. Counting here keeps the
+   * property under test without putting a closure back in the loop.
+   */
+  private sliced = 0;
 
   constructor(
     readonly capacity: number,
@@ -54,6 +65,11 @@ export class NearestLines {
     return this.offered;
   }
 
+  /** Candidate lines copied out of the buffer. See `sliced`. */
+  get slicedCount(): number {
+    return this.sliced;
+  }
+
   /**
    * The distance a candidate must beat, or `Infinity` while there is still room.
    *
@@ -66,25 +82,34 @@ export class NearestLines {
   }
 
   /**
-   * Offer a candidate. `text` is called only if it is kept.
+   * Offer a candidate line, as the buffer that holds it and its bounds inside that buffer.
    *
    * The admission test is in here rather than in the caller so that `offeredCount` is the count of
    * everything the caller saw: a viewport reports itself truncated when more stops were inside the
    * box than it was allowed to return, and that is a different number from the one the heap kept.
    *
+   * The bounds rather than a `() => string` thunk, which is what this took first. A thunk reads
+   * better and costs about a microsecond a candidate in the deployed Worker: esbuild keeps
+   * function names, so every closure created is wrapped in an `Object.defineProperty`, and a V8
+   * profile of the journey search measured 383 ms of exactly that over 328,600 closures. A city
+   * viewport offers several hundred candidates a request. The slice still happens only when the
+   * candidate is kept, which was the point of the thunk in the first place.
+   *
    * A tie at the admission price is resolved on the text, so the answer does not depend on read
-   * order. That costs one string comparison per tied candidate and nothing otherwise.
+   * order. That costs one slice and one string comparison per tied candidate and nothing otherwise.
    */
-  offer(metres: number, text: () => string): boolean {
+  offer(metres: number, buffer: string, start: number, end: number): boolean {
     this.offered += 1;
     if (!this.full) {
-      this.push(metres, text());
+      this.sliced += 1;
+      this.push(metres, buffer.slice(start, end));
       return true;
     }
     const worst = this.metres[0] ?? Infinity;
     /* The cheap rejection, and the common one: no slice, no comparison, no allocation. */
     if (metres > worst) return false;
-    const candidate = text();
+    this.sliced += 1;
+    const candidate = buffer.slice(start, end);
     if (metres === worst && candidate >= (this.lines[0] ?? "")) return false;
     this.metres[0] = metres;
     this.lines[0] = candidate;
