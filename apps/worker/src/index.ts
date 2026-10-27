@@ -834,35 +834,28 @@ router.get("/v1/map", async (_request, { env, url }) => {
    * bus in that state and not otherwise.
    */
   /*
-   * Only when this artifact has no projection at all, which the deployed one does.
+   * The map reads no pattern geometry, on any artifact. That is the whole of this comment.
    *
-   * This used to also fire when any vehicle in the viewport arrived without a line name on it,
-   * and that was the single most expensive branch left on the map. A dense city's pattern tiles
-   * reach 3,935,975 bytes each, a viewport spans several, and `serviceNames` follows them — so one
-   * operator omitting `PublishedLineName` turned a sixteen-millisecond request into Cloudflare's
-   * measured p95 of 56 ms, against a limit of ten. It is not a fallback a passenger request can
-   * hold: a fallback that itself exceeds the limit is not one.
+   * Two branches used to reach it. The first fired whenever a bus in the viewport arrived with no
+   * line name on it, so the bus could be matched to a route by its shape — and a dense city's
+   * pattern tile reaches 3,935,975 bytes, a viewport spans several, and `serviceNames` follows
+   * them. Whether a request cost sixteen milliseconds or sixty depended on whether a third party
+   * had filled in `PublishedLineName`.
    *
-   * What it bought was a route name for a bus whose feed did not publish one, and a service id
-   * for every marker. Both are given up here and the giving up is visible rather than silent: an
-   * unnamed bus is drawn as a bus with no route label, and the map matches a selected route by
-   * the number on the front — see `vehicleEmphasis` in the web app, which names what that costs.
+   * The second was the compatibility path for an artifact published before the stop-routes family
+   * and the map projection existed, which would otherwise draw its stops with no route numbers on
+   * them. It is the same read and it has the same cost, and the deployed artifact has carried both
+   * families for weeks — so what it defends against is a rollback past them, at the price of
+   * putting every map request on such a rollback over the limit.
    *
-   * The legacy branch stays because it is the only thing that labels a stop on an artifact built
-   * before the projection existed, and that artifact genuinely has nowhere else to read it from.
+   * A fallback that itself exceeds the limit is not a fallback. On an artifact with neither family
+   * the map now draws its stops without route labels and says so through `degradationReason`,
+   * which is a map; what it did before was Cloudflare's error page, which is not.
    */
   const unnamedVehicles = (liveObservations?.vehicles ?? []).filter(
     (vehicle) => !vehicle.publishedLineName,
   ).length;
-  const needsGeometry = !stopRoutes.available;
   ledger.count({ unnamedVehicles });
-  const enrichment =
-    network && needsGeometry
-      ? await ledger.stage("patterns", () =>
-          network!.patternsInTilesDetailed(patternTilesForBoundingBox(bbox), Date.now(), ledger),
-        )
-      : { geometries: [], complete: true };
-  const geometries = enrichment.geometries;
   /*
    * The services these geometries belong to, not all 13,626 of them.
    *
@@ -877,78 +870,9 @@ router.get("/v1/map", async (_request, { env, url }) => {
    * The same substitution that fixed the stop board in 8828ff8 and route detail in cb610bc. The
    * geometries name their services; asking for those is one bounded scan of the text.
    */
-  /*
-   * And now the names only, because that is all three of the uses below read.
-   *
-   * The buckets cannot help here. A city viewport names a few hundred distinct services, which
-   * hash across nearly all 256 buckets, and reading two hundred objects is worse than reading one
-   * when an invocation gets fifty subrequests — so this path fell through to the whole services
-   * object, which the bucket proof measures at 4,669,134 bytes — fetched, decoded and parsed on
-   * the one endpoint that still answers Cloudflare's error page when a browser opens a page's
-   * worth of requests at once. (Not the endpoint instrument's 2,182,908 characters: that counts
-   * tracked shard reads, the tiles, and this read reports itself in the artifact notes instead.)
-   *
-   * Every use of a resolved service below is `id` or `publicName`, so the projection answers the
-   * same question for about a sixth of the bytes. Absent — a version published before the family
-   * existed — and this falls back to the services themselves, unchanged.
-   */
-  const serviceNameById =
-    network && geometries.length > 0
-      ? await ledger.stage("service-names", () => network!.serviceNames(ledger))
-      : null;
-
-  const services =
-    serviceNameById === null && network && geometries.length > 0
-      ? await ledger.stage("services", () =>
-          network!.servicesByIds(
-            new Set(geometries.map((geometry) => geometry.pattern.serviceRouteId)),
-          ),
-        )
-      : new Map<string, ServiceRoute>();
-
-  /*
-   * One lookup over whichever of the two is present.
-   *
-   * Not a converted copy of the projection: building 13,000 `{ id, publicName }` objects to read a
-   * few hundred of them would hand back most of what the smaller object just saved. This allocates
-   * one per service actually used, which is the few hundred on the screen.
-   */
-  const serviceFor = (id: string): { id: string; publicName: string } | undefined => {
-    if (serviceNameById !== null) {
-      const publicName = serviceNameById.get(id);
-      return publicName === undefined ? undefined : { id, publicName };
-    }
-    return services.get(id);
-  };
-
-  /*
-   * Which services call at each stop on screen.
-   *
-   * `routePublicNames` was a literal `[]` in this projection. The contract declares it, the map
-   * marker reads it, and the deployed check that asks whether a viewport's stops carry their
-   * services could only ever fail — which it did, reporting "not one stop in the viewport carries
-   * a service" and blaming the national timetable for a hard-coded empty array.
-   *
-   * Built by walking the patterns once rather than per stop: a viewport holds a few hundred
-   * patterns and a few hundred stops, and the per-stop version is the product of the two.
-   */
   const routeNamesByStopId = new Map<string, Set<string>>();
-  if (stopRoutes.available) {
-    for (const [stopId, names] of stopRoutes.byStopId) {
-      routeNamesByStopId.set(stopId, new Set(names.map(routeBadgeName)));
-    }
-  } else {
-    // The legacy path, kept so the map still labels stops between a deploy and the next national
-    // rebuild. Labelled as legacy rather than left to look like the intended route.
-    for (const geometry of geometries) {
-      const service = serviceFor(geometry.pattern.serviceRouteId);
-      if (!service) continue;
-      for (const stopId of geometry.pattern.stopSequence) {
-        const names = routeNamesByStopId.get(stopId);
-        if (names) names.add(routeBadgeName(service.publicName));
-        else routeNamesByStopId.set(stopId, new Set([routeBadgeName(service.publicName)]));
-      }
-    }
+  for (const [stopId, names] of stopRoutes.byStopId) {
+    routeNamesByStopId.set(stopId, new Set(names.map(routeBadgeName)));
   }
 
   if (liveObservations) {
@@ -960,72 +884,20 @@ router.get("/v1/map", async (_request, { env, url }) => {
     const capped = live.vehicles.slice(0, MAP_QUERY_LIMITS.maxVehicles);
     vehiclesTruncated = live.vehicles.length > capped.length;
 
-    const patternsById = new Map(
-      geometries.map((geometry) => [geometry.pattern.id, geometry.pattern]),
-    );
-
     /*
-     * Which service a route number refers to, where this viewport can say so unambiguously.
+     * The marker, from the feed and nothing else.
      *
-     * A live feed publishes "36" and nothing that identifies the service, and the map was
-     * carrying that straight through as though it were an identifier — so a bus could only ever
-     * link to a route page by its public name, which several operators share. Within one viewport
-     * the name is usually unique, and where it is not, the answer here is null: a bus linked to
-     * somebody else's 36 is a worse answer than a bus with no route link.
+     * This used to try three things in turn: a service id from the viewport's patterns where the
+     * line name was unambiguous, a geometry match for a bus with no line name, then the summary on
+     * its own. The first two need the pattern tiles, which the map no longer reads — see above — so
+     * a marker carries exactly what the feed published: position, line name where there is one,
+     * destination, age.
      *
-     * Built once by walking the viewport's services rather than matching per vehicle, because
-     * running the geometry matcher for three hundred vehicles against several hundred patterns is
-     * exactly the kind of work that took this endpoint over its limit.
+     * What is given up is the service id, so the web app matches a selected route by the number on
+     * the front instead and `vehicleEmphasis` there names what that costs. What is kept is a map
+     * that answers.
      */
-    const serviceIdByName = new Map<string, string | null>();
-    for (const geometry of geometries) {
-      const service = serviceFor(geometry.pattern.serviceRouteId);
-      if (!service) continue;
-      const name = routeBadgeName(service.publicName);
-      const existing = serviceIdByName.get(name);
-      if (existing === undefined) serviceIdByName.set(name, service.id);
-      else if (existing !== service.id) serviceIdByName.set(name, null);
-    }
-
-    vehicles = capped.map((vehicle) => {
-      const summary = toMapVehicle(vehicle, now);
-
-      // Matching only runs when routes for this viewport are published. Without them a vehicle is
-      // still shown — just without a route name — rather than being hidden from the map.
-      if (geometries.length === 0) return summary;
-
-      if (summary.routePublicName !== null) {
-        const resolved = serviceIdByName.get(summary.routePublicName) ?? null;
-        return resolved ? { ...summary, routeId: resolved } : summary;
-      }
-
-      const match = matchObservation(
-        {
-          coordinate: summary.coordinate,
-          ...(vehicle.bearingDegrees === undefined
-            ? {}
-            : { bearingDegrees: vehicle.bearingDegrees }),
-        },
-        geometries,
-      );
-      if (!match.best || match.confidence.level === "low") return summary;
-
-      const pattern = patternsById.get(match.best.patternId);
-      const service = pattern ? serviceFor(pattern.serviceRouteId) : undefined;
-      /*
-       * A matched vehicle is the one case where the identity is known exactly: the match names the
-       * pattern, the pattern names the service. Both travel with it so the marker can open the
-       * route page and draw the line it was matched to.
-       */
-      return service
-        ? {
-            ...summary,
-            routePublicName: routeBadgeName(service.publicName),
-            routeId: service.id,
-            routePatternId: match.best.patternId,
-          }
-        : summary;
-    });
+    vehicles = capped.map((vehicle) => toMapVehicle(vehicle, now));
   }
 
   /*
@@ -1081,18 +953,19 @@ router.get("/v1/map", async (_request, { env, url }) => {
      * about matching live vehicles to routes, and a viewport with no buses in it skips it
      * entirely — which must not be reported as a degraded map.
      */
-    degraded: stopRoutes.available
-      ? !stopRoutes.complete || ledger.stopped
-      : !enrichment.complete || ledger.stopped,
+    degraded: stopRoutes.available ? !stopRoutes.complete || ledger.stopped : true,
     degradationReason:
       ledger.reason ??
       (stopRoutes.available
         ? stopRoutes.complete
           ? null
           : "stop_routes_budget"
-        : enrichment.complete
-          ? null
-          : "pattern_read_budget"),
+        : /*
+           * An artifact carrying neither the projection nor the stop-routes family. Its stops are
+           * drawn and their route numbers are not available at all, which is a different statement
+           * from a read that ran out of budget and is reported as its own reason.
+           */
+          "stop_routes_unavailable"),
   };
 
   const coverage = index ? (liveAllowed && failedSources.length === 0 ? 1 : 0.5) : 0;
