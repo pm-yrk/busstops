@@ -59,10 +59,56 @@ export interface RaptorResult {
 
 export const DEFAULT_MIN_TRANSFER_SECONDS = 60;
 
+/**
+ * Counters a profiler can pass in, so the search can be measured without being rewritten.
+ *
+ * Cloudflare recorded `/v1/journeys` at 243 ms of CPU against a ten-millisecond free limit, 183 of
+ * them in this function — over a corridor of 250 stops and 1,390 trips, which is small. A number
+ * that large over a set that small is a question about data structures rather than about
+ * algorithms, and answering it needs to know how many times the inner work actually runs.
+ *
+ * Optional and unused in production: nothing allocates these unless a caller asks.
+ */
+export interface SearchCounters {
+  rounds: number;
+  /** Stops marked as improved at the start of each round. */
+  markedPerRound: number[];
+  /** `(stop, trip)` pairs considered: the inner loop's real size. */
+  tripScans: number;
+  /** Calls to `boardingIndex`, each of which scans a trip's stop times. */
+  boardingIndexCalls: number;
+  /** Calls to `effectiveStopTimes`, each of which may allocate a whole array. */
+  effectiveStopTimesCalls: number;
+  /** Alighting labels offered, and how many survived. Garbage is the difference. */
+  improveCalls: number;
+  improveAccepted: number;
+  /** Transfer edges walked. */
+  transferScans: number;
+  /** Label maps copied, and the entries copied with them. */
+  labelMapCopies: number;
+  labelEntriesCopied: number;
+}
+
+export function newSearchCounters(): SearchCounters {
+  return {
+    rounds: 0,
+    markedPerRound: [],
+    tripScans: 0,
+    boardingIndexCalls: 0,
+    effectiveStopTimesCalls: 0,
+    improveCalls: 0,
+    improveAccepted: 0,
+    transferScans: 0,
+    labelMapCopies: 0,
+    labelEntriesCopied: 0,
+  };
+}
+
 export function runRaptor(
   graph: JourneyGraph,
   origins: readonly SearchOrigin[],
   options: RaptorOptions,
+  counters?: SearchCounters,
 ): RaptorResult {
   const maxRounds = options.maxRounds ?? 4;
   const minTransferSeconds = options.minTransferSeconds ?? DEFAULT_MIN_TRANSFER_SECONDS;
@@ -122,10 +168,17 @@ export function runRaptor(
   let marked = new Set(round0.keys());
 
   for (let round = 1; round <= maxRounds && marked.size > 0; round++) {
+    if (counters) {
+      counters.rounds += 1;
+      counters.markedPerRound.push(marked.size);
+      counters.labelMapCopies += 1;
+      counters.labelEntriesCopied += labelsByRound[round - 1]!.size;
+    }
     const current = new Map<string, StopLabel>(labelsByRound[round - 1]!);
     const nextMarked = new Set<string>();
 
     const improve = (stopId: string, label: StopLabel) => {
+      if (counters) counters.improveCalls += 1;
       const existing = current.get(stopId);
       if (existing && existing.arrivalSeconds <= label.arrivalSeconds) return;
       // Pruning against the global best is what keeps the search bounded.
@@ -137,6 +190,7 @@ export function runRaptor(
       ) {
         return;
       }
+      if (counters) counters.improveAccepted += 1;
       current.set(stopId, label);
       if (!globalBest || label.arrivalSeconds < globalBest.arrivalSeconds) best.set(stopId, label);
       nextMarked.add(stopId);
@@ -152,6 +206,12 @@ export function runRaptor(
         from.round === 0 ? from.arrivalSeconds : from.arrivalSeconds + minTransferSeconds;
 
       for (const trip of graph.tripsByStop.get(stopId) ?? []) {
+        if (counters) {
+          counters.tripScans += 1;
+          counters.boardingIndexCalls += 1;
+          /* `boardingIndex` calls it once internally, and the line below calls it again. */
+          counters.effectiveStopTimesCalls += 2;
+        }
         const index = boardingIndex(trip, stopId, readyAt);
         if (index === null) continue;
 
@@ -184,6 +244,7 @@ export function runRaptor(
       if (!from) continue;
 
       for (const transfer of graph.transfers.get(stopId) ?? []) {
+        if (counters) counters.transferScans += 1;
         const arrival = from.arrivalSeconds + transfer.walkSeconds;
         const existing = current.get(transfer.toStopId);
         if (existing && existing.arrivalSeconds <= arrival) continue;

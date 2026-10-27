@@ -997,6 +997,61 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
+  # Why a search over 250 stops and 1,390 trips takes 183 milliseconds.
+  #
+  # Cloudflare recorded `/v1/journeys` at 243 ms of CPU against a ten-millisecond free limit, 183
+  # of them inside the round-based search and 17 more building the graph it searches. Those are not
+  # large inputs, and the search is already RAPTOR-shaped — the family suited to scheduled
+  # transport — so a figure that size over a set that small is a question about repeated work and
+  # data structures rather than about the choice of algorithm. This counts how many times the inner
+  # work actually runs, on a real corridor from the published artifact, across the four query
+  # shapes a planner has to serve.
+  #
+  # Reads the artifact and writes nothing.
+  journey_profile:
+    name: Profile the journey search
+    if: contains(github.event.head_commit.message, '[journey-profile]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - run: npm ci --no-audit --no-fund
+
+      - name: Profile
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          NODE_OPTIONS: "--max-old-space-size=8192"
+        run: |
+          set -o pipefail
+          npx tsx scripts/profile-journey-search.ts \
+            --json journey-profile.json 2>&1 | tee journey-profile.log
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "## Where the journey search spends its time"
+            echo
+            echo '```'
+            sed -n '1,200p' journey-profile.log 2>/dev/null || echo "no journey-profile.log"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-journey-profile
+          path: |
+            journey-profile.json
+            journey-profile.log
+          retention-days: 14
+          if-no-files-found: ignore
+
   prune_artifacts:
     name: Prune superseded network artifacts
     if: contains(github.event.head_commit.message, '[prune]')
