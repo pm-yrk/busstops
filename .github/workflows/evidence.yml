@@ -1187,6 +1187,37 @@ jobs:
           npx tsx scripts/journey-corpus.ts \
             --json journey-corpus.json 2>&1 | tee journey-corpus.log
 
+      # What a tighter walk between buses would cost, as five numbers rather than as an opinion.
+      #
+      # The walking transfers are most of what a journey request spends: a Birmingham corridor has
+      # 126,952 of them over 2,737 stops, and the count goes roughly with the square of the cap.
+      # Ten minutes of walking to change buses is generous and five is nearer what somebody would
+      # do — but that is a product judgement, and cutting coverage on a judgement is exactly what
+      # B6 forbids. So the corpus is recorded at five minutes too and held against the ten-minute
+      # one: how often the recommendation changes, how often it arrives materially later, and how
+      # often the journey is lost. The comparison exits non-zero when a journey is lost, which is
+      # the answer rather than a failure of the job.
+      - name: The same corpus with a five-minute change walk
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          NODE_OPTIONS: "--max-old-space-size=8192"
+        run: |
+          set -o pipefail
+          npx tsx scripts/journey-corpus.ts \
+            --max-transfer-seconds 300 \
+            --json journey-corpus-300.json 2>&1 | tee journey-corpus-300.log
+
+      - name: What the tighter walk costs
+        if: always()
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          npx tsx scripts/compare-journey-plans.ts \
+            --baseline journey-corpus.json \
+            --candidate journey-corpus-300.json \
+            --json journey-corpus-300-comparison.json 2>&1 | tee journey-corpus-300-comparison.log
+
       - name: Summarise
         if: always()
         run: |
@@ -1195,6 +1226,14 @@ jobs:
             echo
             echo '```'
             sed -n '1,200p' journey-corpus.log 2>/dev/null || echo "no journey-corpus.log"
+            echo '```'
+            echo "## The same corpus with a five-minute change walk"
+            echo '```'
+            sed -n '1,200p' journey-corpus-300.log 2>/dev/null || echo "not recorded"
+            echo '```'
+            echo "## What the tighter walk costs"
+            echo '```'
+            cat journey-corpus-300-comparison.log 2>/dev/null || echo "not compared"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -1205,6 +1244,10 @@ jobs:
           path: |
             journey-corpus.json
             journey-corpus.log
+            journey-corpus-300.json
+            journey-corpus-300.log
+            journey-corpus-300-comparison.json
+            journey-corpus-300-comparison.log
           retention-days: 14
           if-no-files-found: ignore
 

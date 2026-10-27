@@ -153,6 +153,22 @@ const QUERIES: readonly CorridorQuery[] = [
 /** Nine in the morning, which is the hour the profile and the deployed probes both use. */
 const DEPART_AT_SECONDS = 9 * 3600;
 
+/**
+ * How far a passenger may walk to change buses, in seconds, for this run.
+ *
+ * A parameter rather than a constant because it is the lever with the most CPU behind it and the
+ * most coverage at stake. The graph's walking transfers are what a journey request spends most of
+ * its time on — a Birmingham corridor has 126,952 of them over 2,737 stops — and the count goes
+ * roughly with the square of this number. Ten minutes of walking between two buses is generous;
+ * five is nearer what somebody would actually do.
+ *
+ * It is not cut on that reasoning. The corpus is recorded at each value and
+ * `scripts/compare-journey-plans.ts` says what the tighter one costs: how often it recommends a
+ * different ride, how often it arrives materially later, and how often it loses the journey
+ * altogether. A number nobody has measured the cost of is not a saving.
+ */
+const MAX_TRANSFER_SECONDS = Number(arg("max-transfer-seconds") ?? "600");
+
 /** One option of one answer, in the form a comparison reads. */
 interface CorpusOption {
   ranking: string;
@@ -228,12 +244,22 @@ async function main(): Promise<number> {
       continue;
     }
 
-    const graph = buildGraph({ stops: slice.stops, trips: slice.trips });
+    const graphBegan = process.hrtime.bigint();
+    const graph = buildGraph({
+      stops: slice.stops,
+      trips: slice.trips,
+      maxTransferSeconds: MAX_TRANSFER_SECONDS,
+    });
+    const buildGraphMs = Number(process.hrtime.bigint() - graphBegan) / 1e6;
+    let transferEdges = 0;
+    for (const list of graph.transfers.values()) transferEdges += list.length;
+    const planBegan = process.hrtime.bigint();
     const result = plan(graph, {
       origin: query.from,
       destination: query.to,
       departAtSeconds: DEPART_AT_SECONDS,
     });
+    const planMs = Number(process.hrtime.bigint() - planBegan) / 1e6;
     if (result.options.length > 0) answered += 1;
 
     entries.push({
@@ -243,6 +269,10 @@ async function main(): Promise<number> {
       outcome: result.options.length > 0 ? "answered" : "unanswered",
       stops: slice.stops.length,
       trips: slice.trips.length,
+      transferEdges,
+      /* A runner's milliseconds, which transfer as ratios rather than as figures. */
+      buildGraphMs: Number(buildGraphMs.toFixed(2)),
+      planMs: Number(planMs.toFixed(2)),
       /*
        * Why an unanswered query was unanswered, carried with it. A replacement that also cannot
        * answer it for the same reason is not a regression; one that fails differently is a
@@ -254,7 +284,8 @@ async function main(): Promise<number> {
     });
     console.log(
       `${query.name.padEnd(52)} stops ${String(slice.stops.length).padStart(5)} ` +
-        `trips ${String(slice.trips.length).padStart(6)} options ${String(result.options.length)}` +
+        `edges ${String(transferEdges).padStart(7)} build ${buildGraphMs.toFixed(1).padStart(7)}ms ` +
+        `plan ${planMs.toFixed(1).padStart(6)}ms options ${String(result.options.length)}` +
         (result.options[0]
           ? ` best ${String(result.options[0].arrivalSeconds - DEPART_AT_SECONDS)}s ` +
             `${String(result.options[0].changeCount)} change(s)`
@@ -267,6 +298,7 @@ async function main(): Promise<number> {
     version: index.version,
     serviceDate,
     departAtSeconds: DEPART_AT_SECONDS,
+    maxTransferSeconds: MAX_TRANSFER_SECONDS,
     queries: QUERIES.length,
     answered,
     note:
