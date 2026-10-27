@@ -1,4 +1,10 @@
-import { boardingIndexIn, effectiveStopTimes, type JourneyGraph, type Trip } from "./graph.js";
+import {
+  effectiveStopTimes,
+  type JourneyGraph,
+  type RouteGroup,
+  type Trip,
+  type TripStopTime,
+} from "./graph.js";
 
 /**
  * Round-based earliest-arrival search (RAPTOR-style).
@@ -102,6 +108,66 @@ export function newSearchCounters(): SearchCounters {
     labelMapCopies: 0,
     labelEntriesCopied: 0,
   };
+}
+
+/**
+ * The earliest trip on this route that can be boarded at `at`, or null if none beats what is ridden.
+ *
+ * Only an *earlier* trip than the one already being ridden is of interest: a later one cannot
+ * improve any arrival downstream, and RAPTOR's route scan relies on that to visit each stop once.
+ *
+ * A binary search, which is sound because a route's trips never overtake each other — see
+ * `RouteGroup.nonOvertaking`, which is what the split in `groupRoutes` exists to guarantee.
+ * Departure order is therefore the same at this stop as at the first, so "boardable here" is
+ * monotone in the index and the first such trip can be found without scanning them all. On a stop
+ * sequence where buses *do* overtake, the trips are in different routes and each is scanned on its
+ * own; claiming the order where it did not hold would quietly return a later bus than the one a
+ * passenger could catch.
+ */
+function earliestBoardable(
+  route: RouteGroup,
+  at: number,
+  readyAt: number,
+  riding: number,
+  counters?: SearchCounters,
+): { index: number; times: readonly TripStopTime[] } | null {
+  const trips = route.trips;
+  /* Nothing past the trip already being ridden can help. */
+  const ceiling = riding === -1 ? trips.length : riding;
+  if (ceiling === 0) return null;
+
+  const boardable = (index: number): readonly TripStopTime[] | null => {
+    const trip = trips[index]!;
+    if (trip.cancelled) return null;
+    if (counters) {
+      counters.tripScans += 1;
+      counters.effectiveStopTimesCalls += 1;
+    }
+    const times = effectiveStopTimes(trip);
+    return times[at]!.departureSeconds >= readyAt ? times : null;
+  };
+
+  /*
+   * The first index in [0, ceiling) whose departure here is at or after `readyAt`.
+   *
+   * `monotone` is computed from the effective times, so the order this relies on already accounts
+   * for any live delay the trips carried when the graph was built, and the probe reads the
+   * effective times for the same reason.
+   */
+  let low = 0;
+  let high = ceiling;
+  while (low < high) {
+    const mid = (low + high) >> 1;
+    if (counters) counters.boardingIndexCalls += 1;
+    if (effectiveStopTimes(trips[mid]!)[at]!.departureSeconds >= readyAt) high = mid;
+    else low = mid + 1;
+  }
+  /* Then the first of those that is actually running. */
+  for (let index = low; index < ceiling; index++) {
+    const times = boardable(index);
+    if (times !== null) return { index, times };
+  }
+  return null;
 }
 
 export function runRaptor(
@@ -210,53 +276,82 @@ export function runRaptor(
       nextMarked.add(stopId);
     };
 
-    // Board every trip reachable from a stop improved in the previous round.
+    /*
+     * Which routes to scan, and from where.
+     *
+     * A route enters the queue because an improved stop is on it, and it is scanned from the
+     * earliest such position: everything before that was already reachable in an earlier round,
+     * so riding through it adds a change for nothing.
+     */
+    const queue = new Map<RouteGroup, number>();
     for (const stopId of marked) {
-      const from = labelsByRound[round - 1]!.get(stopId);
-      if (!from) continue;
+      for (const entry of graph.routesByStop.get(stopId) ?? []) {
+        const existing = queue.get(entry.route);
+        if (existing === undefined || entry.at < existing) queue.set(entry.route, entry.at);
+      }
+    }
 
-      // Boarding after a previous ride needs the interchange buffer; the first boarding does not.
-      const readyAt =
-        from.round === 0 ? from.arrivalSeconds : from.arrivalSeconds + minTransferSeconds;
+    const previous = labelsByRound[round - 1]!;
 
-      for (const trip of graph.tripsByStop.get(stopId) ?? []) {
-        if (counters) {
-          counters.tripScans += 1;
-          counters.boardingIndexCalls += 1;
-          counters.effectiveStopTimesCalls += 1;
-        }
-        /*
-         * One `effectiveStopTimes` per trip, not two.
-         *
-         * `boardingIndex` called it internally and the line below called it again, which the
-         * profile counted as 885,340 calls for a Manchester plan against 442,670 trips scanned —
-         * and for a trip carrying a live delay each call allocates a fresh array of stop-time
-         * objects. The times are computed once here and the boarding index is found from them.
-         */
-        const stopTimes = effectiveStopTimes(trip);
-        const index = trip.cancelled ? null : boardingIndexIn(stopTimes, stopId, readyAt);
-        if (index === null) continue;
+    /*
+     * One pass along each route, carrying the trip currently being ridden.
+     *
+     * This is the scan the search was missing. It used to board *every trip* serving every
+     * improved stop and walk each of them to its end — 442,670 trip scans and 6,510,009 alighting
+     * offers for one Manchester plan, of which 24,105 were kept. Here each stop of each queued
+     * route is visited once: the ride is offered to it, and then the earliest trip catchable from
+     * it is boarded if that is better than the one being ridden.
+     *
+     * The answer is the same answer. RAPTOR's round structure is unchanged — a round is still one
+     * boarding, so the round a stop is first reached in is still its change count — and the
+     * brute-force comparison in `journey.test.ts` is what holds that claim up, over randomised
+     * timetables with delays, cancellations, loops and overtaking.
+     */
+    for (const [route, startAt] of queue) {
+      const stopIds = route.stopIds;
+      /** The trip being ridden: an index into `route.trips`, or -1 for none yet. */
+      let riding = -1;
+      let ridingTimes: readonly TripStopTime[] | null = null;
+      let boardedStopId: string | null = null;
+      let boardedDeparture = 0;
 
-        const boarded = stopTimes[index]!;
+      for (let at = startAt; at < stopIds.length; at++) {
+        const stopId = stopIds[at]!;
 
-        for (let i = index + 1; i < stopTimes.length; i++) {
-          const alight = stopTimes[i]!;
-          /* Tested before anything is built; see `worthLabelling`. */
-          if (!worthLabelling(alight.stopId, alight.arrivalSeconds)) continue;
-          accept(alight.stopId, {
-            arrivalSeconds: alight.arrivalSeconds,
-            round,
-            leg: {
-              kind: "board",
-              fromStopId: stopId,
-              toStopId: alight.stopId,
-              departureSeconds: boarded.departureSeconds,
+        /* Alight here, if a trip is being ridden and this is worth a label. */
+        if (ridingTimes !== null) {
+          const alight = ridingTimes[at]!;
+          if (worthLabelling(stopId, alight.arrivalSeconds)) {
+            accept(stopId, {
               arrivalSeconds: alight.arrivalSeconds,
-              trip,
-            },
-            previousStopId: stopId,
-          });
+              round,
+              leg: {
+                kind: "board",
+                fromStopId: boardedStopId!,
+                toStopId: stopId,
+                departureSeconds: boardedDeparture,
+                arrivalSeconds: alight.arrivalSeconds,
+                trip: route.trips[riding]!,
+              },
+              previousStopId: boardedStopId,
+            });
+          }
         }
+
+        /* Board here, if the previous round reached this stop in time for something earlier. */
+        const from = previous.get(stopId);
+        if (!from) continue;
+        // Boarding after a previous ride needs the interchange buffer; the first boarding does not.
+        const readyAt =
+          from.round === 0 ? from.arrivalSeconds : from.arrivalSeconds + minTransferSeconds;
+        if (ridingTimes !== null && ridingTimes[at]!.departureSeconds <= readyAt) continue;
+
+        const earlier = earliestBoardable(route, at, readyAt, riding, counters);
+        if (earlier === null) continue;
+        riding = earlier.index;
+        ridingTimes = earlier.times;
+        boardedStopId = stopId;
+        boardedDeparture = earlier.times[at]!.departureSeconds;
       }
     }
 

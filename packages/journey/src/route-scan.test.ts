@@ -1,0 +1,267 @@
+import { describe, expect, it } from "vitest";
+import { bruteForceEarliestArrival } from "./brute-force.js";
+import { buildGraph, groupRoutes, type JourneyStop, type Trip } from "./graph.js";
+import { bestArrival, runRaptor } from "./raptor.js";
+
+/**
+ * The route scan, against exhaustive enumeration, on timetables built to break it.
+ *
+ * The search became route-centric to get its cost down: it used to board every trip serving every
+ * improved stop and ride each to its end — 442,670 trip scans and 6,510,009 alighting offers for
+ * one Manchester plan — and now walks each route once per round, boarding the earliest trip it can
+ * catch. That last step is only sound when an earlier departure means an earlier arrival all the
+ * way down the route, and the existing brute-force comparison found the counter-example on the
+ * first run: two buses on one stop sequence, the later one faster, and boarding the earlier one
+ * arrives a minute after the bus a passenger would actually have taken.
+ *
+ * So the shapes that break it are generated on purpose here rather than hoped for. Forty
+ * two-stop trips in a five-stop town, which is what the suite had, exercises none of this: no
+ * route has more than one trip, so there is nothing to overtake and nothing to scan past.
+ */
+
+const HOUR = 3600;
+const MIN = 60;
+const departAt = 8 * HOUR;
+
+/** Eight stops close enough together that walking transfers exist between most pairs. */
+const stops: JourneyStop[] = [
+  { id: "A", name: "A", coordinate: { lat: 53.7946, lon: -1.5419 } },
+  { id: "B", name: "B", coordinate: { lat: 53.7955, lon: -1.5478 } },
+  { id: "C", name: "C", coordinate: { lat: 53.7962, lon: -1.5512 } },
+  { id: "D", name: "D", coordinate: { lat: 53.8005, lon: -1.5605 } },
+  { id: "E", name: "E", coordinate: { lat: 53.8061, lon: -1.5712 } },
+  { id: "F", name: "F", coordinate: { lat: 53.8115, lon: -1.6205 } },
+  { id: "G", name: "G", coordinate: { lat: 53.8221, lon: -1.6602 } },
+  { id: "H", name: "H", coordinate: { lat: 53.8155, lon: -1.6402 } },
+];
+
+function mulberry32(seed: number): () => number {
+  let a = seed + 0x6d2b79f5;
+  return () => {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+interface Generated {
+  trips: Trip[];
+  /** How many of the stop sequences generated had a bus overtaking another on them. */
+  overtakingSequences: number;
+}
+
+/**
+ * A timetable with several trips to a pattern, uneven running times, and the occasional express.
+ *
+ * The express is the point: a trip that leaves after another and arrives before it is what makes
+ * "board the earliest you can catch" wrong, and it has to occur often enough in the generated
+ * cases to be exercised rather than stumbled on.
+ */
+function timetable(seed: number): Generated {
+  const random = mulberry32(seed);
+  const pick = <T>(from: readonly T[]): T => from[Math.floor(random() * from.length)]!;
+  const trips: Trip[] = [];
+  let overtakingSequences = 0;
+
+  const patterns = 2 + Math.floor(random() * 4);
+  for (let p = 0; p < patterns; p++) {
+    /* A random ordered run of stops, sometimes returning to one it has already called at. */
+    const length = 3 + Math.floor(random() * 4);
+    const sequence: string[] = [];
+    while (sequence.length < length) {
+      const stop = pick(stops).id;
+      if (sequence[sequence.length - 1] === stop) continue;
+      sequence.push(stop);
+    }
+
+    const tripCount = 2 + Math.floor(random() * 5);
+    const headway = (3 + Math.floor(random() * 10)) * MIN;
+    const firstDeparture = departAt + Math.floor(random() * 10) * MIN;
+    let overtakes = false;
+
+    for (let t = 0; t < tripCount; t++) {
+      /*
+       * One trip in five runs at between a third and a half of the normal pace, which is what an
+       * express or a bus that has caught up looks like in a published timetable.
+       */
+      const express = random() < 0.2;
+      if (express && t > 0) overtakes = true;
+      const hopSeconds = express
+        ? (1 + Math.floor(random() * 2)) * MIN
+        : (3 + Math.floor(random() * 5)) * MIN;
+      let clock = firstDeparture + t * headway;
+      const stopTimes = sequence.map((stopId, at) => {
+        if (at > 0) clock += hopSeconds;
+        return { stopId, arrivalSeconds: clock, departureSeconds: clock };
+      });
+      trips.push({
+        id: `s${String(seed)}-p${String(p)}-t${String(t)}`,
+        routeId: `route-${String(p)}`,
+        patternId: `pattern-${String(p)}`,
+        routeName: `R${String(p)}`,
+        headsign: "Test",
+        stopTimes,
+        /* A cancelled trip must be skipped, and a delayed one must shift by exactly its delay. */
+        ...(random() < 0.08 ? { cancelled: true } : {}),
+        ...(random() < 0.15 ? { delaySeconds: Math.floor(random() * 6) * MIN } : {}),
+      });
+    }
+    if (overtakes) overtakingSequences += 1;
+  }
+
+  return { trips, overtakingSequences };
+}
+
+const origins = [
+  { stopId: "A", accessSeconds: 30 },
+  { stopId: "B", accessSeconds: 300 },
+  { stopId: "C", accessSeconds: 500 },
+];
+const destinations = [
+  { stopId: "F", egressSeconds: 30 },
+  { stopId: "G", egressSeconds: 120 },
+];
+
+describe("the route scan against exhaustive enumeration", () => {
+  it("finds the same earliest arrival on two hundred generated timetables", () => {
+    let compared = 0;
+    let withOvertaking = 0;
+
+    for (let seed = 0; seed < 200; seed++) {
+      const generated = timetable(seed);
+      if (generated.overtakingSequences > 0) withOvertaking += 1;
+      /*
+       * Every pair of stops joined directly, which is what makes this comparison faithful.
+       *
+       * The planner's round-zero footpath step re-reads the labels it has just improved, so it
+       * can chain walks — stop to stop to stop — and reach further than any single transfer edge.
+       * The oracle walks one edge at a time. With a cap, that is a difference in the travel model
+       * rather than in the search, and it showed up as both a journey the planner found and the
+       * oracle could not, and one the oracle found and the planner could not.
+       *
+       * An hour's cap over stops three kilometres apart joins all of them, and then chaining can
+       * never beat the direct edge, because walking A to B to C is never shorter than walking A
+       * to C. The two searches are then enumerating the same journeys and a disagreement is the
+       * scan's.
+       */
+      const graph = buildGraph({
+        stops,
+        trips: generated.trips,
+        maxTransferSeconds: 3600,
+      });
+      const raptor = runRaptor(graph, origins, { departAtSeconds: departAt, maxRounds: 3 });
+      const found = bestArrival(raptor.best, destinations);
+      const brute = bruteForceEarliestArrival(graph, origins, destinations, departAt, 3);
+
+      if (brute === null) {
+        expect(
+          found,
+          `seed ${String(seed)} found a journey brute force says is impossible`,
+        ).toBeNull();
+        continue;
+      }
+      expect(
+        found,
+        `seed ${String(seed)} found nothing where brute force found a journey`,
+      ).not.toBeNull();
+      expect(
+        found!.arrivalSeconds,
+        `seed ${String(seed)} arrives later than the journey brute force found`,
+      ).toBe(brute.arrivalSeconds);
+      compared += 1;
+    }
+
+    /* The generator has to actually produce the hard cases, or this test proves nothing. */
+    expect(compared).toBeGreaterThan(150);
+    expect(withOvertaking).toBeGreaterThan(40);
+  });
+
+  it("splits a stop sequence whose buses overtake, and keeps every trip", () => {
+    const sequence = ["A", "D", "F"];
+    const slow = {
+      id: "slow",
+      routeId: "r",
+      patternId: "p",
+      routeName: "R",
+      headsign: "T",
+      stopTimes: sequence.map((stopId, at) => ({
+        stopId,
+        arrivalSeconds: departAt + at * 12 * MIN,
+        departureSeconds: departAt + at * 12 * MIN,
+      })),
+    };
+    const express = {
+      ...slow,
+      id: "express",
+      stopTimes: sequence.map((stopId, at) => ({
+        stopId,
+        arrivalSeconds: departAt + 5 * MIN + at * 2 * MIN,
+        departureSeconds: departAt + 5 * MIN + at * 2 * MIN,
+      })),
+    };
+
+    const grouped = groupRoutes([slow, express]);
+    expect(grouped.routes).toHaveLength(2);
+    expect(grouped.routes.flatMap((route) => route.trips.map((trip) => trip.id)).sort()).toEqual([
+      "express",
+      "slow",
+    ]);
+    /* Both are reachable from the first stop, which is what the scan queues from. */
+    expect(grouped.routesByStop.get("A")).toHaveLength(2);
+  });
+
+  it("keeps one route when nothing overtakes, and orders it by departure", () => {
+    const sequence = ["A", "D", "F"];
+    const at = (minute: number) =>
+      sequence.map((stopId, i) => ({
+        stopId,
+        arrivalSeconds: departAt + (minute + i * 10) * MIN,
+        departureSeconds: departAt + (minute + i * 10) * MIN,
+      }));
+    const later = {
+      id: "later",
+      routeId: "r",
+      patternId: "p",
+      routeName: "R",
+      headsign: "T",
+      stopTimes: at(20),
+    };
+    const earlier = { ...later, id: "earlier", stopTimes: at(5) };
+
+    const grouped = groupRoutes([later, earlier]);
+    expect(grouped.routes).toHaveLength(1);
+    expect(grouped.routes[0]!.trips.map((trip) => trip.id)).toEqual(["earlier", "later"]);
+    expect(grouped.routes[0]!.stopIds).toEqual(sequence);
+  });
+
+  it("files a stop a route calls at twice at both of its positions", () => {
+    const loop = {
+      id: "loop",
+      routeId: "r",
+      patternId: "p",
+      routeName: "R",
+      headsign: "T",
+      stopTimes: ["A", "D", "A", "F"].map((stopId, at) => ({
+        stopId,
+        arrivalSeconds: departAt + at * 6 * MIN,
+        departureSeconds: departAt + at * 6 * MIN,
+      })),
+    };
+    const grouped = groupRoutes([loop]);
+    expect(grouped.routesByStop.get("A")?.map((entry) => entry.at)).toEqual([0, 2]);
+  });
+
+  it("ignores a trip with fewer than two calls, which is not a ride", () => {
+    const stub = {
+      id: "stub",
+      routeId: "r",
+      patternId: "p",
+      routeName: "R",
+      headsign: "T",
+      stopTimes: [{ stopId: "A", arrivalSeconds: departAt, departureSeconds: departAt }],
+    };
+    expect(groupRoutes([stub]).routes).toEqual([]);
+  });
+});

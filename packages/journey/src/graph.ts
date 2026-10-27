@@ -48,11 +48,58 @@ export interface Transfer {
   walkSeconds: number;
 }
 
+/**
+ * Trips that follow exactly the same stop sequence, which is what RAPTOR calls a route.
+ *
+ * Not the published service and not the pattern: a *stop sequence*. Two trips on one pattern can
+ * end up with different sequences here, because the planner drops stop times outside the corridor
+ * before the graph is built, and a route whose trips disagree about where they stop cannot be
+ * scanned as one. So the grouping key is the sequence itself and the pattern is incidental.
+ *
+ * This exists because the search was trip-centric and that is the wrong shape. Boarding every trip
+ * at every improved stop and walking each one to its end counted 442,670 trip scans and 6,510,009
+ * alighting offers for a single Manchester plan. A route scan visits each stop of each route once
+ * per round — 606 routes of about thirty stops is 18,180 — and finds the earliest catchable trip
+ * at the boarding stop instead of trying all of them.
+ */
+export interface RouteGroup {
+  /** The stop sequence every trip in this group follows, in order. */
+  stopIds: string[];
+  /** The trips, in departure order at the first stop. */
+  trips: Trip[];
+  /**
+   * Trips on a route never overtake each other: departure order is the same at every stop.
+   *
+   * Guaranteed by construction, not hoped for, and it is what makes the scan both correct and
+   * fast. The scan boards the **earliest** trip it can catch and rides it, which is only the best
+   * choice when an earlier departure also means an earlier arrival everywhere downstream. The
+   * brute-force comparison caught the counter-example on the first run: a route where one bus
+   * leaves Wellington Street at 08:17 and reaches Armley Road at 08:36, and the next leaves at
+   * 08:25 and reaches it at 08:35. Boarding the earlier one arrives a minute later.
+   *
+   * So a stop sequence whose trips overtake is split into as many routes as it takes, each of them
+   * free of overtaking, and the scan visits each. The split is on the **effective** times, so a
+   * live delay that moves one trip past its neighbour splits them too — which assumes delays are
+   * applied before the graph is built, as `buildGraphFor` does.
+   */
+  readonly nonOvertaking: true;
+}
+
 export interface JourneyGraph {
   stops: Map<string, JourneyStop>;
   trips: Trip[];
   /** Trips serving each stop, precomputed so the search does not rescan every trip. */
   tripsByStop: Map<string, Trip[]>;
+  /** Routes in the graph, grouped by stop sequence. See `RouteGroup`. */
+  routes: RouteGroup[];
+  /**
+   * Which routes call at each stop, and where in the sequence.
+   *
+   * One entry per occurrence, so a route that calls at a stop twice — a loop, or an out-and-back
+   * — is boardable at both. The search queues a route from the earliest position any improved
+   * stop holds, which is why the position travels with it.
+   */
+  routesByStop: Map<string, Array<{ route: RouteGroup; at: number }>>;
   transfers: Map<string, Transfer[]>;
 }
 
@@ -103,7 +150,97 @@ export function buildGraph(input: BuildGraphInput): JourneyGraph {
     transfers.set(from.id, list);
   }
 
-  return { stops, trips: [...input.trips], tripsByStop, transfers };
+  return {
+    stops,
+    trips: [...input.trips],
+    tripsByStop,
+    ...groupRoutes(input.trips),
+    transfers,
+  };
+}
+
+/**
+ * Trips grouped by the stop sequence they follow, with the index that makes them searchable.
+ *
+ * The sequence is joined with a separator that cannot occur in a stop id — these are UUIDs — so
+ * two different sequences cannot collide into one route and be scanned as though a bus called
+ * somewhere it does not.
+ */
+export function groupRoutes(trips: readonly Trip[]): {
+  routes: RouteGroup[];
+  routesByStop: Map<string, Array<{ route: RouteGroup; at: number }>>;
+} {
+  const bySequence = new Map<string, Trip[]>();
+  for (const trip of trips) {
+    if (trip.stopTimes.length < 2) continue;
+    const key = trip.stopTimes.map((stopTime) => stopTime.stopId).join("\u0000");
+    const existing = bySequence.get(key);
+    if (existing) existing.push(trip);
+    else bySequence.set(key, [trip]);
+  }
+
+  const routes: RouteGroup[] = [];
+  const routesByStop = new Map<string, Array<{ route: RouteGroup; at: number }>>();
+
+  for (const group of bySequence.values()) {
+    /*
+     * Ordered by departure at the first stop, and ties broken on the trip id.
+     *
+     * The tie-break is not cosmetic: the split below compares each trip against the last one
+     * admitted to a route, so an order that is not total would make which journey is found depend
+     * on the order the trips happened to be read in.
+     */
+    const times = new Map(group.map((trip) => [trip, effectiveStopTimes(trip)]));
+    const ordered = [...group].sort((a, b) => {
+      const byTime = times.get(a)![0]!.departureSeconds - times.get(b)![0]!.departureSeconds;
+      return byTime !== 0 ? byTime : a.id < b.id ? -1 : 1;
+    });
+    const stopIds = times.get(ordered[0]!)!.map((stopTime) => stopTime.stopId);
+
+    /*
+     * Split into routes no bus overtakes another on. See `RouteGroup.nonOvertaking`.
+     *
+     * Each trip joins the first route whose last admitted trip it is at or behind at every stop,
+     * and starts a new one when there is none. Comparing against the last member is enough
+     * because that route is already free of overtaking, so being behind its last trip puts this
+     * one behind all of them — which keeps this O(trips × routes × stops) rather than quadratic
+     * in the trips, and in practice there is one route and the inner loop runs once.
+     */
+    const buckets: Trip[][] = [];
+    for (const trip of ordered) {
+      const mine = times.get(trip)!;
+      let placed = false;
+      for (const bucket of buckets) {
+        const last = times.get(bucket[bucket.length - 1]!)!;
+        let behind = true;
+        for (let at = 0; at < mine.length; at++) {
+          if (mine[at]!.departureSeconds < last[at]!.departureSeconds) {
+            behind = false;
+            break;
+          }
+        }
+        if (behind) {
+          bucket.push(trip);
+          placed = true;
+          break;
+        }
+      }
+      if (!placed) buckets.push([trip]);
+    }
+
+    for (const bucket of buckets) {
+      const route: RouteGroup = { stopIds, trips: bucket, nonOvertaking: true };
+      routes.push(route);
+      for (let at = 0; at < stopIds.length; at++) {
+        const stopId = stopIds[at]!;
+        const list = routesByStop.get(stopId);
+        if (list) list.push({ route, at });
+        else routesByStop.set(stopId, [{ route, at }]);
+      }
+    }
+  }
+
+  return { routes, routesByStop };
 }
 
 /** Effective stop times for a trip, with any live delay applied. */

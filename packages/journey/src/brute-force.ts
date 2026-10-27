@@ -89,7 +89,27 @@ export function bruteForceEarliestArrival(
   };
 
   for (const origin of origins) {
-    visit(origin.stopId, departAtSeconds + origin.accessSeconds, 0, [], new Set([origin.stopId]));
+    const ready = departAtSeconds + origin.accessSeconds;
+    visit(origin.stopId, ready, 0, [], new Set([origin.stopId]));
+    /*
+     * And walking from the stop you started at to a different one, before boarding anything.
+     *
+     * The planner does this by default — `allowInitialFootpaths` — and this did not, so the two
+     * were enumerating different sets of journeys. It showed up as the planner "disagreeing" with
+     * the oracle on a case where it had walked thirteen minutes to a stop and caught a bus three
+     * and a half minutes earlier than anything the oracle could reach: a real journey, found by
+     * the planner, invisible here. An oracle that cannot express a journey cannot be used to
+     * check one.
+     */
+    for (const transfer of graph.transfers.get(origin.stopId) ?? []) {
+      visit(
+        transfer.toStopId,
+        ready + transfer.walkSeconds,
+        0,
+        [],
+        new Set([origin.stopId, transfer.toStopId]),
+      );
+    }
   }
 
   return best;
