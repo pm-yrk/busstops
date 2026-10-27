@@ -83,7 +83,13 @@ export interface FamilyCost {
   failed: number;
   /** Characters of decoded text. The wire is gzipped; this is what was held in the isolate. */
   chars: number;
-  /** Records handed back after parsing. */
+  /**
+   * Records handed back after parsing, whether the parse ran inside the read or after it.
+   *
+   * The viewport selects its markers from the raw lines and parses only the survivors, so its
+   * rows are counted by `ReadLedger.built` once they exist rather than by the read that scanned
+   * them. `stream.linesParsed` is the figure that stays specific to the read itself.
+   */
   records: number;
   /** Milliseconds spent inside this family's reads. */
   ms: number;
@@ -360,6 +366,24 @@ export class ReadLedger {
     // Only a read spends compute. A cache hit returns objects that are already built, which is the
     // whole reason the two outcomes are counted apart.
     if (entry.outcome === "read") this.decodedChars += entry.chars ?? 0;
+  }
+
+  /**
+   * Records handed back by a parse that happened after the read rather than inside it.
+   *
+   * The map's viewport selects the markers it will draw from the raw lines and parses only those,
+   * so the stream itself produces no records at all and `records` would read zero for a read that
+   * built four hundred stops. That number is a diagnostic — it is how a report says whether a
+   * `nearby` answered from the projection or fell back to geometry — and zero would be a false
+   * answer to that question rather than a missing one.
+   *
+   * It is not a read: nothing here touches `requested`, `read`, `chars` or the stream counts,
+   * because no object was opened to produce it.
+   */
+  built(family: ArtifactFamily, records: number): void {
+    const cost = this.families.get(family) ?? emptyCost();
+    cost.records += records;
+    this.families.set(family, cost);
   }
 
   /** What the isolate was holding, recorded once the request has finished its reads. */

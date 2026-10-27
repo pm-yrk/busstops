@@ -15,6 +15,7 @@ import {
   haversineMetres,
 } from "@busstops/pipeline-core";
 import { readFilteredLinesStreaming, type StreamLineStats } from "./stream-lines.js";
+import { NearestLines, tileFloorMetres } from "./nearest-lines.js";
 import {
   DATASETS,
   SHARDED,
@@ -431,6 +432,22 @@ function tilesNearestCentre(
 const JOURNEY_CORRIDOR_STOP_LIMIT = 20_000;
 
 /**
+ * Above this, a limit is read as a safety bound rather than as a selector.
+ *
+ * `mapStopsInBoundingBox` serves two different questions through one method. A viewport and a
+ * nearby search ask for a few hundred of the stops around a point and mean it — the cap is the
+ * answer's own shape, so it is worth applying before anything is parsed. The journey corridor asks
+ * for twenty thousand because it wants every stop in the corridor and is guarding against a read
+ * that has gone wrong; selecting the nearest to the middle of a corridor would silently drop one
+ * of its ends.
+ *
+ * Two thousand sits an order of magnitude above the largest real viewport request (four hundred,
+ * or four hundred from a nearby search asking for a hundred) and an order of magnitude below the
+ * corridor's bound, so neither caller is near it.
+ */
+const MAP_NEAREST_SELECTION_CEILING = 2_000;
+
+/**
  * How much pattern text a departure board may open to answer "what calls here".
  *
  * Three quarters of a mebibyte, against the map's three. A board asks this question only when its
@@ -683,6 +700,43 @@ function numberAt(body: string, start: number, end: number, field: string): numb
   if (to === from) return null;
   const value = Number(body.slice(from, to));
   return Number.isFinite(value) ? value : null;
+}
+
+/**
+ * Where a map projection row is, read out of the raw line.
+ *
+ * The keys are one character — `y` and `x`, not `lat` and `lon` — because this family exists to be
+ * cheap. The fallback matters more than it looks: a scan that cannot find a numeric `"y":` must not
+ * be read as "this stop is not in the viewport", because that would take a marker off the screen
+ * on the strength of a text search. So the line is parsed, once, and the row itself answers.
+ */
+function mapRowCoordinate(
+  body: string,
+  start: number,
+  end: number,
+): { lat: number; lon: number } | null {
+  const lat = numberAt(body, start, end, "y");
+  const lon = numberAt(body, start, end, "x");
+  if (lat !== null && lon !== null) return { lat, lon };
+  try {
+    const row = JSON.parse(body.slice(start, end)) as MapStopRow;
+    if (typeof row.y !== "number" || typeof row.x !== "number") return null;
+    return { lat: row.y, lon: row.x };
+  } catch {
+    return null;
+  }
+}
+
+/** One projection row as the map draws it. */
+function mapStopFromRow(row: MapStopRow): MapStop {
+  return {
+    id: row.i,
+    atcoCode: row.a,
+    name: passengerName(row.n),
+    locationCoordinate: { lat: row.y, lon: row.x },
+    ...(row.d === undefined ? {} : { indicator: row.d }),
+    routePublicNames: row.r ?? [],
+  };
 }
 
 /**
@@ -1247,6 +1301,19 @@ export class NetworkReader {
     keep?: LineFilter,
     /** Passed through to the cache; see `readShardSized`. */
     retain = true,
+    /**
+     * Asked before each tile is fetched, so a read can stop when the rest cannot matter.
+     *
+     * The budget below answers "can this request afford another tile". This answers the different
+     * and much better question "would another tile change the answer" — and a viewport can know
+     * it: tiles arrive nearest-first, and once a bounded selection holds every marker it is
+     * allowed to draw, a tile further away than the worst of them contributes nothing. The tile is
+     * then never fetched, so what is saved is the subrequest, the bytes and the walk, not only the
+     * parse. See `tileFloorMetres`.
+     *
+     * Consulted per tile rather than once, because the bound tightens as tiles are read.
+     */
+    worthReading?: (tile: string) => boolean,
   ): Promise<{ records: T[]; truncated: boolean }> {
     // Only tiles the publish actually wrote are requested: asking for the rest would be a read
     // operation per empty tile, metered, for a guaranteed miss.
@@ -1285,7 +1352,10 @@ export class NetworkReader {
     let batchSize = FIRST_TILE_BATCH;
 
     while (start < wanted.length) {
-      const batch = wanted.slice(start, start + batchSize);
+      const offered = wanted.slice(start, start + batchSize);
+      start += offered.length;
+      const batch = worthReading ? offered.filter((tile) => worthReading(tile)) : offered;
+      if (batch.length === 0) continue;
       const results = await Promise.all(
         batch.map((tile) =>
           this.readShardSized<T>(dataset(tile), version, now, track, keep, retain),
@@ -1296,7 +1366,6 @@ export class NetworkReader {
         chars += result.chars;
         read += 1;
       }
-      start += batch.length;
 
       /*
        * Two ways to run out, and a request can hit either first.
@@ -1313,7 +1382,19 @@ export class NetworkReader {
 
       const averageChars = Math.max(1, Math.ceil(chars / Math.max(1, read)));
       const affordable = Math.floor((ceiling - chars) / averageChars);
-      batchSize = Math.max(1, Math.min(TILE_READ_BATCH, affordable));
+      /*
+       * A pruning read does not widen its batches, because the batch is also how far ahead it
+       * commits to reading.
+       *
+       * `worthReading` is consulted when a batch is formed, so everything already in one is
+       * fetched and walked whether or not the tiles before it settled the answer. At six tiles a
+       * Manchester viewport opens the whole middle of the screen to fill four hundred markers it
+       * had after two of them. Holding the batch at two keeps enough parallelism that the read is
+       * not a serial chain of round trips, while letting the bound tighten four times as often —
+       * and the resource this is defending is CPU, which waiting on a round trip does not spend.
+       */
+      const widest = worthReading ? FIRST_TILE_BATCH : TILE_READ_BATCH;
+      batchSize = Math.max(1, Math.min(widest, affordable));
     }
     return { records, truncated: false };
   }
@@ -1623,20 +1704,39 @@ export class NetworkReader {
     if (!index?.mapStopTiles || index.mapStopTiles.length === 0) return null;
 
     const grid = this.mapStopGrid(index);
+    const centre = { lat: (bbox.north + bbox.south) / 2, lon: (bbox.east + bbox.west) / 2 };
     const wanted = tilesNearestCentre(
       mapStopTilesForBoundingBox(bbox, grid),
       grid,
-      { lat: (bbox.north + bbox.south) / 2, lon: (bbox.east + bbox.west) / 2 },
+      centre,
       MAP_STOP_TILES_PER_REQUEST,
     );
+    const track: ReadTrack | undefined = ledger
+      ? { ledger, family: "stops", budgetReason: "stop_read_budget" }
+      : undefined;
+    const ceiling = Math.min(budgetChars ?? this.requestChars, this.requestChars);
+
+    if (limit < MAP_NEAREST_SELECTION_CEILING) {
+      return this.nearestMapStops(bbox, limit, centre, grid, wanted, index, now, ceiling, track);
+    }
+
+    /*
+     * Everything in the box, for a caller whose limit is a safety bound rather than a selector.
+     *
+     * The journey corridor asks for twenty thousand stops because it wants all of them: ranking
+     * by distance from the centre of a corridor and cutting would drop one end of it, which is a
+     * plan missing the bus somebody wants. Nothing is gained by selecting before the parse when
+     * every row is going to be parsed, and holding each line's text first would raise the peak
+     * rather than lower it.
+     */
     const read = await this.readTiles<MapStopRow>(
       mapStopsDataset,
       wanted.tiles,
       index.mapStopTiles,
       index.version,
       now,
-      Math.min(budgetChars ?? this.requestChars, this.requestChars),
-      ledger ? { ledger, family: "stops", budgetReason: "stop_read_budget" } : undefined,
+      ceiling,
+      track,
       // `y` and `x` rather than `lat` and `lon`: the projection's keys are one character.
       (body, start, end) => {
         const lat = numberAt(body, start, end, "y");
@@ -1646,79 +1746,132 @@ export class NetworkReader {
       },
     );
 
-    /*
-     * Ranked as rows, built as stops — in that order, because most rows are not kept.
-     *
-     * A Manchester viewport holds 3,006 projection rows inside the box and the map draws four
-     * hundred markers. This used to build a `MapStop` for every one of them — a `passengerName`
-     * call, an object, a coordinate object and a route-name array each — and then throw
-     * five-sixths of them away on the next line.
-     *
-     * Worth about seven tenths of a millisecond of a 4.4-millisecond stage — measured, not
-     * assumed, and smaller than it looks because both forms still haversine and sort all 3,006.
-     * Kept because it is free and exactly output-preserving, not because it closes the gap:
-     * Cloudflare measures this endpoint at 38 ms against a ten-millisecond limit, and what remains
-     * is proportional to the 3,006 rows a city viewport contains rather than to the four hundred
-     * it draws.
-     *
-     * Nothing about the answer changes: the same rows survive the box, the same nearest-the-centre
-     * haversine picks the same four hundred, in the same order. The only difference is that the
-     * 2,600 that lose are never built.
-     */
     const inside = read.records.filter(
       (row) =>
         row.y >= bbox.south && row.y <= bbox.north && row.x >= bbox.west && row.x <= bbox.east,
     );
-
-    const toMapStop = (row: MapStopRow): MapStop => ({
-      id: row.i,
-      atcoCode: row.a,
-      name: passengerName(row.n),
-      locationCoordinate: { lat: row.y, lon: row.x },
-      ...(row.d === undefined ? {} : { indicator: row.d }),
-      routePublicNames: row.r ?? [],
-    });
-
-    /*
-     * Truncated if the byte budget cut the read, if the viewport wanted more tiles than one
-     * invocation may open, or if more stops came back than the caller asked for. All three are
-     * the same statement to a passenger — this is not all of them — and the map turns it into
-     * visible degradation rather than a quietly short answer.
-     */
     const truncated = read.truncated || wanted.dropped > 0;
-    /*
-     * "The box needs more objects than one request may open" is a different statement from "the
-     * read hit its byte budget", and the planner says something different about each: one is
-     * "these points are too far apart for this planner", which is true and useful, and the other
-     * is "we could not read it all", which sounds like a fault. The caller cannot tell them apart
-     * from a single flag, so it gets both.
-     */
     if (inside.length <= limit) {
-      return { stops: inside.map(toMapStop), truncated, tooWide: wanted.dropped > 0 };
+      return { stops: inside.map(mapStopFromRow), truncated, tooWide: wanted.dropped > 0 };
     }
-
-    // Nearest the middle, for the reason `stopsInBoundingBox` gives: an arbitrary slice would
-    // drop the centre of the screen.
-    const centre = { lat: (bbox.north + bbox.south) / 2, lon: (bbox.east + bbox.west) / 2 };
-    /*
-     * Still haversine, deliberately.
-     *
-     * Ranking by squared degrees with the longitude scaled by the centre's latitude was tried
-     * here: it removes two trigonometric calls and a square root per stop, and a property test
-     * found it reorders exact ties. A tie means two stops are equidistant and which of them is
-     * four hundredth is arbitrary either way — but "the same four hundred stops in the same order"
-     * is then not true, and the saving was about three tenths of a millisecond against the four
-     * the deferred construction above is worth. A caveat is not worth buying for that.
-     */
     const ranked = inside
-      .map((row) => ({
-        row,
-        distance: haversineMetres(centre, { lat: row.y, lon: row.x }),
-      }))
+      .map((row) => ({ row, distance: haversineMetres(centre, { lat: row.y, lon: row.x }) }))
       .sort((a, b) => a.distance - b.distance)
       .slice(0, limit)
-      .map((entry) => toMapStop(entry.row));
+      .map((entry) => mapStopFromRow(entry.row));
     return { stops: ranked, truncated: true, tooWide: wanted.dropped > 0 };
+  }
+
+  /**
+   * The nearest `limit` markers to the middle of the box, chosen before a row is parsed.
+   *
+   * The viewport read that this replaces was proportional to the stops a city *contains* rather
+   * than to the markers a screen draws, and that is the whole of the gap it was short by.
+   * Manchester holds 3,006 projection rows inside the box and the map draws four hundred, so the
+   * old read walked 878,854 characters, built 3,006 `MapStopRow` objects, took a haversine to each
+   * of them, sorted all of them and then discarded five sixths. Cloudflare measured the endpoint
+   * at 38 ms against a ten-millisecond limit.
+   *
+   * Three things change, and the third is the one that moves the floor:
+   *
+   * **The cap is applied before the parse, not after it.** `NearestLines` knows the
+   * four-hundredth-nearest distance as it goes, so a row that cannot beat it is never sliced out
+   * of the buffer, never parsed and never built. Only the keepers become objects.
+   *
+   * **Nothing is sorted that is not kept.** The heap costs one comparison for the common
+   * rejection, against a sort over every row in the city.
+   *
+   * **Tiles that cannot contribute are never fetched.** `tileFloorMetres` floors the distance from
+   * the centre to anywhere inside a tile; once the heap is full, a tile whose floor exceeds its
+   * admission price is skipped. That is the read itself, not just its parse — the bytes never
+   * arrive and the subrequest is never spent. A dense city viewport fills four hundred markers
+   * from the tiles over the middle of the screen and skips the rest of the box.
+   *
+   * The answer is the same set of markers as the ranking it replaces, in the same order, except
+   * that an exact tie is now broken on the row's own text rather than on which tile happened to be
+   * fetched first. See `NearestLines`.
+   */
+  private async nearestMapStops(
+    bbox: { west: number; south: number; east: number; north: number },
+    limit: number,
+    centre: Coordinate,
+    grid: number,
+    wanted: { tiles: string[]; dropped: number },
+    index: NetworkIndexRecord,
+    now: number,
+    ceiling: number,
+    track: ReadTrack | undefined,
+  ): Promise<{ stops: MapStop[]; truncated: boolean; tooWide: boolean }> {
+    const nearest = new NearestLines(limit, centre);
+    let skipped = 0;
+
+    const read = await this.readTiles<MapStopRow>(
+      mapStopsDataset,
+      wanted.tiles,
+      index.mapStopTiles ?? [],
+      index.version,
+      now,
+      ceiling,
+      track,
+      /*
+       * Always `false`: this filter is the whole read.
+       *
+       * It takes the row's coordinates out of the raw line, decides whether the row is inside the
+       * box and whether it beats the current admission price, and keeps the line's text when it
+       * does. Nothing is handed back through `records`, because a row the stream reader parsed
+       * would be a row parsed before it was known to be wanted — which is the cost being removed.
+       */
+      (body, start, end) => {
+        const at = mapRowCoordinate(body, start, end);
+        if (at === null) return false;
+        const { lat, lon } = at;
+        if (lat < bbox.south || lat > bbox.north || lon < bbox.west || lon > bbox.east) {
+          return false;
+        }
+        nearest.offer(nearest.distanceTo(lat, lon), () => body.slice(start, end));
+        return false;
+      },
+      true,
+      (tile) => {
+        if (tileFloorMetres(tile, grid, centre) <= nearest.admissionMetres) return true;
+        skipped += 1;
+        return false;
+      },
+    );
+
+    const stops: MapStop[] = [];
+    for (const kept of nearest.drain()) {
+      /*
+       * A line that reached here passed the coordinate scan, so an unparseable one is a fault in
+       * the artifact rather than a row this viewport did not want. Skipped rather than thrown:
+       * four hundred markers minus one is a map, and an exception is not.
+       */
+      try {
+        stops.push(mapStopFromRow(JSON.parse(kept.text) as MapStopRow));
+      } catch {
+        continue;
+      }
+    }
+
+    /*
+     * Three ways to be short of the whole truth, and the map says the same thing about all of
+     * them — this is not all of them — while the planner needs `tooWide` separately.
+     *
+     * The third is new with the selection: a tile skipped because it could not beat the admission
+     * price was skipped *because* the cap was already full, so the cap is what bound the answer.
+     * That is the same statement the old read made when more rows were inside the box than the
+     * caller asked for, and it is made here from the count of candidates rather than from the
+     * count of rows read, which the skipping deliberately makes smaller.
+     */
+    /* The rows this read built, which the stream could not count because it parsed none. */
+    track?.ledger.built("stops", stops.length);
+
+    const cappedByLimit = nearest.offeredCount > limit || (nearest.full && skipped > 0);
+    return {
+      stops,
+      truncated: read.truncated || wanted.dropped > 0 || cappedByLimit,
+      tooWide: wanted.dropped > 0,
+    };
   }
 
   async stopsInBoundingBox(
