@@ -87,6 +87,15 @@ interface Reading {
   sourceAgeSeconds?: number | null;
   charsDecoded?: number;
   degradation?: string | null;
+  /**
+   * The isolate's own tally of requests it has answered, including this one.
+   *
+   * One is the first request an isolate ever serves, and it pays for everything the module level
+   * does once: the index record — a single 144,948-character line — and an empty shard cache. A
+   * p95 that is four times a p50 is either one expensive branch or the cold request, and these
+   * two numbers side by side are what tell them apart.
+   */
+  requestsServed?: number;
 }
 
 interface TailRecord {
@@ -123,6 +132,9 @@ async function ask(endpoint: string, city: string, path: string): Promise<void> 
       reading.degradation = typeof meta?.degradation === "string" ? meta.degradation : null;
       const vehicles = data?.vehicles;
       if (Array.isArray(vehicles)) reading.vehicles = vehicles.length;
+      const residency = diagnostics?.residency as Record<string, unknown> | undefined;
+      reading.requestsServed =
+        typeof residency?.requestsServed === "number" ? residency.requestsServed : undefined;
       const observedAt = meta?.observedAt;
       reading.sourceAgeSeconds =
         typeof observedAt === "string"
@@ -279,6 +291,72 @@ async function main(): Promise<number> {
     byEndpoint.set(endpoint, entry);
   }
 
+  /*
+   * Which invocation was which, joined on the URL and the order it was asked in.
+   *
+   * A tail record carries the request's URL but not its `cf-ray`, and a reading carries the ray
+   * but not the CPU — so neither alone can say whether the expensive invocations were the cold
+   * ones. Each (endpoint, city) pair is asked for exactly once per round, so for one URL the tail
+   * records in timestamp order line up with the readings in request order, and the pairing is
+   * sound rather than approximate. A killed request appears in both sequences, so they stay
+   * aligned.
+   */
+  const pathOf = (url: string | undefined): string => {
+    if (!url) return "";
+    try {
+      const parsed = new URL(url);
+      return `${parsed.pathname}${parsed.search}`;
+    } catch {
+      return url;
+    }
+  };
+  const tailByPath = new Map<string, TailRecord[]>();
+  for (const record of tail.records) {
+    const path = pathOf(record.event?.request?.url);
+    const list = tailByPath.get(path) ?? [];
+    list.push(record);
+    tailByPath.set(path, list);
+  }
+  for (const list of tailByPath.values()) {
+    list.sort((a, b) => (a.eventTimestamp ?? 0) - (b.eventTimestamp ?? 0));
+  }
+  const seenPerPath = new Map<string, number>();
+  const paired: Array<{ endpoint: string; cpuMs: number; requestsServed: number | null }> = [];
+  for (const reading of readings) {
+    const at = seenPerPath.get(reading.path) ?? 0;
+    seenPerPath.set(reading.path, at + 1);
+    const record = tailByPath.get(reading.path)?.[at];
+    if (!record || typeof record.cpuTime !== "number") continue;
+    paired.push({
+      endpoint: reading.endpoint,
+      cpuMs: record.cpuTime,
+      requestsServed: reading.requestsServed ?? null,
+    });
+  }
+  const coldWarm = (endpoint: string) => {
+    const rows = paired.filter((row) => row.endpoint === endpoint);
+    /* A request the platform killed reports no ledger, so its warmth is unknown rather than cold. */
+    const cold = rows.filter((row) => row.requestsServed === 1).map((row) => row.cpuMs);
+    const warm = rows
+      .filter((row) => row.requestsServed !== null && row.requestsServed > 1)
+      .map((row) => row.cpuMs);
+    const unknown = rows.filter((row) => row.requestsServed === null).map((row) => row.cpuMs);
+    return {
+      pairedInvocations: rows.length,
+      firstInIsolate: {
+        n: cold.length,
+        p50CpuMs: percentile(cold, 50),
+        maxCpuMs: cold.length === 0 ? null : Math.max(...cold),
+      },
+      laterInIsolate: {
+        n: warm.length,
+        p50CpuMs: percentile(warm, 50),
+        maxCpuMs: warm.length === 0 ? null : Math.max(...warm),
+      },
+      noLedger: { n: unknown.length, maxCpuMs: unknown.length === 0 ? null : Math.max(...unknown) },
+    };
+  };
+
   const table = [...byEndpoint]
     .map(([endpoint, entry]) => ({
       endpoint,
@@ -292,6 +370,7 @@ async function main(): Promise<number> {
       outcomes: entry.outcomes,
       /* The bar: the configured limit, not whatever the platform tolerated today. */
       withinBudget: (percentile(entry.cpu, 95) ?? Number.POSITIVE_INFINITY) <= 10,
+      coldVsWarm: coldWarm(endpoint),
     }))
     .sort((a, b) => (b.maxCpuMs ?? 0) - (a.maxCpuMs ?? 0));
 

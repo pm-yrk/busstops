@@ -972,8 +972,13 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           set -o pipefail
+          # Six rounds rather than three. The tail delivers a sample rather than every
+          # invocation — thirty-one records of sixty requests on the run before this — and a p95
+          # taken from seven map invocations moved by ten milliseconds between two deployments
+          # that decoded byte-for-byte the same characters.
           npx tsx scripts/measure-worker-cpu.ts \
             --worker "${{ steps.worker.outputs.url }}" \
+            --rounds 6 \
             --json worker-cpu.json 2>&1 | tee worker-cpu.log
 
       - name: Summarise

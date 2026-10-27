@@ -120,33 +120,88 @@ Building only the rows that survive the ranking is now done — exactly output-p
 row by row against the eager form — and is worth seven tenths of a millisecond, because both forms
 still haversine and sort all 3,006.
 
-### The floor, which is worth stating before building anything else
+### A floor I stated, and why it was wrong
 
-The obvious next step is to **select the four hundred before parsing any of them**: score each line
-from the coordinates the textual filter already extracts, keep the best four hundred in a bounded
-heap, and parse only those. It is a real change and it is proportional to what the map draws rather
-than to what the box contains. Costed against the stages above:
+The paragraph that stood here costed a next step — select the four hundred markers before parsing
+any of them — at about nineteen milliseconds on Cloudflare, and then declared a floor of fifteen,
+on this reasoning: the selection makes the _parse_ proportional to the four hundred markers drawn,
+but the _walk_ stays proportional to the 878,854 characters a city viewport contains, and walking
+that text is unavoidable. The conclusion drawn from it was that only a display-oriented projection
+— a new artifact family, and a product decision about what the map shows when zoomed out — could
+move the number, so the target could not be met by optimisation.
 
-|                                                 |       Local |  Cloudflare at ~2.7× |
-| ----------------------------------------------- | ----------: | -------------------: |
-| Today                                           |    ~13.4 ms | 38 ms (measured p50) |
-| With select-before-parse                        |     ~6.9 ms |               ~19 ms |
-| **Floor: walk 878 KB, score it, scan the feed** | **~5.6 ms** |           **~15 ms** |
+**The premise was false, and it was my own assumption rather than a measurement.** A viewport does
+not have to walk every tile in its box. Tiles are opened nearest-first, and a bounded selection
+knows, as soon as it is full, the distance of the worst marker it is holding: `tileFloorMetres`
+floors the distance from the middle of the box to anywhere inside a tile, so a tile whose floor
+exceeds that distance cannot contain a marker that would be kept. It is then not fetched, not
+decoded and not walked. The bound is exact — it gives up a factor of at most √2 by taking the
+larger of the two axis separations rather than their hypotenuse, and one per cent on the
+longitudinal term, both so that it can never be too high — so the answer is the same set of
+markers, not an approximation of it.
 
-So select-before-parse would roughly halve the map's CPU and still not reach ten milliseconds — and
-neither would anything after it, because **the floor is set by the 878,854 characters of projection
-a city viewport reads**, not by what is done with them. Walking that text and scoring every line in
-it is about 3.6 ms locally before a single row is built, and the live feed scan is 2 ms on top.
+Deployed, on real tiles: a Manchester viewport opens **2 tiles of 8** and walks **217,947
+characters of 616,598**.
 
-Which makes the change that _would_ meet the target a different one: read less. A display-oriented
-projection — fewer stops per tile, chosen for what a map at a given zoom actually draws, rather than
-every stop in the box — is the only lever left that moves the floor rather than the overhead. That
-is a new artifact family and a product decision about what the map shows when zoomed out, so it is
-recorded here as the measured consequence rather than taken unilaterally.
+### Deployed again, with the selection in
 
-Part A's verdict, stated plainly: the live-feed normalisation is gone from the request path and the
-map's CPU has fallen by about 60%, from ~96 ms to a p50 of 38. The 7 ms target is not met, the
-reason is measured, and the remaining work is a product decision rather than an optimisation.
+| Endpoint       |            p50 CPU |            p95 CPU |        `exceededCpu` |
+| -------------- | -----------------: | -----------------: | -------------------: |
+| `/v1/map`      | **16 ms** (was 38) | **56 ms** (was 97) | 0 of 8 (was 1 of 12) |
+| `/v1/nearby`   |       3 ms (was 6) |     28 ms (was 36) |               0 of 9 |
+| `/v1/search`   |     10 ms (was 10) |     14 ms (was 16) |               1 of 5 |
+| `/v1/journeys` |   194 ms (was 105) |   573 ms (was 754) |               4 of 8 |
+
+Every one of the fifteen map requests across the five cities answered, and the characters each one
+decoded fell with them: Manchester 217,947, Birmingham 177,381, Bristol 140,539, York 105,577.
+
+Two corrections to my own measurements belong with that, because both were reported and both were
+wrong:
+
+- The local harness timed the two viewport forms once each and reported the one that reads a third
+  of the bytes as the **slower** of the two, 8.42 ms against 7.54. That is a measurement of JIT
+  state: the eager form ran on code paths two earlier stages had already warmed, and the selected
+  form ran cold on a heap, a haversine and a tile bound the process had never executed.
+  Cloudflare's tail measured the same pair at 38 ms and 16. Comparisons in that script now warm
+  both and take a median of seven.
+- That script's live stage timed `normalizeSiriVm` only, so it kept reporting ninety-nine
+  milliseconds for a parse no passenger request has made since the scan replaced it. It times the
+  scan now, with the normaliser beside it.
+
+### A fallback removed, and the gap it turned out not to explain
+
+The map read the viewport's **pattern geometry** whenever any bus in it arrived without a line
+name, so that the bus could be matched to a route by its shape. A dense city's pattern tile reaches
+3,935,975 bytes, a viewport spans several, and `serviceNames` follows them. That is not a fallback a
+passenger request can hold — a fallback that itself exceeds the limit is not one — and whether a
+request paid it depended on whether a third party had filled in `PublishedLineName`. So the map
+does not read it at all any more.
+
+Two things are given up, and both are now visible rather than silent:
+
+- A bus whose feed publishes no line name is drawn as a bus with no route label. The ledger counts
+  how many, because that count is what says whether a cheap way of naming them is worth publishing.
+- No marker carries a service id, so the web app emphasises a selected route by the number on the
+  front where it has no identity to go on. In a viewport holding two different 36s, both are
+  emphasised. That reverses a deliberate earlier decision and the code says so: identity still wins
+  wherever a bus has it, and the alternative was drawing a selected route with every bus on it as
+  context, which is a road that looks empty.
+
+**It did not move the p95, and I had said it would.** The commit that removed it claimed the
+geometry read was what the gap between a p50 of 16 and a p95 of 56 consisted of. The next walk
+measured the map at a p50 of 14 and a p95 of **66**, with 2 of 7 invocations exceeding CPU where
+the walk before it had 0 of 8 — and the characters each city decoded were identical to the
+character across both: Leeds 265,801, Manchester 217,947, Birmingham 177,381, Bristol 140,539,
+York 105,577. Identical totals mean the geometry was never read in either walk. The branch was
+reachable and worth removing on its own terms; it was not the explanation, and the claim was a
+guess dressed as a measurement.
+
+What the two walks do establish is that seven map invocations are not a p95. Two deployments
+decoding byte-for-byte the same characters reported 56 and 66, and 0 and 2 exceeded. So the next
+measurement widens the sample — six rounds rather than three — and splits the invocations by
+whether they were the **first their isolate ever served**, which is the hypothesis that fits the
+shape: a cold request pays for the index record, a single 144,948-character line, and for an empty
+shard cache, and nothing in the per-endpoint table could tell that apart from an expensive branch.
 
 ## Part B — the journey planner
 
