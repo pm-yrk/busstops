@@ -478,6 +478,24 @@ function isolateReach(pass: Pass): Record<string, unknown> {
     ok: rows.filter((row) => row.status === 200).length,
     platformErrors: failures.length,
     platformSaid: [...new Set(failures.map((row) => row.platform))].slice(0, 3),
+    /*
+     * Which endpoints the platform refused, and how often, against how many it was asked.
+     *
+     * A peak pass that reports "forty-two of fifty-two" says nothing about whether a passenger
+     * would notice: fifty journey planner failures and fifty map failures are the same number and
+     * completely different products. Every acceptance sample so far has had to be read beside a
+     * separate CPU-per-endpoint job to find out, and the two measure different bursts.
+     */
+    failedByEndpoint: Object.fromEntries(
+      [...new Set(failures.map((row) => row.endpoint))]
+        .sort()
+        .map((endpoint) => [
+          endpoint,
+          `${String(failures.filter((row) => row.endpoint === endpoint).length)} of ${String(
+            rows.filter((row) => row.endpoint === endpoint).length,
+          )}`,
+        ]),
+    ),
     isolateServedMax: Math.max(0, ...served),
     isolates: handovers + 1,
     maxCharsDecoded: Math.max(0, ...rows.map((row) => row.charsDecoded ?? 0)),

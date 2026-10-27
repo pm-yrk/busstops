@@ -1742,6 +1742,67 @@ describe("GET /v1/vehicles/:ref", () => {
     });
 
     /*
+     * The branch that made one operator's omission everybody's error page.
+     *
+     * `/v1/map` used to read the viewport's pattern geometry whenever any bus in it arrived with
+     * no line name, so that the bus could be matched to a route by its shape. A dense city's
+     * pattern tile reaches 3,935,975 bytes, a viewport spans several, and `serviceNames` follows
+     * them: Cloudflare measured the endpoint at a p95 of 56 milliseconds against a limit of ten,
+     * and which requests paid it depended on whether a third party had filled in a field.
+     *
+     * A fallback that itself exceeds the limit is not a fallback. The bus is drawn without a
+     * route label instead, and this asserts the read is gone rather than merely cheaper.
+     */
+    it("reads no pattern geometry for a map viewport holding an unnamed bus", async () => {
+      const unnamed = `<?xml version="1.0" encoding="UTF-8"?>
+<Siri xmlns="http://www.siri.org.uk/siri" version="2.0"><ServiceDelivery>
+<ResponseTimestamp>2026-09-02T08:00:00+00:00</ResponseTimestamp>
+<VehicleMonitoringDelivery><VehicleActivity>
+<RecordedAtTime>2026-09-02T08:00:00+00:00</RecordedAtTime>
+<MonitoredVehicleJourney>
+<DirectionRef>outbound</DirectionRef>
+<DestinationName>Bradford Interchange</DestinationName>
+<VehicleLocation><Longitude>-1.5491</Longitude><Latitude>53.7965</Latitude></VehicleLocation>
+<Bearing>90</Bearing>
+<VehicleRef>FLEE-30412</VehicleRef>
+</MonitoredVehicleJourney>
+</VehicleActivity></VehicleMonitoringDelivery></ServiceDelivery></Siri>`;
+
+      const store = await publishedStore();
+      const reads: string[] = [];
+      const recording = {
+        get: async (key: string) => {
+          reads.push(key);
+          return store.get(key);
+        },
+        put: (key: string, value: string) => store.put(key, value),
+        delete: (key: string) => store.delete(key),
+        list: (prefix: string) => store.list(prefix),
+      };
+      const env = makeEnv(recording as unknown as InMemoryObjectStore);
+      resetWorkerState();
+      initialiseWorker(
+        env,
+        () => new Date("2026-09-02T08:00:05Z"),
+        (async () => new Response(unnamed, { status: 200 })) as unknown as typeof fetch,
+      );
+
+      const map = await worker.fetch(get("/v1/map?bbox=-1.7,53.7,-1.4,53.9&zoom=14"), env, ctx);
+      expect(map.status).toBe(200);
+      const body = (await map.json()) as {
+        data: { vehicles: Array<{ routePublicName: string | null; routeId: string | null }> };
+      };
+
+      // The bus is on the map, and honestly unlabelled rather than named by a guess.
+      expect(body.data.vehicles.length, "the unnamed bus is still drawn").toBeGreaterThan(0);
+      expect(body.data.vehicles[0]!.routePublicName).toBeNull();
+      expect(body.data.vehicles[0]!.routeId).toBeNull();
+
+      const geometry = reads.filter((key) => key.includes(SHARDED.patternTile));
+      expect(geometry, `the map opened pattern geometry: ${geometry.join(", ")}`).toEqual([]);
+    });
+
+    /*
      * What the tap leaves behind for every request after it.
      *
      * The deployed trace is what made this specific: thirty-three first-contact requests across

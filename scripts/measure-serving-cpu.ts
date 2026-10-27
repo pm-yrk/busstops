@@ -44,6 +44,8 @@ import {
   type PatternTripRow,
 } from "@busstops/pipeline-static-network";
 import { normalizeSiriVm } from "@busstops/adapters";
+import { NearestLines, tileFloorMetres } from "../apps/worker/src/nearest-lines.js";
+import { haversineMetres } from "@busstops/pipeline-core";
 import { buildGraph, plan, type Trip } from "@busstops/journey";
 
 const JSON_OUT = (() => {
@@ -160,6 +162,113 @@ async function main(): Promise<number> {
     return rows.length;
   });
   stages.push(stage("map: parse the rows it keeps", mapParse.ms, mapChars, mapParse.value));
+
+  /* ------------------------------------------- the viewport, both ways, end to end */
+  /*
+   * The two forms of the same answer, on the same objects, in the same process.
+   *
+   * The stages above split the read into walking and parsing. These two time the whole selection:
+   * the form that built every row in the box and then ranked them, against the one that ranks the
+   * raw lines and parses only the four hundred it keeps. The second also reports how many tiles it
+   * opened, which is the part no byte budget could reach — a tile it skips costs nothing at all.
+   */
+  const MARKERS = 400;
+  const viewportCentre = {
+    lat: (VIEWPORT.north + VIEWPORT.south) / 2,
+    lon: (VIEWPORT.east + VIEWPORT.west) / 2,
+  };
+  const insideBox = (lat: number, lon: number) =>
+    lat >= VIEWPORT.south && lat <= VIEWPORT.north && lon >= VIEWPORT.west && lon <= VIEWPORT.east;
+
+  const eager = timed(() => {
+    const rows: MapStopRow[] = [];
+    for (const body of mapBodies) {
+      for (let start = 0; start < body.length;) {
+        const newline = body.indexOf("\n", start);
+        const end = newline < 0 ? body.length : newline;
+        if (end > start && inBox(body, start, end)) {
+          const row = JSON.parse(body.slice(start, end)) as MapStopRow;
+          if (insideBox(row.y, row.x)) rows.push(row);
+        }
+        if (newline < 0) break;
+        start = newline + 1;
+      }
+    }
+    return rows
+      .map((row) => ({ row, metres: haversineMetres(viewportCentre, { lat: row.y, lon: row.x }) }))
+      .sort((a, b) => a.metres - b.metres)
+      .slice(0, MARKERS)
+      .map((entry) => entry.row.i);
+  });
+  stages.push(
+    stage("map: viewport, building every row first", eager.ms, mapChars, eager.value.length),
+  );
+
+  /*
+   * The same tiles, nearest first, with the ones that cannot contribute skipped.
+   *
+   * Batched in twos exactly as the Worker batches them, because the skipping is only checked
+   * between batches and a wider batch commits to reading further ahead than it needs to.
+   */
+  const nearestTiles = [...mapTiles]
+    .map((tile) => ({ tile, floor: tileFloorMetres(tile, grid ?? 0.125, viewportCentre) }))
+    .sort((a, b) => a.floor - b.floor);
+  const bodyByTile = new Map(mapTiles.map((tile, at) => [tile, mapBodies[at] ?? ""]));
+
+  let openedChars = 0;
+  let opened = 0;
+  const selected = timed(() => {
+    const nearest = new NearestLines(MARKERS, viewportCentre);
+    for (let at = 0; at < nearestTiles.length; at += 2) {
+      const batch = nearestTiles
+        .slice(at, at + 2)
+        .filter((entry) => entry.floor <= nearest.admissionMetres);
+      for (const entry of batch) {
+        const body = bodyByTile.get(entry.tile) ?? "";
+        opened += 1;
+        openedChars += body.length;
+        for (let start = 0; start < body.length;) {
+          const newline = body.indexOf("\n", start);
+          const end = newline < 0 ? body.length : newline;
+          if (end > start) {
+            const latAt = body.indexOf('"y":', start);
+            const lonAt = body.indexOf('"x":', start);
+            if (latAt >= 0 && latAt < end && lonAt >= 0 && lonAt < end) {
+              const lat = Number.parseFloat(body.slice(latAt + 4, Math.min(end, latAt + 16)));
+              const lon = Number.parseFloat(body.slice(lonAt + 4, Math.min(end, lonAt + 16)));
+              if (insideBox(lat, lon)) {
+                const from = start;
+                const to = end;
+                nearest.offer(nearest.distanceTo(lat, lon), () => body.slice(from, to));
+              }
+            }
+          }
+          if (newline < 0) break;
+          start = newline + 1;
+        }
+      }
+    }
+    return nearest.drain().map((kept) => (JSON.parse(kept.text) as MapStopRow).i);
+  });
+  stages.push(
+    stage(
+      "map: viewport, parsing only the markers it draws",
+      selected.ms,
+      openedChars,
+      selected.value.length,
+    ),
+  );
+  stages.push(
+    stage(`map: tiles opened ${String(opened)} of ${String(mapBodies.length)}`, 0, openedChars),
+  );
+  /*
+   * The two forms must agree. Reported rather than asserted, because this script measures and a
+   * disagreement is a measurement too — but the structural test in the Worker is what gates it.
+   */
+  const agree =
+    eager.value.length === selected.value.length &&
+    eager.value.every((id, at) => id === selected.value[at]);
+  stages.push(stage(`map: the two forms ${agree ? "agree" : "DISAGREE"}`, 0));
 
   /* ---------------------------------------------------------- the live feed */
   const bodsKey = process.env.BODS_API_KEY;

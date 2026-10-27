@@ -99,14 +99,40 @@ describe("what the map emphasises", () => {
     expect(features.features.map((f) => f.properties.emphasis)).toEqual([1, 0]);
   });
 
-  it("leaves a bus we could not identify as context rather than guessing by its number", () => {
+  /*
+   * The trade the CPU budget forced, asserted so it cannot drift back by accident.
+   *
+   * A bus arrives without a service identity now — the Worker no longer reads the pattern
+   * geometry that produced one, because it took `/v1/map` to a p95 of 56 ms against a limit of
+   * ten. Identity-or-nothing would then draw a selected route with every bus on it as context,
+   * which is a road that looks empty.
+   */
+  it("emphasises an unidentified bus whose number matches the selected route", () => {
     const features = vehicleFeatures([bus({ routePublicName: "36", routeId: null })], {
       kind: "route",
       routeId: "svc-36",
       routePublicName: "36",
     });
-    expect(features.features[0]!.properties.emphasis).toBe(0);
+    expect(features.features[0]!.properties.emphasis).toBe(1);
     expect(features.features[0]!.properties.routeId).toBe("");
+  });
+
+  it("leaves an unidentified bus with a different number as context", () => {
+    const features = vehicleFeatures([bus({ routePublicName: "1", routeId: null })], {
+      kind: "route",
+      routeId: "svc-36",
+      routePublicName: "36",
+    });
+    expect(features.features[0]!.properties.emphasis).toBe(0);
+  });
+
+  it("will not guess by number when the selected route has no number to compare", () => {
+    const features = vehicleFeatures([bus({ routePublicName: "36", routeId: null })], {
+      kind: "route",
+      routeId: "svc-36",
+      routePublicName: null,
+    });
+    expect(features.features[0]!.properties.emphasis).toBe(0);
   });
 
   it("emphasises the selected bus and no other, whatever the intent was", () => {

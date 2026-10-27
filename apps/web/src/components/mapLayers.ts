@@ -130,13 +130,28 @@ function vehicleEmphasis(
   switch (intent.kind) {
     case "route":
       /*
-       * By identity where we have it, and never by name alone.
+       * By identity where we have it, and by the number on the front where we do not.
        *
-       * `routeId` is null when the viewport's patterns could not say which service a bus is on.
-       * Falling back to the public name there would emphasise every operator's 36 — which is the
-       * bug this pair of fields exists to stop — so an unidentified bus stays context.
+       * This used to be identity or nothing, and the reason was sound: "36" is a number several
+       * operators put on the front of a bus, so emphasising by it emphasises all of them. That is
+       * still true and it is still the first test below — a bus whose service we know, and know
+       * to be a different one, stays context however its number reads.
+       *
+       * What changed is the price of knowing. `routeId` came from matching the bus against the
+       * viewport's pattern geometry, and a dense city's pattern tiles reach three mebibytes:
+       * Cloudflare measured `/v1/map` at a p95 of 56 ms against a ten-millisecond limit with that
+       * read in the path, and it fired whenever any operator in the viewport omitted a line name.
+       * So the Worker no longer reads it, every bus on the map now arrives unidentified, and
+       * identity-or-nothing would draw a selected route with no buses on it at all.
+       *
+       * The cost of this is stated rather than hidden: in a viewport holding two different 36s,
+       * both are emphasised. That is a worse answer than identity and a much better one than an
+       * empty road.
        */
-      return vehicle.routeId !== null && vehicle.routeId === intent.routeId ? 1 : 0;
+      if (vehicle.routeId !== null) return vehicle.routeId === intent.routeId ? 1 : 0;
+      return intent.routePublicName !== null && vehicle.routePublicName === intent.routePublicName
+        ? 1
+        : 0;
     case "stop":
     case "journey":
     case "explore":

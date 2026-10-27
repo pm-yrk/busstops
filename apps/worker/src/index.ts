@@ -833,10 +833,29 @@ router.get("/v1/map", async (_request, { env, url }) => {
    * shapes is the fallback for a feed that publishes no line name, so it is read when there is a
    * bus in that state and not otherwise.
    */
+  /*
+   * Only when this artifact has no projection at all, which the deployed one does.
+   *
+   * This used to also fire when any vehicle in the viewport arrived without a line name on it,
+   * and that was the single most expensive branch left on the map. A dense city's pattern tiles
+   * reach 3,935,975 bytes each, a viewport spans several, and `serviceNames` follows them — so one
+   * operator omitting `PublishedLineName` turned a sixteen-millisecond request into Cloudflare's
+   * measured p95 of 56 ms, against a limit of ten. It is not a fallback a passenger request can
+   * hold: a fallback that itself exceeds the limit is not one.
+   *
+   * What it bought was a route name for a bus whose feed did not publish one, and a service id
+   * for every marker. Both are given up here and the giving up is visible rather than silent: an
+   * unnamed bus is drawn as a bus with no route label, and the map matches a selected route by
+   * the number on the front — see `vehicleEmphasis` in the web app, which names what that costs.
+   *
+   * The legacy branch stays because it is the only thing that labels a stop on an artifact built
+   * before the projection existed, and that artifact genuinely has nowhere else to read it from.
+   */
   const unnamedVehicles = (liveObservations?.vehicles ?? []).filter(
     (vehicle) => !vehicle.publishedLineName,
   ).length;
-  const needsGeometry = !stopRoutes.available || unnamedVehicles > 0;
+  const needsGeometry = !stopRoutes.available;
+  ledger.count({ unnamedVehicles });
   const enrichment =
     network && needsGeometry
       ? await ledger.stage("patterns", () =>

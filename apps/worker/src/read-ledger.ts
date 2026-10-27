@@ -159,6 +159,16 @@ export interface LedgerCounts {
   graphNodes?: number;
   /** Edges in the journey graph. */
   graphEdges?: number;
+  /**
+   * Buses in this viewport whose feed published no line name, and which are therefore drawn
+   * without a route label.
+   *
+   * Reported because this is now a visible product consequence rather than an internal detail:
+   * the map used to answer it by matching the bus against the viewport's pattern geometry, and
+   * that read is what took `/v1/map` to a p95 of 56 ms. How often it happens, and where, is the
+   * number that says whether a cheap way of naming these buses is worth publishing.
+   */
+  unnamedVehicles?: number;
 }
 
 /**
