@@ -1,6 +1,7 @@
 # ADR 0007 — The edge reads cheaply and computes expensively, and the computing is the problem
 
-Status: in progress, 2026-10-27. Part A decided and deployed; Part B measured, not yet decided.
+Status: in progress, 2026-10-27. Part A decided and deployed, its target not met; Part B profiled,
+and the profile settles that the current algorithm cannot reach the budget by any arrangement.
 
 ## Context
 
@@ -244,6 +245,46 @@ are visible in the code before any profile:
 
 `runRaptor` now takes optional counters so those can be counted rather than guessed at, and
 `scripts/profile-journey-search.ts` runs the real planner over a real corridor across the four
-query shapes a planner has to serve. The decision — optimise this algorithm, or move to a
-query-ready precomputed representation — waits on those numbers and on a golden corpus taken from
-the current planner, because a faster planner that finds a worse journey is not a faster planner.
+query shapes a planner has to serve.
+
+### What the profile measured, and what it settles
+
+All three guesses were right about the mechanism and wrong about the scale, because the corridor a
+real query opens is much larger than the capped slice the first measurement used. On the published
+artifact, with both semantics-preserving fixes in:
+
+| Query                   | Stops |  Trips | Transfer edges | `buildGraph` | `plan` |
+| ----------------------- | ----: | -----: | -------------: | -----------: | -----: |
+| Leeds, neighbourhood    | 1,396 |  6,919 |         61,060 |       230 ms | 489 ms |
+| Manchester, normal      | 2,063 |  9,526 |        108,284 |       520 ms | 295 ms |
+| Birmingham, cross-city  | 2,737 | 13,793 |        126,952 |       911 ms | 947 ms |
+| Bristol, several change | 1,443 |  6,006 |         47,036 |       253 ms | 197 ms |
+| York, park and ride     |   860 |  1,204 |         28,670 |        87 ms |  50 ms |
+
+The two fixes are in and both preserve the answer exactly, asserted against the brute-force oracle:
+`improve` is split into a test that answers from the two label maps alone and an `accept` that
+builds nothing until the label is wanted, and a trip's effective times are computed once per scan
+rather than twice. The counters show the second: `effectiveStopTimesCalls` now equals `tripScans`
+where it was double. Manchester's search went 377 ms to 295, Leeds 624 to 489, Birmingham 1,139 to 947. The accept rate is what the first fix was aimed at and it is unchanged by design —
+**6,510,009 offers against 24,105 acceptances, a rate of 0.004** — so what the fix removed was
+thirteen million object allocations rather than the comparisons.
+
+**B2 is therefore answered, and the answer is no.** A budget of four to five milliseconds for the
+search and two to three for decoding the artifact is between forty and two hundred times below
+what the optimised form of this algorithm does, and the remaining costs are structural rather than
+incidental: `buildGraph` is an O(n²) haversine over 860 to 2,737 stops to produce 28,670 to 126,952
+transfer edges, and it is rebuilt from scratch on every request although nothing in it changes
+between requests. Parsing the trips is 37 ms for 8.4 MB of JSON before the search begins. No
+arrangement of this code reaches ten milliseconds.
+
+So the work is a query-ready representation: transfers precomputed and published, trips held as
+integer times in typed arrays rather than as objects, stops interned to integer indices, and a
+search that reads them in place. The free-plan constraints that shape it are already known —
+`getStream` hands a Worker raw bytes, so a binary artifact needs no text decode at all, and the
+store's `put` is text-only today, so writing one needs a byte path beside it.
+
+The golden corpus is recorded first, and it is: `scripts/journey-corpus.ts` planned twenty
+queries — four shapes in each of the five probe cities — against the deployed artifact and the
+current planner answered **20 of 20**. `scripts/compare-journey-plans.ts` holds a candidate against
+it and reports the five numbers separately, because a candidate that is 95% identical and loses one
+journey in twenty is not acceptable and a single agreement percentage would hide it.
