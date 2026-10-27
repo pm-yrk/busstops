@@ -634,6 +634,54 @@ jobs:
               --json "acceptance-$SAMPLE.json" 2>&1 | tee "acceptance-$SAMPLE.log"
           done
 
+      # The same peak passes with the journey planner switched off, to test one correlation.
+      #
+      # The per-endpoint breakdown of the three samples above says the same thing every time: in a
+      # pass where the journey planner failed nine of ten, the map failed eight of ten and search
+      # seven; in a pass where it failed five of eight, the map failed two. Cloudflare's own tail
+      # records journeys at up to 1,249 ms of CPU against a limit of ten, and its documentation
+      # says an isolate carries some flexibility for a Worker that infrequently exceeds the limit
+      # and loses it for one that does so consistently.
+      #
+      # So the hypothesis is that the journey planner is spending the isolate's slack and the
+      # other endpoints are paying for it. `journeyPlanner` turns it off without a code change,
+      # which makes that testable rather than arguable — and the answer is the size of the prize
+      # for replacing the search, which is otherwise a guess.
+      - name: The same peak passes with the journey planner off
+        if: always()
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          URL: ${{ steps.worker.outputs.url }}
+        run: |
+          set -o pipefail
+          npx --no-install wrangler deploy \
+            --config apps/worker/wrangler.toml --env "$WORKER_ENV" \
+            --var 'FEATURE_FLAGS_JSON:{"journeyPlanner":false}' --keep-vars >/dev/null
+          for attempt in 1 2 3 4 5 6; do
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 \
+              "$URL/v1/sources/health" || echo 000)
+            [ "$CODE" = "200" ] && break
+            sleep 10
+          done
+          sleep 90
+          npx tsx scripts/cold-serving.ts \
+            --worker "$URL" \
+            --only peak \
+            --peak 50 \
+            --sample "no-journeys" \
+            --json acceptance-no-journeys.json 2>&1 | tee acceptance-no-journeys.log
+
+      # Always, so a failed comparison never leaves the preview without a journey planner.
+      - name: Put the journey planner back
+        if: always()
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          npx --no-install wrangler deploy \
+            --config apps/worker/wrangler.toml --env "$WORKER_ENV" >/dev/null
+
       - name: The distribution, not the best of them
         if: always()
         run: |
@@ -649,6 +697,11 @@ jobs:
                 || echo "no sample $SAMPLE was recorded"
               echo '```'
             done
+            echo "### The same peak passes with the journey planner off"
+            echo '```'
+            grep -E "^(peak-[12]:|PEAK_)" acceptance-no-journeys.log 2>/dev/null \
+              || echo "the comparison pass was not recorded"
+            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
@@ -658,6 +711,8 @@ jobs:
           path: |
             acceptance-*.json
             acceptance-*.log
+            acceptance-no-journeys.json
+            acceptance-no-journeys.log
           retention-days: 14
           if-no-files-found: ignore
 
