@@ -1246,7 +1246,8 @@ jobs:
             --corridor-margin-degrees 0.02 \
             --json journey-corpus-narrow.json 2>&1 | tee journey-corpus-narrow.log
 
-      - name: What each saving costs
+      # Each comparison in its own step, because annotations are kept per step and ten deep.
+      - name: What the tighter walk costs
         if: always()
         continue-on-error: true
         run: |
@@ -1255,6 +1256,12 @@ jobs:
             --baseline journey-corpus.json \
             --candidate journey-corpus-300.json \
             --json journey-corpus-300-comparison.json 2>&1 | tee journey-corpus-300-comparison.log
+
+      - name: What the narrower corridor costs
+        if: always()
+        continue-on-error: true
+        run: |
+          set -o pipefail
           npx tsx scripts/compare-journey-plans.ts \
             --baseline journey-corpus.json \
             --candidate journey-corpus-narrow.json \

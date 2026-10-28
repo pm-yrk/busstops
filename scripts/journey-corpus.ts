@@ -328,7 +328,40 @@ async function main(): Promise<number> {
     entries,
   };
   if (JSON_OUT) writeFileSync(JSON_OUT, `${JSON.stringify(report, null, 1)}\n`);
-  annotateReport("journey corpus", report);
+  /*
+   * A summary in the annotation, the whole thing in the artifact.
+   *
+   * The full report is twenty queries with every option and every ride in each, which the
+   * annotator splits into ten parts — and GitHub keeps ten annotations per level per step, so
+   * three corpora in one job crowded out the comparison that followed them. The run that measured
+   * what a five-minute change walk costs lost the figure for the narrower corridor to exactly
+   * that. What a reader wants here is one line a query; what a diff wants is the JSON, and the
+   * JSON is uploaded.
+   */
+  annotateReport("journey corpus", {
+    ...report,
+    entries: entries.map((entry) => {
+      const options = (entry.options ?? []) as CorpusOption[];
+      const best = options[0];
+      return {
+        query: entry.query,
+        outcome: entry.outcome,
+        stops: entry.stops,
+        trips: entry.trips,
+        transferEdges: entry.transferEdges,
+        buildGraphMs: entry.buildGraphMs,
+        planMs: entry.planMs,
+        options: options.length,
+        ...(best === undefined
+          ? {}
+          : {
+              best: `${String(best.arrivalSeconds - DEPART_AT_SECONDS)}s, ${String(
+                best.changeCount,
+              )} change(s), ${String(best.rides.length)} ride(s)`,
+            }),
+      };
+    }),
+  });
   console.log(`\nAnswered ${String(answered)} of ${String(QUERIES.length)} queries.`);
   return 0;
 }
