@@ -239,6 +239,17 @@ export type JourneyPlanOutcome =
  * sharding exists to prevent, just slower.
  */
 const MAX_CACHED_TRIP_SHARDS = 16;
+
+/**
+ * How many misses before an isolate stops looking for the binary form of a shard.
+ *
+ * Three, because a batch reads four shards at once: the counter cannot trip inside a batch, so
+ * the cost of a bucket with no binary shards at all is about one batch of wasted subrequests per
+ * isolate, and the cost of giving up too early is one text read of a shard that had been
+ * converted. The first is a budget this endpoint has already run out of once; the second is slow
+ * but correct.
+ */
+const BINARY_PROBE_MISSES = 3;
 /**
  * The pattern id out of a spilled trip line, without building the row.
  *
@@ -341,6 +352,14 @@ const TRIP_SHARD_BATCH = 3;
 
 export class JourneyService {
   private readonly cache = new Map<string, { rows: PatternTripRow[]; chars: number }>();
+  /**
+   * Consecutive misses when looking for a published binary shard, per artifact version.
+   *
+   * Isolate-lifetime, like the service itself, because whether the bucket has been converted is a
+   * property of the bucket and not of a request. It exists to stop a corridor spending its fifty
+   * subrequests on 404s while the migration is still running.
+   */
+  private readonly binaryMisses = new Map<string, number>();
 
   constructor(
     private readonly store: ObjectStore,
@@ -1001,6 +1020,18 @@ export class JourneyService {
     | null
   > {
     if (!canHoldBytes(this.store)) return null;
+    /*
+     * And stop probing a bucket that has not been converted yet.
+     *
+     * Every probe is a subrequest, and a Workers Free invocation gets fifty of them. A corridor
+     * can ask for dozens of shards, so probing for a binary sibling that is not there would spend
+     * the subrequest budget on 404s and could cost a journey the shards it actually needed. After
+     * a few consecutive misses this isolate stops asking; a hit resets it, so a bucket part way
+     * through the migration recovers as soon as one converted shard is read, and a new isolate
+     * tries again from scratch.
+     */
+    const misses = this.binaryMisses.get(version) ?? 0;
+    if (misses >= BINARY_PROBE_MISSES) return null;
     let bytes: Uint8Array | null;
     try {
       bytes = await this.store.getBytes(objectKeyForBytes(dataset, version));
@@ -1008,7 +1039,11 @@ export class JourneyService {
       /* Reading it failed outright. The text sibling is the answer, and it is counted there. */
       return { kind: "unreadable" };
     }
-    if (bytes === null) return null;
+    if (bytes === null) {
+      this.binaryMisses.set(version, misses + 1);
+      return null;
+    }
+    this.binaryMisses.set(version, 0);
 
     try {
       const shard = new PatternTripShard(bytes);

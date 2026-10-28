@@ -549,6 +549,50 @@ describe("a corridor published as bytes", () => {
     expect(outcome.diagnostics.tripsLoaded).toBeGreaterThan(0);
   });
 
+  /*
+   * And the cost of looking, on a bucket that has not been converted.
+   *
+   * Every probe is a subrequest and a Workers Free invocation gets fifty. A corridor asks for
+   * dozens of shards, so a reader that probed for a binary sibling on every read, for the life of
+   * the isolate, would spend that budget on 404s — and this endpoint has already been killed once
+   * for running out of what it was given. After a few consecutive misses the isolate stops asking.
+   */
+  it("stops looking for bytes that are not there, rather than probing for the life of the isolate", async () => {
+    const { store, shards } = await publish(8);
+    const probes: string[] = [];
+    const counting = {
+      get: (key: string) => store.get(key),
+      put: (key: string, value: string) => store.put(key, value),
+      delete: (key: string) => store.delete(key),
+      list: (prefix: string) => store.list(prefix),
+      getStream: (key: string) => store.getStream(key),
+      getBytes: async (key: string) => {
+        probes.push(key);
+        return store.getBytes(key);
+      },
+      putBytes: (key: string, value: Uint8Array) => store.putBytes(key, value),
+    };
+
+    const service = new JourneyService(counting as unknown as InMemoryObjectStore);
+    const perPlan: number[] = [];
+    for (let plan = 0; plan < 5; plan += 1) {
+      const before = probes.length;
+      /* A different departure each time, so the shard cache cannot answer instead of the store. */
+      const outcome = await service.planJourney(slice(), {
+        ...request,
+        departAtSeconds: DEPART_AT + plan * 60,
+      });
+      expect(outcome.ok).toBe(true);
+      expect(outcome.diagnostics.shardsBinary).toBe(0);
+      perPlan.push(probes.slice(before).filter((key) => key.endsWith(".bin")).length);
+    }
+
+    /* It gave up: the last plan asked for nothing, and the total is bounded rather than growing
+     * with the number of plans this isolate serves. */
+    expect(perPlan[perPlan.length - 1]).toBe(0);
+    expect(probes.filter((key) => key.endsWith(".bin")).length).toBeLessThanOrEqual(shards * 3);
+  });
+
   it("refuses rather than planning on half a corridor when the bytes are the only copy", async () => {
     /* No text sibling and bytes that cannot be opened: there is nothing to plan from, and a
      * confident itinerary built on the shards that happened to work is the one answer that must

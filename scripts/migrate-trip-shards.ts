@@ -43,11 +43,9 @@ import {
 import {
   PATTERN_TRIPS_PREFIX,
   SHARDED,
-  encodePatternTripShard,
-  shardHoldsEveryRow,
   type NetworkIndexRecord,
-  type PatternTripRow,
 } from "@busstops/pipeline-static-network";
+import { binaryKeyOf, convertTripShard } from "./lib/convert-trip-shard.js";
 
 const argv = process.argv.slice(2);
 const flag = (name: string): string | undefined => {
@@ -58,15 +56,6 @@ const APPLY = argv.includes("--apply");
 const LIMIT = Number(flag("limit") ?? "100000");
 const MINUTES = Number(flag("minutes") ?? "30");
 const JSON_OUT = flag("json");
-
-/** Every row the text shard held, in order. */
-function rowsOf(text: string): PatternTripRow[] {
-  const rows: PatternTripRow[] = [];
-  for (const line of text.split("\n")) {
-    if (line.length > 0) rows.push(JSON.parse(line) as PatternTripRow);
-  }
-  return rows;
-}
 
 async function main(): Promise<number> {
   const resolved = r2StoreFromEnv(process.env);
@@ -100,7 +89,7 @@ async function main(): Promise<number> {
     (object) =>
       object.key.endsWith(".jsonl") &&
       versionInObjectKey(object.key) === version &&
-      !binaryKeys.has(`${object.key.slice(0, -".jsonl".length)}.bin`),
+      !binaryKeys.has(binaryKeyOf(object.key)),
   );
 
   const deadline = Date.now() + MINUTES * 60 * 1000;
@@ -129,60 +118,24 @@ async function main(): Promise<number> {
       break;
     }
 
-    let text: string | null;
-    try {
-      text = await store.get(object.key);
-    } catch (error) {
+    const conversion = await convertTripShard(store, object.key, { apply: APPLY });
+    if (conversion.outcome === "absent") continue;
+    if (conversion.outcome === "unreadable") {
       counts.unreadable += 1;
-      failures.push({ key: object.key, reason: String(error).slice(0, 120) });
+      failures.push({ key: object.key, reason: conversion.reason ?? "unreadable" });
       continue;
     }
-    if (text === null) continue;
-
-    let bytes: Uint8Array;
-    try {
-      bytes = encodePatternTripShard(rowsOf(text)).bytes;
-    } catch (error) {
-      counts.unreadable += 1;
-      failures.push({ key: object.key, reason: `encode: ${String(error).slice(0, 100)}` });
-      continue;
-    }
-
-    const held = shardHoldsEveryRow(bytes, rowsOf(text));
-    if (!held.ok) {
+    if (conversion.outcome === "not_replaced") {
       counts.failedVerification += 1;
-      failures.push({ key: object.key, reason: held.reason });
+      failures.push({ key: object.key, reason: conversion.reason ?? "not replaced" });
       continue;
     }
 
     counts.converted += 1;
     counts.verified += 1;
-    counts.bytesText += text.length;
-    counts.bytesBinary += bytes.byteLength;
-    if (!APPLY) continue;
-
-    const binaryKey = `${object.key.slice(0, -".jsonl".length)}.bin`;
-    await store.putBytes(binaryKey, bytes);
-    /*
-     * And read it back from the bucket before the text goes, because an upload that answered 200
-     * and stored something else is exactly the failure this deletion cannot survive.
-     */
-    const stored = await store.getBytes(binaryKey);
-    const readBack = stored === null ? null : shardHoldsEveryRow(stored, rowsOf(text));
-    if (readBack === null || !readBack.ok) {
-      counts.failedVerification += 1;
-      counts.verified -= 1;
-      failures.push({
-        key: binaryKey,
-        reason:
-          readBack === null
-            ? "what was written is not there"
-            : `what came back from the bucket was not the shard: ${readBack.reason}`,
-      });
-      continue;
-    }
-    await store.delete(object.key);
-    counts.textDeleted += 1;
+    counts.bytesText += conversion.textBytes;
+    counts.bytesBinary += conversion.binaryBytes;
+    if (conversion.outcome === "converted") counts.textDeleted += 1;
   }
 
   const report = {
@@ -198,7 +151,7 @@ async function main(): Promise<number> {
         : objectKeyForBytes(
             pending[0].key.slice("data/".length, pending[0].key.lastIndexOf("/")),
             version,
-          ) === `${pending[0].key.slice(0, -".jsonl".length)}.bin` &&
+          ) === binaryKeyOf(pending[0].key) &&
           objectKeyFor(
             pending[0].key.slice("data/".length, pending[0].key.lastIndexOf("/")),
             version,

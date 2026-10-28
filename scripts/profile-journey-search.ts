@@ -19,7 +19,14 @@
 import { writeFileSync } from "node:fs";
 import { ArtifactStore, annotateReport, r2StoreFromEnv } from "@busstops/pipeline-core";
 import { SHARDED, type NetworkIndexRecord } from "@busstops/pipeline-static-network";
-import { buildGraph, newSearchCounters, plan, runRaptor } from "@busstops/journey";
+import {
+  buildGraph,
+  buildTransfers,
+  groupRoutes,
+  newSearchCounters,
+  plan,
+  runRaptor,
+} from "@busstops/journey";
 import { loadCorridor } from "./lib/journey-corridor.js";
 
 const arg = (name: string): string | undefined => {
@@ -110,6 +117,19 @@ async function main(): Promise<number> {
     const built = timed(() => buildGraph({ stops, trips }));
     const graph = built.value;
 
+    /*
+     * And the build, split into the two things it does.
+     *
+     * With the trip parse moved into the published form, the graph build is the largest item left
+     * in a journey request, and "the build" is two unrelated pieces of work: the walking transfers
+     * between every pair of stops within range, and the grouping of trips into the routes the scan
+     * walks. They have different fixes — transfers are the same every day and could be published,
+     * grouping depends on the corridor filter and could not — so a single number for the build
+     * cannot decide which to do. These two can.
+     */
+    const transfersOnly = timed(() => buildTransfers(stops, 600));
+    const groupingOnly = timed(() => groupRoutes(trips));
+
     let transferEdges = 0;
     for (const list of graph.transfers.values()) transferEdges += list.length;
     let stopTripEntries = 0;
@@ -132,6 +152,8 @@ async function main(): Promise<number> {
       stopTripEntries,
       tripChars,
       buildGraphMs: Number(built.ms.toFixed(2)),
+      buildTransfersMs: Number(transfersOnly.ms.toFixed(2)),
+      groupRoutesMs: Number(groupingOnly.ms.toFixed(2)),
       planMs: Number(planned.ms.toFixed(2)),
       options: planned.value.options.length,
       counters: {

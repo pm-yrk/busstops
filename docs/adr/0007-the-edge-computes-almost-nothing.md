@@ -489,3 +489,56 @@ changes on three queries in ten, and two of twenty are materially worse — one 
 an extra change, one arriving eight and a half minutes later. That is a real cost for about a
 quarter of the transfer edges, and it is a product decision with a number against it rather than a
 constant somebody lowered.
+
+### The shards change form, because the parse is the request
+
+Stage attribution against the real published artifacts, on one GitHub runner, for a Manchester
+corridor — the corridor every measured failure came from:
+
+| Stage                                  |    ms |
+| -------------------------------------- | ----: |
+| walk the trip shards                   |  0.61 |
+| **parse every trip row**               | 37.18 |
+| parse only the rows inside the horizon | 26.84 |
+| walk the pattern rows                  |  0.28 |
+| parse every pattern row                |  5.39 |
+| build the graph                        | 15.87 |
+| **search it**                          |  6.30 |
+
+The search is the cheapest thing in the request. The parse is the largest, by a factor of six over
+the search, and filtering before it — which both read paths now do — removes the rows a plan does
+not want and leaves the ones it does. A corridor opens about eight megabytes of trip text; there is
+no arrangement of `JSON.parse` over eight megabytes that fits in ten milliseconds.
+
+So the shard changes form. Columnar, little-endian, call times and pattern indices in typed arrays,
+the trip-id and pattern-id blobs at the end where a plan touches them only for the trips it
+recommends. The same eight shards, measured in CI against the published objects:
+
+| Form                                             |     bytes |                   ms |
+| ------------------------------------------------ | --------: | -------------------: |
+| JSON lines, horizon tested before parsing        | 8,380,928 |                21.37 |
+| bytes, rows materialised as the graph takes them | 3,780,454 | _(measured per run)_ |
+| bytes, times read straight out of the arrays     | 3,780,454 |             **0.64** |
+
+Both forms are made to agree on the trips kept, the calls read and the sum of the times, or the
+milliseconds would be comparing two different answers.
+
+Two things make this affordable rather than merely faster. The form is **45%** of the text, so the
+conversion frees storage in a bucket with about a gigabyte of headroom — a larger form would not
+have been available at any speed. And it converts **in place**: a national rebuild takes about
+forty-five minutes and writes a second copy of England, so republishing to change a format was
+never on the table. The migration writes the bytes, reads them back out of the bucket, checks they
+hold every row — pattern, trip id, every departure, every arrival — and only then deletes the text.
+It touches only the version the index names, so the rollback stays a thing that works.
+
+The reader prefers the bytes and falls back to the text sibling, which is what makes a half
+converted bucket safe, and counts both: `shardsBinary` and `shardsBinaryFallback`, because "the
+fast path was not taken" and "the fast path is not fast" are different problems and a deployed
+measurement has to tell them apart.
+
+What this does not fix is the rest of the request. With the parse gone, the graph build and the
+search are what is left, and both work on an object graph keyed by stop id strings. Publishing the
+walking transfers would remove most of the build; making the search read indices rather than
+strings is the step after that, and the one earlier attempt at it measured 40% _slower_ because it
+built the object graph first and then indexed it. The order matters: the artifact has to carry the
+indices, or the rewrite pays for both forms.
