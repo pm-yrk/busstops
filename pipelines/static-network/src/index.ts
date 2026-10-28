@@ -18,3 +18,4 @@ export * from "./service-buckets.js";
 export * from "./service-names.js";
 export * from "./binary-trips.js";
 export * from "./journey-transfers.js";
+export * from "./journey-routes.js";

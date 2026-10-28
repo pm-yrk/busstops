@@ -10,10 +10,13 @@ import {
   type ObjectStore,
 } from "@busstops/pipeline-core";
 import {
+  PatternTripShard,
   STOP_TILE_DEGREES,
   currentArtifactLayout,
   encodePatternTripShard,
+  encodeRouteGrouping,
   encodeTransferTile,
+  journeyRoutesDataset,
   journeyTransfersDataset,
   patternTripsDataset,
   tripTilesForBoundingBox,
@@ -22,7 +25,7 @@ import {
 import { JOURNEY_LIMITS, JourneyService } from "./journey-service.js";
 import type { PatternTripRow } from "@busstops/pipeline-static-network";
 import type { NetworkSlice } from "./network-reader.js";
-import { buildTransferTiles } from "@busstops/journey";
+import { buildTransferTiles, groupRouteIndices } from "@busstops/journey";
 import { LiveService } from "./live-service.js";
 import { NetworkReader } from "./network-reader.js";
 import { patternTilesForBoundingBox } from "@busstops/pipeline-static-network";
@@ -711,6 +714,134 @@ describe("a corridor whose transfers are published", () => {
     const outcome = await new JourneyService(store).planJourney(walkableSlice(), walkableRequest);
     expect(outcome.ok).toBe(true);
     expect(outcome.diagnostics.transfersFromArtifact).toBe(false);
+  });
+});
+
+/**
+ * The published route grouping, read instead of inferred.
+ *
+ * Grouping cost more than the walking transfers on real corridors — 27.65 ms against 23.56 in
+ * Manchester — and it is derived from the timetable alone. What has to hold once it is published:
+ * the plan is the same plan, the reader says which path it took, and a grouping that does not
+ * describe the shard that was read is ignored rather than used, because its trip indices would
+ * name other buses.
+ */
+describe("a corridor whose route grouping is published", () => {
+  async function publishBinaryTrips(rowsPerShard = 10) {
+    const store = new InMemoryObjectStore();
+    const tiles = tripTilesForBoundingBox(corridor);
+    const midnight = Date.parse(`${SERVICE_DATE}T00:00:00.000Z`) / 1000;
+    const windows = tripWindowsFor(
+      midnight + DEPART_AT,
+      midnight + DEPART_AT + 4 * 3600,
+      SERVICE_DATE,
+    );
+    const rows = [
+      JSON.parse(tripLine(0, DEPART_AT + 600)) as PatternTripRow,
+      JSON.parse(tripLine(1, DEPART_AT + 1800)) as PatternTripRow,
+      ...Array.from(
+        { length: rowsPerShard },
+        (_, i) => JSON.parse(fillerLine(i)) as PatternTripRow,
+      ),
+    ];
+    const datasets: Array<{ dataset: string; tile: string; window: number }> = [];
+    for (const tile of tiles) {
+      for (const window of windows) {
+        const dataset = patternTripsDataset(SERVICE_DATE, tile, window);
+        await store.putBytes(objectKeyForBytes(dataset, "v1"), encodePatternTripShard(rows).bytes);
+        datasets.push({ dataset, tile, window });
+      }
+    }
+    return { store, datasets, rows };
+  }
+
+  async function publishGrouping(
+    store: InMemoryObjectStore,
+    datasets: Array<{ dataset: string; tile: string; window: number }>,
+    options: {
+      fingerprintOf?: (shard: PatternTripShard) => ReturnType<PatternTripShard["fingerprint"]>;
+    } = {},
+  ) {
+    for (const entry of datasets) {
+      const bytes = (await store.getBytes(objectKeyForBytes(entry.dataset, "v1")))!;
+      const shard = new PatternTripShard(bytes);
+      const groups = groupRouteIndices({
+        tripCount: shard.tripCount,
+        patternKeyOf: (trip) => shard.patternOf(trip),
+        callCountOf: (trip) => shard.callsIn(trip),
+        departureOf: (trip, call) => shard.departure(trip, call),
+        tripIdOf: (trip) => shard.tripId(trip),
+      });
+      const encoded = encodeRouteGrouping({
+        fingerprint: (options.fingerprintOf ?? ((one) => one.fingerprint()))(shard),
+        routes: groups,
+      });
+      await store.putBytes(
+        objectKeyForBytes(journeyRoutesDataset(SERVICE_DATE, entry.tile, entry.window), "v1"),
+        encoded.bytes,
+      );
+    }
+  }
+
+  it("reads it, and plans the journey it planned before", async () => {
+    const { store, datasets } = await publishBinaryTrips();
+    const before = await new JourneyService(store).planJourney(slice(), request);
+    expect(before.ok).toBe(true);
+    expect(before.diagnostics.shardsBinary).toBeGreaterThan(0);
+    expect(before.diagnostics.shardsGrouped).toBe(0);
+
+    await publishGrouping(store, datasets);
+    const after = await new JourneyService(store).planJourney(slice(), request);
+
+    expect(after.ok).toBe(true);
+    expect(after.diagnostics.shardsGrouped).toBe(before.diagnostics.shardsBinary);
+    expect(after.diagnostics.tripsInGraph).toBe(before.diagnostics.tripsInGraph);
+    expect(JSON.stringify(after.ok ? after.result : null)).toBe(
+      JSON.stringify(before.ok ? before.result : null),
+    );
+  });
+
+  it("ignores a grouping that does not describe the shard it was read with", async () => {
+    const { store, datasets } = await publishBinaryTrips();
+    /* A fingerprint from a different timetable: the trip indices would name other buses. */
+    await publishGrouping(store, datasets, {
+      fingerprintOf: (shard) => ({ ...shard.fingerprint(), tripCount: shard.tripCount + 1 }),
+    });
+
+    const outcome = await new JourneyService(store).planJourney(slice(), request);
+    expect(outcome.ok).toBe(true);
+    expect(outcome.diagnostics.shardsGrouped).toBe(0);
+    /* And still answers, by grouping the long way. */
+    expect(outcome.diagnostics.tripsInGraph).toBeGreaterThan(0);
+  });
+
+  it("asks each shard's grouping once per isolate", async () => {
+    const { store, datasets } = await publishBinaryTrips();
+    await publishGrouping(store, datasets);
+    const asked: string[] = [];
+    const counting = {
+      get: (key: string) => store.get(key),
+      put: (key: string, value: string) => store.put(key, value),
+      delete: (key: string) => store.delete(key),
+      list: (prefix: string) => store.list(prefix),
+      getStream: (key: string) => store.getStream(key),
+      getBytes: async (key: string) => {
+        if (key.includes("journey-routes")) asked.push(key);
+        return store.getBytes(key);
+      },
+      putBytes: (key: string, value: Uint8Array) => store.putBytes(key, value),
+    };
+
+    const service = new JourneyService(counting as unknown as InMemoryObjectStore);
+    for (let at = 0; at < 3; at += 1) {
+      const outcome = await service.planJourney(slice(), {
+        ...request,
+        departAtSeconds: DEPART_AT + at * 60,
+      });
+      expect(outcome.ok).toBe(true);
+      expect(outcome.diagnostics.shardsGrouped).toBeGreaterThan(0);
+    }
+    expect(asked.length).toBe(new Set(asked).size);
   });
 });
 

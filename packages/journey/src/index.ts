@@ -13,3 +13,4 @@ export {
   type TransferAdjacency,
   type TransferTilePlan,
 } from "./transfers.js";
+export { groupRouteIndices, type IndexedRouteGroup, type TripTimesSource } from "./route-groups.js";

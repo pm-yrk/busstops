@@ -250,6 +250,30 @@ export class PatternTripShard {
     return this.departures[at]! - this.view.getUint16(this.arrivalDeltasAt + at * 2, true);
   }
 
+  /**
+   * The four numbers that identify this shard's contents.
+   *
+   * A published route grouping names trips by their index in a shard, so it is only meaningful for
+   * the shard it was built from — and mapping an index onto the wrong bus would put a passenger on
+   * a service that does not exist. These four travel in the grouping's header and are compared
+   * before it is used: the trip count, the total number of calls, and the first and last departure
+   * in the array. Two different timetables agreeing on all four is not a thing that happens by
+   * accident, and checking costs nothing because the reader has them already.
+   */
+  fingerprint(): {
+    tripCount: number;
+    callCount: number;
+    firstDeparture: number;
+    lastDeparture: number;
+  } {
+    return {
+      tripCount: this.tripCount,
+      callCount: this.callCount,
+      firstDeparture: this.callCount === 0 ? 0 : this.departures[0]!,
+      lastDeparture: this.callCount === 0 ? 0 : this.departures[this.callCount - 1]!,
+    };
+  }
+
   /** The two numbers a horizon test needs, without touching anything else in the row. */
   firstDeparture(trip: number): number {
     return this.departures[this.callOffsets[trip]!]!;

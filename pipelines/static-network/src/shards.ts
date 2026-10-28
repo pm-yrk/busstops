@@ -40,6 +40,8 @@ export const SHARDED = {
   routeTiles: "network/route-tiles",
   /** Walking transfers between stops, per tile. Immutable for a published network. */
   journeyTransfers: "network/journey-transfers",
+  /** Route grouping, per trip shard. Immutable for a published network. */
+  journeyRoutes: "network/journey-routes",
 } as const;
 
 /**

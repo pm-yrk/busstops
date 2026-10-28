@@ -21,11 +21,14 @@ import {
   type TripStopTime,
 } from "@busstops/journey";
 import {
+  PATTERN_TRIPS_PREFIX,
   PatternTripShard,
+  RouteGrouping,
   STOP_TILE_DEGREES,
   TransferTile,
   checkArtifactLayout,
   describeLayoutCheck,
+  journeyRoutesDataset,
   journeyTransfersDataset,
   passengerName,
   patternTripsDataset,
@@ -168,6 +171,14 @@ export interface JourneyDiagnostics {
   shardsBinary?: number;
   /** Binary shards that could not be opened, and were read as text instead. */
   shardsBinaryFallback?: number;
+  /**
+   * Shards whose published route grouping answered, so the request grouped nothing.
+   *
+   * Zero with `shardsBinary` non-zero means the grouping is not published for this version, or
+   * does not describe the shards that were read — the request then groups the long way, which is
+   * correct and is the cost the artifact exists to remove.
+   */
+  shardsGrouped?: number;
   /** How far ahead this plan looked, in hours. Two unless the narrow pass could not answer. */
   horizonHours?: number;
   /**
@@ -289,6 +300,26 @@ const MAX_CACHED_TRANSFER_TILES = 32;
  * the artifact can be compared.
  */
 const JOURNEY_TRANSFER_CAP_SECONDS = 600;
+
+/** How many shards' groupings an isolate keeps. Four bytes a trip, so this is cheap to hold. */
+const MAX_CACHED_GROUPINGS = 48;
+
+/** A corridor's trip row, carrying the route the published grouping put it on. */
+type CorridorTripRow = PatternTripRow & { routeKey?: string };
+
+/** `network/pattern-trips/<date>/<window>/<tile>` → its three parts, for the sibling grouping. */
+function tripShardParts(
+  dataset: string,
+): { serviceDate: string; window: number; tile: string } | null {
+  const marker = `${PATTERN_TRIPS_PREFIX}/`;
+  if (!dataset.startsWith(marker)) return null;
+  const rest = dataset.slice(marker.length).split("/");
+  if (rest.length !== 3) return null;
+  const [serviceDate, window, tile] = rest as [string, string, string];
+  const windowNumber = Number(window);
+  if (!Number.isInteger(windowNumber)) return null;
+  return { serviceDate, window: windowNumber, tile };
+}
 
 /**
  * How far ahead a plan looks: the first attempt, and the one it falls back on.
@@ -420,6 +451,13 @@ export class JourneyService {
    * `null` records a tile that is not published, so a corridor in an unpublished area asks once.
    */
   private readonly transferTiles = new Map<string, TransferTile | null>();
+  /**
+   * Published route groupings, by shard, for the life of the isolate.
+   *
+   * `null` records a shard with no usable grouping — none published, or one that does not describe
+   * the shard that was read — so a corridor ahead of the publisher asks once.
+   */
+  private readonly groupings = new Map<string, readonly (string | undefined)[] | null>();
 
   constructor(
     private readonly store: ObjectStore,
@@ -588,6 +626,7 @@ export class JourneyService {
     diagnostics.tripsFiltered = loaded.tripsFiltered;
     diagnostics.shardsBinary = loaded.shardsBinary;
     diagnostics.shardsBinaryFallback = loaded.shardsBinaryFallback;
+    diagnostics.shardsGrouped = loaded.shardsGrouped;
     diagnostics.tripsLoaded = loaded.rows.length;
     diagnostics.failures = loaded.failures;
 
@@ -829,6 +868,7 @@ export class JourneyService {
     tripsFiltered: number;
     shardsBinary: number;
     shardsBinaryFallback: number;
+    shardsGrouped: number;
     chars: number;
     readMs: number;
     parseMs: number;
@@ -842,6 +882,7 @@ export class JourneyService {
     let tripsFiltered = 0;
     let shardsBinary = 0;
     let shardsBinaryFallback = 0;
+    let shardsGrouped = 0;
     let chars = 0;
     let readMs = 0;
     let parseMs = 0;
@@ -1019,6 +1060,7 @@ export class JourneyService {
           continue;
         }
         if (result.kind === "binary") {
+          if (result.grouped) shardsGrouped += 1;
           /*
            * A shard read without a parse. Counted as read like any other, with its bytes against
            * the same budget — which is a byte budget in all but name, and the published binary
@@ -1146,6 +1188,7 @@ export class JourneyService {
       tripsFiltered,
       shardsBinary,
       shardsBinaryFallback,
+      shardsGrouped,
       chars,
       readMs,
       parseMs,
@@ -1174,7 +1217,15 @@ export class JourneyService {
     to: number,
     patternIds: ReadonlySet<string> | null,
   ): Promise<
-    | { kind: "binary"; dataset: string; rows: PatternTripRow[]; bytes: number; filtered: number }
+    | {
+        kind: "binary";
+        dataset: string;
+        rows: PatternTripRow[];
+        bytes: number;
+        filtered: number;
+        /** Whether the shard's published grouping answered, so the request need not group. */
+        grouped: boolean;
+      }
     | { kind: "unreadable" }
     | null
   > {
@@ -1213,6 +1264,16 @@ export class JourneyService {
               patternIds.has(shard.patternId(index)),
             );
 
+      /*
+       * The shard's published grouping, if there is one, as a route per trip.
+       *
+       * Grouping is derived from the timetable and nothing else, and deriving it per request cost
+       * more than the walking transfers did. Read, it is one array lookup per trip: the trip
+       * carries its route and the graph builder groups by a `Map` insert, with no sequence
+       * comparison, no sort and no overtaking split. A grouping whose fingerprint does not match
+       * this shard is ignored rather than used, because its trip indices would name other buses.
+       */
+      const grouping = await this.readGrouping(dataset, version, shard);
       const rows: PatternTripRow[] = [];
       let filtered = 0;
       for (let trip = 0; trip < shard.tripCount; trip += 1) {
@@ -1224,12 +1285,91 @@ export class JourneyService {
           filtered += 1;
           continue;
         }
-        rows.push(shard.rowAt(trip));
+        const row = shard.rowAt(trip) as CorridorTripRow;
+        /* Always set, even to undefined, so every row has the same shape. */
+        row.routeKey = grouping === null ? undefined : grouping[trip];
+        rows.push(row);
       }
-      return { kind: "binary", dataset, rows, bytes: bytes.byteLength, filtered };
+      return {
+        kind: "binary",
+        dataset,
+        rows,
+        bytes: bytes.byteLength,
+        filtered,
+        grouped: grouping !== null,
+      };
     } catch {
       return { kind: "unreadable" };
     }
+  }
+
+  /**
+   * One shard's published route grouping, as the route key each trip belongs to.
+   *
+   * Keyed by the dataset so two shards' route numbers cannot collide, and kept for the life of the
+   * isolate like the transfer tiles: a published grouping cannot change under a version, so the
+   * second journey through the same shard pays nothing. Null means there is none, or that the one
+   * published does not describe the shard that was read — in which case the request groups the long
+   * way rather than mapping a trip index onto a different bus.
+   */
+  private async readGrouping(
+    dataset: string,
+    version: string,
+    shard: PatternTripShard,
+  ): Promise<readonly (string | undefined)[] | null> {
+    if (!canHoldBytes(this.store)) return null;
+    const parts = tripShardParts(dataset);
+    if (parts === null) return null;
+
+    const cacheKey = `${version}:${dataset}`;
+    const held = this.groupings.get(cacheKey);
+    if (held !== undefined) return held;
+
+    let bytes: Uint8Array | null;
+    try {
+      bytes = await this.store.getBytes(
+        objectKeyForBytes(
+          journeyRoutesDataset(parts.serviceDate, parts.tile, parts.window),
+          version,
+        ),
+      );
+    } catch {
+      this.rememberGrouping(cacheKey, null);
+      return null;
+    }
+    if (bytes === null) {
+      this.rememberGrouping(cacheKey, null);
+      return null;
+    }
+
+    try {
+      const grouping = new RouteGrouping(bytes);
+      if (!grouping.describes(shard.fingerprint())) {
+        this.rememberGrouping(cacheKey, null);
+        return null;
+      }
+      const keyOf: (string | undefined)[] = new Array<string | undefined>(shard.tripCount);
+      for (let route = 0; route < grouping.routeCount; route += 1) {
+        const key = `${dataset}#${String(route)}`;
+        for (let at = grouping.firstTrip(route); at < grouping.tripEnd(route); at += 1) {
+          const trip = grouping.tripAt(at);
+          if (trip < shard.tripCount) keyOf[trip] = key;
+        }
+      }
+      this.rememberGrouping(cacheKey, keyOf);
+      return keyOf;
+    } catch {
+      this.rememberGrouping(cacheKey, null);
+      return null;
+    }
+  }
+
+  private rememberGrouping(key: string, keys: readonly (string | undefined)[] | null): void {
+    if (this.groupings.size >= MAX_CACHED_GROUPINGS) {
+      const oldest = this.groupings.keys().next().value;
+      if (oldest !== undefined) this.groupings.delete(oldest);
+    }
+    this.groupings.set(key, keys);
   }
 
   /**
@@ -1458,6 +1598,13 @@ export async function buildGraphFor(
       routeId: pattern.serviceRouteId,
       patternId: pattern.id,
       /*
+       * The route the published grouping put this trip on, when the shard it came from had one.
+       * A corridor cuts every trip of a pattern identically, so the key survives the cut.
+       */
+      ...((row as CorridorTripRow).routeKey === undefined
+        ? {}
+        : { routeKey: (row as CorridorTripRow).routeKey }),
+      /*
        * Whether this is the pattern's whole sequence, which is what lets the grouping skip a
        * comparison. True only when every call in the sequence had a time: a row with a gap is a
        * different sequence from one without, and claiming otherwise would merge two routes and
@@ -1511,6 +1658,7 @@ export async function buildGraphFor(
       if (usableStopIds.has(stopTime.stopId)) kept.push(stopTime);
     }
     usableTrips.push({ ...trip, stopTimes: kept, wholePatternSequence: false });
+    /* `routeKey` travels with the spread: the cut is identical for every trip on the pattern. */
   }
 
   /*

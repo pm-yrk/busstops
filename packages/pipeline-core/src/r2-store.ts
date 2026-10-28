@@ -87,15 +87,25 @@ export class R2ObjectStore implements ObjectStore {
       }
 
       /*
-       * 429 is the API asking for less; 502, 503 and 504 are it being briefly unable to answer.
-       * Both are transient and both are expected when a national build writes thousands of
-       * objects — a run that treats either as final throws away three quarters of an hour of work
-       * over a moment of load. A national publish lost 376 shards, and then its own rollback, to
-       * a run of 503s. Every other status, including 413 and 404, is answered honestly and at
-       * once, because retrying those would only be slower.
+       * 429 is the API asking for less; 500 to 504 are it being briefly unable to answer, and 520
+       * to 527 are Cloudflare's own edge saying the same about itself. All of them are transient
+       * and all of them are expected when a national build writes thousands of objects — a run
+       * that treats any as final throws away three quarters of an hour of work over a moment of
+       * load. A national publish lost 376 shards, and then its own rollback, to a run of 503s.
+       * Every other status, including 413 and 404, is answered honestly and at once, because
+       * retrying those would only be slower.
+       *
+       * 500 was missing from this set and should not have been. The walking-transfer publisher
+       * reads every stop tile in the country in one pass and died on
+       * `R2 get failed for data/network/stops-tile/217_-10/...: 500` — one tile of about four
+       * hundred, after hundreds of identical reads had succeeded. Skipping the tile instead would
+       * have published transfers with a city's stops missing from them, which is worse than
+       * failing, so the read has to be retried rather than tolerated.
        */
       const transient =
-        response.status === 429 || (response.status >= 502 && response.status <= 504);
+        response.status === 429 ||
+        (response.status >= 500 && response.status <= 504) ||
+        (response.status >= 520 && response.status <= 527);
       if (!transient || attempt > this.maxRateLimitRetries) return response;
 
       const retryAfter = Number(response.headers.get("retry-after"));

@@ -59,6 +59,22 @@ export interface Trip {
    * saving and nothing else.
    */
   wholePatternSequence?: boolean;
+  /**
+   * The route this trip belongs to, as the published grouping decided.
+   *
+   * Grouping trips into routes is derived entirely from the published timetable — the pattern and
+   * the number of calls are the stop sequence, and the non-overtaking split is a function of the
+   * times — and deriving it per request measured more than the walking transfers did: 27.65 ms
+   * against 23.56 in Manchester, 38.28 against 24.76 in Birmingham. So it is published, and a trip
+   * that carries its route needs no comparison, no sort and no split.
+   *
+   * Two trips with the same key are on the same route, in the order they arrive. A corridor that
+   * cuts their stop sequences cuts both identically — routes are per pattern and call count, so
+   * their kept positions are the same — which is why the key survives the corridor filter.
+   *
+   * Absent means "not known", never "not grouped": the trips that lack it are grouped the long way.
+   */
+  routeKey?: string;
 }
 
 export interface Transfer {
@@ -203,6 +219,35 @@ export function buildGraph(input: BuildGraphInput): JourneyGraph {
  * two different sequences cannot collide into one route and be scanned as though a bus called
  * somewhere it does not.
  */
+/**
+ * Routes from groups that are already decided: one route per group, in the order given.
+ *
+ * Used by the published-grouping path, where the publisher has already split the trips so that no
+ * bus overtakes another and ordered them by departure. The sequence comes from the first trip's
+ * effective times, as it does in the long path, so a corridor that cut the sequence is reflected
+ * here too.
+ */
+function routesFromGroups(groups: readonly Trip[][]): {
+  routes: RouteGroup[];
+  routesByStop: Map<string, Array<{ route: RouteGroup; at: number }>>;
+} {
+  const routes: RouteGroup[] = [];
+  const routesByStop = new Map<string, Array<{ route: RouteGroup; at: number }>>();
+  for (const group of groups) {
+    if (group.length === 0) continue;
+    const stopIds = effectiveStopTimes(group[0]!).map((stopTime) => stopTime.stopId);
+    const route: RouteGroup = { stopIds, trips: [...group], nonOvertaking: true };
+    routes.push(route);
+    for (let at = 0; at < stopIds.length; at += 1) {
+      const stopId = stopIds[at]!;
+      const list = routesByStop.get(stopId);
+      if (list) list.push({ route, at });
+      else routesByStop.set(stopId, [{ route, at }]);
+    }
+  }
+  return { routes, routesByStop };
+}
+
 export function groupRoutes(trips: readonly Trip[]): {
   routes: RouteGroup[];
   routesByStop: Map<string, Array<{ route: RouteGroup; at: number }>>;
@@ -220,6 +265,32 @@ export function groupRoutes(trips: readonly Trip[]): {
    * Two different patterns that happen to have the same sequence stay separate routes. That costs
    * one extra route scan and is correct, which is the right way round.
    */
+  /*
+   * The published grouping first, when every trip carries one.
+   *
+   * This is the whole of the artifact's value on the request path: a `Map` insert per trip and
+   * nothing else — no sequence comparison, no sort, no overtaking split. The publisher has already
+   * made all three decisions, and it made them with the same code this falls back to, which a test
+   * holds it to over two hundred generated timetables.
+   *
+   * All or nothing: a mixture of keyed and unkeyed trips goes the long way, because a keyed trip
+   * and an unkeyed one with the same sequence belong in one route and only the comparison can say
+   * so.
+   */
+  const keyed = new Map<string, Trip[]>();
+  let everyTripKeyed = true;
+  for (const trip of trips) {
+    if (trip.stopTimes.length < 2) continue;
+    if (trip.routeKey === undefined) {
+      everyTripKeyed = false;
+      break;
+    }
+    const existing = keyed.get(trip.routeKey);
+    if (existing) existing.push(trip);
+    else keyed.set(trip.routeKey, [trip]);
+  }
+  if (everyTripKeyed && keyed.size > 0) return routesFromGroups([...keyed.values()]);
+
   const byPattern = new Map<string, { whole: Trip[] | null; cut: Trip[][] }>();
   for (const trip of trips) {
     if (trip.stopTimes.length < 2) continue;
