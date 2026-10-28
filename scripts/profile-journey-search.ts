@@ -22,11 +22,16 @@ import { SHARDED, type NetworkIndexRecord } from "@busstops/pipeline-static-netw
 import {
   buildGraph,
   buildTransferAdjacency,
+  buildTransferTiles,
+  groupRouteIndices,
   groupRoutes,
+  mergeTransferTiles,
   newSearchCounters,
   plan,
   runRaptor,
 } from "@busstops/journey";
+import { tileIdFor } from "@busstops/pipeline-core";
+import { STOP_TILE_DEGREES } from "@busstops/pipeline-static-network";
 import { loadCorridor } from "./lib/journey-corridor.js";
 
 const arg = (name: string): string | undefined => {
@@ -141,6 +146,49 @@ async function main(): Promise<number> {
     const unflagged = trips.map((trip) => ({ ...trip, wholePatternSequence: false }));
     const groupingUnflagged = timed(() => groupRoutes(unflagged));
 
+    /*
+     * And the two artifact paths, against the work they replace, in the same process.
+     *
+     * The grouping first: keys as the publisher assigns them — `groupRouteIndices`, the same
+     * function the publisher runs — and then the grouping that a trip carrying its route costs,
+     * which is a `Map` insert each and nothing else. The pair is the honest measure of what
+     * publishing the grouping buys a request, and the `agrees` field is what says it bought it
+     * without changing the answer.
+     */
+    /* Pattern keys as a shard would number them. */
+    const patternKeys = new Map<string, number>();
+    for (const trip of trips) {
+      if (!patternKeys.has(trip.patternId)) patternKeys.set(trip.patternId, patternKeys.size);
+    }
+    const indexed = groupRouteIndices({
+      tripCount: trips.length,
+      patternKeyOf: (trip) => patternKeys.get(trips[trip]!.patternId) ?? 0,
+      callCountOf: (trip) => trips[trip]!.stopTimes.length,
+      departureOf: (trip, call) => trips[trip]!.stopTimes[call]!.departureSeconds,
+      tripIdOf: (trip) => trips[trip]!.id,
+    });
+    const keyOf = new Map<string, string>();
+    indexed.forEach((group, at) => {
+      for (const trip of group.trips) keyOf.set(trips[trip]!.id, `r${String(at)}`);
+    });
+    const keyedTrips = trips.map((trip) => ({ ...trip, routeKey: keyOf.get(trip.id) }));
+    const groupingFromArtifact = timed(() => groupRoutes(keyedTrips));
+
+    /*
+     * The transfers: the published tiles, built here by the same function the publisher uses, then
+     * merged for this corridor the way the reader merges them. What this isolates is the
+     * request-time cost — the read itself is I/O and is measured in the endpoint's own figures.
+     */
+    const tilePlans = buildTransferTiles(stops, {
+      capSeconds: 600,
+      tileOf: (stop) => tileIdFor(stop.coordinate, STOP_TILE_DEGREES),
+    });
+    const tilesForMerge = tilePlans.map((plan) => ({ ...plan, capSeconds: 600 }));
+    const corridorStopIds = stops.map((stop) => stop.id);
+    const transfersFromArtifact = timed(() =>
+      mergeTransferTiles(corridorStopIds, tilesForMerge, 600),
+    );
+
     const transferEdges = graph.transfers.edgeCount;
     let stopTripEntries = 0;
     for (const list of graph.tripsByStop.values()) stopTripEntries += list.length;
@@ -165,6 +213,24 @@ async function main(): Promise<number> {
       buildTransfersMs: Number(transfersOnly.ms.toFixed(2)),
       groupRoutesMs: Number(groupingOnly.ms.toFixed(2)),
       groupRoutesUnflaggedMs: Number(groupingUnflagged.ms.toFixed(2)),
+      /* What publishing each of them costs the request instead. */
+      groupRoutesFromArtifactMs: Number(groupingFromArtifact.ms.toFixed(2)),
+      transfersFromArtifactMs: Number(transfersFromArtifact.ms.toFixed(2)),
+      transferTiles: tilePlans.length,
+      /* And that each artifact path answers with the same thing the computed one did. */
+      artifactTransfersAgree:
+        transfersFromArtifact.value !== null &&
+        transfersFromArtifact.value.edgeCount === transfersOnly.value.edgeCount,
+      artifactGroupingAgrees:
+        groupingFromArtifact.value.routes.length === groupingOnly.value.routes.length &&
+        [...groupingFromArtifact.value.routes]
+          .map((route) => `${route.stopIds.join(">")}|${route.trips.map((t) => t.id).join(",")}`)
+          .sort()
+          .join("\n") ===
+          [...groupingOnly.value.routes]
+            .map((route) => `${route.stopIds.join(">")}|${route.trips.map((t) => t.id).join(",")}`)
+            .sort()
+            .join("\n"),
       /* And that the two forms agree about the routes, which is the flag's only promise. */
       groupingAgrees:
         groupingOnly.value.routes.length === groupingUnflagged.value.routes.length &&
