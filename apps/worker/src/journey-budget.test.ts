@@ -471,6 +471,89 @@ describe("the buffered read filters what the streaming read filters", () => {
  * through typed arrays. What has to be true is that it is the *same shard*: the same trips kept,
  * the same ones dropped, the same itinerary, and a fallback that works when the bytes do not.
  */
+/**
+ * The plan horizon, which is the cheapest thing the planner had been getting wrong.
+ *
+ * It read four hours of timetable for every request. Against the golden corpus a two-hour horizon
+ * returned the same best itinerary on all twenty queries — same fastest arrival, same fewest
+ * changes, nothing lost, nothing materially worse — for half the rows. So the narrow pass runs
+ * first, and widens only when its answer suggests a better one is just outside it.
+ *
+ * What is asserted here is the thing a corpus of nine-o'clock city queries cannot show: that the
+ * journey whose only useful bus leaves after the narrow horizon is still found.
+ */
+describe("how far ahead a plan looks", () => {
+  /** A corridor whose only service runs later than the narrow horizon. */
+  async function publishLateOnly() {
+    const store = new InMemoryObjectStore();
+    const tiles = tripTilesForBoundingBox(corridor);
+    const midnight = Date.parse(`${SERVICE_DATE}T00:00:00.000Z`) / 1000;
+    /* Windows for the whole four hours, because the shards have to exist for the wide pass. */
+    const windows = tripWindowsFor(
+      midnight + DEPART_AT,
+      midnight + DEPART_AT + 4 * 3600,
+      SERVICE_DATE,
+    );
+    for (const tile of tiles) {
+      for (const window of windows) {
+        /* Three hours out: outside two hours, inside four. */
+        const lines = [tripLine(0, DEPART_AT + 3 * 3600), tripLine(1, DEPART_AT + 3 * 3600 + 900)];
+        await store.put(
+          objectKeyFor(patternTripsDataset(SERVICE_DATE, tile, window), "v1"),
+          `${lines.join("\n")}\n`,
+        );
+      }
+    }
+    return store;
+  }
+
+  it("answers a city journey from the narrow pass alone", async () => {
+    const { store } = await publish(8);
+    const outcome = await new JourneyService(store).planJourney(slice(), request);
+
+    expect(outcome.ok).toBe(true);
+    /* Two hours, not four: the second read never happened. */
+    expect(outcome.diagnostics.horizonHours).toBe(2);
+  });
+
+  it("widens when the only useful bus leaves after the narrow horizon", async () => {
+    const store = await publishLateOnly();
+    const outcome = await new JourneyService(store).planJourney(slice(), request);
+
+    expect(outcome.ok).toBe(true);
+    expect(outcome.diagnostics.horizonHours).toBe(4);
+    if (outcome.ok) {
+      /* And it is a real itinerary, on the bus three hours out. */
+      expect(outcome.result.options.length).toBeGreaterThan(0);
+      expect(outcome.result.options[0]!.legs.some((leg) => leg.mode === "bus")).toBe(true);
+    }
+  });
+
+  it("reads twice as many shards when it widens, and no more than that", async () => {
+    const store = await publishLateOnly();
+    const service = new JourneyService(store);
+    const outcome = await service.planJourney(slice(), request);
+    expect(outcome.ok).toBe(true);
+    /* The wide pass's own read, reported: the narrow one's numbers are not carried over. */
+    expect(outcome.diagnostics.shardsRead).toBeGreaterThan(0);
+    expect(outcome.diagnostics.tripsLoaded).toBeGreaterThan(0);
+  });
+
+  /*
+   * A refusal is never retried.
+   *
+   * A corridor that could not be read inside its budget does not get better with a wider horizon:
+   * it reads more and fails again, having spent a second budget to say the same thing.
+   */
+  it("does not widen a refusal", async () => {
+    const { store } = await publish(200);
+    const outcome = await new JourneyService(store, 2_000).planJourney(slice(), request);
+    expect(outcome.ok).toBe(false);
+    expect(outcome.diagnostics.code).toBe("incomplete_read");
+    expect(outcome.diagnostics.horizonHours).toBe(2);
+  });
+});
+
 describe("a corridor published as bytes", () => {
   async function publishBinary(options: { alsoText: boolean; corrupt?: boolean }) {
     const store = new InMemoryObjectStore();

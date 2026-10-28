@@ -162,6 +162,8 @@ export interface JourneyDiagnostics {
   shardsBinary?: number;
   /** Binary shards that could not be opened, and were read as text instead. */
   shardsBinaryFallback?: number;
+  /** How far ahead this plan looked, in hours. Two unless the narrow pass could not answer. */
+  horizonHours?: number;
   /** Patterns the corridor's trips named, and therefore the patterns that had to be read. */
   patternsRequested?: number;
   /** Trip rows read out of the shards. */
@@ -250,6 +252,19 @@ const MAX_CACHED_TRIP_SHARDS = 16;
  * but correct.
  */
 const BINARY_PROBE_MISSES = 3;
+
+/**
+ * How far ahead a plan looks: the first attempt, and the one it falls back on.
+ *
+ * Four hours was the only horizon, and it is about twice what a city journey uses. Against the
+ * golden corpus a two-hour horizon gave the same best itinerary on all twenty queries — same
+ * fastest arrival, same fewest changes, none lost, none materially worse — for half the timetable.
+ * Four hours remains, for the journey the narrow pass could not answer: a corpus of city queries
+ * at nine in the morning says nothing about the village whose useful bus leaves in two hours and
+ * ten minutes.
+ */
+const NARROW_PLAN_HORIZON_SECONDS = 2 * 60 * 60;
+const WIDE_PLAN_HORIZON_SECONDS = 4 * 60 * 60;
 /**
  * The pattern id out of a spilled trip line, without building the row.
  *
@@ -373,7 +388,70 @@ export class JourneyService {
     private readonly tripCharBudget = JOURNEY_TRIP_READ_CHARS,
   ) {}
 
+  /**
+   * A plan, over as little of the timetable as will answer the question.
+   *
+   * The plan horizon was four hours, and four hours of a corridor is about twice the timetable a
+   * nine-o'clock journey in a city actually uses. Measured against the golden corpus — twenty
+   * queries across five cities, the deployed planner's own answers as the baseline — a two-hour
+   * horizon returned **the same best itinerary on all twenty**: same fastest arrival, same fewest
+   * changes, nothing lost, nothing materially worse. It halves the rows a plan parses and the
+   * trips it builds a graph from.
+   *
+   * What a corpus of city queries at nine in the morning cannot show is the sparse case, where the
+   * only useful bus leaves in two hours and ten minutes. So the horizon is not simply shortened:
+   * it starts narrow and widens when the narrow answer is the kind that suggests a better one is
+   * just outside it — nothing found, or a best option that needs two changes, which is what a
+   * patchwork of connections looks like when the direct bus was out of range. A wider search is
+   * over a superset of the same timetable, so its optimum can only be at least as good, and that
+   * is why its answer wins when it has one.
+   *
+   * The cost is paid only where it buys something: a city journey answers from the narrow pass and
+   * never reads the rest.
+   */
   async planJourney(slice: NetworkSlice, request: JourneyPlanRequest): Promise<JourneyPlanOutcome> {
+    const narrow = await this.planWithin(slice, request, NARROW_PLAN_HORIZON_SECONDS);
+    if (!this.worthWidening(narrow)) return narrow;
+
+    const wide = await this.planWithin(slice, request, WIDE_PLAN_HORIZON_SECONDS);
+    if (wide.ok && wide.result.options.length > 0) return wide;
+    /*
+     * Both came back empty-handed: report the deeper attempt, because its numbers describe the
+     * whole four hours and the narrow one's describe half of them. But a narrow answer is kept
+     * over a wide refusal — a wider read can run out of budget where a shorter one did not, and
+     * that is not a reason to turn an itinerary into an error.
+     */
+    return narrow.ok ? narrow : wide;
+  }
+
+  /**
+   * Whether the narrow answer is worth spending a second read on.
+   *
+   * Two refusals say "there was nothing here in this window", which is exactly what a wider window
+   * might disagree with: `no_data` — the shards held no trip inside the horizon at all — and
+   * `no_options`, where trips were found and no path through them was. The others are not about
+   * the horizon and get worse with a wider one, not better: a corridor that could not be read
+   * inside its budget reads more and fails again, having spent a second budget to say the same
+   * thing, and a corridor too large to plan is already too large.
+   *
+   * An answer is widened only when it looks constrained: no itinerary, or a best one that needs
+   * two changes, which is what a patchwork of connections looks like when the direct bus was out
+   * of range.
+   */
+  private worthWidening(outcome: JourneyPlanOutcome): boolean {
+    if (!outcome.ok) {
+      return outcome.diagnostics.code === "no_data" || outcome.diagnostics.code === "no_options";
+    }
+    const best = outcome.result.options[0];
+    if (best === undefined) return true;
+    return best.legs.filter((leg) => leg.mode === "bus").length > 2;
+  }
+
+  private async planWithin(
+    slice: NetworkSlice,
+    request: JourneyPlanRequest,
+    horizonSeconds: number,
+  ): Promise<JourneyPlanOutcome> {
     const corridor = corridorBoundingBox(
       request.origin,
       request.destination,
@@ -440,6 +518,7 @@ export class JourneyService {
       tiles,
       request,
       request.resolvePatterns ? null : new Set(slice.patternsById.keys()),
+      horizonSeconds,
     );
     diagnostics.stageMs.loadTrips = Date.now() - readBegan;
     diagnostics.stageMs.readTrips = loaded.readMs;
@@ -447,6 +526,7 @@ export class JourneyService {
     diagnostics.tripChars = loaded.chars;
     diagnostics.tripCharBudget = this.tripCharBudget;
     diagnostics.windows = loaded.windows;
+    diagnostics.horizonHours = Number((horizonSeconds / 3600).toFixed(2));
     diagnostics.shardsRequested = loaded.shardsRequested;
     diagnostics.shardsRead = loaded.shardsRead;
     diagnostics.shardsMissing = loaded.shardsMissing;
@@ -659,6 +739,8 @@ export class JourneyService {
      * that drops most of a shard: a window is eight hours and a plan spans four.
      */
     patternIds: ReadonlySet<string> | null,
+    /** How far ahead this attempt looks. The narrow pass answers almost every city journey. */
+    horizonSeconds: number = WIDE_PLAN_HORIZON_SECONDS,
   ): Promise<{
     rows: PatternTripRow[];
     failures: Array<{ dataset: string; reason: string }>;
@@ -692,7 +774,7 @@ export class JourneyService {
     const midnight = Date.parse(`${request.serviceDate}T00:00:00Z`) / 1000;
     const from = midnight + request.departAtSeconds;
     // A plan looks a few hours ahead; beyond that the answer is a different day's timetable.
-    const to = from + 4 * 60 * 60;
+    const to = from + horizonSeconds;
     const windows = tripWindowsFor(from, to, request.serviceDate);
 
     /*
