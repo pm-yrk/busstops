@@ -7,7 +7,14 @@ import {
   type ObjectStore,
 } from "@busstops/pipeline-core";
 import { readFilteredLinesStreaming } from "./stream-lines.js";
-import { buildGraph, plan, type JourneyGraph, type PlanResult, type Trip } from "@busstops/journey";
+import {
+  buildGraph,
+  plan,
+  type JourneyGraph,
+  type PlanResult,
+  type Trip,
+  type TripStopTime,
+} from "@busstops/journey";
 import {
   checkArtifactLayout,
   describeLayoutCheck,
@@ -896,6 +903,27 @@ export function buildGraphFor(
   const stopIds = new Set<string>();
   const trips: Trip[] = [];
 
+  /*
+   * Midnight once, and arithmetic instead of a round trip through text.
+   *
+   * This read `secondsIntoServiceDay(new Date(epoch * 1000).toISOString(), serviceDate)` for the
+   * arrival and the departure of every stop of every trip. For a Manchester corridor — 9,526 trips
+   * of about twenty-five calls each — that is 476,300 `Date` objects, 476,300 ISO strings, and
+   * 952,600 `Date.parse` calls, half of them re-parsing the same `serviceDate` midnight. All of it
+   * to compute one subtraction: `Date.parse` of an ISO string that `toISOString` just produced is
+   * the epoch it came from, exactly, so the whole expression is `epoch - dayStart`.
+   *
+   * It is the cost the profile could not see. `scripts/profile-journey-search.ts` builds its trips
+   * arithmetically, so it measured a search of 28 ms over a corridor the deployed endpoint was
+   * taking hundreds of milliseconds on, and the difference was never the search.
+   *
+   * `secondsIntoServiceDay` stays below for a caller that genuinely has an instant as text.
+   */
+  const dayStartSeconds = Date.parse(`${serviceDate}T00:00:00.000Z`) / 1000;
+  if (!Number.isFinite(dayStartSeconds)) {
+    return { graph: null, tripsWithPattern, tripsWithoutPattern };
+  }
+
   for (const row of rows) {
     const pattern = slice.patternsById.get(row.p);
     // Without the pattern there is no stop sequence, and times alone are not a trip.
@@ -906,23 +934,25 @@ export function buildGraphFor(
     tripsWithPattern += 1;
     const service = slice.services.get(pattern.serviceRouteId);
 
-    const stopTimes = pattern.stopSequence
-      .map((stopId, at) => {
-        const departureEpoch = row.t[at];
-        if (departureEpoch === undefined) return null;
-        const arrivalEpoch = row.a?.[at] ?? departureEpoch;
-        const departure = secondsIntoServiceDay(
-          new Date(departureEpoch * 1000).toISOString(),
-          serviceDate,
-        );
-        const arrival = secondsIntoServiceDay(
-          new Date(arrivalEpoch * 1000).toISOString(),
-          serviceDate,
-        );
-        if (departure === null || arrival === null) return null;
-        return { stopId, arrivalSeconds: arrival, departureSeconds: departure };
-      })
-      .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+    /*
+     * One loop, one array. The pair of `map` and `filter` this replaces built two arrays per trip
+     * and created two closures per trip with them — and esbuild keeps function names in the
+     * deployed bundle, so each closure costs an `Object.defineProperty`, measured at about a
+     * microsecond. Three closures a trip over nine and a half thousand trips is its own thirty
+     * milliseconds, before the arrays.
+     */
+    const sequence = pattern.stopSequence;
+    const stopTimes: TripStopTime[] = [];
+    for (let at = 0; at < sequence.length; at++) {
+      const departureEpoch = row.t[at];
+      if (departureEpoch === undefined) continue;
+      const arrivalEpoch = row.a?.[at] ?? departureEpoch;
+      stopTimes.push({
+        stopId: sequence[at]!,
+        arrivalSeconds: Math.round(arrivalEpoch - dayStartSeconds),
+        departureSeconds: Math.round(departureEpoch - dayStartSeconds),
+      });
+    }
 
     if (stopTimes.length < 2) continue;
 
@@ -940,25 +970,45 @@ export function buildGraphFor(
     });
   }
 
-  const stops = [...stopIds]
-    .map((stopId) => slice.stopsById.get(stopId))
-    .filter((stop): stop is NonNullable<typeof stop> => stop !== undefined)
-    // Stops outside the corridor cannot help this plan and only enlarge the transfer graph,
-    // which is quadratic in stop count.
-    .filter((stop) => withinBoundingBox(stop.locationCoordinate, corridor))
-    .map((stop) => ({ id: stop.id, name: stop.name, coordinate: stop.locationCoordinate }));
+  /* Stops outside the corridor cannot help this plan, and they enlarge the transfer graph. */
+  const stops: Array<{ id: string; name: string; coordinate: Coordinate }> = [];
+  const usableStopIds = new Set<string>();
+  for (const stopId of stopIds) {
+    const stop = slice.stopsById.get(stopId);
+    if (!stop) continue;
+    if (!withinBoundingBox(stop.locationCoordinate, corridor)) continue;
+    stops.push({ id: stop.id, name: stop.name, coordinate: stop.locationCoordinate });
+    usableStopIds.add(stop.id);
+  }
 
   if (stops.length > JOURNEY_LIMITS.maxStops) {
     return { graph: null, tripsWithPattern, tripsWithoutPattern };
   }
 
-  const usableStopIds = new Set(stops.map((stop) => stop.id));
-  const usableTrips = trips
-    .map((trip) => ({
-      ...trip,
-      stopTimes: trip.stopTimes.filter((stopTime) => usableStopIds.has(stopTime.stopId)),
-    }))
-    .filter((trip) => trip.stopTimes.length >= 2);
+  /*
+   * One loop again, and the filter inside it rather than a closure per trip.
+   *
+   * A trip whose every call survives is kept as it is, so the common case allocates nothing: the
+   * old form spread every trip into a new object and built a new stop-time array for all of them,
+   * whether the corridor had cut anything or not.
+   */
+  const usableTrips: Trip[] = [];
+  for (const trip of trips) {
+    let dropped = 0;
+    for (const stopTime of trip.stopTimes) {
+      if (!usableStopIds.has(stopTime.stopId)) dropped += 1;
+    }
+    if (dropped === 0) {
+      usableTrips.push(trip);
+      continue;
+    }
+    if (trip.stopTimes.length - dropped < 2) continue;
+    const kept: TripStopTime[] = [];
+    for (const stopTime of trip.stopTimes) {
+      if (usableStopIds.has(stopTime.stopId)) kept.push(stopTime);
+    }
+    usableTrips.push({ ...trip, stopTimes: kept });
+  }
 
   return {
     graph: buildGraph({ stops, trips: usableTrips }),
