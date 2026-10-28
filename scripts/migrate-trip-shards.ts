@@ -143,8 +143,7 @@ async function main(): Promise<number> {
     version,
     /* Proof the keys this walks are the ones a request reads. */
     exampleTextKey: pending[0]?.key ?? null,
-    exampleBinaryKey:
-      pending[0] === undefined ? null : `${pending[0].key.slice(0, -".jsonl".length)}.bin`,
+    exampleBinaryKey: pending[0] === undefined ? null : binaryKeyOf(pending[0].key),
     sameDatasetAsTheReader:
       pending[0] === undefined
         ? null

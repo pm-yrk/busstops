@@ -41,6 +41,7 @@ import {
   type PatternTripRow,
 } from "@busstops/pipeline-static-network";
 import { tripWindowInLine } from "../apps/worker/src/journey-service.js";
+import { readTripShard } from "./lib/read-trip-shard.js";
 
 const JSON_OUT = (() => {
   const index = process.argv.indexOf("--json");
@@ -113,11 +114,14 @@ async function main(): Promise<number> {
   const windows = tripWindowsFor(from, to, serviceDate);
 
   const bodies: { key: string; text: string }[] = [];
+  const forms = new Set<string>();
   for (const tile of tripTilesForBoundingBox(corridor).slice(0, 4)) {
     for (const window of windows) {
-      const key = objectKeyFor(patternTripsDataset(serviceDate, tile, window), index.version);
-      const text = await store.get(key);
-      if (text !== null && text.length > 0) bodies.push({ key, text });
+      const dataset = patternTripsDataset(serviceDate, tile, window);
+      const shard = await readTripShard(store, dataset, index.version);
+      if (shard === null) continue;
+      forms.add(shard.form);
+      bodies.push({ key: objectKeyFor(dataset, index.version), text: shard.text });
     }
   }
   if (bodies.length === 0) {
@@ -222,6 +226,12 @@ async function main(): Promise<number> {
     version: index.version,
     serviceDate,
     shards: bodies.length,
+    /*
+     * Which form the bucket holds. Once it is "bytes" the comparison is against lines rebuilt
+     * from the shard's own rows, which measures the same work on the same timetable — and saying
+     * so is the difference between a measurement and a claim.
+     */
+    publishedForms: [...forms],
     note:
       "A GitHub runner's CPU is not Cloudflare's. What transfers is the ratio between the two " +
       "forms and the order of magnitude against the 10 ms a Workers Free invocation is allowed.",

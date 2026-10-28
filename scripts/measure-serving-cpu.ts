@@ -46,6 +46,7 @@ import {
 import { normalizeSiriVm, scanSiriVehicles } from "@busstops/adapters";
 import { NearestLines, tileFloorMetres } from "../apps/worker/src/nearest-lines.js";
 import { tripWindowInLine } from "../apps/worker/src/journey-service.js";
+import { readTripShard } from "./lib/read-trip-shard.js";
 import { haversineMetres } from "@busstops/pipeline-core";
 import { buildGraph, plan, type Trip } from "@busstops/journey";
 
@@ -370,14 +371,28 @@ async function main(): Promise<number> {
 
   let tripChars = 0;
   const tripBodies: string[] = [];
+  /*
+   * Either form, and the report says which.
+   *
+   * The shards are being converted in place, so this corridor can be part text and part bytes. A
+   * converted shard's lines are rebuilt from its rows for the text stages below: the rows are the
+   * same rows, and what those stages measure is the work of parsing them, not which object the
+   * pipeline happened to write first. A reader that only knew the old key would instead have
+   * reported a converted corridor as a corridor with no trips, and the stage that costs more than
+   * the search would have quietly read zero.
+   */
+  const tripForms = new Set<string>();
   for (const tile of tripTiles) {
     for (const window of windows) {
-      const body = await store.get(
-        objectKeyFor(patternTripsDataset(serviceDate, tile, window), index.version),
+      const shard = await readTripShard(
+        store,
+        patternTripsDataset(serviceDate, tile, window),
+        index.version,
       );
-      if (body === null) continue;
-      tripBodies.push(body);
-      tripChars += body.length;
+      if (shard === null) continue;
+      tripForms.add(shard.form);
+      tripBodies.push(shard.text);
+      tripChars += shard.text.length;
     }
   }
   const tripScan = timed(() => tripBodies.reduce((total, body) => total + walk(body), 0));
@@ -555,6 +570,9 @@ async function main(): Promise<number> {
     outcome: "measured",
     version: index.version,
     mapStopTileDegrees: grid ?? null,
+    /* "bytes" means the published shards are converted and the text stages were measured against
+     * lines rebuilt from their rows. */
+    tripShardForms: [...tripForms],
     note:
       "A GitHub runner's CPU is not Cloudflare's. What transfers is the ratio between stages " +
       "and the order of magnitude against the 10 ms a Workers Free invocation is allowed.",

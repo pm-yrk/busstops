@@ -21,9 +21,9 @@ import {
   type MapStopRow,
   type NetworkIndexRecord,
   type PatternIndexRow,
-  type PatternTripRow,
 } from "@busstops/pipeline-static-network";
 import type { JourneyStop, Trip } from "@busstops/journey";
+import { readTripShard } from "./read-trip-shard.js";
 
 export interface CorridorQuery {
   readonly name: string;
@@ -126,12 +126,17 @@ export async function loadCorridor(
   const windows = tripWindowsFor(from, from + windowHours * 3600, serviceDate);
   for (const tile of tripTilesForBoundingBox(box).slice(0, TRIP_TILES)) {
     for (const window of windows) {
-      const body = await store.get(
-        objectKeyFor(patternTripsDataset(serviceDate, tile, window), index.version),
+      /* Either form: the shards are being converted in place, so a corridor can be half and
+       * half, and a loader that only knew the old key would report a converted tile as a tile
+       * with no buses in it. */
+      const shard = await readTripShard(
+        store,
+        patternTripsDataset(serviceDate, tile, window),
+        index.version,
       );
-      if (body === null) continue;
-      tripChars += body.length;
-      for (const row of walkLines<PatternTripRow>(body, () => true)) {
+      if (shard === null) continue;
+      tripChars += shard.text.length;
+      for (const row of shard.rows) {
         const sequence = stopSequenceByPattern.get(row.p);
         /*
          * A trip whose pattern is not in this slice, or whose stop count disagrees with it, is
