@@ -1291,7 +1291,13 @@ jobs:
     # `[regress]` as well — without it this job is skipped, which is the right failure.
     needs: regress
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # Hours, not minutes, because this is a national family converted shard by shard.
+    #
+    # The first real run was still going at thirty minutes and would have been cut off with the
+    # family part converted — which is safe (the reader handles a mixture) but means another run,
+    # another deploy and another regression suite to get the rest. A migration that can finish in
+    # one pass should.
+    timeout-minutes: 300
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -1318,7 +1324,7 @@ jobs:
           NODE_OPTIONS: "--max-old-space-size=8192"
         run: |
           set -o pipefail
-          npx tsx scripts/migrate-trip-shards.ts --apply --minutes 30 \
+          npx tsx scripts/migrate-trip-shards.ts --apply --minutes 270 \
             --json trip-shard-migration.json 2>&1 | tee trip-shard-migration.log
 
       - name: Summarise
@@ -1364,7 +1370,8 @@ jobs:
     name: Publish the walking transfers
     if: contains(github.event.head_commit.message, '[transfers]')
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Reading every stop tile in the country and writing a tile per populated square.
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -1390,7 +1397,7 @@ jobs:
           NODE_OPTIONS: "--max-old-space-size=8192"
         run: |
           set -o pipefail
-          npx tsx scripts/publish-journey-transfers.ts --apply --minutes 40 \
+          npx tsx scripts/publish-journey-transfers.ts --apply --minutes 210 \
             --json journey-transfers.json 2>&1 | tee journey-transfers.log
 
       - name: Summarise
@@ -1436,7 +1443,8 @@ jobs:
     needs: migrate_trip_shards
     if: always() && contains(github.event.head_commit.message, '[routes]')
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # One object per trip shard, after a conversion that may itself have taken hours.
+    timeout-minutes: 300
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -1462,7 +1470,7 @@ jobs:
           NODE_OPTIONS: "--max-old-space-size=8192"
         run: |
           set -o pipefail
-          npx tsx scripts/publish-journey-routes.ts --apply --minutes 40 \
+          npx tsx scripts/publish-journey-routes.ts --apply --minutes 270 \
             --json journey-routes.json 2>&1 | tee journey-routes.log
 
       - name: Summarise
