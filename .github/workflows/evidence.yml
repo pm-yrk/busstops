@@ -35,7 +35,7 @@ jobs:
   # through the deployment? The Worker is redeployed first, so the probe runs against this commit.
   probe:
     name: Probe the deployed API, and ask BODS the same question
-    if: contains(github.event.head_commit.message, '[evidence]')
+    if: contains(join(github.event.commits.*.message), '[evidence]')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -142,7 +142,7 @@ jobs:
   # reader hold up against a national one?
   gtfs:
     name: Measure the GTFS timetable downloads
-    if: contains(github.event.head_commit.message, '[evidence]')
+    if: contains(join(github.event.commits.*.message), '[evidence]')
     needs: probe
     runs-on: ubuntu-latest
     timeout-minutes: 120
@@ -206,7 +206,7 @@ jobs:
   # two-and-a-half-hour build.
   map_grid:
     name: Measure what each map-projection grid would cost
-    if: contains(github.event.head_commit.message, '[map-grid]')
+    if: contains(join(github.event.commits.*.message), '[map-grid]')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -264,7 +264,7 @@ jobs:
   # pushed it past its step limit with nothing published at all.
   retile_map_stops:
     name: Re-file the map projection onto a smaller square
-    if: contains(github.event.head_commit.message, '[retile]')
+    if: contains(join(github.event.commits.*.message), '[retile]')
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -286,7 +286,7 @@ jobs:
           # Through the environment, not interpolated into the script. A commit message is
           # attacker-controlled text on a public repository, and `${{ }}` substitution happens
           # before the shell sees the line — so a message with a backtick in it would run.
-          HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+          HEAD_COMMIT_MESSAGE: ${{ join(github.event.commits.*.message) }}
         run: |
           set -o pipefail
           APPLY=""
@@ -332,7 +332,7 @@ jobs:
   # GTFS archive, no NaPTAN parse and no million journeys.
   enrich_stop_services:
     name: Build the enriched stop serving-route index
-    if: contains(github.event.head_commit.message, '[enrich]')
+    if: contains(join(github.event.commits.*.message), '[enrich]')
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -352,7 +352,7 @@ jobs:
           NODE_OPTIONS: "--max-old-space-size=8192"
           # Through the environment, not interpolated: a commit message is attacker-controlled
           # text on a public repository and `${{ }}` substitution happens before the shell sees it.
-          HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+          HEAD_COMMIT_MESSAGE: ${{ join(github.event.commits.*.message) }}
         run: |
           set -o pipefail
           APPLY=""
@@ -429,7 +429,7 @@ jobs:
   # Reads the live version and writes nothing.
   measure_lines:
     name: Measure what each family buffers, and its longest line
-    if: contains(github.event.head_commit.message, '[lines]')
+    if: contains(join(github.event.commits.*.message), '[lines]')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -474,7 +474,7 @@ jobs:
 
   classify_1102:
     name: Classify a real 1102 from Cloudflare
-    if: contains(github.event.head_commit.message, '[classify]')
+    if: contains(join(github.event.commits.*.message), '[classify]')
     runs-on: ubuntu-latest
     # Forty-five, because thirty was not enough and the overrun was not the measurement. The
     # script printed its whole report and then sat there: `npx wrangler tail` is a shell wrapping
@@ -570,7 +570,7 @@ jobs:
     # exactly like a real one. `always()` so a skipped or failed classification does not cancel
     # the samples; the ordering is what is wanted, not the outcome.
     needs: classify_1102
-    if: always() && contains(github.event.head_commit.message, '[acceptance]')
+    if: always() && contains(join(github.event.commits.*.message), '[acceptance]')
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -758,7 +758,7 @@ jobs:
   # come from. It is the same method that produced this project's SIRI-VM figure.
   measure_cpu:
     name: Measure where a request's CPU goes
-    if: contains(github.event.head_commit.message, '[cpu]')
+    if: contains(join(github.event.commits.*.message), '[cpu]')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -858,7 +858,7 @@ jobs:
     # A commit that asks for the walk without the CPU proof still gets it: `always()` lets a
     # skipped dependency through, and the marker test below is what decides whether this runs.
     needs: [acceptance, worker_cpu]
-    if: always() && contains(github.event.head_commit.message, '[regress]')
+    if: always() && contains(join(github.event.commits.*.message), '[regress]')
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -955,7 +955,7 @@ jobs:
   # tried against the real feed and the positions that come back decide it.
   bods_bbox:
     name: Does BODS honour the bounding box
-    if: contains(github.event.head_commit.message, '[bods]')
+    if: contains(join(github.event.commits.*.message), '[bods]')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -1005,7 +1005,7 @@ jobs:
   # Reads one live feed and writes nothing.
   live_decode:
     name: Measure the live decode, and the formats BODS offers
-    if: contains(github.event.head_commit.message, '[live]')
+    if: contains(join(github.event.commits.*.message), '[live]')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -1057,7 +1057,7 @@ jobs:
   worker_cpu:
     name: Cloudflare CPU per endpoint and city
     needs: [classify_1102, acceptance]
-    if: always() && contains(github.event.head_commit.message, '[cpu-proof]')
+    if: always() && contains(join(github.event.commits.*.message), '[cpu-proof]')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -1213,7 +1213,7 @@ jobs:
   # Reads the artifact and writes nothing.
   journey_profile:
     name: Profile the journey search
-    if: contains(github.event.head_commit.message, '[journey-profile]')
+    if: contains(join(github.event.commits.*.message), '[journey-profile]')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -1280,7 +1280,7 @@ jobs:
     # succeeded. Nothing else can satisfy it — a skipped or failed suite leaves the timetable
     # alone, which is the point of the gate.
     if: >
-      always() && contains(github.event.head_commit.message, '[migrate-trips]') &&
+      always() && contains(join(github.event.commits.*.message), '[migrate-trips]') &&
       needs.regress.result == 'success'
     # After the regression suite has passed against the deployed build of this commit.
     #
@@ -1368,7 +1368,7 @@ jobs:
   # tier stops being free.
   publish_journey_transfers:
     name: Publish the walking transfers
-    if: contains(github.event.head_commit.message, '[transfers]')
+    if: contains(join(github.event.commits.*.message), '[transfers]')
     runs-on: ubuntu-latest
     # Reading every stop tile in the country and writing a tile per populated square.
     timeout-minutes: 240
@@ -1441,7 +1441,7 @@ jobs:
   publish_journey_routes:
     name: Publish the route grouping
     needs: migrate_trip_shards
-    if: always() && contains(github.event.head_commit.message, '[routes]')
+    if: always() && contains(join(github.event.commits.*.message), '[routes]')
     runs-on: ubuntu-latest
     # One object per trip shard, after a conversion that may itself have taken hours.
     timeout-minutes: 300
@@ -1501,7 +1501,7 @@ jobs:
 
   journey_corpus:
     name: Record what the current planner answers
-    if: contains(github.event.head_commit.message, '[corpus]')
+    if: contains(join(github.event.commits.*.message), '[corpus]')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -1682,7 +1682,7 @@ jobs:
 
   prune_artifacts:
     name: Prune superseded network artifacts
-    if: contains(github.event.head_commit.message, '[prune]')
+    if: contains(join(github.event.commits.*.message), '[prune]')
     runs-on: ubuntu-latest
     timeout-minutes: 215
     steps:
@@ -1715,7 +1715,7 @@ jobs:
           # visible rather than buried in a default.
           KEEP_NETWORK_VERSIONS: ${{ vars.KEEP_NETWORK_VERSIONS || '2' }}
           # Through the environment, not interpolated into the script.
-          HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+          HEAD_COMMIT_MESSAGE: ${{ join(github.event.commits.*.message) }}
         run: |
           set -o pipefail
           APPLY=""
@@ -1766,7 +1766,7 @@ jobs:
   # the runner saw, and a job that fell over has usually written the most interesting part of it.
   publish:
     name: Commit what the runners saw
-    if: always() && contains(github.event.head_commit.message, '[evidence]')
+    if: always() && contains(join(github.event.commits.*.message), '[evidence]')
     needs: [probe, gtfs]
     runs-on: ubuntu-latest
     timeout-minutes: 10
