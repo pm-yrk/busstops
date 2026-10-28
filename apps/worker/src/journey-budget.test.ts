@@ -1,6 +1,12 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { InMemoryObjectStore, objectKeyFor, corridorBoundingBox } from "@busstops/pipeline-core";
+import {
+  InMemoryObjectStore,
+  canStream,
+  objectKeyFor,
+  corridorBoundingBox,
+  type ObjectStore,
+} from "@busstops/pipeline-core";
 import {
   currentArtifactLayout,
   patternTripsDataset,
@@ -364,6 +370,93 @@ describe("a live lookup cannot outlive the budget it entered with", () => {
     // A scheduled collector genuinely should retry a flaky upstream: nobody is waiting for it.
     await service.vehiclesInBoundingBox({ west: -1.6, south: 53.7, east: -1.5, north: 53.8 });
     expect(attempts).toBeGreaterThan(1);
+  });
+});
+
+/**
+ * The two read paths have to filter the same rows.
+ *
+ * A trip line is tested twice off the raw text before it is parsed: the pattern it is on, and the
+ * window its calls fall in. The window test was added to the streaming path only, and the
+ * buffered path — the one a store without `getStream` takes — kept testing the window on the
+ * parsed row instead. Both end in the same answer either way, but only if the two filters agree:
+ * a scan that drops a row the parse would have kept removes a bus from a journey, and it would
+ * have done so on exactly one of the two paths, which is the hardest kind of difference to see.
+ */
+describe("the buffered read filters what the streaming read filters", () => {
+  /* A trip on the corridor's own pattern, five hours after the plan ends: inside the shard the
+   * plan opens, outside the horizon it searches. The pattern test cannot drop it, so the window
+   * test is the only thing that can. */
+  function lateLine(index: number): string {
+    const base = Date.parse(`${SERVICE_DATE}T00:00:00.000Z`) / 1000 + DEPART_AT + 5 * 3600;
+    return JSON.stringify({ p: "p-a2", j: `late-${String(index)}`, t: [base, base + 900] });
+  }
+
+  async function publishWithLateTrips() {
+    const store = new InMemoryObjectStore();
+    const tiles = tripTilesForBoundingBox(corridor);
+    const midnight = Date.parse(`${SERVICE_DATE}T00:00:00.000Z`) / 1000;
+    const windows = tripWindowsFor(
+      midnight + DEPART_AT,
+      midnight + DEPART_AT + 4 * 3600,
+      SERVICE_DATE,
+    );
+    for (const tile of tiles) {
+      for (const window of windows) {
+        const lines = [
+          tripLine(0, DEPART_AT + 600),
+          tripLine(1, DEPART_AT + 1800),
+          ...Array.from({ length: 8 }, (_, i) => lateLine(i)),
+          ...Array.from({ length: 8 }, (_, i) => fillerLine(i)),
+        ];
+        await store.put(
+          objectKeyFor(patternTripsDataset(SERVICE_DATE, tile, window), "v1"),
+          `${lines.join("\n")}\n`,
+        );
+      }
+    }
+    return store;
+  }
+
+  /** The same store with `getStream` hidden, which is how the buffered path is reached. */
+  function withoutStreaming(store: InMemoryObjectStore): ObjectStore {
+    return {
+      get: (key) => store.get(key),
+      put: (key, value) => store.put(key, value),
+      delete: (key) => store.delete(key),
+      list: (prefix) => store.list(prefix),
+    };
+  }
+
+  it("loads and drops the same rows, and plans the same journey", async () => {
+    const store = await publishWithLateTrips();
+    expect(canStream(store)).toBe(true);
+    const buffered = withoutStreaming(store);
+    expect(canStream(buffered)).toBe(false);
+
+    const streamed = await new JourneyService(store).planJourney(slice(), request);
+    const plain = await new JourneyService(buffered).planJourney(slice(), request);
+
+    expect(streamed.ok).toBe(true);
+    expect(plain.ok).toBe(true);
+    expect(plain.diagnostics.tripsLoaded).toBe(streamed.diagnostics.tripsLoaded);
+    expect(plain.diagnostics.tripsFiltered).toBe(streamed.diagnostics.tripsFiltered);
+    expect(JSON.stringify(plain.ok ? plain.result : null)).toBe(
+      JSON.stringify(streamed.ok ? streamed.result : null),
+    );
+  });
+
+  it("drops the out-of-horizon trips before parsing them, on both paths", async () => {
+    const store = await publishWithLateTrips();
+    const streamed = await new JourneyService(store).planJourney(slice(), request);
+    const plain = await new JourneyService(withoutStreaming(store)).planJourney(slice(), request);
+
+    /* Sixteen of the eighteen rows in each shard cannot be used: eight on other patterns, eight
+     * outside the horizon. Both paths have to account for all of them. */
+    for (const outcome of [streamed, plain]) {
+      expect(outcome.diagnostics.tripsLoaded).toBeGreaterThan(0);
+      expect(outcome.diagnostics.tripsFiltered).toBe(outcome.diagnostics.tripsLoaded! * 8);
+    }
   });
 });
 

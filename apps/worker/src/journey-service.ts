@@ -251,6 +251,38 @@ export function patternIdInTripLine(line: string): string | null {
   return end === -1 ? null : line.slice(from, end);
 }
 
+/**
+ * When a trip line's calls begin and end, read off the raw text.
+ *
+ * The pattern test already ran before the parse; the time test did not, and it is the other half
+ * of what a plan keeps. A published shard holds an eight-hour window and a plan spans four, so
+ * about half the rows in it are outside the plan's horizon — and they were parsed into objects
+ * with two arrays of twenty-five numbers each before the next statement discarded them. Parsing
+ * the trips is 37 ms of a Manchester corridor locally, which since the graph build and the search
+ * came down is the largest item left in the endpoint.
+ *
+ * Only the first and the last departure are needed, because the array is in stop order and so in
+ * time order: the row can be kept if its last call is at or after the plan begins and its first
+ * is at or before the plan ends. Returns null when the shape is not recognised, and a line that
+ * is not recognised is parsed rather than dropped — losing a bus because a text scan was confused
+ * is far worse than parsing one row too many.
+ */
+export function tripWindowInLine(line: string): { first: number; last: number } | null {
+  const open = line.indexOf('"t":[');
+  if (open === -1) return null;
+  const close = line.indexOf("]", open + 5);
+  if (close === -1) return null;
+
+  const firstEnd = line.indexOf(",", open + 5);
+  const first = Number(
+    line.slice(open + 5, firstEnd === -1 || firstEnd > close ? close : firstEnd),
+  );
+  const lastStart = line.lastIndexOf(",", close);
+  const last = Number(line.slice(lastStart > open + 4 ? lastStart + 1 : open + 5, close));
+  if (!Number.isFinite(first) || !Number.isFinite(last)) return null;
+  return { first, last };
+}
+
 /*
  * Two mebibytes, down from eight, for the reason in network-reader.ts: a warm cache is paid for in
  * the CPU of whichever request triggers collection, and CPU is the resource this platform rations.
@@ -694,16 +726,29 @@ export class JourneyService {
             const read = await readFilteredLinesStreaming<PatternTripRow>(body, {
               key: objectKey,
               keep: (buffer, lineStart, lineEnd) => {
-                if (patternIds === null) return true;
                 /*
-                 * The pattern test off the text, before anything is built. Five sixths of what
-                 * this read used to construct was discarded one statement later. A line whose
-                 * shape the scan does not recognise falls through to the parse rather than being
-                 * dropped: removing a bus from a journey because a scan was confused is far worse
-                 * than parsing one row too many.
+                 * Both tests off the text, before anything is built.
+                 *
+                 * The pattern test was here and the window test was not — it ran on the parsed
+                 * row, one statement after the parse it should have prevented. A shard holds an
+                 * eight-hour window and a plan spans four, so about half of what survives the
+                 * pattern test is outside the horizon and was built into an object with two
+                 * arrays of twenty-five numbers first.
+                 *
+                 * A line whose shape either scan does not recognise falls through to the parse
+                 * rather than being dropped: removing a bus from a journey because a scan was
+                 * confused is far worse than parsing one row too many.
                  */
-                const pattern = patternIdInTripLine(buffer.slice(lineStart, lineEnd));
-                if (pattern !== null && !patternIds.has(pattern)) {
+                const line = buffer.slice(lineStart, lineEnd);
+                if (patternIds !== null) {
+                  const pattern = patternIdInTripLine(line);
+                  if (pattern !== null && !patternIds.has(pattern)) {
+                    filtered += 1;
+                    return false;
+                  }
+                }
+                const window = tripWindowInLine(line);
+                if (window !== null && (window.last < from || window.first > to)) {
                   filtered += 1;
                   return false;
                 }
@@ -791,8 +836,11 @@ export class JourneyService {
         for (const line of result.raw.split("\n")) {
           if (line.length === 0) continue;
           /*
-           * The pattern test first, off the text, before anything is built. Five sixths of what this
-           * loop used to construct was discarded by `keep` one statement later.
+           * Both tests off the text, before anything is built, exactly as the streaming path does
+           * them. Five sixths of what this loop used to construct was discarded by `keep` one
+           * statement later, and half of the rest is outside the plan's horizon. The two read
+           * paths have to filter identically or a store without streaming would answer a
+           * different plan from one with it.
            */
           if (patternIds !== null) {
             const pattern = patternIdInTripLine(line);
@@ -800,6 +848,11 @@ export class JourneyService {
               tripsFiltered += 1;
               continue;
             }
+          }
+          const window = tripWindowInLine(line);
+          if (window !== null && (window.last < from || window.first > to)) {
+            tripsFiltered += 1;
+            continue;
           }
           const row = JSON.parse(line) as PatternTripRow;
           if (keep(row)) parsed.push(row);
