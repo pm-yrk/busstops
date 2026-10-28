@@ -1826,6 +1826,20 @@ await check("a journey can be planned across real timetable data", async () => {
       `(${diagnostics.tripsWithPattern} matched a pattern, ${diagnostics.tripsWithoutPattern} did not), ` +
       `${diagnostics.tripsInGraph} in the graph over ${diagnostics.stopsInGraph} stop(s) ` +
       `and ${diagnostics.transferEdges} transfer edge(s); ` +
+      /*
+       * Which of the published forms answered, which is the difference between measuring the
+       * architecture and measuring its fallback. A walk reporting `trips as lines` or
+       * `transfers computed` is measuring the work the publish exists to remove.
+       */
+      `${diagnostics.shardsBinary ?? 0} shard(s) as bytes` +
+      (diagnostics.shardsBinaryFallback
+        ? ` (${diagnostics.shardsBinaryFallback} fell back to lines)`
+        : "") +
+      `, ${diagnostics.shardsGrouped ?? 0} grouped from the artifact, transfers ` +
+      (diagnostics.transfersFromArtifact
+        ? `read from ${diagnostics.transferTilesRead ?? 0} tile(s)`
+        : `computed (${diagnostics.transferTilesMissing ?? 0} tile(s) missing)`) +
+      `, horizon ${diagnostics.horizonHours ?? "?"}h; ` +
       `${diagnostics.originCandidates} origin and ${diagnostics.destinationCandidates} destination ` +
       `candidate stop(s); ${diagnostics.roundsWithOption} of ${diagnostics.rounds} round(s) found ` +
       `an itinerary; slice held ${diagnostics.patternsInSlice} pattern(s) and ` +
