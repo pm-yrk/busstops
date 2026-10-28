@@ -743,3 +743,57 @@ failures reading `Worker exceeded resource limits`. That is this effect again, f
 door: the CPU proof and the regression walk both deployed and then walked the _same_ preview
 Worker, concurrently, so the suite was being judged on isolates the other job was burning. They
 are sequenced now.)
+
+### The immutable half of a journey moves into the publish
+
+Three things a journey request computed, all three derived entirely from the published network, none
+of them dependent on the passenger's question:
+
+| What              | Why it is immutable                                              | Published as                                            |
+| ----------------- | ---------------------------------------------------------------- | ------------------------------------------------------- |
+| trip rows         | the timetable for a service date does not change under a version | columnar bytes, `pattern-trips/<date>/<window>/<tile>`  |
+| walking transfers | stops do not move                                                | per 0.25° tile, `journey-transfers/<tile>`              |
+| route grouping    | which trips run as one route is a property of the timetable      | per trip shard, `journey-routes/<date>/<window>/<tile>` |
+
+The measured cost of computing them, on one runner against the real published objects, against what
+reading them costs instead:
+
+| Stage             |                   Computed |                                                            Read | Ratio |
+| ----------------- | -------------------------: | --------------------------------------------------------------: | ----: |
+| trip preparation  |     17.97–21.37 ms (parse) | 0.59–0.64 ms to select; 3.97–8.07 ms with the rows a plan keeps | 3–35× |
+| walking transfers | 21.5–25 ms (34.18 locally) |                              3.33 ms locally to merge the tiles |  ~10× |
+| route grouping    |              9.45–38.28 ms |                                         a `Map` insert per trip |     — |
+| search            |              4.13–21.39 ms |  unchanged: this is the only part that is transport computation |     — |
+
+Three design decisions are worth recording, because each was the difference between an artifact
+that pays and one that does not.
+
+**The reader decodes into the structure the search walks, not into the one it replaced.** The
+graph's transfers were a `Map<string, Transfer[]>` — 108,284 objects for a Manchester corridor — and
+are now three parallel arrays with an integer index space. The first version of the merge built an
+array of edge objects and handed it to the generic builder, which sorts each stop's list: a hundred
+thousand allocations and a sort per stop, the exact cost the artifact exists to remove, moved from
+one side of the read to the other. Counting, prefix-summing and copying integers instead took it
+from 34.18 ms to 3.33.
+
+**The tiling is exact, not approximate.** A transfer tile holds every stop whose coordinate falls in
+it _with a complete neighbour list_, plus the stops within the walking cap of those as targets only.
+A corridor reads the tiles its own stops fall in, so every edge between two of its stops is in one
+of them — the near end is in a tile that was read, and the far end is within the cap of that end.
+That also means a corridor stop's edges come from exactly one tile, which is why the merge needs no
+sort: each tile's lists are already canonical and filtering a sorted list leaves it sorted.
+
+**The couplings are checked, not assumed.** There is no manifest capability flag, deliberately:
+every object is addressed by the artifact version and a reader that finds nothing does the work
+itself, so a half-published family is a slower request rather than a wrong one. What could go wrong
+is narrower than that and is enforced — a transfer tile carries the walking cap it was built under
+and is refused for a different one; a route grouping names trips by their index in a shard, so it
+carries that shard's fingerprint and a reader whose shard disagrees groups the long way instead of
+mapping an index onto another bus.
+
+And the correctness work is against oracles rather than against the thing being replaced. The
+published transfers are held to **every pair, measured directly** — not to the grid, which is itself
+held to that oracle — over stops deliberately clustered on tile boundaries. The published grouping
+is held to `groupRoutes` over two hundred generated timetables containing expresses that overtake,
+trips cut short, identical departure times and patterns that must never merge; and the request-time
+fast path that reads it is held to the same two hundred.
