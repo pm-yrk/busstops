@@ -708,3 +708,38 @@ variance is the isolate rather than the request. It means two things for the met
 run cannot establish a difference of less than about a factor of two. And the way out is not a
 tighter measurement — it is to stop being a Worker that exceeds the limit at all, which is the
 artifact work this file keeps arriving at.
+
+### The cleanest passes this platform has recorded, and the worst, in one run
+
+Three acceptance samples of one frozen build, with the isolate count the pass ran on:
+
+| Sample      | pass   | Requests |     OK | Platform errors | Isolates |
+| ----------- | ------ | -------: | -----: | --------------: | -------: |
+| 1           | peak-1 |       54 |     53 |               1 |        2 |
+| 1           | peak-2 |       54 |     53 |               1 |        2 |
+| 2           | peak-1 |       52 |     15 |              37 |       13 |
+| 2           | peak-2 |       50 |     11 |              39 |       11 |
+| 3           | peak-1 |       54 | **54** |           **0** |    **1** |
+| 3           | peak-2 |       54 |     26 |              28 |       11 |
+| planner off | peak-1 |       54 |     46 |           **0** |        9 |
+| planner off | peak-2 |       54 |     46 |           **0** |       13 |
+
+Sample 3's first pass is the first time every request of a fifty-plus peak pass has been answered.
+Sample 1 lost one request of fifty-four, twice. Sample 2 lost three quarters of both passes.
+
+The isolate count is the whole story and it is not a coincidence. The clean passes ran on one and
+two isolates; every bad pass ran on eleven to thirteen. A request that exceeds the CPU limit takes
+its isolate with it, the next request starts cold on a new one — paying first-request costs — and is
+more likely to exceed in turn. That is a cascade, and it explains why the variance between runs is
+larger than any improvement measured in this file: the unit of failure is the isolate, not the
+request, and whether a pass is clean or ruined is decided in its first few seconds.
+
+So the planner-off rows matter more than they look. Eight requests of fifty-four are not answered
+in them because the flag is doing its job, and **no request fails** — on nine and thirteen isolates,
+which is to say without a single cascade. The journey planner is what starts them.
+
+(The regression walk in the same run reported nineteen of twenty-eight checks passing, with nine
+failures reading `Worker exceeded resource limits`. That is this effect again, from the job next
+door: the CPU proof and the regression walk both deployed and then walked the _same_ preview
+Worker, concurrently, so the suite was being judged on isolates the other job was burning. They
+are sequenced now.)

@@ -843,7 +843,21 @@ jobs:
   # including the selected bus, Stops Ahead and the recent trail.
   regress:
     name: Passenger regression suite and the city walk
-    needs: acceptance
+    # After the CPU proof, not beside it.
+    #
+    # Both deploy and then walk the *same* preview Worker, and `needs: acceptance` started them
+    # together: the CPU proof's six rounds across five cities were burning isolates that the
+    # regression walk was being judged on. It showed up as nine of its twenty-eight checks failing
+    # with `Worker exceeded resource limits` — the live map returning no buses in four cities at
+    # once, two journeys, the page-load burst — in a run whose acceptance samples included a pass
+    # of 54 requests answered out of 54. The suite was measuring the job next door.
+    #
+    # `always()` because the CPU proof can legitimately fail (it exits non-zero on an overrun it
+    # was built to find) and the regression walk still has to run.
+    #
+    # A commit that asks for the walk without the CPU proof still gets it: `always()` lets a
+    # skipped dependency through, and the marker test below is what decides whether this runs.
+    needs: [acceptance, worker_cpu]
     if: always() && contains(github.event.head_commit.message, '[regress]')
     runs-on: ubuntu-latest
     timeout-minutes: 60
