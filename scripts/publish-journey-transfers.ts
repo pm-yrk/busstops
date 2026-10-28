@@ -33,6 +33,7 @@ import {
   objectKeyForBytes,
   r2StoreFromEnv,
   tileIdFor,
+  versionInObjectKey,
 } from "@busstops/pipeline-core";
 import {
   SHARDED,
@@ -54,6 +55,15 @@ const APPLY = argv.includes("--apply");
 const MINUTES = Number(flag("minutes") ?? "30");
 const LIMIT = Number(flag("limit") ?? "100000");
 const JSON_OUT = flag("json");
+/**
+ * Remove this family at the live version instead of publishing it: the rollback.
+ *
+ * The reader falls back to doing the work itself for any object it cannot find, so deleting the
+ * family is a complete rollback on its own — there is no manifest flag to unset and no mixed state
+ * to worry about, because every object is addressed by the artifact version and missing means
+ * "compute it". Needs `--apply` as well, like everything else here that writes.
+ */
+const REMOVE = argv.includes("--remove");
 /**
  * The most this family may cost, in bytes. Checked before anything is written.
  *
@@ -137,6 +147,37 @@ async function main(): Promise<number> {
   if (!index) {
     annotateReport("journey transfers", { outcome: "failed", reason: "no index record" });
     return 1;
+  }
+
+  if (REMOVE) {
+    /*
+     * The rollback: every object of this family at the live version, and nothing else. Other
+     * versions are left alone — a rollback of this change is not a prune — and a reader that finds
+     * nothing goes back to computing it, which is the behaviour this family replaced.
+     */
+    const mine = (await store.list(`data/${SHARDED.journeyTransfers}/`)).filter(
+      (key) => versionInObjectKey(key) === index.version,
+    );
+    let removed = 0;
+    if (APPLY) {
+      for (const key of mine) {
+        await store.delete(key);
+        removed += 1;
+      }
+    }
+    const report = {
+      outcome: APPLY ? "removed" : "dry_run_remove",
+      version: index.version,
+      objects: mine.length,
+      removed,
+      note:
+        "The reader computes what it cannot find, so removing this family at the live version is " +
+        "a complete rollback. Other versions are untouched.",
+    };
+    console.log(JSON.stringify(report, null, 1));
+    if (JSON_OUT) writeFileSync(JSON_OUT, JSON.stringify(report, null, 1));
+    annotateReport("journey transfers", report);
+    return 0;
   }
 
   const readBegan = Date.now();
