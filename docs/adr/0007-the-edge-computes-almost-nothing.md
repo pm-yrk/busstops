@@ -623,15 +623,21 @@ and gets an answer instead of an apology.
 
 Cloudflare's tail, on the build that made the horizon adaptive, against the build before it:
 
+(The journey p50 in this table did not survive the next run, which measured 157 on a build that
+should only have been faster. See "What a second run said about the first" below: a median taken
+over a sample where four fifths of the invocations were killed is a median of the failures. The
+acceptance figures underneath did survive.)
+
 | Endpoint | p50 before | p50 after | p95 before | p95 after | exceededCpu before |    after |
 | -------- | ---------: | --------: | ---------: | --------: | -----------------: | -------: |
-| journey  |        166 |    **10** |        274 |       515 |            2 of 10 | 20 of 25 |
+| journey  |        166 |        10 |        274 |       515 |            2 of 10 | 20 of 25 |
 | map      |         13 |        19 |         51 |       118 |            1 of 25 |  0 of 36 |
 | search   |         11 |        11 |         43 |        71 |            2 of 10 | 14 of 37 |
 | stop     |         15 |        30 |         28 |        58 |            0 of 32 |  1 of 13 |
 | nearby   |          4 |         6 |         21 |        28 |            0 of 16 |  0 of 33 |
 
-The median journey went from sixteen times its budget to inside it. The tail went the other way,
+The median journey appeared to go from sixteen times its budget to inside it — appeared, because
+the next run says otherwise. The tail went the other way,
 and the reason was a trigger I had added as insurance rather than measured: the plan also widened
 when the best option needed two changes, on the theory that a patchwork of connections is what a
 direct bus just out of range looks like. A cross-city query usually _does_ have a two-change best
@@ -654,3 +660,51 @@ pass of three samples, before and after:
 
 And the deployed regression walk went from six failures to two, losing the "Leeds → Leeds Bradford
 Airport gave 0 options" one: a plan that used to run out of budget now answers.
+
+### What a second run said about the first
+
+The run above measured the journey endpoint at a p50 of 10 ms of CPU and I wrote that down as the
+median journey fitting inside its budget. The next run, on the build with the over-eager widening
+trigger removed — which should only have helped — measured this:
+
+| Endpoint | invocations | p50 | p95 | max | exceededCpu |
+| -------- | ----------: | --: | --: | --: | ----------: |
+| journey  |          34 | 157 | 430 | 571 |    12 of 34 |
+| search   |          39 |  14 |  82 | 141 |     9 of 39 |
+| map      |          64 |  20 |  78 | 121 |     8 of 64 |
+| stop     |          56 |  30 |  65 |  73 |    14 of 56 |
+| nearby   |          40 |   6 |  50 |  51 |     1 of 40 |
+| route    |           8 |  39 |  49 |  49 |      1 of 8 |
+
+A p50 of 157 where the run before it said 10. Both numbers are real; the first one was not what I
+took it to mean. Twenty of twenty-five invocations in that run exceeded the limit, and an
+invocation on an isolate the platform has already killed answers quickly and cheaply — so a median
+taken over a sample where four fifths of the entries are failures is a median of the failures, not
+of the work. The 10 ms was the shape of a collapse, read as a success.
+
+What is trustworthy in that pair is the _rate_: 2 of 10 invocations over the limit before, 20 of 25
+with the eager trigger, 12 of 34 with it removed. And what is trustworthy generally is the
+acceptance walk, because it counts what a passenger gets rather than sampling what the platform
+felt like reporting.
+
+Even there, the run-to-run variance is larger than any change measured so far. Three samples of one
+frozen build, in one run:
+
+| Sample | peak-1 OK | errors | peak-2 OK | errors |
+| ------ | --------: | -----: | --------: | -----: |
+| 1      |     48/53 |      5 |     44/52 |      8 |
+| 2      |     31/52 |     21 |     18/52 |     34 |
+| 3      |     44/52 |      8 |     43/52 |      9 |
+
+Samples 1 and 3 are the best this platform has recorded — the previous build's peak-2 passes were
+12, 14 and 21 of about fifty. Sample 2 is as bad as anything before it. The deployed regression
+walk in the same run went from 24 of 28 checks passing to 20 of 28, with five of its failures being
+`/v1/map` answering 503 in four cities at once.
+
+Cloudflare's documentation says an isolate carries flexibility for a Worker that _infrequently_
+exceeds the limit and loses it for one that exceeds consistently. That is exactly this shape: an
+isolate that gets burned early stays burned, and everything sharing it pays, so the unit of
+variance is the isolate rather than the request. It means two things for the method here. A single
+run cannot establish a difference of less than about a factor of two. And the way out is not a
+tighter measurement — it is to stop being a Worker that exceeds the limit at all, which is the
+artifact work this file keeps arriving at.
