@@ -50,6 +50,13 @@ Reading the bytes landed in `b0e7db6`. Any build from there on reads both forms 
 bytes; a build older than that cannot read them at all, so **do not deploy a pre-`b0e7db6` Worker
 after converting** without reverting the shards first.
 
+## Authorisation
+
+The conversion deletes published timetable, so it is not a thing to run on inference. It was
+authorised explicitly, for this artifact family and this migration only, on 28 October 2026,
+together with publishing the precomputed walking-transfer and route-grouping artifacts. That
+authorisation does not extend to any other destructive operation on the bucket.
+
 ## Running it
 
 A dry run writes and deletes nothing. It reads, encodes, verifies in memory and reports what it
