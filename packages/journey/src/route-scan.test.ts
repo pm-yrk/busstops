@@ -1,14 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { bruteForceEarliestArrival } from "./brute-force.js";
-import {
-  buildGraph,
-  buildTransfers,
-  groupRoutes,
-  walkSeconds,
-  type JourneyStop,
-  type Trip,
-} from "./graph.js";
+import { buildGraph, groupRoutes, walkSeconds, type JourneyStop, type Trip } from "./graph.js";
 import { bestArrival, runRaptor } from "./raptor.js";
+import { buildTransferAdjacency } from "./transfers.js";
 
 /**
  * The route scan, against exhaustive enumeration, on timetables built to break it.
@@ -412,19 +406,36 @@ describe("walking transfers from a grid", () => {
       for (const spread of [0.02, 0.5, 5]) {
         for (const cap of [120, 600, 1800]) {
           const of = scatter(400, seed, spread);
-          const grid = buildTransfers(of, cap);
+          const grid = buildTransferAdjacency(of, cap);
           const naive = allPairs(of, cap);
           for (const stop of of) {
-            const mine = (grid.get(stop.id) ?? [])
-              .map((t) => `${t.toStopId}@${String(t.walkSeconds)}`)
-              .sort();
+            const at = grid.indexOf(stop.id);
+            const mine: string[] = [];
+            if (at >= 0) {
+              for (let edge = grid.offsets[at]!; edge < grid.offsets[at + 1]!; edge += 1) {
+                mine.push(
+                  `${grid.stopIds[grid.neighbours[edge]!]!}@${String(grid.seconds[edge]!)}`,
+                );
+              }
+            }
             const theirs = (naive.get(stop.id) ?? [])
               .map((t) => `${t.toStopId}@${String(t.walkSeconds)}`)
               .sort();
             expect(
-              mine,
+              [...mine].sort(),
               `seed ${String(seed)} spread ${String(spread)} cap ${String(cap)} at ${stop.id}`,
             ).toEqual(theirs);
+            /* And in canonical order: shortest walk first, the neighbour's id breaking ties. */
+            const canonical = [...mine].sort((a, b) => {
+              const [aId, aSeconds] = a.split("@") as [string, string];
+              const [bId, bSeconds] = b.split("@") as [string, string];
+              return Number(aSeconds) !== Number(bSeconds)
+                ? Number(aSeconds) - Number(bSeconds)
+                : aId < bId
+                  ? -1
+                  : 1;
+            });
+            expect(mine, `canonical order at ${stop.id}`).toEqual(canonical);
           }
         }
       }
@@ -438,22 +449,24 @@ describe("walking transfers from a grid", () => {
      * 126,952 edges. This is the same shape at a size a test can run.
      */
     const of = scatter(1_200, 7, 0.08);
-    const edges = [...buildTransfers(of, 600).values()].reduce(
-      (total, list) => total + list.length,
-      0,
-    );
+    const edges = buildTransferAdjacency(of, 600).edgeCount;
     expect(edges).toBeGreaterThan(0);
     expect(edges).toBeLessThan(of.length * of.length);
   });
 
-  it("returns an empty map for no stops, rather than dividing by zero", () => {
-    expect([...buildTransfers([], 600).entries()]).toEqual([]);
+  it("returns an empty adjacency for no stops, rather than dividing by zero", () => {
+    const none = buildTransferAdjacency([], 600);
+    expect(none.edgeCount).toBe(0);
+    expect(none.stopIds).toEqual([]);
+    expect(none.indexOf("anything")).toBe(-1);
   });
 
   it("gives a lone stop no transfers rather than one to itself", () => {
     const only: JourneyStop[] = [
       { id: "only", name: "Only", coordinate: { lat: 53.8, lon: -1.5 } },
     ];
-    expect(buildTransfers(only, 600).get("only")).toEqual([]);
+    const one = buildTransferAdjacency(only, 600);
+    expect(one.edgeCount).toBe(0);
+    expect(one.offsets[one.indexOf("only")]).toBe(0);
   });
 });

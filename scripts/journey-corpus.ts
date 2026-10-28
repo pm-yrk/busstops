@@ -287,8 +287,7 @@ async function main(): Promise<number> {
       maxTransferSeconds: MAX_TRANSFER_SECONDS,
     });
     const buildGraphMs = Number(process.hrtime.bigint() - graphBegan) / 1e6;
-    let transferEdges = 0;
-    for (const list of graph.transfers.values()) transferEdges += list.length;
+    const transferEdges = graph.transfers.edgeCount;
     const planBegan = process.hrtime.bigint();
     const result = plan(graph, {
       origin: query.from,

@@ -70,13 +70,21 @@ export function bruteForceEarliestArrival(
           );
 
           // Walking on from where we alighted.
-          for (const transfer of graph.transfers.get(alight.stopId) ?? []) {
-            if (nextVisited.has(transfer.toStopId)) continue;
+          const walks = graph.transfers;
+          const alightIndex = walks.indexOf(alight.stopId);
+          const lastWalk = alightIndex < 0 ? 0 : walks.offsets[alightIndex + 1]!;
+          for (
+            let edge = alightIndex < 0 ? 0 : walks.offsets[alightIndex]!;
+            edge < lastWalk;
+            edge += 1
+          ) {
+            const toStopId = walks.stopIds[walks.neighbours[edge]!]!;
+            if (nextVisited.has(toStopId)) continue;
             const walked = new Set(nextVisited);
-            walked.add(transfer.toStopId);
+            walked.add(toStopId);
             visit(
-              transfer.toStopId,
-              alight.arrivalSeconds + transfer.walkSeconds,
+              toStopId,
+              alight.arrivalSeconds + walks.seconds[edge]!,
               boardings + 1,
               [...boardedTripIds, trip.id],
               walked,
@@ -101,13 +109,21 @@ export function bruteForceEarliestArrival(
      * the planner, invisible here. An oracle that cannot express a journey cannot be used to
      * check one.
      */
-    for (const transfer of graph.transfers.get(origin.stopId) ?? []) {
+    const originWalks = graph.transfers;
+    const originIndex = originWalks.indexOf(origin.stopId);
+    const lastOriginWalk = originIndex < 0 ? 0 : originWalks.offsets[originIndex + 1]!;
+    for (
+      let edge = originIndex < 0 ? 0 : originWalks.offsets[originIndex]!;
+      edge < lastOriginWalk;
+      edge += 1
+    ) {
+      const toStopId = originWalks.stopIds[originWalks.neighbours[edge]!]!;
       visit(
-        transfer.toStopId,
-        ready + transfer.walkSeconds,
+        toStopId,
+        ready + originWalks.seconds[edge]!,
         0,
         [],
-        new Set([origin.stopId, transfer.toStopId]),
+        new Set([origin.stopId, toStopId]),
       );
     }
   }

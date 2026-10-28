@@ -1,5 +1,10 @@
 import type { Coordinate } from "@busstops/contracts";
 import { haversineMetres } from "@busstops/pipeline-core";
+import {
+  WALK_SPEED_METRES_PER_SECOND as WALK_SPEED,
+  buildTransferAdjacency,
+  type TransferAdjacency,
+} from "./transfers.js";
 
 /**
  * The time-dependent transport graph the planner searches (docs/11_JOURNEY_ENGINE.md).
@@ -114,10 +119,19 @@ export interface JourneyGraph {
    * stop holds, which is why the position travels with it.
    */
   routesByStop: Map<string, Array<{ route: RouteGroup; at: number }>>;
-  transfers: Map<string, Transfer[]>;
+  /**
+   * Walking transfers, as three parallel arrays over an integer index space.
+   *
+   * Not a `Map<string, Transfer[]>` any more. A Manchester corridor holds 108,284 edges and a
+   * Birmingham one 126,952, and as objects that is a hundred thousand allocations per request for
+   * a structure identical for every passenger on a published network — which is also why it is
+   * published rather than built. The reader decodes straight into this shape; turning it back into
+   * objects would spend the artifact's whole value on the way in.
+   */
+  transfers: TransferAdjacency;
 }
 
-export const WALK_SPEED_METRES_PER_SECOND = 1.3;
+export const WALK_SPEED_METRES_PER_SECOND = WALK_SPEED;
 
 /** Walking time between two points, at a deliberately unhurried pace. */
 export function walkSeconds(
@@ -133,6 +147,14 @@ export interface BuildGraphInput {
   trips: readonly Trip[];
   /** Maximum walking transfer between stops, in seconds. */
   maxTransferSeconds?: number;
+  /**
+   * Walking transfers the caller already has, from the published artifact.
+   *
+   * Given one, the graph does not build them: stops do not move between requests, so computing
+   * them per journey was work that belonged to the publish. Omitted, they are built here, which
+   * is what a corridor whose transfers are not published yet falls back to.
+   */
+  transfers?: TransferAdjacency;
 }
 
 export function buildGraph(input: BuildGraphInput): JourneyGraph {
@@ -140,7 +162,7 @@ export function buildGraph(input: BuildGraphInput): JourneyGraph {
 
   const stops = new Map(input.stops.map((stop) => [stop.id, stop]));
 
-  const transfers = buildTransfers(input.stops, maxTransferSeconds);
+  const transfers = input.transfers ?? buildTransferAdjacency(input.stops, maxTransferSeconds);
 
   const trips = [...input.trips];
   /*
@@ -343,125 +365,6 @@ export function groupRoutes(trips: readonly Trip[]): {
   }
 
   return { routes, routesByStop };
-}
-
-/**
- * Walking transfers between stops within range, without comparing every pair.
- *
- * This was two nested loops over the corridor's stops and it is the single most expensive thing a
- * journey request does. Profiled against the published artifact: a Birmingham corridor holds 2,737
- * stops and 126,952 transfer edges, and building them took 911 milliseconds against a budget of
- * ten for the whole request — 7.5 million haversines, of which 126,952 produced an edge. The
- * quadratic was the whole of it. Nothing about the corridor was unreasonable; the loop was.
- *
- * Stops go into a grid of cells about as wide as the furthest walk allowed, so every stop within
- * range of one is in its own cell or one of the eight around it, and no pair outside those is ever
- * considered. That is exact rather than approximate: a pair further apart than the cell
- * neighbourhood cannot be within the walking cap, by construction of the cell size.
- *
- * Inside the neighbourhood a flat distance decides who gets a haversine. The flat metric is
- * within a fraction of a per cent of the real thing at these ranges and it costs no trigonometry,
- * so it is used as a sieve with a five per cent margin and the survivors are measured properly.
- * It is deliberately *only* a sieve: a property test caught a flat metric reordering exact ties
- * when it was used to rank, and the edge's own `walkSeconds` is what the search reads.
- */
-export function buildTransfers(
-  stops: readonly JourneyStop[],
-  maxTransferSeconds: number,
-): Map<string, Transfer[]> {
-  const transfers = new Map<string, Transfer[]>();
-  if (stops.length === 0) return transfers;
-
-  const maxMetres = maxTransferSeconds * WALK_SPEED_METRES_PER_SECOND;
-  /* A degree of latitude is about 111,320 m everywhere; of longitude, that times cos(latitude). */
-  const latitudeSpan = maxMetres / 111_320;
-  /*
-   * Taken at the highest latitude in the set, not its middle, and that is the difference between
-   * exact and nearly.
-   *
-   * A degree of longitude shortens towards the poles, so sizing the cell on the mean latitude
-   * makes it *narrower* than the walking cap wherever the set reaches higher than its mean — and a
-   * pair within walking distance could then sit two cells apart and never be compared at all. The
-   * smallest cosine in the set makes every cell at least as wide as the cap everywhere in it, so
-   * the eight neighbours are always enough. The same figure sieves below, where under-stating the
-   * metres in a degree of longitude under-states the distance, and therefore keeps pairs rather
-   * than discarding them.
-   */
-  let cosLatitude = 1;
-  for (const stop of stops) {
-    cosLatitude = Math.min(cosLatitude, Math.cos((Math.abs(stop.coordinate.lat) * Math.PI) / 180));
-  }
-  cosLatitude = Math.max(0.01, cosLatitude);
-  const longitudeSpan = latitudeSpan / cosLatitude;
-
-  /*
-   * Cells keyed by one integer rather than by `${row}:${column}`.
-   *
-   * The same grid with the same cells and the same edges, measured at 18 ms against 52 on a
-   * 2,063-stop corridor — and the algorithm is identical. The cost was the key: a template string
-   * built for every insertion and for all nine lookups per stop, about twenty thousand short
-   * strings to allocate, hash and compare, in a function that has ten milliseconds for the whole
-   * request to live in.
-   *
-   * Rows and columns are taken relative to the lowest corner of the set, so both are at least −1
-   * (the neighbourhood reaches one cell out) and at most the set's own span in cells. Shifting by
-   * one and multiplying the row by a stride wider than any column keeps every (row, column) pair
-   * on its own integer: no two cells can collide, which a hash of two numbers mixed together
-   * could not promise.
-   */
-  let lowestLatitude = Infinity;
-  let lowestLongitude = Infinity;
-  let highestLongitude = -Infinity;
-  for (const stop of stops) {
-    if (stop.coordinate.lat < lowestLatitude) lowestLatitude = stop.coordinate.lat;
-    if (stop.coordinate.lon < lowestLongitude) lowestLongitude = stop.coordinate.lon;
-    if (stop.coordinate.lon > highestLongitude) highestLongitude = stop.coordinate.lon;
-  }
-  /* Two spare columns: one for the cell the neighbourhood reaches below zero, one above the top. */
-  const stride = Math.floor((highestLongitude - lowestLongitude) / longitudeSpan) + 3;
-  const rowOf = (stop: JourneyStop): number =>
-    Math.floor((stop.coordinate.lat - lowestLatitude) / latitudeSpan);
-  const columnOf = (stop: JourneyStop): number =>
-    Math.floor((stop.coordinate.lon - lowestLongitude) / longitudeSpan);
-  const keyOf = (row: number, column: number): number => (row + 1) * stride + (column + 1);
-
-  const cells = new Map<number, JourneyStop[]>();
-  for (const stop of stops) {
-    const key = keyOf(rowOf(stop), columnOf(stop));
-    const existing = cells.get(key);
-    if (existing) existing.push(stop);
-    else cells.set(key, [stop]);
-  }
-
-  /* The sieve's threshold, in squared metres, with the margin the flat metric needs. */
-  const sieve = (maxMetres * 1.05) ** 2;
-  const metresPerDegreeLatitude = 111_320;
-  const metresPerDegreeLongitude = 111_320 * cosLatitude;
-
-  for (const from of stops) {
-    const list: Transfer[] = [];
-    const fromRow = rowOf(from);
-    const fromColumn = columnOf(from);
-    for (let row = fromRow - 1; row <= fromRow + 1; row++) {
-      for (let column = fromColumn - 1; column <= fromColumn + 1; column++) {
-        const neighbours = cells.get(keyOf(row, column));
-        if (!neighbours) continue;
-        for (const to of neighbours) {
-          if (from.id === to.id) continue;
-          const dLat = (to.coordinate.lat - from.coordinate.lat) * metresPerDegreeLatitude;
-          const dLon = (to.coordinate.lon - from.coordinate.lon) * metresPerDegreeLongitude;
-          if (dLat * dLat + dLon * dLon > sieve) continue;
-          const seconds = walkSeconds(from.coordinate, to.coordinate);
-          if (seconds <= maxTransferSeconds) {
-            list.push({ fromStopId: from.id, toStopId: to.id, walkSeconds: seconds });
-          }
-        }
-      }
-    }
-    transfers.set(from.id, list);
-  }
-
-  return transfers;
 }
 
 /** Effective stop times for a trip, with any live delay applied. */

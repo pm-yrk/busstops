@@ -5,22 +5,28 @@ import {
   corridorBoundingBox,
   objectKeyFor,
   objectKeyForBytes,
+  tileIdFor,
   withinBoundingBox,
   type ObjectStore,
 } from "@busstops/pipeline-core";
 import { readFilteredLinesStreaming } from "./stream-lines.js";
 import {
   buildGraph,
+  mergeTransferTiles,
   plan,
   type JourneyGraph,
   type PlanResult,
+  type TransferAdjacency,
   type Trip,
   type TripStopTime,
 } from "@busstops/journey";
 import {
   PatternTripShard,
+  STOP_TILE_DEGREES,
+  TransferTile,
   checkArtifactLayout,
   describeLayoutCheck,
+  journeyTransfersDataset,
   passengerName,
   patternTripsDataset,
   routeBadgeName,
@@ -164,6 +170,17 @@ export interface JourneyDiagnostics {
   shardsBinaryFallback?: number;
   /** How far ahead this plan looked, in hours. Two unless the narrow pass could not answer. */
   horizonHours?: number;
+  /**
+   * Whether the walking transfers were read from the published tiles rather than computed, and
+   * how many tiles answered.
+   *
+   * Here because "the artifact was not used" and "the artifact is not fast" are different
+   * problems, and a deployed walk that reports `transfersFromArtifact: false` is measuring the
+   * fallback — the thing the publish exists to stop running.
+   */
+  transfersFromArtifact?: boolean;
+  transferTilesRead?: number;
+  transferTilesMissing?: number;
   /** Patterns the corridor's trips named, and therefore the patterns that had to be read. */
   patternsRequested?: number;
   /** Trip rows read out of the shards. */
@@ -252,6 +269,26 @@ const MAX_CACHED_TRIP_SHARDS = 16;
  * but correct.
  */
 const BINARY_PROBE_MISSES = 3;
+
+/**
+ * How many decoded transfer tiles an isolate keeps.
+ *
+ * A dense tile is a few hundred kilobytes of typed arrays and about a thousand stop ids; sixteen
+ * of them is the largest corridor this planner will accept, and twice that lets two cities stay
+ * resident without the 128 MB isolate noticing.
+ */
+const MAX_CACHED_TRANSFER_TILES = 32;
+
+/**
+ * The walking cap the published transfers were built under, and the one the search uses.
+ *
+ * One number in two places — here and in the publisher — and the artifact carries it in its own
+ * header so a mismatch is caught rather than assumed: an adjacency built for a five-minute walk
+ * cannot answer a ten-minute question, and using it anyway would offer a passenger a change they
+ * cannot make. `buildGraph`'s own default is the same 600 seconds; this names it so the reader and
+ * the artifact can be compared.
+ */
+const JOURNEY_TRANSFER_CAP_SECONDS = 600;
 
 /**
  * How far ahead a plan looks: the first attempt, and the one it falls back on.
@@ -375,6 +412,14 @@ export class JourneyService {
    * subrequests on 404s while the migration is still running.
    */
   private readonly binaryMisses = new Map<string, number>();
+  /**
+   * Decoded transfer tiles, for the life of the isolate.
+   *
+   * A published tile is immutable — it is addressed by the artifact version — so keeping it is
+   * sound, and it is what makes the second journey through a city free of transfer work entirely.
+   * `null` records a tile that is not published, so a corridor in an unpublished area asks once.
+   */
+  private readonly transferTiles = new Map<string, TransferTile | null>();
 
   constructor(
     private readonly store: ObjectStore,
@@ -674,7 +719,29 @@ export class JourneyService {
     }
 
     const graphBegan = Date.now();
-    const built = buildGraphFor(planningSlice, loaded.rows, corridor, request.serviceDate);
+    let transferTilesRead = 0;
+    let transferTilesMissing = 0;
+    const built = await buildGraphFor(
+      planningSlice,
+      loaded.rows,
+      corridor,
+      request.serviceDate,
+      async (stopIds) => {
+        const read = await this.readTransfers(
+          request.version,
+          stopIds
+            .map((id) => {
+              const stop = planningSlice.stopsById.get(id);
+              return stop === undefined ? null : { id, coordinate: stop.locationCoordinate };
+            })
+            .filter((stop): stop is { id: string; coordinate: Coordinate } => stop !== null),
+          JOURNEY_TRANSFER_CAP_SECONDS,
+        );
+        transferTilesRead = read.tilesRead;
+        transferTilesMissing = read.tilesMissing;
+        return read.adjacency;
+      },
+    );
     diagnostics.stageMs.buildGraph = Date.now() - graphBegan;
     diagnostics.tripsWithPattern = built.tripsWithPattern;
     diagnostics.tripsWithoutPattern = built.tripsWithoutPattern;
@@ -692,9 +759,10 @@ export class JourneyService {
     const graph = built.graph;
     diagnostics.tripsInGraph = graph.trips.length;
     diagnostics.stopsInGraph = graph.stops.size;
-    let transferEdges = 0;
-    for (const transfers of graph.transfers.values()) transferEdges += transfers.length;
-    diagnostics.transferEdges = transferEdges;
+    diagnostics.transferEdges = graph.transfers.edgeCount;
+    diagnostics.transferTilesRead = transferTilesRead;
+    diagnostics.transferTilesMissing = transferTilesMissing;
+    diagnostics.transfersFromArtifact = built.transfersFromArtifact ?? false;
 
     const searchBegan = Date.now();
     const result = plan(graph, {
@@ -1164,6 +1232,104 @@ export class JourneyService {
     }
   }
 
+  /**
+   * The corridor's walking transfers, from the published tiles.
+   *
+   * Only the tiles the corridor's stops actually fall in, derived from their coordinates rather
+   * than from the corridor box: a city corridor is one or two tiles where the box can touch four,
+   * and every one of those is a subrequest against the fifty an invocation gets.
+   *
+   * Decoded tiles are kept for the life of the isolate, because a published tile cannot change —
+   * it is addressed by the artifact version — so the second journey through a city pays nothing
+   * for them. Null means they are not published here, and the caller builds its own.
+   */
+  private async readTransfers(
+    version: string,
+    stops: readonly { id: string; coordinate: Coordinate }[],
+    capSeconds: number,
+  ): Promise<{ adjacency: TransferAdjacency | null; tilesRead: number; tilesMissing: number }> {
+    if (!canHoldBytes(this.store) || stops.length === 0) {
+      return { adjacency: null, tilesRead: 0, tilesMissing: 0 };
+    }
+
+    const wanted = new Set<string>();
+    for (const stop of stops) wanted.add(tileIdFor(stop.coordinate, STOP_TILE_DEGREES));
+    if (wanted.size > JOURNEY_LIMITS.maxTiles) {
+      return { adjacency: null, tilesRead: 0, tilesMissing: 0 };
+    }
+
+    const tiles: TransferTile[] = [];
+    let tilesRead = 0;
+    let tilesMissing = 0;
+    for (const tile of wanted) {
+      const cacheKey = `${version}:${tile}`;
+      const held = this.transferTiles.get(cacheKey);
+      if (held !== undefined) {
+        if (held === null) {
+          tilesMissing += 1;
+          continue;
+        }
+        tiles.push(held);
+        tilesRead += 1;
+        continue;
+      }
+
+      let bytes: Uint8Array | null;
+      try {
+        bytes = await this.store.getBytes(
+          objectKeyForBytes(journeyTransfersDataset(tile), version),
+        );
+      } catch {
+        tilesMissing += 1;
+        continue;
+      }
+      if (bytes === null) {
+        /* Remembered as absent, so a corridor in an unpublished area asks once per isolate. */
+        this.rememberTransferTile(cacheKey, null);
+        tilesMissing += 1;
+        continue;
+      }
+      try {
+        const decoded = new TransferTile(bytes);
+        this.rememberTransferTile(cacheKey, decoded);
+        tiles.push(decoded);
+        tilesRead += 1;
+      } catch {
+        tilesMissing += 1;
+      }
+    }
+
+    /*
+     * A missing tile is not a slower answer, it is a wrong one: the transfers for the stops in it
+     * would simply be absent, and the search would report that you cannot change buses there. So
+     * a partial read falls back to building the whole corridor's transfers.
+     */
+    if (tilesMissing > 0 || tiles.length === 0) {
+      return { adjacency: null, tilesRead, tilesMissing };
+    }
+
+    const adjacency = mergeTransferTiles(
+      stops.map((stop) => stop.id),
+      tiles.map((tile) => ({
+        stopIds: tile.stopIds(),
+        offsets: tile.offsets(),
+        neighbours: tile.neighbours(),
+        seconds: tile.walkSeconds(),
+        capSeconds: tile.capSeconds,
+      })),
+      capSeconds,
+    );
+    return { adjacency, tilesRead, tilesMissing };
+  }
+
+  private rememberTransferTile(key: string, tile: TransferTile | null): void {
+    if (this.transferTiles.size >= MAX_CACHED_TRANSFER_TILES) {
+      const oldest = this.transferTiles.keys().next().value;
+      if (oldest !== undefined) this.transferTiles.delete(oldest);
+    }
+    this.transferTiles.set(key, tile);
+  }
+
   private evict(): void {
     let chars = 0;
     for (const shard of this.cache.values()) chars += shard.chars;
@@ -1203,14 +1369,26 @@ export interface BuiltGraph {
   graph: JourneyGraph | null;
   tripsWithPattern: number;
   tripsWithoutPattern: number;
+  /** Whether the walking transfers were read from the published tiles rather than computed. */
+  transfersFromArtifact?: boolean;
 }
 
-export function buildGraphFor(
+export async function buildGraphFor(
   slice: NetworkSlice,
   rows: readonly PatternTripRow[],
   corridor: ReturnType<typeof corridorBoundingBox>,
   serviceDate: string,
-): BuiltGraph {
+  /**
+   * The corridor's walking transfers, from the published tiles.
+   *
+   * Asked for the stop ids the corridor actually ends up with, which is why this is a callback and
+   * not an argument: the stop set is a result of the trips, the patterns and the corridor box, and
+   * nothing before this point knows it. Returning null means they are not published for this
+   * version — or not for this walking cap — and the graph builds its own, which is what a corridor
+   * ahead of the publisher falls back to.
+   */
+  resolveTransfers?: (stopIds: readonly string[]) => Promise<TransferAdjacency | null>,
+): Promise<BuiltGraph> {
   let tripsWithPattern = 0;
   let tripsWithoutPattern = 0;
   if (rows.length > JOURNEY_LIMITS.maxTrips) {
@@ -1335,10 +1513,26 @@ export function buildGraphFor(
     usableTrips.push({ ...trip, stopTimes: kept, wholePatternSequence: false });
   }
 
+  /*
+   * The transfers, read rather than computed.
+   *
+   * Stops do not move, so a corridor's walking transfers are a property of the published network:
+   * 108,284 edges in Manchester, 126,952 in Birmingham, measured at 21 to 25 milliseconds of a
+   * ten-millisecond request. Read, they cost a bounded number of integer copies and no geometry at
+   * all. The fallback stays for a version whose tiles are not published yet, and the caller counts
+   * which answered — "the artifact was not used" and "the artifact is not fast" are different
+   * problems.
+   */
+  const transfers =
+    resolveTransfers === undefined ? null : await resolveTransfers(stops.map((stop) => stop.id));
+
   return {
-    graph: buildGraph({ stops, trips: usableTrips }),
+    graph: buildGraph(
+      transfers === null ? { stops, trips: usableTrips } : { stops, trips: usableTrips, transfers },
+    ),
     tripsWithPattern,
     tripsWithoutPattern,
+    transfersFromArtifact: transfers !== null,
   };
 }
 

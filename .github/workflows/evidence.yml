@@ -1269,7 +1269,19 @@ jobs:
   # bucket and found to hold every row.
   migrate_trip_shards:
     name: Convert the trip shards to the form a request can read
-    if: contains(github.event.head_commit.message, '[migrate-trips]')
+    # Explicit about the gate, because the implicit one skipped the job.
+    #
+    # `needs: regress` plus a plain marker test was not enough: the regression suite's own needs
+    # (acceptance, the CPU proof) are marker-gated and were skipped on the commit that asked for
+    # the conversion, and a dependent job with no `always()` is skipped along with the chain even
+    # though the suite itself ran and passed. The run reported success and converted nothing.
+    #
+    # So the condition says what it means: the marker is present and the regression suite
+    # succeeded. Nothing else can satisfy it — a skipped or failed suite leaves the timetable
+    # alone, which is the point of the gate.
+    if: >
+      always() && contains(github.event.head_commit.message, '[migrate-trips]') &&
+      needs.regress.result == 'success'
     # After the regression suite has passed against the deployed build of this commit.
     #
     # The order is the whole safety of this: the text form is deleted, so the Worker in front of
@@ -1332,6 +1344,78 @@ jobs:
             trip-shard-migration-dry.log
             trip-shard-migration.json
             trip-shard-migration.log
+          retention-days: 14
+          if-no-files-found: ignore
+
+  # Publishing the walking transfers, so a journey request stops computing them.
+  #
+  # Stops do not move: a corridor's transfers are a property of the published network, and building
+  # them measured 21 to 25 ms of a ten-millisecond request — the largest item left after the trip
+  # parse moved into the published form. This writes one object per 0.25-degree tile, each holding
+  # every stop whose coordinate falls in it with a complete neighbour list, plus the stops within
+  # the walking cap of those as targets.
+  #
+  # Additive, so it is gated on its own marker rather than on the regression suite: nothing is
+  # deleted and a reader that finds no tile builds its own. What it is gated on is size — the whole
+  # family is measured before a single object is written, and the run refuses if it is larger than
+  # it was allowed, because a publisher that discovers its size by filling the bucket is how a free
+  # tier stops being free.
+  publish_journey_transfers:
+    name: Publish the walking transfers
+    if: contains(github.event.head_commit.message, '[transfers]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - run: npm ci --no-audit --no-fund
+
+      - name: What the family would cost
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          NODE_OPTIONS: "--max-old-space-size=8192"
+        run: |
+          set -o pipefail
+          npx tsx scripts/publish-journey-transfers.ts \
+            --json journey-transfers-dry.json 2>&1 | tee journey-transfers-dry.log
+
+      - name: Publish
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          NODE_OPTIONS: "--max-old-space-size=8192"
+        run: |
+          set -o pipefail
+          npx tsx scripts/publish-journey-transfers.ts --apply --minutes 40 \
+            --json journey-transfers.json 2>&1 | tee journey-transfers.log
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "## What the walking transfers would cost"
+            echo '```'
+            sed -n '1,60p' journey-transfers-dry.log 2>/dev/null || echo "not measured"
+            echo '```'
+            echo "## What was published"
+            echo '```'
+            sed -n '1,60p' journey-transfers.log 2>/dev/null || echo "not run"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-journey-transfers
+          path: |
+            journey-transfers-dry.json
+            journey-transfers-dry.log
+            journey-transfers.json
+            journey-transfers.log
           retention-days: 14
           if-no-files-found: ignore
 

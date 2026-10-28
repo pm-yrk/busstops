@@ -38,6 +38,8 @@ export const SHARDED = {
   searchPrefix: "network/search-prefix",
   stopLocator: "network/stop-locator",
   routeTiles: "network/route-tiles",
+  /** Walking transfers between stops, per tile. Immutable for a published network. */
+  journeyTransfers: "network/journey-transfers",
 } as const;
 
 /**

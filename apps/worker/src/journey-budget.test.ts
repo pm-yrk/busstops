@@ -6,11 +6,15 @@ import {
   objectKeyFor,
   objectKeyForBytes,
   corridorBoundingBox,
+  tileIdFor,
   type ObjectStore,
 } from "@busstops/pipeline-core";
 import {
+  STOP_TILE_DEGREES,
   currentArtifactLayout,
   encodePatternTripShard,
+  encodeTransferTile,
+  journeyTransfersDataset,
   patternTripsDataset,
   tripTilesForBoundingBox,
   tripWindowsFor,
@@ -18,6 +22,7 @@ import {
 import { JOURNEY_LIMITS, JourneyService } from "./journey-service.js";
 import type { PatternTripRow } from "@busstops/pipeline-static-network";
 import type { NetworkSlice } from "./network-reader.js";
+import { buildTransferTiles } from "@busstops/journey";
 import { LiveService } from "./live-service.js";
 import { NetworkReader } from "./network-reader.js";
 import { patternTilesForBoundingBox } from "@busstops/pipeline-static-network";
@@ -485,6 +490,230 @@ describe("the buffered read filters what the streaming read filters", () => {
  * two changes", and Cloudflare's tail priced it: the median journey fell to 10 ms of CPU and the
  * p95 rose to 515, because a cross-city query usually does have a two-change best option.
  */
+/**
+ * The published walking transfers, read instead of computed.
+ *
+ * A corridor's transfers are a property of the published network — stops do not move — and
+ * building them measured 21 to 25 milliseconds of a ten-millisecond request. What has to be true
+ * once they are published is that the plan is the same plan, that the reader says which path it
+ * took, and that a corridor whose tiles are missing still answers.
+ */
+describe("a corridor whose transfers are published", () => {
+  const CAP = 600;
+
+  /*
+   * Its own fixture, because the one above has its three stops kilometres apart — a corridor with
+   * no walkable pair proves nothing about walking transfers. These are a few hundred metres apart
+   * along one street, which is the shape a transfer exists in.
+   */
+  const WALKABLE = [
+    { id: "w-1", name: "Armley Road", lat: 53.7955, lon: -1.5478 },
+    { id: "w-2", name: "Armley Town Street", lat: 53.7968, lon: -1.5478 },
+    { id: "w-3", name: "Wellington Road", lat: 53.798, lon: -1.5478 },
+    { id: "w-4", name: "Leeds City Square", lat: 53.7995, lon: -1.5478 },
+  ] as const;
+  const WALKABLE_ORIGIN = { lat: WALKABLE[0].lat, lon: WALKABLE[0].lon };
+  const WALKABLE_DESTINATION = { lat: WALKABLE[3].lat, lon: WALKABLE[3].lon };
+
+  function walkableSlice(): NetworkSlice {
+    return {
+      stopsById: new Map(
+        WALKABLE.map((stop) => [
+          stop.id,
+          {
+            id: stop.id,
+            atcoCode: stop.id.toUpperCase(),
+            name: stop.name,
+            locationCoordinate: { lat: stop.lat, lon: stop.lon },
+          } as never,
+        ]),
+      ),
+      patternsById: new Map([
+        [
+          "p-w",
+          {
+            id: "p-w",
+            serviceRouteId: "svc-w",
+            direction: "outbound",
+            stopSequence: ["w-1", "w-3", "w-4"],
+            distanceMetres: 600,
+            shapeRef: "shape-w",
+          } as never,
+        ],
+      ]),
+      services: new Map([["svc-w", { id: "svc-w", publicName: "W1", operatorId: "op" } as never]]),
+    };
+  }
+
+  const walkableRequest = {
+    origin: WALKABLE_ORIGIN,
+    destination: WALKABLE_DESTINATION,
+    departAtSeconds: DEPART_AT,
+    serviceDate: SERVICE_DATE,
+    version: "v1",
+    layout: currentArtifactLayout(),
+  };
+
+  async function publishWalkable(): Promise<InMemoryObjectStore> {
+    const store = new InMemoryObjectStore();
+    const box = corridorBoundingBox(
+      WALKABLE_ORIGIN,
+      WALKABLE_DESTINATION,
+      JOURNEY_LIMITS.maxAccessWalkMetres,
+    );
+    const midnight = Date.parse(`${SERVICE_DATE}T00:00:00.000Z`) / 1000;
+    const windows = tripWindowsFor(
+      midnight + DEPART_AT,
+      midnight + DEPART_AT + 4 * 3600,
+      SERVICE_DATE,
+    );
+    const lines = [0, 1, 2].map((at) => {
+      const base = midnight + DEPART_AT + 300 + at * 600;
+      return JSON.stringify({
+        p: "p-w",
+        j: `w-trip-${String(at)}`,
+        t: [base, base + 120, base + 240],
+      });
+    });
+    for (const tile of tripTilesForBoundingBox(box)) {
+      for (const window of windows) {
+        await store.put(
+          objectKeyFor(patternTripsDataset(SERVICE_DATE, tile, window), "v1"),
+          `${lines.join("\n")}\n`,
+        );
+      }
+    }
+    return store;
+  }
+
+  async function publishTransfers(store: InMemoryObjectStore, omit: string[] = []) {
+    const stops = WALKABLE.map((stop) => ({
+      id: stop.id,
+      coordinate: { lat: stop.lat, lon: stop.lon },
+    }));
+    const tiles = buildTransferTiles(stops, {
+      capSeconds: CAP,
+      tileOf: (stop) => tileIdFor(stop.coordinate, STOP_TILE_DEGREES),
+    });
+    for (const plan of tiles) {
+      if (omit.includes(plan.tile)) continue;
+      const { bytes } = encodeTransferTile({
+        stopIds: plan.stopIds,
+        offsets: plan.offsets,
+        neighbours: plan.neighbours,
+        seconds: plan.seconds,
+        capSeconds: CAP,
+      });
+      await store.putBytes(objectKeyForBytes(journeyTransfersDataset(plan.tile), "v1"), bytes);
+    }
+    return tiles.map((plan) => plan.tile);
+  }
+
+  it("reads them, and plans the journey it planned before", async () => {
+    const store = await publishWalkable();
+    const before = await new JourneyService(store).planJourney(walkableSlice(), walkableRequest);
+    expect(before.ok).toBe(true);
+    expect(before.diagnostics.transfersFromArtifact).toBe(false);
+    /* A corridor with walkable pairs, or this test is about nothing. */
+    expect(before.diagnostics.transferEdges).toBeGreaterThan(0);
+
+    await publishTransfers(store);
+    const after = await new JourneyService(store).planJourney(walkableSlice(), walkableRequest);
+
+    expect(after.ok).toBe(true);
+    expect(after.diagnostics.transfersFromArtifact).toBe(true);
+    expect(after.diagnostics.transferTilesRead).toBeGreaterThan(0);
+    expect(after.diagnostics.transferTilesMissing).toBe(0);
+    /* The same edges, and then the same itinerary. */
+    expect(after.diagnostics.transferEdges).toBe(before.diagnostics.transferEdges);
+    expect(JSON.stringify(after.ok ? after.result : null)).toBe(
+      JSON.stringify(before.ok ? before.result : null),
+    );
+  });
+
+  it("builds its own when a tile is missing, rather than planning without those transfers", async () => {
+    const store = await publishWalkable();
+    const tiles = await publishTransfers(store);
+    expect(tiles.length).toBeGreaterThan(0);
+    /* One tile withheld: a corridor missing a tile is missing the transfers of every stop in it,
+     * which reads as "you cannot change buses there" rather than as a slower answer. */
+    const withheld = new InMemoryObjectStore();
+    for (const key of await store.list("")) {
+      const text = await store.get(key);
+      if (text !== null) {
+        await withheld.put(key, text);
+        continue;
+      }
+      const bytes = await store.getBytes(key);
+      if (bytes !== null && !key.includes(tiles[0]!)) await withheld.putBytes(key, bytes);
+    }
+
+    const outcome = await new JourneyService(withheld).planJourney(
+      walkableSlice(),
+      walkableRequest,
+    );
+    expect(outcome.ok).toBe(true);
+    expect(outcome.diagnostics.transfersFromArtifact).toBe(false);
+    expect(outcome.diagnostics.transferTilesMissing).toBeGreaterThan(0);
+    expect(outcome.diagnostics.transferEdges).toBeGreaterThan(0);
+  });
+
+  it("asks each tile once per isolate, however many journeys follow", async () => {
+    const store = await publishWalkable();
+    await publishTransfers(store);
+    const asked: string[] = [];
+    const counting = {
+      get: (key: string) => store.get(key),
+      put: (key: string, value: string) => store.put(key, value),
+      delete: (key: string) => store.delete(key),
+      list: (prefix: string) => store.list(prefix),
+      getStream: (key: string) => store.getStream(key),
+      getBytes: async (key: string) => {
+        if (key.includes("journey-transfers")) asked.push(key);
+        return store.getBytes(key);
+      },
+      putBytes: (key: string, value: Uint8Array) => store.putBytes(key, value),
+    };
+
+    const service = new JourneyService(counting as unknown as InMemoryObjectStore);
+    for (let at = 0; at < 4; at += 1) {
+      const outcome = await service.planJourney(walkableSlice(), {
+        ...walkableRequest,
+        departAtSeconds: DEPART_AT + at * 60,
+      });
+      expect(outcome.ok).toBe(true);
+      expect(outcome.diagnostics.transfersFromArtifact).toBe(true);
+    }
+    /* Four plans, one read of each tile: a published tile cannot change under a version. */
+    expect(asked.length).toBe(new Set(asked).size);
+  });
+
+  it("refuses tiles published for a different walk, rather than offering a change nobody can make", async () => {
+    const store = await publishWalkable();
+    const stops = WALKABLE.map((stop) => ({
+      id: stop.id,
+      coordinate: { lat: stop.lat, lon: stop.lon },
+    }));
+    for (const plan of buildTransferTiles(stops, {
+      capSeconds: 300,
+      tileOf: (stop) => tileIdFor(stop.coordinate, STOP_TILE_DEGREES),
+    })) {
+      const { bytes } = encodeTransferTile({
+        stopIds: plan.stopIds,
+        offsets: plan.offsets,
+        neighbours: plan.neighbours,
+        seconds: plan.seconds,
+        capSeconds: 300,
+      });
+      await store.putBytes(objectKeyForBytes(journeyTransfersDataset(plan.tile), "v1"), bytes);
+    }
+
+    const outcome = await new JourneyService(store).planJourney(walkableSlice(), walkableRequest);
+    expect(outcome.ok).toBe(true);
+    expect(outcome.diagnostics.transfersFromArtifact).toBe(false);
+  });
+});
+
 describe("how far ahead a plan looks", () => {
   /** A corridor whose only service runs later than the narrow horizon. */
   async function publishLateOnly() {

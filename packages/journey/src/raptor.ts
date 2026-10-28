@@ -202,12 +202,16 @@ export function runRaptor(
   // Initial footpaths: a passenger can walk from the stop they started at to a nearby one and
   // board there. Without this the search silently misses itineraries a person would obviously
   // take, which is exactly what the brute-force comparison catches.
+  const walks = graph.transfers;
   const allowInitialFootpaths = options.allowInitialFootpaths ?? true;
   for (const originStopId of allowInitialFootpaths ? [...round0.keys()] : []) {
     const from = round0.get(originStopId)!;
-    for (const transfer of graph.transfers.get(originStopId) ?? []) {
-      const arrival = from.arrivalSeconds + transfer.walkSeconds;
-      const existing = round0.get(transfer.toStopId);
+    const fromIndex = walks.indexOf(originStopId);
+    const lastEdge = fromIndex < 0 ? 0 : walks.offsets[fromIndex + 1]!;
+    for (let edge = fromIndex < 0 ? 0 : walks.offsets[fromIndex]!; edge < lastEdge; edge += 1) {
+      const toStopId = walks.stopIds[walks.neighbours[edge]!]!;
+      const arrival = from.arrivalSeconds + walks.seconds[edge]!;
+      const existing = round0.get(toStopId);
       if (existing && existing.arrivalSeconds <= arrival) continue;
 
       const label: StopLabel = {
@@ -216,17 +220,16 @@ export function runRaptor(
         leg: {
           kind: "transfer",
           fromStopId: originStopId,
-          toStopId: transfer.toStopId,
+          toStopId,
           departureSeconds: from.arrivalSeconds,
           arrivalSeconds: arrival,
         },
         previousStopId: originStopId,
       };
-      round0.set(transfer.toStopId, label);
+      round0.set(toStopId, label);
 
-      const bestExisting = best.get(transfer.toStopId);
-      if (!bestExisting || arrival < bestExisting.arrivalSeconds)
-        best.set(transfer.toStopId, label);
+      const bestExisting = best.get(toStopId);
+      if (!bestExisting || arrival < bestExisting.arrivalSeconds) best.set(toStopId, label);
     }
   }
 
@@ -362,30 +365,40 @@ export function runRaptor(
       const from = current.get(stopId);
       if (!from) continue;
 
-      for (const transfer of graph.transfers.get(stopId) ?? []) {
+      /*
+       * Over the adjacency's arrays, not over a list of objects.
+       *
+       * This is where the published transfers are spent: an index for the stop, then integer
+       * arithmetic per edge and one array read for the neighbour's id. The structure it walks is
+       * the same one the artifact decodes into, which is the whole point of publishing it.
+       */
+      const fromIndex = walks.indexOf(stopId);
+      if (fromIndex < 0) continue;
+      const lastEdge = walks.offsets[fromIndex + 1]!;
+      for (let edge = walks.offsets[fromIndex]!; edge < lastEdge; edge += 1) {
         if (counters) counters.transferScans += 1;
-        const arrival = from.arrivalSeconds + transfer.walkSeconds;
-        const existing = current.get(transfer.toStopId);
+        const toStopId = walks.stopIds[walks.neighbours[edge]!]!;
+        const arrival = from.arrivalSeconds + walks.seconds[edge]!;
+        const existing = current.get(toStopId);
         if (existing && existing.arrivalSeconds <= arrival) continue;
 
-        current.set(transfer.toStopId, {
+        const label: StopLabel = {
           arrivalSeconds: arrival,
           round,
           leg: {
             kind: "transfer",
             fromStopId: stopId,
-            toStopId: transfer.toStopId,
+            toStopId,
             departureSeconds: from.arrivalSeconds,
             arrivalSeconds: arrival,
           },
           previousStopId: stopId,
-        });
+        };
+        current.set(toStopId, label);
 
-        const globalBest = best.get(transfer.toStopId);
-        if (!globalBest || arrival < globalBest.arrivalSeconds) {
-          best.set(transfer.toStopId, current.get(transfer.toStopId)!);
-        }
-        nextMarked.add(transfer.toStopId);
+        const globalBest = best.get(toStopId);
+        if (!globalBest || arrival < globalBest.arrivalSeconds) best.set(toStopId, label);
+        nextMarked.add(toStopId);
       }
     }
 

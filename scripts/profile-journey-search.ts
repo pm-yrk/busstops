@@ -21,7 +21,7 @@ import { ArtifactStore, annotateReport, r2StoreFromEnv } from "@busstops/pipelin
 import { SHARDED, type NetworkIndexRecord } from "@busstops/pipeline-static-network";
 import {
   buildGraph,
-  buildTransfers,
+  buildTransferAdjacency,
   groupRoutes,
   newSearchCounters,
   plan,
@@ -127,7 +127,7 @@ async function main(): Promise<number> {
      * grouping depends on the corridor filter and could not — so a single number for the build
      * cannot decide which to do. These two can.
      */
-    const transfersOnly = timed(() => buildTransfers(stops, 600));
+    const transfersOnly = timed(() => buildTransferAdjacency(stops, 600));
     const groupingOnly = timed(() => groupRoutes(trips));
     /*
      * The same grouping with the whole-pattern flag taken off, in the same process and against
@@ -141,8 +141,7 @@ async function main(): Promise<number> {
     const unflagged = trips.map((trip) => ({ ...trip, wholePatternSequence: false }));
     const groupingUnflagged = timed(() => groupRoutes(unflagged));
 
-    let transferEdges = 0;
-    for (const list of graph.transfers.values()) transferEdges += list.length;
+    const transferEdges = graph.transfers.edgeCount;
     let stopTripEntries = 0;
     for (const list of graph.tripsByStop.values()) stopTripEntries += list.length;
 

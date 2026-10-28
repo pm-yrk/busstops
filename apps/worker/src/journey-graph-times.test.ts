@@ -76,7 +76,7 @@ function viaText(epochSeconds: number, serviceDate: string): number | null {
 }
 
 describe("stop times into seconds of the service day", () => {
-  it("agrees with the text round trip it replaced, to the second", () => {
+  it("agrees with the text round trip it replaced, to the second", async () => {
     /* A winter date and a summer one, so a British Summer Time offset cannot hide in it. */
     for (const serviceDate of ["2026-01-14", "2026-07-15", "2026-10-25"]) {
       const midnight = Date.parse(`${serviceDate}T00:00:00.000Z`) / 1000;
@@ -86,7 +86,7 @@ describe("stop times into seconds of the service day", () => {
         midnight + 23 * 3600 + 59 * 60 + 59,
         midnight + 25 * 3600, // the night bus, past midnight into the next day
       ];
-      const built = buildGraphFor(
+      const built = await buildGraphFor(
         slice([STOP_A, STOP_B, STOP_C, STOP_A]),
         [row(departures)],
         corridor,
@@ -103,13 +103,13 @@ describe("stop times into seconds of the service day", () => {
     }
   });
 
-  it("keeps a separate arrival where the feed publishes one", () => {
+  it("keeps a separate arrival where the feed publishes one", async () => {
     const serviceDate = "2026-07-15";
     const midnight = Date.parse(`${serviceDate}T00:00:00.000Z`) / 1000;
     const departures = [midnight + 32_400, midnight + 33_000, midnight + 33_600];
     /* A layover: the bus arrives two minutes before it leaves the interchange. */
     const arrivals = [midnight + 32_400, midnight + 32_880, midnight + 33_600];
-    const built = buildGraphFor(
+    const built = await buildGraphFor(
       slice([STOP_A, STOP_B, STOP_C]),
       [row(departures, arrivals)],
       corridor,
@@ -120,12 +120,12 @@ describe("stop times into seconds of the service day", () => {
     expect(trip.stopTimes[1]!.departureSeconds).toBe(33_000);
   });
 
-  it("drops a call the trip has no time for, and keeps the stops in order", () => {
+  it("drops a call the trip has no time for, and keeps the stops in order", async () => {
     const serviceDate = "2026-07-15";
     const midnight = Date.parse(`${serviceDate}T00:00:00.000Z`) / 1000;
     /* The middle call is missing: a trip that does not serve that stop. */
     const times = [midnight + 32_400, undefined, midnight + 33_600] as unknown as number[];
-    const built = buildGraphFor(
+    const built = await buildGraphFor(
       slice([STOP_A, STOP_B, STOP_C]),
       [{ p: PATTERN_ID, j: "trip-1", t: times }],
       corridor,
@@ -135,8 +135,8 @@ describe("stop times into seconds of the service day", () => {
     expect(trip.stopTimes.map((stopTime) => stopTime.stopId)).toEqual([STOP_A, STOP_C]);
   });
 
-  it("refuses the graph rather than inventing times for an unreadable service date", () => {
-    const built = buildGraphFor(
+  it("refuses the graph rather than inventing times for an unreadable service date", async () => {
+    const built = await buildGraphFor(
       slice([STOP_A, STOP_B]),
       [row([1_000, 2_000])],
       corridor,
@@ -145,10 +145,10 @@ describe("stop times into seconds of the service day", () => {
     expect(built.graph).toBeNull();
   });
 
-  it("keeps a trip untouched when the corridor cuts nothing from it", () => {
+  it("keeps a trip untouched when the corridor cuts nothing from it", async () => {
     const serviceDate = "2026-07-15";
     const midnight = Date.parse(`${serviceDate}T00:00:00.000Z`) / 1000;
-    const built = buildGraphFor(
+    const built = await buildGraphFor(
       slice([STOP_A, STOP_B, STOP_C]),
       [row([midnight + 1, midnight + 2, midnight + 3])],
       corridor,
@@ -157,12 +157,12 @@ describe("stop times into seconds of the service day", () => {
     expect(built.graph!.trips[0]!.stopTimes).toHaveLength(3);
   });
 
-  it("cuts the calls outside the corridor and drops a trip left with fewer than two", () => {
+  it("cuts the calls outside the corridor and drops a trip left with fewer than two", async () => {
     const serviceDate = "2026-07-15";
     const midnight = Date.parse(`${serviceDate}T00:00:00.000Z`) / 1000;
     /* A corridor around the first stop only: the other two are a long way east. */
     const narrow = { west: -1.56, east: -1.54, south: 53.79, north: 53.8 };
-    const built = buildGraphFor(
+    const built = await buildGraphFor(
       slice([STOP_A, STOP_B, STOP_C]),
       [row([midnight + 1, midnight + 2, midnight + 3])],
       narrow,

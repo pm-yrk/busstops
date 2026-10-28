@@ -96,10 +96,15 @@ describe("graph construction", () => {
   });
 
   it("creates walking transfers only within range", () => {
-    const fromA = graph.transfers.get("A") ?? [];
-    expect(fromA.some((t) => t.toStopId === "B")).toBe(true);
+    const walks = graph.transfers;
+    const at = walks.indexOf("A");
+    const reaches = new Set<string>();
+    for (let edge = walks.offsets[at]!; edge < walks.offsets[at + 1]!; edge += 1) {
+      reaches.add(walks.stopIds[walks.neighbours[edge]!]!);
+    }
+    expect(reaches.has("B")).toBe(true);
     // A to E is over a kilometre, beyond the 10-minute transfer cap.
-    expect(fromA.some((t) => t.toStopId === "E")).toBe(false);
+    expect(reaches.has("E")).toBe(false);
   });
 
   it("computes walking time from distance at a plausible pace", () => {
