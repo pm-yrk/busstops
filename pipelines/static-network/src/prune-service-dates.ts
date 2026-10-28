@@ -1,4 +1,4 @@
-import type { ObjectStore } from "@busstops/pipeline-core";
+import { versionInObjectKey, type ObjectStore } from "@busstops/pipeline-core";
 import { DEPARTURES_PREFIX, PATTERN_TRIPS_PREFIX } from "./departures-index.js";
 
 /**
@@ -70,8 +70,8 @@ export function staleVersionDatedKeys(
   const keep = new Set(keepVersions);
   return keys.filter((key) => {
     if (serviceDateInKey(key) === null) return false;
-    const version = /\/([^/]+)\.jsonl$/.exec(key)?.[1];
-    return version !== undefined && !keep.has(version);
+    const version = versionInObjectKey(key);
+    return version !== null && !keep.has(version);
   });
 }
 

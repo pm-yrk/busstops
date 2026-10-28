@@ -1,4 +1,4 @@
-import type { StoredObject } from "@busstops/pipeline-core";
+import { versionInObjectKey, type StoredObject } from "@busstops/pipeline-core";
 
 /**
  * Deleting superseded network artifacts, without ever deleting the one being served.
@@ -58,14 +58,16 @@ export interface PrunePlan {
   objectsAfter: number;
 }
 
-/** `data/<dataset>/<version>.jsonl` — the version is the last path segment, minus the suffix. */
+/**
+ * `data/<dataset>/<version>.jsonl` — or `.bin`, for a dataset published as bytes.
+ *
+ * Both suffixes, because a form this function does not recognise is a form nothing prunes: the
+ * binary trip shards would have accumulated one unreachable copy per rebuild in a bucket whose
+ * free allowance is account-wide.
+ */
 export function versionOfObjectKey(key: string): string | null {
   if (!key.startsWith("data/")) return null;
-  if (!key.endsWith(".jsonl")) return null;
-  const lastSlash = key.lastIndexOf("/");
-  if (lastSlash < 0) return null;
-  const version = key.slice(lastSlash + 1, -".jsonl".length);
-  return version.length > 0 ? version : null;
+  return versionInObjectKey(key);
 }
 
 export interface PruneOptions {

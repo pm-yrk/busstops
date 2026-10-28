@@ -1216,6 +1216,85 @@ jobs:
           if-no-files-found: ignore
 
   # The baseline a replacement planner is compared against: what the deployed one answers today.
+  # Converting the live version's trip shards into the form a passenger request can read.
+  #
+  # The journey endpoint does not fail in its search (3.24 ms). It fails in `JSON.parse`, which
+  # measured 24.26 ms of a ten-millisecond budget on a Manchester corridor. Republishing England
+  # to change a format is not available — a national build takes about forty-five minutes and
+  # writes a second copy of everything into a bucket with about a gigabyte of headroom — so the
+  # conversion happens in place, and it *frees* space: the binary form is about 46% of the text.
+  #
+  # Destructive, so it is gated on its own marker, it only touches the version the index names,
+  # and it deletes nothing until the bytes written in its place have been read back out of the
+  # bucket and found to hold every row.
+  migrate_trip_shards:
+    name: Convert the trip shards to the form a request can read
+    if: contains(github.event.head_commit.message, '[migrate-trips]')
+    # After the regression suite has passed against the deployed build of this commit.
+    #
+    # The order is the whole safety of this: the text form is deleted, so the Worker in front of
+    # passengers has to be one that reads the binary form *before* anything is converted. `regress`
+    # deploys this commit and walks the passenger surface, so needing it means a conversion can
+    # only follow a deployed, verified reader. A `[migrate-trips]` commit therefore has to carry
+    # `[regress]` as well — without it this job is skipped, which is the right failure.
+    needs: regress
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - run: npm ci --no-audit --no-fund
+
+      # A sample first, writing nothing: what the whole family would cost and save.
+      - name: What it would save
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          NODE_OPTIONS: "--max-old-space-size=8192"
+        run: |
+          set -o pipefail
+          npx tsx scripts/migrate-trip-shards.ts --limit 20 --minutes 5 \
+            --json trip-shard-migration-dry.json 2>&1 | tee trip-shard-migration-dry.log
+
+      - name: Convert
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          NODE_OPTIONS: "--max-old-space-size=8192"
+        run: |
+          set -o pipefail
+          npx tsx scripts/migrate-trip-shards.ts --apply --minutes 30 \
+            --json trip-shard-migration.json 2>&1 | tee trip-shard-migration.log
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "## What converting the trip shards would save"
+            echo '```'
+            sed -n '1,80p' trip-shard-migration-dry.log 2>/dev/null || echo "not measured"
+            echo '```'
+            echo "## What it converted"
+            echo '```'
+            sed -n '1,80p' trip-shard-migration.log 2>/dev/null || echo "not run"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-trip-shard-migration
+          path: |
+            trip-shard-migration-dry.json
+            trip-shard-migration-dry.log
+            trip-shard-migration.json
+            trip-shard-migration.log
+          retention-days: 14
+          if-no-files-found: ignore
+
   journey_corpus:
     name: Record what the current planner answers
     if: contains(github.event.head_commit.message, '[corpus]')

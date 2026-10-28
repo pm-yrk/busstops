@@ -29,6 +29,7 @@ import {
   annotateReport,
   objectKeyFor,
   r2StoreFromEnv,
+  versionInObjectKey,
   type StoredObject,
 } from "@busstops/pipeline-core";
 
@@ -214,9 +215,8 @@ async function main(): Promise<number> {
   const versionsSeen = new Map<string, { objects: number; bytes: number; referenced: number }>();
   for (const object of objects) {
     if (!object.key.startsWith("data/")) continue;
-    const match = /^data\/(.+)\/([^/]+)\.jsonl$/.exec(object.key);
-    if (!match) continue;
-    const version = match[2]!;
+    const version = versionInObjectKey(object.key);
+    if (version === null) continue;
     const entry = versionsSeen.get(version) ?? { objects: 0, bytes: 0, referenced: 0 };
     entry.objects += 1;
     entry.bytes += object.sizeBytes ?? 0;
@@ -234,10 +234,8 @@ async function main(): Promise<number> {
     }));
 
   /** The version in a data key, or null for anything that is not a versioned data object. */
-  const versionOf = (key: string): string | null => {
-    const match = /^data\/(.+)\/([^/]+)\.jsonl$/.exec(key);
-    return match === null ? null : match[2]!;
-  };
+  const versionOf = (key: string): string | null =>
+    key.startsWith("data/") ? versionInObjectKey(key) : null;
 
   const unreachable = objects.filter((object) => {
     if (object.key.startsWith("manifests/")) return false;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PatternTripShard, encodePatternTripShard } from "./binary-trips.js";
+import { PatternTripShard, encodePatternTripShard, shardHoldsEveryRow } from "./binary-trips.js";
 import type { PatternTripRow } from "./departures-index.js";
 
 /**
@@ -181,5 +181,72 @@ describe("a pattern-trips shard as bytes", () => {
     expect(stats.trips).toBe(0);
     expect(shard.tripCount).toBe(0);
     expect(shard.callCount).toBe(0);
+  });
+});
+
+/**
+ * The check that stands between a migration and deleting a published timetable.
+ *
+ * The migration writes bytes, reads them back out of the bucket, and only then deletes the text.
+ * This is the "only then": if it can be fooled, a shard of England's timetable goes missing and
+ * the endpoint that needed it answers "no journeys found" with total confidence.
+ */
+describe("proving the bytes hold what the rows held", () => {
+  it("accepts a faithful encode", () => {
+    const source = rows(400, 13);
+    const { bytes } = encodePatternTripShard(source);
+    expect(shardHoldsEveryRow(bytes, source)).toEqual({ ok: true });
+  });
+
+  it("accepts an encode that dropped a row no search could use", () => {
+    const source = [...rows(10, 17), { p: "p-1", j: "nothing", t: [] }];
+    const { bytes } = encodePatternTripShard(source);
+    expect(shardHoldsEveryRow(bytes, source).ok).toBe(true);
+  });
+
+  it("refuses bytes that are a different shard", () => {
+    const { bytes } = encodePatternTripShard(rows(50, 19));
+    const other = rows(50, 23);
+    expect(shardHoldsEveryRow(bytes, other).ok).toBe(false);
+  });
+
+  it("refuses bytes that are missing a trip", () => {
+    const source = rows(30, 29);
+    const { bytes } = encodePatternTripShard(source.slice(0, 29));
+    const verdict = shardHoldsEveryRow(bytes, source);
+    expect(verdict.ok).toBe(false);
+    if (!verdict.ok) expect(verdict.reason).toContain("29 trips");
+  });
+
+  it("refuses bytes whose times differ by one second", () => {
+    const source = rows(20, 31);
+    const nudged = source.map((row, index) =>
+      index === 7 ? { ...row, t: row.t.map((time, call) => (call === 2 ? time + 1 : time)) } : row,
+    );
+    const { bytes } = encodePatternTripShard(nudged);
+    const verdict = shardHoldsEveryRow(bytes, source);
+    expect(verdict.ok).toBe(false);
+    if (!verdict.ok) expect(verdict.reason).toContain("departure differs");
+  });
+
+  it("refuses bytes that lost a layover", () => {
+    const source = rows(20, 37).map((row, index) =>
+      index === 3
+        ? { ...row, a: row.t.map((time, call) => (call === 1 ? time - 240 : time)) }
+        : row,
+    );
+    const flattened = source.map((row, index) =>
+      index === 3 ? { p: row.p, j: row.j, t: row.t } : row,
+    );
+    const { bytes } = encodePatternTripShard(flattened);
+    const verdict = shardHoldsEveryRow(bytes, source);
+    expect(verdict.ok).toBe(false);
+    if (!verdict.ok) expect(verdict.reason).toContain("arrival differs");
+  });
+
+  it("refuses bytes that are not a shard at all", () => {
+    const verdict = shardHoldsEveryRow(new TextEncoder().encode("not a shard"), rows(3, 41));
+    expect(verdict.ok).toBe(false);
+    if (!verdict.ok) expect(verdict.reason).toContain("would not open");
   });
 });

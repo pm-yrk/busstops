@@ -4,16 +4,19 @@ import {
   InMemoryObjectStore,
   canStream,
   objectKeyFor,
+  objectKeyForBytes,
   corridorBoundingBox,
   type ObjectStore,
 } from "@busstops/pipeline-core";
 import {
   currentArtifactLayout,
+  encodePatternTripShard,
   patternTripsDataset,
   tripTilesForBoundingBox,
   tripWindowsFor,
 } from "@busstops/pipeline-static-network";
 import { JOURNEY_LIMITS, JourneyService } from "./journey-service.js";
+import type { PatternTripRow } from "@busstops/pipeline-static-network";
 import type { NetworkSlice } from "./network-reader.js";
 import { LiveService } from "./live-service.js";
 import { NetworkReader } from "./network-reader.js";
@@ -457,6 +460,102 @@ describe("the buffered read filters what the streaming read filters", () => {
       expect(outcome.diagnostics.tripsLoaded).toBeGreaterThan(0);
       expect(outcome.diagnostics.tripsFiltered).toBe(outcome.diagnostics.tripsLoaded! * 8);
     }
+  });
+});
+
+/**
+ * The published binary shard, which is the form that makes a journey fit in a passenger request.
+ *
+ * `JSON.parse` over a corridor's trip text measured 24.26 ms against a ten-millisecond budget —
+ * more than the graph build and the search put together. The same shard published columnar is read
+ * through typed arrays. What has to be true is that it is the *same shard*: the same trips kept,
+ * the same ones dropped, the same itinerary, and a fallback that works when the bytes do not.
+ */
+describe("a corridor published as bytes", () => {
+  async function publishBinary(options: { alsoText: boolean; corrupt?: boolean }) {
+    const store = new InMemoryObjectStore();
+    const tiles = tripTilesForBoundingBox(corridor);
+    const midnight = Date.parse(`${SERVICE_DATE}T00:00:00.000Z`) / 1000;
+    const windows = tripWindowsFor(
+      midnight + DEPART_AT,
+      midnight + DEPART_AT + 4 * 3600,
+      SERVICE_DATE,
+    );
+    const lines = [
+      tripLine(0, DEPART_AT + 600),
+      tripLine(1, DEPART_AT + 1800),
+      ...Array.from({ length: 8 }, (_, i) => fillerLine(i)),
+    ];
+    const rows = lines.map((line) => JSON.parse(line) as PatternTripRow);
+    let shards = 0;
+    for (const tile of tiles) {
+      for (const window of windows) {
+        const dataset = patternTripsDataset(SERVICE_DATE, tile, window);
+        if (options.alsoText) await store.put(objectKeyFor(dataset, "v1"), `${lines.join("\n")}\n`);
+        const bytes = options.corrupt
+          ? new TextEncoder().encode("this is not a shard")
+          : encodePatternTripShard(rows).bytes;
+        await store.putBytes(objectKeyForBytes(dataset, "v1"), bytes);
+        shards += 1;
+      }
+    }
+    return { store, shards };
+  }
+
+  it("plans the same journey from the bytes as from the text", async () => {
+    const { store: textStore } = await publish(8);
+    const { store: binaryStore, shards } = await publishBinary({ alsoText: false });
+
+    const fromText = await new JourneyService(textStore).planJourney(slice(), request);
+    const fromBytes = await new JourneyService(binaryStore).planJourney(slice(), request);
+
+    expect(fromText.ok).toBe(true);
+    expect(fromBytes.ok).toBe(true);
+    // Every shard came from the binary form, and none of them from a text fallback.
+    expect(fromBytes.diagnostics.shardsBinary).toBe(shards);
+    expect(fromBytes.diagnostics.shardsBinaryFallback).toBe(0);
+    expect(fromText.diagnostics.shardsBinary).toBe(0);
+    // The same trips kept and the same trips dropped, and then the same itinerary.
+    expect(fromBytes.diagnostics.tripsLoaded).toBe(fromText.diagnostics.tripsLoaded);
+    expect(fromBytes.diagnostics.tripsFiltered).toBe(fromText.diagnostics.tripsFiltered);
+    expect(JSON.stringify(fromBytes.ok ? fromBytes.result : null)).toBe(
+      JSON.stringify(fromText.ok ? fromText.result : null),
+    );
+  });
+
+  it("prefers the bytes when both forms are published", async () => {
+    const { store, shards } = await publishBinary({ alsoText: true });
+    const outcome = await new JourneyService(store).planJourney(slice(), request);
+    expect(outcome.ok).toBe(true);
+    expect(outcome.diagnostics.shardsBinary).toBe(shards);
+    expect(outcome.diagnostics.shardsBinaryFallback).toBe(0);
+  });
+
+  /*
+   * A publishing fault must not cost a passenger a journey.
+   *
+   * Corrupt bytes are the publisher's problem and they are fixable in minutes; a plan that
+   * refuses because of them is a day of lost journeys. So the text sibling answers and the
+   * fallback is counted, because "the fast path was not taken" and "the fast path is not fast"
+   * need telling apart in a deployed measurement.
+   */
+  it("falls back to the text sibling when the bytes cannot be opened, and says so", async () => {
+    const { store, shards } = await publishBinary({ alsoText: true, corrupt: true });
+    const outcome = await new JourneyService(store).planJourney(slice(), request);
+
+    expect(outcome.ok).toBe(true);
+    expect(outcome.diagnostics.shardsBinary).toBe(0);
+    expect(outcome.diagnostics.shardsBinaryFallback).toBe(shards);
+    expect(outcome.diagnostics.tripsLoaded).toBeGreaterThan(0);
+  });
+
+  it("refuses rather than planning on half a corridor when the bytes are the only copy", async () => {
+    /* No text sibling and bytes that cannot be opened: there is nothing to plan from, and a
+     * confident itinerary built on the shards that happened to work is the one answer that must
+     * never be given. */
+    const { store } = await publishBinary({ alsoText: false, corrupt: true });
+    const outcome = await new JourneyService(store).planJourney(slice(), request);
+    expect(outcome.ok).toBe(false);
   });
 });
 

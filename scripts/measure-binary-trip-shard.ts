@@ -190,7 +190,32 @@ async function main(): Promise<number> {
     return { trips, calls, sum };
   };
 
+  /*
+   * And the third form: the bytes, with the rows the graph builder consumes today.
+   *
+   * The reader materialises a `PatternTripRow` for each trip that survives the two filters,
+   * because that is what `buildGraph` takes. That allocation is not free, and the gap between
+   * this number and the one above is exactly what moving the graph builder onto the shard itself
+   * would be worth — so it is measured rather than asserted.
+   */
+  const fromBytesRows = (): { trips: number; calls: number; sum: number } => {
+    const shard = new PatternTripShard(bytes);
+    const kept: PatternTripRow[] = [];
+    for (let trip = 0; trip < shard.tripCount; trip += 1) {
+      if (shard.lastDeparture(trip) < from || shard.firstDeparture(trip) > to) continue;
+      kept.push(shard.rowAt(trip));
+    }
+    let calls = 0;
+    let sum = 0;
+    for (const row of kept) {
+      calls += row.t.length;
+      for (const time of row.t) sum += time;
+    }
+    return { trips: kept.length, calls, sum };
+  };
+
   const open = compare(fromText, fromBytes);
+  const rowsForm = compare(fromText, fromBytesRows);
 
   const report = {
     outcome: "measured",
@@ -209,13 +234,19 @@ async function main(): Promise<number> {
     openMs: {
       text: open.aMs,
       binary: open.bMs,
+      /* What the reader costs as written: bytes, with the rows the graph builder takes. */
+      binaryWithRows: rowsForm.bMs,
       speedup: open.bMs === 0 ? null : Number((open.aMs / open.bMs).toFixed(1)),
+      speedupWithRows: rowsForm.bMs === 0 ? null : Number((rowsForm.aMs / rowsForm.bMs).toFixed(1)),
     },
     /* Both forms have to answer the same question, or the milliseconds mean nothing. */
     agrees:
       open.aValue.trips === open.bValue.trips &&
       open.aValue.calls === open.bValue.calls &&
-      open.aValue.sum === open.bValue.sum,
+      open.aValue.sum === open.bValue.sum &&
+      rowsForm.bValue.trips === open.aValue.trips &&
+      rowsForm.bValue.calls === open.aValue.calls &&
+      rowsForm.bValue.sum === open.aValue.sum,
     selected: open.bValue,
     encodeMs: Number(encoded.ms.toFixed(2)),
     stats: encoded.value.stats,

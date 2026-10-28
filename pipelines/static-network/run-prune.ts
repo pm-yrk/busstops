@@ -8,7 +8,7 @@ import {
   positiveNumberFromEnv,
 } from "@busstops/pipeline-core";
 import { SHARDED, type NetworkIndexRecord } from "./src/shards.js";
-import { keysToRemove, planNetworkPrune } from "./src/prune-versions.js";
+import { keysToRemove, planNetworkPrune, versionOfObjectKey } from "./src/prune-versions.js";
 
 /**
  * Deleting superseded national publishes, carefully.
@@ -304,8 +304,11 @@ async function main(): Promise<number> {
       return 1;
     }
 
+    /* Either suffix: a dataset published as bytes carries `.bin`, and a retire that matched only
+     * the text form would leave the other half of the version behind. */
     const atVersion = all.filter(
-      (object) => object.key.startsWith("data/") && object.key.endsWith(`/${RETIRE_VERSION}.jsonl`),
+      (object) =>
+        object.key.startsWith("data/") && versionOfObjectKey(object.key) === RETIRE_VERSION,
     );
     /*
      * And the pointers at it, so nothing is left naming an object that has gone. Read rather than

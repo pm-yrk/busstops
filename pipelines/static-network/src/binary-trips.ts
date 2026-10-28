@@ -303,3 +303,56 @@ export class PatternTripShard {
     return differs ? { ...row, a: arrivals } : row;
   }
 }
+
+/**
+ * Whether these bytes hold what these rows held.
+ *
+ * Read back out of the encoded form rather than compared against the encoder's own intermediate
+ * state: what matters is that a reader opening the bytes sees the timetable, and the only honest
+ * way to check that is to open them the way a reader will. This is what stands between a
+ * migration and deleting a published timetable it has not replaced — so it compares the pattern,
+ * the trip id, every departure and every arrival, not a count and a checksum.
+ *
+ * A row with no calls is excluded, because the encoder drops those: no search can use a trip that
+ * stops nowhere, and the encode reports how many it dropped.
+ */
+export function shardHoldsEveryRow(
+  bytes: Uint8Array,
+  rows: readonly PatternTripRow[],
+): { ok: true } | { ok: false; reason: string } {
+  const expected = rows.filter((row) => row.t.length > 0);
+  let shard: PatternTripShard;
+  try {
+    shard = new PatternTripShard(bytes);
+  } catch (error) {
+    return { ok: false, reason: `the bytes would not open: ${String(error).slice(0, 80)}` };
+  }
+  if (shard.tripCount !== expected.length) {
+    return {
+      ok: false,
+      reason: `holds ${String(shard.tripCount)} trips, the rows have ${String(expected.length)}`,
+    };
+  }
+  for (let trip = 0; trip < expected.length; trip += 1) {
+    const want = expected[trip]!;
+    const got = shard.rowAt(trip);
+    if (got.p !== want.p) return { ok: false, reason: `trip ${String(trip)}: pattern differs` };
+    if (got.j !== want.j) return { ok: false, reason: `trip ${String(trip)}: trip id differs` };
+    if (got.t.length !== want.t.length) {
+      return {
+        ok: false,
+        reason: `trip ${want.j}: ${String(got.t.length)} calls, not ${String(want.t.length)}`,
+      };
+    }
+    for (let call = 0; call < want.t.length; call += 1) {
+      if (got.t[call] !== want.t[call]) {
+        return { ok: false, reason: `trip ${want.j}, call ${String(call)}: departure differs` };
+      }
+      const wantArrival = want.a?.[call] ?? want.t[call]!;
+      if (shard.arrival(trip, call) !== wantArrival) {
+        return { ok: false, reason: `trip ${want.j}, call ${String(call)}: arrival differs` };
+      }
+    }
+  }
+  return { ok: true };
+}

@@ -1,8 +1,10 @@
 import type { Coordinate, RoutePattern, ServiceRoute } from "@busstops/contracts";
 import {
+  canHoldBytes,
   canStream,
   corridorBoundingBox,
   objectKeyFor,
+  objectKeyForBytes,
   withinBoundingBox,
   type ObjectStore,
 } from "@busstops/pipeline-core";
@@ -16,6 +18,7 @@ import {
   type TripStopTime,
 } from "@busstops/journey";
 import {
+  PatternTripShard,
   checkArtifactLayout,
   describeLayoutCheck,
   passengerName,
@@ -149,6 +152,16 @@ export interface JourneyDiagnostics {
   shardsSkipped?: number;
   /** Rows parsed and immediately discarded as outside the plan's window or corridor patterns. */
   tripsFiltered?: number;
+  /**
+   * Shards that were read in the published binary form rather than as JSON lines.
+   *
+   * Here because the binary form is the whole reason a journey can fit in a passenger request's
+   * CPU, and because "the fast path was not taken" and "the fast path is not fast" are different
+   * problems. A deployed walk that reports zero of these is measuring the text path.
+   */
+  shardsBinary?: number;
+  /** Binary shards that could not be opened, and were read as text instead. */
+  shardsBinaryFallback?: number;
   /** Patterns the corridor's trips named, and therefore the patterns that had to be read. */
   patternsRequested?: number;
   /** Trip rows read out of the shards. */
@@ -420,6 +433,8 @@ export class JourneyService {
     diagnostics.shardsMissing = loaded.shardsMissing;
     diagnostics.shardsSkipped = loaded.shardsSkipped;
     diagnostics.tripsFiltered = loaded.tripsFiltered;
+    diagnostics.shardsBinary = loaded.shardsBinary;
+    diagnostics.shardsBinaryFallback = loaded.shardsBinaryFallback;
     diagnostics.tripsLoaded = loaded.rows.length;
     diagnostics.failures = loaded.failures;
 
@@ -634,6 +649,8 @@ export class JourneyService {
     shardsMissing: number;
     shardsSkipped: number;
     tripsFiltered: number;
+    shardsBinary: number;
+    shardsBinaryFallback: number;
     chars: number;
     readMs: number;
     parseMs: number;
@@ -645,6 +662,8 @@ export class JourneyService {
     let shardsRead = 0;
     let shardsMissing = 0;
     let tripsFiltered = 0;
+    let shardsBinary = 0;
+    let shardsBinaryFallback = 0;
     let chars = 0;
     let readMs = 0;
     let parseMs = 0;
@@ -715,12 +734,44 @@ export class JourneyService {
           if (cached) return { kind: "cached", dataset, cached } as const;
           const objectKey = objectKeyFor(dataset, request.version);
           try {
+            /*
+             * The published binary shard first, when there is one.
+             *
+             * This is the stage that did not fit. A corridor opens about eight megabytes of trip
+             * text and `JSON.parse` over it measured 24.26 ms against a ten-millisecond budget —
+             * more than the graph build and the search put together, and the search is the only
+             * part of a request that is actually transport computation. The same shard published
+             * columnar is read through typed arrays: the horizon test is two integer comparisons
+             * per trip and costs nothing, and only the trips that survive are built into rows.
+             * Measured on a Manchester-shaped shard: 19.18 ms of text against 7.10 ms of bytes
+             * for the same answer, and 0.65 ms if the rows are not materialised at all, which is
+             * where the graph builder has to go next.
+             *
+             * A shard that cannot be opened falls through to the text sibling and is counted,
+             * rather than failing the plan: corrupt bytes are a publishing fault, and a passenger
+             * should not lose a journey to one while it is being fixed. A count rather than a
+             * silent fallback, because "the fast path was not taken" has to be visible.
+             */
+            let binaryFallback = false;
+            if (canHoldBytes(this.store)) {
+              const binary = await this.readBinaryShard(
+                dataset,
+                request.version,
+                from,
+                to,
+                patternIds,
+              );
+              if (binary?.kind === "binary") return binary;
+              binaryFallback = binary !== null;
+            }
             if (!canStream(this.store)) {
               const raw = await this.store.get(objectKey);
-              return { kind: "buffered", dataset, raw } as const;
+              return { kind: "buffered", dataset, raw, binaryFallback } as const;
             }
             const body = await this.store.getStream(objectKey);
-            if (body === null) return { kind: "buffered", dataset, raw: null } as const;
+            if (body === null) {
+              return { kind: "buffered", dataset, raw: null, binaryFallback } as const;
+            }
 
             let filtered = 0;
             const read = await readFilteredLinesStreaming<PatternTripRow>(body, {
@@ -766,6 +817,7 @@ export class JourneyService {
               rows: read.records,
               chars: read.stats.chars,
               filtered,
+              binaryFallback,
             } as const;
           } catch (error) {
             return { kind: "error", dataset, error } as const;
@@ -788,6 +840,26 @@ export class JourneyService {
           for (const row of result.cached.rows) rows.push(row);
           continue;
         }
+        if (result.kind === "binary") {
+          /*
+           * A shard read without a parse. Counted as read like any other, with its bytes against
+           * the same budget — which is a byte budget in all but name, and the published binary
+           * form is about 46% of the text it replaces, so the same ceiling reaches further up the
+           * corridor than it used to.
+           */
+          shardsRead += 1;
+          shardsBinary += 1;
+          opened += 1;
+          chars += result.bytes;
+          tripsFiltered += result.filtered;
+          this.cache.set(`${request.version}:${result.dataset}:${from}:${to}`, {
+            rows: result.rows,
+            chars: result.bytes,
+          });
+          this.evict();
+          for (const row of result.rows) rows.push(row);
+          continue;
+        }
         if (result.kind === "error") {
           failures.push({
             dataset: result.dataset,
@@ -799,6 +871,7 @@ export class JourneyService {
           continue;
         }
         if (result.kind === "streamed") {
+          if (result.binaryFallback) shardsBinaryFallback += 1;
           shardsRead += 1;
           opened += 1;
           chars += result.chars;
@@ -817,6 +890,7 @@ export class JourneyService {
           for (const row of result.rows) rows.push(row);
           continue;
         }
+        if (result.binaryFallback) shardsBinaryFallback += 1;
         if (result.raw === null) {
           this.cache.set(`${request.version}:${result.dataset}:${from}:${to}`, {
             rows: [],
@@ -892,12 +966,76 @@ export class JourneyService {
       shardsMissing,
       shardsSkipped: datasets.length - start,
       tripsFiltered,
+      shardsBinary,
+      shardsBinaryFallback,
       chars,
       readMs,
       parseMs,
       truncated,
       stoppedBy: truncated ? stoppedBy : null,
     };
+  }
+
+  /**
+   * One shard in its published binary form, or null when there is not one to read.
+   *
+   * Null means "no binary shard here", which is not a failure: the migration converts the bucket
+   * shard by shard, and a corridor can legitimately be half converted. The caller then reads the
+   * text sibling. A shard that exists and cannot be opened also returns null — with the fallback
+   * counted, so that a publishing fault shows up as a number rather than as a slow endpoint.
+   *
+   * The two filters are the same two the text path applies, in the cheaper order: the horizon
+   * test is two integer comparisons against a typed array, and the pattern test needs a string,
+   * so the pattern ids are decoded once per shard (there are a few hundred) into a flag per
+   * pattern index rather than once per trip (there are tens of thousands).
+   */
+  private async readBinaryShard(
+    dataset: string,
+    version: string,
+    from: number,
+    to: number,
+    patternIds: ReadonlySet<string> | null,
+  ): Promise<
+    | { kind: "binary"; dataset: string; rows: PatternTripRow[]; bytes: number; filtered: number }
+    | { kind: "unreadable" }
+    | null
+  > {
+    if (!canHoldBytes(this.store)) return null;
+    let bytes: Uint8Array | null;
+    try {
+      bytes = await this.store.getBytes(objectKeyForBytes(dataset, version));
+    } catch {
+      /* Reading it failed outright. The text sibling is the answer, and it is counted there. */
+      return { kind: "unreadable" };
+    }
+    if (bytes === null) return null;
+
+    try {
+      const shard = new PatternTripShard(bytes);
+      const wanted: boolean[] | null =
+        patternIds === null
+          ? null
+          : Array.from({ length: shard.patternCount }, (_, index) =>
+              patternIds.has(shard.patternId(index)),
+            );
+
+      const rows: PatternTripRow[] = [];
+      let filtered = 0;
+      for (let trip = 0; trip < shard.tripCount; trip += 1) {
+        if (shard.lastDeparture(trip) < from || shard.firstDeparture(trip) > to) {
+          filtered += 1;
+          continue;
+        }
+        if (wanted !== null && !wanted[shard.patternOf(trip)]) {
+          filtered += 1;
+          continue;
+        }
+        rows.push(shard.rowAt(trip));
+      }
+      return { kind: "binary", dataset, rows, bytes: bytes.byteLength, filtered };
+    } catch {
+      return { kind: "unreadable" };
+    }
   }
 
   private evict(): void {

@@ -256,6 +256,40 @@ export function objectKeyFor(dataset: string, version: string): string {
   return `data/${dataset}/${version}.jsonl`;
 }
 
+/**
+ * The same object, for a dataset published as bytes rather than as lines.
+ *
+ * The pattern-trips shards are published columnar and binary because `JSON.parse` over a
+ * corridor's worth of timetable was the largest single item in a journey request's CPU. They live
+ * beside the text objects under the same dataset path, with a suffix that says what they are.
+ */
+export function objectKeyForBytes(dataset: string, version: string): string {
+  return `data/${dataset}/${version}.bin`;
+}
+
+/**
+ * The suffixes a published data object can carry.
+ *
+ * Everything that walks the bucket — pruning by version, pruning by service date, the storage
+ * inventory — recognises an object by this suffix, so a form that is not listed here is a form
+ * nothing can clean up. That is not a hypothetical: this bucket already carried a 3.27 GB
+ * artifact nothing pointed at, and its free allowance is account-wide.
+ */
+export const ARTIFACT_OBJECT_SUFFIXES = [".jsonl", ".bin"] as const;
+
+/** `data/<dataset>/<version>.jsonl` or `.bin` — the version is the last segment, less its suffix. */
+export function versionInObjectKey(key: string): string | null {
+  const lastSlash = key.lastIndexOf("/");
+  if (lastSlash < 0) return null;
+  const name = key.slice(lastSlash + 1);
+  for (const suffix of ARTIFACT_OBJECT_SUFFIXES) {
+    if (!name.endsWith(suffix)) continue;
+    const version = name.slice(0, -suffix.length);
+    return version.length > 0 ? version : null;
+  }
+  return null;
+}
+
 export class ArtifactStore {
   constructor(private readonly store: ObjectStore) {}
 
@@ -300,8 +334,7 @@ export class ArtifactStore {
    */
   async listVersions(dataset: string): Promise<string[]> {
     const keys = await this.store.list(`data/${dataset}/`);
-    return keys
-      .map((key) => /\/([^/]+)\.jsonl$/.exec(key)?.[1] ?? null)
+    return [...new Set(keys.map(versionInObjectKey))]
       .filter((version): version is string => version !== null)
       .sort()
       .reverse();

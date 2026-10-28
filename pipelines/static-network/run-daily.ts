@@ -26,7 +26,8 @@ import {
   publishSpilledJourneyTiles,
   type SpilledJourneyPublishResult,
 } from "./src/publish-spilled-journeys.js";
-import { encodeDepartureShardFromJsonl } from "./src/departures-index.js";
+import { encodeDepartureShardFromJsonl, type PatternTripRow } from "./src/departures-index.js";
+import { encodePatternTripShard } from "./src/binary-trips.js";
 import { MAX_PUBLISH_BYTES, publishNetworkShards } from "./src/publish-shards.js";
 import { serviceDateHorizonFromEnv } from "./src/service-dates.js";
 import { earliestServiceDateToKeep, pruneExpiredServiceDates } from "./src/prune-service-dates.js";
@@ -601,6 +602,16 @@ async function main(): Promise<number> {
   const tripResult = await publishSpilledJourneyTiles(store, assembled.patternTripSpill, {
     version,
     datasetFor: (dataset) => dataset,
+    /*
+     * Published columnar, because this is the family a passenger request cannot afford to parse.
+     * On real published data a Manchester corridor spent 24.26 ms of a ten-millisecond budget
+     * turning these lines into objects — more than building the graph and searching it together.
+     * The reader opens the bytes through typed arrays, and they are also about 46% of the text,
+     * which is the only reason a format change is affordable in a bucket this close to its free
+     * allowance.
+     */
+    encodeBytes: (lines) =>
+      encodePatternTripShard(lines.map((line) => JSON.parse(line) as PatternTripRow)).bytes,
   });
   report.patternTrips = {
     published: tripResult.tiles.length,

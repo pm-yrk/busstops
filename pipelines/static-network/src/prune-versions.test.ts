@@ -19,7 +19,8 @@ function publish(version: string, bytesEach = 1000): StoredObject[] {
     // The departure index nests a service date and a bucket inside the dataset name, so the
     // version is not the only date-shaped thing in the key.
     object(`data/network/departures/2026-09-17/125/${version}.jsonl`, bytesEach),
-    object(`data/network/pattern-trips/2026-09-17/1/215_-7/${version}.jsonl`, bytesEach),
+    // Published as bytes, not as lines: the search reads it through typed arrays.
+    object(`data/network/pattern-trips/2026-09-17/1/215_-7/${version}.bin`, bytesEach),
   ];
 }
 
@@ -27,6 +28,19 @@ describe("finding the version in an object key", () => {
   it("reads the version from the last segment, not from a date inside the dataset", () => {
     expect(versionOfObjectKey(`data/network/departures/2026-09-17/125/${V3}.jsonl`)).toBe(V3);
     expect(versionOfObjectKey(`data/network/stops/${V1}.jsonl`)).toBe(V1);
+  });
+
+  /*
+   * And the binary form, which is the one that could have gone unnoticed.
+   *
+   * The pattern-trips shards are published as bytes because parsing them was the largest item in
+   * a journey request's CPU. Pruning recognises an object by the suffix on its last segment, so a
+   * suffix it did not know would have left one unreachable copy of every trip shard behind at
+   * every rebuild — in a bucket whose free allowance is account-wide and already nearly spent.
+   */
+  it("reads the version from a dataset published as bytes", () => {
+    expect(versionOfObjectKey(`data/network/pattern-trips/2026-09-17/1/215_-7/${V3}.bin`)).toBe(V3);
+    expect(versionOfObjectKey("data/network/pattern-trips/2026-09-17/1/215_-7/.bin")).toBeNull();
   });
 
   it("refuses anything that is not a versioned data object", () => {
