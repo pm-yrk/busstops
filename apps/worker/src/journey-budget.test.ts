@@ -480,7 +480,10 @@ describe("the buffered read filters what the streaming read filters", () => {
  * first, and widens only when its answer suggests a better one is just outside it.
  *
  * What is asserted here is the thing a corpus of nine-o'clock city queries cannot show: that the
- * journey whose only useful bus leaves after the narrow horizon is still found.
+ * journey whose only useful bus leaves after the narrow horizon is still found — and that an
+ * answer which exists is never paid for twice. The trigger used to include "a best option needing
+ * two changes", and Cloudflare's tail priced it: the median journey fell to 10 ms of CPU and the
+ * p95 rose to 515, because a cross-city query usually does have a two-change best option.
  */
 describe("how far ahead a plan looks", () => {
   /** A corridor whose only service runs later than the narrow horizon. */
@@ -514,6 +517,32 @@ describe("how far ahead a plan looks", () => {
     expect(outcome.ok).toBe(true);
     /* Two hours, not four: the second read never happened. */
     expect(outcome.diagnostics.horizonHours).toBe(2);
+  });
+
+  it("does not widen an answer that has an itinerary in it, whatever its shape", async () => {
+    const { store } = await publish(8);
+    const reads: string[] = [];
+    const counting = {
+      get: (key: string) => {
+        reads.push(key);
+        return store.get(key);
+      },
+      put: (key: string, value: string) => store.put(key, value),
+      delete: (key: string) => store.delete(key),
+      list: (prefix: string) => store.list(prefix),
+      getStream: (key: string) => {
+        reads.push(key);
+        return store.getStream(key);
+      },
+    };
+    const outcome = await new JourneyService(
+      counting as unknown as InMemoryObjectStore,
+    ).planJourney(slice(), request);
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) expect(outcome.result.options.length).toBeGreaterThan(0);
+    /* Each trip shard opened once. A second pass would read every one of them again. */
+    const tripReads = reads.filter((key) => key.includes("pattern-trips"));
+    expect(tripReads.length).toBe(new Set(tripReads).size);
   });
 
   it("widens when the only useful bus leaves after the narrow horizon", async () => {

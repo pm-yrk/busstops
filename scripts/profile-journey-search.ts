@@ -129,6 +129,17 @@ async function main(): Promise<number> {
      */
     const transfersOnly = timed(() => buildTransfers(stops, 600));
     const groupingOnly = timed(() => groupRoutes(trips));
+    /*
+     * The same grouping with the whole-pattern flag taken off, in the same process and against
+     * the same trips.
+     *
+     * Two numbers from two CI runs cannot measure a change this size: the same unchanged corridor
+     * measured 68.26 ms and 91.91 ms of graph build on two runners an hour apart. A controlled
+     * pair inside one process can, and the flag's whole claim is that it does not change what the
+     * grouping produces — only what it costs.
+     */
+    const unflagged = trips.map((trip) => ({ ...trip, wholePatternSequence: false }));
+    const groupingUnflagged = timed(() => groupRoutes(unflagged));
 
     let transferEdges = 0;
     for (const list of graph.transfers.values()) transferEdges += list.length;
@@ -154,6 +165,15 @@ async function main(): Promise<number> {
       buildGraphMs: Number(built.ms.toFixed(2)),
       buildTransfersMs: Number(transfersOnly.ms.toFixed(2)),
       groupRoutesMs: Number(groupingOnly.ms.toFixed(2)),
+      groupRoutesUnflaggedMs: Number(groupingUnflagged.ms.toFixed(2)),
+      /* And that the two forms agree about the routes, which is the flag's only promise. */
+      groupingAgrees:
+        groupingOnly.value.routes.length === groupingUnflagged.value.routes.length &&
+        groupingOnly.value.routes.every(
+          (route, at) =>
+            route.trips.length === groupingUnflagged.value.routes[at]?.trips.length &&
+            route.stopIds.join(">") === groupingUnflagged.value.routes[at]?.stopIds.join(">"),
+        ),
       planMs: Number(planned.ms.toFixed(2)),
       options: planned.value.options.length,
       counters: {

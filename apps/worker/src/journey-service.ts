@@ -434,17 +434,26 @@ export class JourneyService {
    * inside its budget reads more and fails again, having spent a second budget to say the same
    * thing, and a corridor too large to plan is already too large.
    *
-   * An answer is widened only when it looks constrained: no itinerary, or a best one that needs
-   * two changes, which is what a patchwork of connections looks like when the direct bus was out
-   * of range.
+   * An answer is widened only when it has no itinerary in it. That is narrower than it was, and
+   * the measurement is why.
+   *
+   * It also widened when the best option needed two changes, on the theory that a patchwork of
+   * connections is what a direct bus just out of range looks like. Cloudflare's tail priced that
+   * theory: the median journey fell from 166 ms of CPU to 10, and the p95 rose from 274 to 515
+   * with twenty of twenty-five invocations over the limit, because a cross-city query usually
+   * does have a two-change best option and so paid for both passes. The corpus had already
+   * answered the question the trigger was insuring against — at two hours every one of twenty
+   * queries returned the same best itinerary, same fastest arrival, same fewest changes — so the
+   * insurance was buying nothing and charging a second read for it.
+   *
+   * What stays is the coverage case, which no corpus of city queries can speak for: nothing found
+   * at all. A journey that exists must not be lost to a shorter horizon.
    */
   private worthWidening(outcome: JourneyPlanOutcome): boolean {
     if (!outcome.ok) {
       return outcome.diagnostics.code === "no_data" || outcome.diagnostics.code === "no_options";
     }
-    const best = outcome.result.options[0];
-    if (best === undefined) return true;
-    return best.legs.filter((leg) => leg.mode === "bus").length > 2;
+    return outcome.result.options.length === 0;
   }
 
   private async planWithin(

@@ -147,6 +147,12 @@ export async function loadCorridor(
         trips.push({
           id: row.j,
           routeId: row.p,
+          /*
+           * Every trip this loader emits carries its pattern's whole sequence — the length test
+           * above drops the ones that do not — so the flag the grouping reads is true here, and
+           * the harness measures the path the deployed reader takes rather than its fallback.
+           */
+          wholePatternSequence: true,
           stopTimes: row.t.map((seconds, i) => ({
             stopId: sequence[i]!,
             arrivalSeconds: seconds - midnightSeconds,

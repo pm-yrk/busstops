@@ -618,3 +618,39 @@ suggests a better one is just outside it (nothing found, no path through what wa
 option needing two changes). A wider search covers a superset of the same timetable, so its optimum
 can only be at least as good. A city journey never pays for the second read; the sparse one does,
 and gets an answer instead of an apology.
+
+### What the narrow horizon did to the deployed endpoint
+
+Cloudflare's tail, on the build that made the horizon adaptive, against the build before it:
+
+| Endpoint | p50 before | p50 after | p95 before | p95 after | exceededCpu before |    after |
+| -------- | ---------: | --------: | ---------: | --------: | -----------------: | -------: |
+| journey  |        166 |    **10** |        274 |       515 |            2 of 10 | 20 of 25 |
+| map      |         13 |        19 |         51 |       118 |            1 of 25 |  0 of 36 |
+| search   |         11 |        11 |         43 |        71 |            2 of 10 | 14 of 37 |
+| stop     |         15 |        30 |         28 |        58 |            0 of 32 |  1 of 13 |
+| nearby   |          4 |         6 |         21 |        28 |            0 of 16 |  0 of 33 |
+
+The median journey went from sixteen times its budget to inside it. The tail went the other way,
+and the reason was a trigger I had added as insurance rather than measured: the plan also widened
+when the best option needed two changes, on the theory that a patchwork of connections is what a
+direct bus just out of range looks like. A cross-city query usually _does_ have a two-change best
+option, so most journeys paid for both passes — and the corpus had already answered the question
+the insurance was asking, with every one of twenty queries returning the same best itinerary at two
+hours. The trigger is gone; what stays is the case no corpus of city queries can speak for, which
+is nothing found at all.
+
+The lesson is the one this file keeps recording: a safeguard whose cost is not measured is not
+conservative, it is just expensive. The measurement that priced it took one run.
+
+Passenger acceptance, on the same build, says the same thing from the other end. The first peak
+pass of three samples, before and after:
+
+| Sample | OK before | OK after | Platform errors before | after |
+| ------ | --------: | -------: | ---------------------: | ----: |
+| 1      |     36/55 |    48/53 |                     19 | **5** |
+| 2      |     33/54 |    50/53 |                     21 | **3** |
+| 3      |     33/50 |    47/53 |                     17 | **6** |
+
+And the deployed regression walk went from six failures to two, losing the "Leeds → Leeds Bradford
+Airport gave 0 options" one: a plan that used to run out of budget now answers.
