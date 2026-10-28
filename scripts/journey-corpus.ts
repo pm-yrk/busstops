@@ -27,7 +27,15 @@
 import { writeFileSync } from "node:fs";
 import { ArtifactStore, annotateReport, r2StoreFromEnv } from "@busstops/pipeline-core";
 import { SHARDED, type NetworkIndexRecord } from "@busstops/pipeline-static-network";
-import { buildGraph, plan } from "@busstops/journey";
+import {
+  buildGraph,
+  buildTransferTiles,
+  groupRouteIndices,
+  mergeTransferTiles,
+  plan,
+} from "@busstops/journey";
+import { tileIdFor } from "@busstops/pipeline-core";
+import { STOP_TILE_DEGREES } from "@busstops/pipeline-static-network";
 import { loadCorridor, type CorridorQuery } from "./lib/journey-corridor.js";
 
 const arg = (name: string): string | undefined => {
@@ -168,6 +176,13 @@ const DEPART_AT_SECONDS = 9 * 3600;
  * altogether. A number nobody has measured the cost of is not a saving.
  */
 const MAX_TRANSFER_SECONDS = Number(arg("max-transfer-seconds") ?? "600");
+/**
+ * Plan through the published artifacts rather than by computing their contents.
+ *
+ * The comparison this exists for: record the corpus both ways and ask whether reading the
+ * transfers and the grouping changes a single recommendation. Nothing else about the plan differs.
+ */
+const USE_ARTIFACTS = process.argv.includes("--artifacts");
 
 /**
  * How far either side of the straight line a plan may look, in degrees.
@@ -280,11 +295,56 @@ async function main(): Promise<number> {
       continue;
     }
 
+    /*
+     * Through the artifact path, when asked for.
+     *
+     * The three immutable pieces of a journey are published now, and the question this corpus
+     * answers is whether reading them changes a single recommendation. So `--artifacts` plans with
+     * the transfers merged from tiles and the trips carrying the route the grouping gives them,
+     * which is what the deployed reader does; without it, the same corridor is planned by
+     * computing both, which is what the deployed reader did before.
+     *
+     * The tiles are built here rather than read from the bucket, by the same function the
+     * publisher calls. What that leaves untested is the encode and the upload, and those are
+     * checked where they happen: the publisher reads every object back and reopens it before
+     * counting it as published, and the codec's own round trip is a test.
+     */
+    const artifactTransfers = USE_ARTIFACTS
+      ? mergeTransferTiles(
+          slice.stops.map((stop) => stop.id),
+          buildTransferTiles(slice.stops, {
+            capSeconds: MAX_TRANSFER_SECONDS,
+            tileOf: (stop) => tileIdFor(stop.coordinate, STOP_TILE_DEGREES),
+          }).map((tile) => ({ ...tile, capSeconds: MAX_TRANSFER_SECONDS })),
+          MAX_TRANSFER_SECONDS,
+        )
+      : null;
+
+    let tripsForGraph = slice.trips;
+    if (USE_ARTIFACTS) {
+      const patternKeys = new Map<string, number>();
+      for (const trip of slice.trips) {
+        if (!patternKeys.has(trip.patternId)) patternKeys.set(trip.patternId, patternKeys.size);
+      }
+      const keyOf = new Map<string, string>();
+      groupRouteIndices({
+        tripCount: slice.trips.length,
+        patternKeyOf: (trip) => patternKeys.get(slice.trips[trip]!.patternId) ?? 0,
+        callCountOf: (trip) => slice.trips[trip]!.stopTimes.length,
+        departureOf: (trip, call) => slice.trips[trip]!.stopTimes[call]!.departureSeconds,
+        tripIdOf: (trip) => slice.trips[trip]!.id,
+      }).forEach((group, at) => {
+        for (const trip of group.trips) keyOf.set(slice.trips[trip]!.id, `r${String(at)}`);
+      });
+      tripsForGraph = slice.trips.map((trip) => ({ ...trip, routeKey: keyOf.get(trip.id) }));
+    }
+
     const graphBegan = process.hrtime.bigint();
     const graph = buildGraph({
       stops: slice.stops,
-      trips: slice.trips,
+      trips: tripsForGraph,
       maxTransferSeconds: MAX_TRANSFER_SECONDS,
+      ...(artifactTransfers === null ? {} : { transfers: artifactTransfers }),
     });
     const buildGraphMs = Number(process.hrtime.bigint() - graphBegan) / 1e6;
     const transferEdges = graph.transfers.edgeCount;
@@ -336,6 +396,8 @@ async function main(): Promise<number> {
     maxTransferSeconds: MAX_TRANSFER_SECONDS,
     corridorMarginDegrees: CORRIDOR_MARGIN_DEGREES,
     windowHours: WINDOW_HOURS,
+    /* Which path planned these answers, so a comparison cannot be read the wrong way round. */
+    plannedThrough: USE_ARTIFACTS ? "published artifacts" : "computed in the request",
     queries: QUERIES.length,
     answered,
     note:

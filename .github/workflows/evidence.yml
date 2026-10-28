@@ -1566,6 +1566,30 @@ jobs:
             --candidate journey-corpus-300.json \
             --json journey-corpus-300-comparison.json 2>&1 | tee journey-corpus-300-comparison.log
 
+      # The same corpus planned through the published artifacts, which is the migration's own
+      # correctness question: does reading the transfers and the grouping change a single
+      # recommendation? Compared against the baseline above, which computes both.
+      - name: The same corpus through the published artifacts
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          NODE_OPTIONS: "--max-old-space-size=8192"
+        run: |
+          set -o pipefail
+          npx tsx scripts/journey-corpus.ts --artifacts \
+            --json journey-corpus-artifacts.json 2>&1 | tee journey-corpus-artifacts.log
+
+      - name: What the artifacts cost
+        if: always()
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          npx tsx scripts/compare-journey-plans.ts \
+            --baseline journey-corpus.json \
+            --candidate journey-corpus-artifacts.json \
+            --json journey-corpus-artifacts-comparison.json 2>&1 \
+            | tee journey-corpus-artifacts-comparison.log
+
       # And the third: how many hours of timetable a plan opens, which is now the largest item.
       - name: The same corpus over a two-hour horizon
         env:
@@ -1643,6 +1667,10 @@ jobs:
             journey-corpus-300-comparison.log
             journey-corpus-narrow.json
             journey-corpus-narrow.log
+            journey-corpus-artifacts.json
+            journey-corpus-artifacts.log
+            journey-corpus-artifacts-comparison.json
+            journey-corpus-artifacts-comparison.log
             journey-corpus-narrow-comparison.json
             journey-corpus-narrow-comparison.log
             journey-corpus-2h.json
