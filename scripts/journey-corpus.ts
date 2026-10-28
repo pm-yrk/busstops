@@ -185,7 +185,15 @@ interface CorpusOption {
   departureSeconds: number;
   changeCount: number;
   totalWalkSeconds: number;
-  confidence: string;
+  /**
+   * The planner's own confidence object, carried whole.
+   *
+   * Declared as `string` and assigned an object, which compiled because nothing typechecked
+   * `scripts/`. The recorded corpora have the object in them, so the JSON was always right and the
+   * type was always wrong; `scripts/lib/compare-plans.ts` does not read this field, which is why
+   * nothing downstream noticed.
+   */
+  confidence: { level: string; score: number; reasons: readonly string[] };
   boardingStopId: string | null;
   /** The ride, service by service: what a passenger would actually be told to get on. */
   rides: Array<{

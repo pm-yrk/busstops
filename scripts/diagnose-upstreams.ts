@@ -178,9 +178,18 @@ async function main(): Promise<void> {
         `  activities ${row.rawActivities}, accepted ${row.accepted}, parse-rejected ${row.parseRejected}`,
       );
       console.log(`  responseTimestamp ${row.responseTimestamp ?? "-"}`);
-      if (row.rawAgeSeconds)
+      /*
+       * Read back through its own shape, because `row` is a `Record<string, unknown>`.
+       *
+       * The three reads below were `row.rawAgeSeconds.min` and so on, which is a property access
+       * on `unknown` — it compiled only because nothing typechecked `scripts/` until
+       * `tsconfig.scripts.json`, and would have thrown on any run where the ages were absent for
+       * a different reason than the guard expects.
+       */
+      const ages = row.rawAgeSeconds as { min: number; median: number; max: number } | undefined;
+      if (ages)
         console.log(
-          `  raw observation age s: min ${row.rawAgeSeconds.min} median ${row.rawAgeSeconds.median} max ${row.rawAgeSeconds.max}`,
+          `  raw observation age s: min ${String(ages.min)} median ${String(ages.median)} max ${String(ages.max)}`,
         );
       if (row.oldestObservation)
         console.log(
@@ -258,11 +267,19 @@ async function main(): Promise<void> {
     console.log(`\n${"=".repeat(72)}`);
     console.log("TfL");
     console.log("=".repeat(72));
-    for (const [label, path] of [
+    /*
+     * A tuple type, so `path` is a string rather than `string | undefined`.
+     *
+     * Destructuring an inferred `string[][]` gives each element the array's type widened by
+     * `noUncheckedIndexedAccess`, which is why the template below was interpolating a possibly
+     * undefined value into a URL.
+     */
+    const tflProbes: ReadonlyArray<readonly [string, string]> = [
       ["arrivals at a Westminster stop", "/StopPoint/490008660N/Arrivals"],
       ["bus line status", "/Line/Mode/bus/Status"],
       ["bus disruption", "/Line/Mode/bus/Disruption"],
-    ]) {
+    ];
+    for (const [label, path] of tflProbes) {
       const url = new URL(`https://api.tfl.gov.uk${path}`);
       url.searchParams.set("app_key", TFL_KEY);
       const result = await probe(label, url.toString(), {
@@ -295,10 +312,11 @@ async function main(): Promise<void> {
   }
 
   const jsonAt = process.argv.indexOf("--json");
-  if (jsonAt !== -1 && process.argv[jsonAt + 1]) {
+  const jsonPath = jsonAt === -1 ? undefined : process.argv[jsonAt + 1];
+  if (jsonPath !== undefined) {
     // The captured bodies are dropped: they are large and can contain source vehicle references.
-    writeFileSync(process.argv[jsonAt + 1], JSON.stringify(report, null, 2));
-    console.log(`\nreport -> ${process.argv[jsonAt + 1]}`);
+    writeFileSync(jsonPath, JSON.stringify(report, null, 2));
+    console.log(`\nreport -> ${jsonPath}`);
   }
 }
 

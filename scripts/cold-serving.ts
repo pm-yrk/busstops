@@ -679,8 +679,17 @@ async function main(): Promise<void> {
     annotate("notice", "cold serving trace", trace.map((row) => JSON.stringify(row)).join("\n"));
   }
   if (failures.length > 0) {
+    /*
+     * `error`, because `failure` is not a level GitHub recognises.
+     *
+     * This said `"failure"` from the day it was written, and the workflow command it produced was
+     * not an annotation at all — so the one annotation that lists which requests the platform
+     * refused has never appeared in a run. Every acceptance sample has been read from the
+     * per-pass summaries instead, without anyone noticing the detail was missing. Found by
+     * typechecking `scripts/` for the first time.
+     */
     annotate(
-      "failure",
+      "error",
       SAMPLE
         ? `sample ${SAMPLE}: ${failures.length} platform error(s)`
         : `cold serving (${failures.length} platform error(s))`,

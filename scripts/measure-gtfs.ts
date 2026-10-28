@@ -81,6 +81,24 @@ interface RegionReport {
   stopTimesOnHorizon?: number;
   stopTimesMs?: number;
   peakRssMib?: number;
+  /**
+   * What `agency.txt` carries, which decides whether an operator can be identified from the feed.
+   *
+   * Written by the measurement and absent from this interface until `scripts/` was typechecked for
+   * the first time. The report in `evidence/gtfs-measurement.json` has carried both of these for
+   * weeks, so what was wrong was the type rather than the code — but a type that does not describe
+   * its own output is of no use to the next reader of it.
+   */
+  agency?: {
+    rows: number;
+    columns: readonly string[];
+    withAgencyId: number;
+    sampleIds: readonly string[];
+    sampleNames: readonly string[];
+    nocShapedSampleIds: number;
+  };
+  /** A sample of `routes.txt`'s keys: the crosswalk a GTFS-RT feed would have to be joined on. */
+  routeKeys?: { sampleRouteIds: readonly string[]; sampleShortNames: readonly string[] };
   error?: string;
 }
 

@@ -266,9 +266,7 @@ async function main(): Promise<number> {
               const lat = Number.parseFloat(body.slice(latAt + 4, Math.min(end, latAt + 16)));
               const lon = Number.parseFloat(body.slice(lonAt + 4, Math.min(end, lonAt + 16)));
               if (insideBox(lat, lon)) {
-                const from = start;
-                const to = end;
-                nearest.offer(nearest.distanceTo(lat, lon), () => body.slice(from, to));
+                nearest.offer(nearest.distanceTo(lat, lon), body, start, end);
               }
             }
           }

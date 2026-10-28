@@ -1,0 +1,20 @@
+{
+  // The evidence scripts, which nothing typechecked until one of them broke in CI.
+  //
+  // `scripts/` is not a workspace, so `npm run typecheck --workspaces` never saw it: seventeen
+  // TypeScript files that only ever run on a runner, against live credentials, in jobs that take
+  // an hour. One of them called `NearestLines.offer` with the signature it had before a refactor
+  // and threw `buffer.slice is not a function` after the deploy, which cost a measurement cycle
+  // to find out. A compiler would have said so in a second.
+  //
+  // `noEmit`, because these are run with tsx and nothing builds them.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "types": ["node"]
+  },
+  "include": ["scripts/**/*.ts"]
+}

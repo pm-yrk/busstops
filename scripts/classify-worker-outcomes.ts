@@ -28,7 +28,8 @@
  *   npx tsx scripts/classify-worker-outcomes.ts --worker https://... [--json out.json]
  */
 
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, type ChildProcessByStdio } from "node:child_process";
+import type { Readable } from "node:stream";
 import { writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { annotate } from "./annotate.mjs";
@@ -204,7 +205,15 @@ interface Tail {
  * stderr, which is kept because "you do not have permission to tail" belongs in the report.
  */
 function startTail(): Tail {
-  const child: ChildProcessWithoutNullStreams = spawn(
+  /*
+   * Typed for what `stdio: ["ignore", "pipe", "pipe"]` actually returns.
+   *
+   * It was cast to `ChildProcessWithoutNullStreams`, which claims a writable `stdin` the spawn
+   * options explicitly do not create — and only compiled because nothing typechecked `scripts/`.
+   * The two streams it does read are `stdout` and `stderr`, both piped, and that is the shape
+   * below.
+   */
+  const child: ChildProcessByStdio<null, Readable, Readable> = spawn(
     "npx",
     [
       "--no-install",
@@ -224,7 +233,7 @@ function startTail(): Tail {
      * showed plainly.
      */
     { stdio: ["ignore", "pipe", "pipe"], env: process.env, detached: true },
-  ) as ChildProcessWithoutNullStreams;
+  );
 
   const tail: Tail = {
     events: [],
@@ -622,7 +631,14 @@ async function main(): Promise<number> {
 
     /* A working query with nothing in it: wait for ingestion rather than conclude from empty. */
     let attemptsLeft = field === null || report.classification === "retrieved" ? 0 : 3;
-    while (attemptsLeft > 0) {
+    /*
+     * `field !== null` in the condition rather than only in the count above.
+     *
+     * The loop already could not run with no field — `attemptsLeft` is zero then — but saying so
+     * where the compiler can see it is what stops a null being passed to a query that requires a
+     * field name. It compiled before only because nothing typechecked `scripts/`.
+     */
+    while (attemptsLeft > 0 && field !== null) {
       await new Promise((resolve) => setTimeout(resolve, 20_000));
       attemptsLeft -= 1;
       const attempt = await outcomes(probeWindow.startedAt, new Date().toISOString(), field);
