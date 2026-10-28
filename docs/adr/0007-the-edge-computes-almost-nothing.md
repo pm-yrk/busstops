@@ -542,3 +542,28 @@ walking transfers would remove most of the build; making the search read indices
 strings is the step after that, and the one earlier attempt at it measured 40% _slower_ because it
 built the object graph first and then indexed it. The order matters: the artifact has to carry the
 indices, or the rewrite pays for both forms.
+
+### Three acceptance samples of one frozen commit
+
+The build with the binary reader in it, before any shard had been converted, so the only thing this
+measures is that the reader is neutral when there is nothing for it to read. Fifty-odd requests per
+pass, five cities, two passes per sample:
+
+| Sample          | Pass   | Requests |  OK | Platform errors |
+| --------------- | ------ | -------: | --: | --------------: |
+| 1               | peak-1 |       55 |  36 |              19 |
+| 1               | peak-2 |       50 |  12 |              38 |
+| 2               | peak-1 |       54 |  33 |              21 |
+| 2               | peak-2 |       51 |  14 |              37 |
+| 3               | peak-1 |       50 |  33 |              17 |
+| 3               | peak-2 |       53 |  21 |              32 |
+| **planner off** | peak-1 |       54 |  46 |           **0** |
+| **planner off** | peak-2 |       54 |  46 |           **0** |
+
+In every sample's second pass the journey endpoint failed **ten of ten**, and the map failed eight
+to ten of ten beside it. With the planner off, on the same build and the same passes, nothing
+failed on any endpoint in either pass. That is the third independent repetition of the same result,
+and it is why the trip shards are being converted rather than something else being tuned.
+
+The eight requests that are not "ok" with the planner off are not failures: they are the
+`feature_unavailable` the flag is supposed to return, counted honestly rather than excluded.
