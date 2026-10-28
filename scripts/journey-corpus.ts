@@ -178,6 +178,17 @@ const MAX_TRANSFER_SECONDS = Number(arg("max-transfer-seconds") ?? "600");
  */
 const CORRIDOR_MARGIN_DEGREES = Number(arg("corridor-margin-degrees") ?? "0.05");
 
+/**
+ * How many hours of timetable a plan opens, which is the third lever and now the largest.
+ *
+ * The deployed planner loads four hours of trips from the departure time. Parsing them is 37 ms of
+ * a Manchester request locally — about a hundred on Cloudflare — which since the graph build and
+ * the search came down is the single biggest item left in the endpoint. Two hours covers an urban
+ * journey comfortably and loses one that takes longer than the horizon, so, like the other two,
+ * it is recorded and compared rather than chosen.
+ */
+const WINDOW_HOURS = Number(arg("window-hours") ?? "4");
+
 /** One option of one answer, in the form a comparison reads. */
 interface CorpusOption {
   ranking: string;
@@ -253,7 +264,7 @@ async function main(): Promise<number> {
       query,
       serviceDate,
       DEPART_AT_SECONDS,
-      4,
+      WINDOW_HOURS,
       CORRIDOR_MARGIN_DEGREES,
     );
     if (slice.stops.length === 0 || slice.trips.length === 0) {
@@ -325,6 +336,7 @@ async function main(): Promise<number> {
     departAtSeconds: DEPART_AT_SECONDS,
     maxTransferSeconds: MAX_TRANSFER_SECONDS,
     corridorMarginDegrees: CORRIDOR_MARGIN_DEGREES,
+    windowHours: WINDOW_HOURS,
     queries: QUERIES.length,
     answered,
     note:

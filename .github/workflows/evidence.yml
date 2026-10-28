@@ -1257,6 +1257,28 @@ jobs:
             --candidate journey-corpus-300.json \
             --json journey-corpus-300-comparison.json 2>&1 | tee journey-corpus-300-comparison.log
 
+      # And the third: how many hours of timetable a plan opens, which is now the largest item.
+      - name: The same corpus over a two-hour horizon
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          NODE_OPTIONS: "--max-old-space-size=8192"
+        run: |
+          set -o pipefail
+          npx tsx scripts/journey-corpus.ts \
+            --window-hours 2 \
+            --json journey-corpus-2h.json 2>&1 | tee journey-corpus-2h.log
+
+      - name: What the shorter horizon costs
+        if: always()
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          npx tsx scripts/compare-journey-plans.ts \
+            --baseline journey-corpus.json \
+            --candidate journey-corpus-2h.json \
+            --json journey-corpus-2h-comparison.json 2>&1 | tee journey-corpus-2h-comparison.log
+
       - name: What the narrower corridor costs
         if: always()
         continue-on-error: true
@@ -1289,6 +1311,10 @@ jobs:
             echo '```'
             sed -n '1,200p' journey-corpus-narrow.log 2>/dev/null || echo "not recorded"
             echo '```'
+            echo "## What the shorter horizon costs"
+            echo '```'
+            cat journey-corpus-2h-comparison.log 2>/dev/null || echo "not compared"
+            echo '```'
             echo "## What the narrower corridor costs"
             echo '```'
             cat journey-corpus-narrow-comparison.log 2>/dev/null || echo "not compared"
@@ -1310,6 +1336,10 @@ jobs:
             journey-corpus-narrow.log
             journey-corpus-narrow-comparison.json
             journey-corpus-narrow-comparison.log
+            journey-corpus-2h.json
+            journey-corpus-2h.log
+            journey-corpus-2h-comparison.json
+            journey-corpus-2h-comparison.log
           retention-days: 14
           if-no-files-found: ignore
 
