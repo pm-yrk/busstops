@@ -134,6 +134,35 @@ export class R2ObjectStore implements ObjectStore {
     return response.body;
   }
 
+  /**
+   * The body as bytes, for an artifact that is not text.
+   *
+   * The pattern-trips shards are published columnar and binary because parsing eight megabytes of
+   * JSON was the largest item in a journey request's CPU. `get` would decode those bytes as UTF-8
+   * and hand back a string that is neither the object nor an error, so the byte path is separate.
+   */
+  async getBytes(key: string): Promise<Uint8Array | null> {
+    const response = await this.request(this.objectUrl(key), { method: "GET" });
+    if (response.status === 404) return null;
+    if (!response.ok) {
+      throw new Error(`R2 get failed for ${key}: ${response.status}`);
+    }
+    return new Uint8Array(await response.arrayBuffer());
+  }
+
+  async putBytes(key: string, value: Uint8Array): Promise<void> {
+    const response = await this.request(this.objectUrl(key), {
+      method: "PUT",
+      /* A copy of the view's own bytes: a `Uint8Array` over a larger buffer would otherwise be
+       * sent in full, and the shard encoder hands back views. */
+      body: value.slice().buffer as ArrayBuffer,
+      headers: { "Content-Type": "application/octet-stream" },
+    });
+    if (!response.ok) {
+      throw new Error(`R2 put failed for ${key}: ${response.status}`);
+    }
+  }
+
   async put(key: string, value: string): Promise<void> {
     const response = await this.request(this.objectUrl(key), {
       method: "PUT",

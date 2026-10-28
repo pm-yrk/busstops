@@ -57,6 +57,21 @@ export interface ObjectStore {
    * be read, which is a different answer and every caller here keeps them apart.
    */
   getStream?(key: string): Promise<ReadableStream<Uint8Array> | null>;
+  /**
+   * The object's body as bytes, for an artifact that is not text.
+   *
+   * Optional for the same reason `getStream` is: a store may not be able to, and a caller that
+   * needs bytes checks first and reads the text sibling when it cannot. The pattern-trips shards
+   * are published in a columnar binary form because `JSON.parse` over eight megabytes was the
+   * largest single item in a journey request's CPU, and a string cannot carry that form —
+   * `get` would decode the bytes as UTF-8 and hand back something that is neither the object nor
+   * an error.
+   *
+   * Null means absent, exactly as `get` does. A throw means it exists and could not be read.
+   */
+  getBytes?(key: string): Promise<Uint8Array | null>;
+  /** Write bytes. Optional, and for the same reason. */
+  putBytes?(key: string, value: Uint8Array): Promise<void>;
 }
 
 /** An object store that can stream a body. Narrowed from `ObjectStore` by `canStream`. */
@@ -69,8 +84,20 @@ export function canStream(store: ObjectStore): store is StreamingObjectStore {
   return typeof store.getStream === "function";
 }
 
+/** An object store that can read and write bytes. Narrowed from `ObjectStore` by `canHoldBytes`. */
+export interface BinaryObjectStore extends ObjectStore {
+  getBytes(key: string): Promise<Uint8Array | null>;
+  putBytes(key: string, value: Uint8Array): Promise<void>;
+}
+
+/** Whether this store can carry an artifact that is not text. */
+export function canHoldBytes(store: ObjectStore): store is BinaryObjectStore {
+  return typeof store.getBytes === "function" && typeof store.putBytes === "function";
+}
+
 export class InMemoryObjectStore implements ObjectStore {
   private readonly objects = new Map<string, string>();
+  private readonly bytes = new Map<string, Uint8Array>();
   private readonly uploadedAt = new Map<string, string>();
 
   constructor(private readonly now: () => Date = () => new Date()) {}
@@ -107,27 +134,55 @@ export class InMemoryObjectStore implements ObjectStore {
 
   async put(key: string, value: string): Promise<void> {
     this.objects.set(key, value);
+    this.bytes.delete(key);
     this.uploadedAt.set(key, this.now().toISOString());
   }
+
+  /**
+   * The same object as bytes.
+   *
+   * A text object asked for as bytes is still that object, so it is encoded rather than reported
+   * absent: a fixture written with `put` can be read either way, which is what lets a reader that
+   * prefers a binary artifact be tested against a store holding only the text one.
+   */
+  async getBytes(key: string): Promise<Uint8Array | null> {
+    const held = this.bytes.get(key);
+    if (held !== undefined) return held;
+    const text = this.objects.get(key);
+    return text === undefined ? null : new TextEncoder().encode(text);
+  }
+
+  async putBytes(key: string, value: Uint8Array): Promise<void> {
+    this.bytes.set(key, value);
+    this.objects.delete(key);
+    this.uploadedAt.set(key, this.now().toISOString());
+  }
+
   async delete(key: string): Promise<void> {
     this.objects.delete(key);
+    this.bytes.delete(key);
     this.uploadedAt.delete(key);
   }
   async list(prefix: string): Promise<string[]> {
-    return [...this.objects.keys()].filter((k) => k.startsWith(prefix)).sort();
+    return [...this.objects.keys(), ...this.bytes.keys()]
+      .filter((k) => k.startsWith(prefix))
+      .sort();
   }
   async listDetailed(prefix: string): Promise<StoredObject[]> {
-    return [...this.objects.entries()]
+    const sizes = new Map<string, number>();
+    for (const [key, value] of this.objects) sizes.set(key, new TextEncoder().encode(value).length);
+    for (const [key, value] of this.bytes) sizes.set(key, value.byteLength);
+    return [...sizes.entries()]
       .filter(([key]) => key.startsWith(prefix))
-      .map(([key, value]) => ({
+      .map(([key, sizeBytes]) => ({
         key,
-        sizeBytes: new TextEncoder().encode(value).length,
+        sizeBytes,
         uploadedAt: this.uploadedAt.get(key) ?? this.now().toISOString(),
       }))
       .sort((a, b) => a.key.localeCompare(b.key));
   }
   get size(): number {
-    return this.objects.size;
+    return this.objects.size + this.bytes.size;
   }
 }
 

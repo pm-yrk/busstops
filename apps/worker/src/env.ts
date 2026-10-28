@@ -16,8 +16,10 @@ export interface R2BucketLike {
   get(key: string): Promise<{
     text(): Promise<string>;
     body?: ReadableStream<Uint8Array> | null;
+    /* For the artifacts that are not text: the binary trip shards a journey plan reads. */
+    arrayBuffer?(): Promise<ArrayBuffer>;
   } | null>;
-  put(key: string, value: string): Promise<unknown>;
+  put(key: string, value: string | Uint8Array): Promise<unknown>;
   delete(key: string): Promise<unknown>;
   list(options?: { prefix?: string }): Promise<{ objects: Array<{ key: string }> }>;
 }
@@ -66,7 +68,29 @@ export class R2BindingStore implements ObjectStore {
     }
     return body;
   }
+  /**
+   * An object's bytes, for the artifacts that are not text.
+   *
+   * The binary trip shards exist because `JSON.parse` over a corridor's worth of timetable was
+   * the largest single item in a journey request's CPU, and ten milliseconds does not cover it.
+   * Reading them through `text()` would decode them as UTF-8 and lose them, so this is the only
+   * way in; a binding that cannot (a test double) says so by not having the method, and the
+   * caller reads the text sibling instead.
+   */
+  async getBytes(key: string): Promise<Uint8Array | null> {
+    const object = await this.bucket.get(key);
+    if (object === null) return null;
+    if (typeof object.arrayBuffer !== "function") {
+      throw new Error(`R2 object ${key} cannot be read as bytes`);
+    }
+    return new Uint8Array(await object.arrayBuffer());
+  }
+
   async put(key: string, value: string): Promise<void> {
+    await this.bucket.put(key, value);
+  }
+
+  async putBytes(key: string, value: Uint8Array): Promise<void> {
     await this.bucket.put(key, value);
   }
   async delete(key: string): Promise<void> {

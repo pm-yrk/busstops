@@ -99,6 +99,22 @@ function chunked(value: string): ReadableStream<Uint8Array> {
   });
 }
 
+/** The same, over bytes that are not text. */
+function chunkedBytes(bytes: Uint8Array): ReadableStream<Uint8Array> {
+  const size = Math.max(1, Math.ceil(bytes.length / 5));
+  let offset = 0;
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (offset >= bytes.length) {
+        controller.close();
+        return;
+      }
+      controller.enqueue(bytes.slice(offset, offset + size));
+      offset += size;
+    },
+  });
+}
+
 /**
  * Wraps the in-memory object store in the R2 binding shape the Worker expects.
  *
@@ -112,11 +128,32 @@ function bucketFrom(store: InMemoryObjectStore): R2BucketLike {
   return {
     async get(key) {
       const value = await store.get(key);
-      if (value === null) return null;
-      return { text: async () => value, body: chunked(value) };
+      if (value !== null) {
+        return {
+          text: async () => value,
+          body: chunked(value),
+          arrayBuffer: async () => new TextEncoder().encode(value).slice().buffer as ArrayBuffer,
+        };
+      }
+      /*
+       * And the objects that are not text: the binary trip shards a journey plan reads.
+       *
+       * Checked second, and through a method a double may not have, because several tests here
+       * hand in a hand-rolled store with only `get`, `put`, `delete` and `list` — a bucket that
+       * demanded `getBytes` would turn each of those into a 500 and claim the endpoint was
+       * broken.
+       */
+      const bytes = typeof store.getBytes === "function" ? await store.getBytes(key) : null;
+      if (bytes === null) return null;
+      return {
+        text: async () => new TextDecoder().decode(bytes),
+        body: chunkedBytes(bytes),
+        arrayBuffer: async () => bytes.slice().buffer as ArrayBuffer,
+      };
     },
     async put(key, value) {
-      await store.put(key, value);
+      if (typeof value === "string") await store.put(key, value);
+      else await store.putBytes(key, value);
     },
     async delete(key) {
       await store.delete(key);

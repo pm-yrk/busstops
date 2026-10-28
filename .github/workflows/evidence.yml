@@ -767,6 +767,26 @@ jobs:
           set -o pipefail
           npx tsx scripts/measure-serving-cpu.ts --json serving-cpu.json 2>&1 | tee serving-cpu.log
 
+      # The same shard, columnar, opened through typed arrays instead of parsed.
+      #
+      # The step above says the trip parse is the largest item left in a journey request and that
+      # the search itself is the smallest. That makes the published *form* the thing to change,
+      # and three numbers decide whether it is worth changing: the bytes (the bucket has about a
+      # gigabyte of headroom, so a larger form is not available at any speed), the request-side
+      # cost of getting from a body to usable times either way, and the publish-side encode, which
+      # is a daily job's problem and nobody's budget.
+      - name: What the same shard costs as bytes
+        if: always()
+        continue-on-error: true
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          NODE_OPTIONS: "--max-old-space-size=8192"
+        run: |
+          set -o pipefail
+          npx tsx scripts/measure-binary-trip-shard.ts \
+            --json binary-trip-shard.json 2>&1 | tee binary-trip-shard.log
+
       - name: Summarise
         if: always()
         run: |
@@ -775,6 +795,10 @@ jobs:
             echo
             echo '```'
             sed -n '1,160p' serving-cpu.log 2>/dev/null || echo "no serving-cpu.log was written"
+            echo '```'
+            echo "## The same trip shard as bytes"
+            echo '```'
+            sed -n '1,120p' binary-trip-shard.log 2>/dev/null || echo "not measured"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -785,6 +809,8 @@ jobs:
           path: |
             serving-cpu.json
             serving-cpu.log
+            binary-trip-shard.json
+            binary-trip-shard.log
           retention-days: 14
           if-no-files-found: ignore
 

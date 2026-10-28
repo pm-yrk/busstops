@@ -45,6 +45,7 @@ import {
 } from "@busstops/pipeline-static-network";
 import { normalizeSiriVm, scanSiriVehicles } from "@busstops/adapters";
 import { NearestLines, tileFloorMetres } from "../apps/worker/src/nearest-lines.js";
+import { tripWindowInLine } from "../apps/worker/src/journey-service.js";
 import { haversineMetres } from "@busstops/pipeline-core";
 import { buildGraph, plan, type Trip } from "@busstops/journey";
 
@@ -396,6 +397,43 @@ async function main(): Promise<number> {
     return rows.length;
   });
   stages.push(stage("journey: parse every trip row", tripParse.ms, tripChars, tripParse.value));
+
+  /*
+   * And the same read with both text tests in front of the parse, which is what the endpoint does.
+   *
+   * A shard holds an eight-hour window and a plan spans four, so roughly half of what a corridor
+   * opens is outside the horizon the search looks at. The row above parses all of it; this one
+   * tests each line's first and last call off the raw text and parses only what survives. The
+   * difference is the whole reason the test moved in front of the parse.
+   */
+  const to = from + 4 * 3600;
+  const tripParseFiltered = timed(() => {
+    const rows: PatternTripRow[] = [];
+    for (const body of tripBodies) {
+      for (let start = 0; start < body.length;) {
+        const newline = body.indexOf("\n", start);
+        const end = newline < 0 ? body.length : newline;
+        if (end > start) {
+          const line = body.slice(start, end);
+          const window = tripWindowInLine(line);
+          if (window === null || (window.last >= from && window.first <= to)) {
+            rows.push(JSON.parse(line) as PatternTripRow);
+          }
+        }
+        if (newline < 0) break;
+        start = newline + 1;
+      }
+    }
+    return rows.length;
+  });
+  stages.push(
+    stage(
+      "journey: parse only the rows inside the plan's horizon",
+      tripParseFiltered.ms,
+      tripChars,
+      tripParseFiltered.value,
+    ),
+  );
 
   /* ---------------------------------------------------------- the journey's pattern read */
   const patternTiles = patternTilesForBoundingBox(corridor).slice(0, 4);
