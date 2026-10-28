@@ -35,6 +35,8 @@ import {
   mapStopsDataset,
   patternTripsDataset,
   patternIndexTileDataset,
+  searchIndex as rankSearch,
+  searchPrefixDataset,
   patternTilesForBoundingBox,
   patternTileDataset,
   tripTilesForBoundingBox,
@@ -42,9 +44,11 @@ import {
   type MapStopRow,
   type NetworkIndexRecord,
   type PatternTripRow,
+  type SearchIndexEntry,
 } from "@busstops/pipeline-static-network";
 import { normalizeSiriVm, scanSiriVehicles } from "@busstops/adapters";
 import { NearestLines, tileFloorMetres } from "../apps/worker/src/nearest-lines.js";
+import { searchLineFilter } from "../apps/worker/src/network-reader.js";
 import { tripWindowInLine } from "../apps/worker/src/journey-service.js";
 import { readTripShard } from "./lib/read-trip-shard.js";
 import { haversineMetres } from "@busstops/pipeline-core";
@@ -354,6 +358,109 @@ async function main(): Promise<number> {
     }
   } else {
     stages.push(stage("map: SIRI-VM not measured (no BODS_API_KEY)", 0));
+  }
+
+  /* ---------------------------------------------------------- the search's prefix read */
+  /*
+   * The endpoint a visitor uses first, and the one still over its budget.
+   *
+   * Cloudflare puts `/v1/search` at a p50 of eleven milliseconds and a p95 of seventy-one, with
+   * fourteen invocations of thirty-seven over the limit. Its own work is three stages and they
+   * have different fixes, so they are measured apart: walking the prefix buckets as text with the
+   * line filter in front of the parse, parsing what survives, and ranking the candidates. A
+   * published bucket reaches 1,644,719 bytes and a two-word query opens two of them.
+   */
+  const searchWords = ["leeds", "station"];
+  const searchPrefixes = searchWords.map((word) => word.slice(0, 3));
+  const searchBodies: string[] = [];
+  let searchChars = 0;
+  for (const prefix of searchPrefixes) {
+    const body = await store.get(objectKeyFor(searchPrefixDataset(prefix), index.version));
+    if (body === null) continue;
+    searchBodies.push(body);
+    searchChars += body.length;
+  }
+
+  if (searchBodies.length === 0) {
+    stages.push(stage("search: no prefix buckets published for this query", 0));
+  } else {
+    const filter = searchLineFilter(searchWords);
+    const scanned = timed(() => {
+      let kept = 0;
+      for (const body of searchBodies) {
+        for (let start = 0; start < body.length;) {
+          const newline = body.indexOf("\n", start);
+          const end = newline < 0 ? body.length : newline;
+          if (end > start && (filter === undefined || filter(body, start, end))) kept += 1;
+          if (newline < 0) break;
+          start = newline + 1;
+        }
+      }
+      return kept;
+    });
+    stages.push(
+      stage(
+        "search: walk the prefix buckets, filtering as text",
+        scanned.ms,
+        searchChars,
+        scanned.value,
+      ),
+    );
+
+    const searchParsed = timed(() => {
+      const entries: SearchIndexEntry[] = [];
+      for (const body of searchBodies) {
+        for (let start = 0; start < body.length;) {
+          const newline = body.indexOf("\n", start);
+          const end = newline < 0 ? body.length : newline;
+          if (end > start && (filter === undefined || filter(body, start, end))) {
+            entries.push(JSON.parse(body.slice(start, end)) as SearchIndexEntry);
+          }
+          if (newline < 0) break;
+          start = newline + 1;
+        }
+      }
+      return entries;
+    });
+    stages.push(
+      stage(
+        "search: parse the lines it kept",
+        searchParsed.ms,
+        searchChars,
+        searchParsed.value.length,
+      ),
+    );
+
+    /* And the whole bucket parsed, which is what the reader did before the filter existed. */
+    const searchParsedAll = timed(() => {
+      let rows = 0;
+      for (const body of searchBodies) {
+        for (const line of body.split("\n")) {
+          if (line.length > 0) {
+            JSON.parse(line);
+            rows += 1;
+          }
+        }
+      }
+      return rows;
+    });
+    stages.push(
+      stage(
+        "search: parse every line, as it did before the filter",
+        searchParsedAll.ms,
+        searchChars,
+        searchParsedAll.value,
+      ),
+    );
+
+    const ranked = timed(() =>
+      rankSearch(
+        { entries: searchParsed.value, builtAt: index.publishedAt },
+        searchWords.join(" "),
+        { limit: 20 },
+      ),
+    );
+    stages.push(stage("search: rank the candidates", ranked.ms, undefined, ranked.value.length));
   }
 
   /* ---------------------------------------------------------- the journey's trip read */
