@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ScheduledJourney, ServiceRoute, Stop } from "@busstops/contracts";
 import type { PatternGeometry } from "@busstops/matching";
+import type { DepartureRow } from "@busstops/pipeline-static-network";
 import {
   departuresFromRows,
   mergeLiveIntoScheduled,
@@ -300,5 +301,78 @@ describe("the route badge a board renders from a published shard", () => {
     expect(board("36")[0]!.serviceRoutePublicName).toBe("36");
     expect(board("X84")[0]!.serviceRoutePublicName).toBe("X84");
     expect(board("Park & Ride")[0]!.serviceRoutePublicName).toBe("Park & Ride");
+  });
+});
+
+/**
+ * The board's ordering, after it stopped re-parsing its own output to produce it.
+ *
+ * Both builders formatted `new Date(departure).toISOString()` twice for the same instant and then
+ * sorted by `Date.parse` of the string they had just written — and the comment above one of those
+ * sorts said it sorted "on the epoch seconds the rows carry rather than by re-parsing a nullable
+ * ISO string", which is what it should have done and not what it did. These pin the behaviour the
+ * change has to preserve: the order, and the two time fields agreeing.
+ */
+describe("the board's order comes from the epoch, not from its own text", () => {
+  const now = new Date("2026-09-04T09:00:00.000Z");
+  const at = (minute: number) =>
+    Date.parse(`2026-09-04T09:${String(minute).padStart(2, "0")}:00Z`) / 1000;
+  const row = (minute: number, destination: string): DepartureRow => ({
+    s: stop.atcoCode,
+    t: at(minute),
+    r: "36",
+    d: destination,
+    j: `trip-${String(minute)}`,
+    p: PATTERN_ID,
+    k: 1,
+  });
+
+  it("is in departure order however the source rows arrive", () => {
+    const rows = departuresFromRows({
+      stop,
+      rows: [row(30, "Late"), row(5, "Early"), row(50, "Latest"), row(20, "Middle")],
+      now,
+      retrievedAt: provenance.retrievedAt,
+    });
+    expect(rows.map((entry) => entry.destinationName)).toEqual([
+      "Early",
+      "Middle",
+      "Late",
+      "Latest",
+    ]);
+    const times = rows.map((entry) => Date.parse(entry.scheduledTime ?? ""));
+    expect([...times].sort((a, b) => a - b)).toEqual(times);
+  });
+
+  it("gives a scheduled and an expected time that are the same instant", () => {
+    const rows = departuresFromRows({
+      stop,
+      rows: [row(5, "Early")],
+      now,
+      retrievedAt: provenance.retrievedAt,
+    });
+    expect(rows[0]!.expectedTime).toBe(rows[0]!.scheduledTime);
+    expect(rows[0]!.scheduledTime).toBe("2026-09-04T09:05:00.000Z");
+  });
+
+  it("keeps the scheduled journeys' board in order too", () => {
+    const rows = scheduledDeparturesForStop({
+      stop,
+      journeys: [
+        journey("00000000-0000-4000-8000-000000000031", "2026-09-04T09:40:00.000Z"),
+        journey("00000000-0000-4000-8000-000000000032", "2026-09-04T09:10:00.000Z"),
+        journey("00000000-0000-4000-8000-000000000033", "2026-09-04T09:25:00.000Z"),
+      ],
+      patterns,
+      services,
+      stopNamesById: stopNames,
+      now,
+    });
+    expect(rows.map((entry) => entry.scheduledTime)).toEqual([
+      "2026-09-04T09:10:00.000Z",
+      "2026-09-04T09:25:00.000Z",
+      "2026-09-04T09:40:00.000Z",
+    ]);
+    for (const entry of rows) expect(entry.expectedTime).toBe(entry.scheduledTime);
   });
 });

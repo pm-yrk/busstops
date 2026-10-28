@@ -146,7 +146,8 @@ export function scheduledDeparturesForStop(input: ScheduledDepartureInput): Depa
   const until = now.getTime() + windowMinutes * 60_000;
   const patternsById = new Map(patterns.map((geometry) => [geometry.pattern.id, geometry]));
 
-  const rows: DeparturePrediction[] = [];
+  /* The row and the epoch it leaves at, so the sort needs no parse. */
+  const rows: Array<{ row: DeparturePrediction; departure: number }> = [];
   for (const journey of journeys) {
     const stopTime = journey.stopTimes.find((entry) => entry.stopId === stop.id);
     if (!stopTime) continue;
@@ -176,26 +177,39 @@ export function scheduledDeparturesForStop(input: ScheduledDepartureInput): Depa
           : ["timetabled departure interpolated between timing points"],
     };
 
+    /*
+     * Formatted once, and sorted on the epoch rather than on the text.
+     *
+     * This built `new Date(departure).toISOString()` twice for the same instant, and then sorted
+     * by `Date.parse` of the string it had just produced — two allocations and two parses a row,
+     * and another two per comparison. The comment above the sort claimed it sorted "on the epoch
+     * seconds the rows carry rather than by re-parsing a nullable ISO string", which is what it
+     * should have done and not what it did.
+     */
+    const scheduledTime = new Date(departure).toISOString();
     rows.push({
-      id: journey.id,
-      provenance: journey.provenance,
-      ingestedAt: journey.ingestedAt,
-      qualityFlags: stopTime.isTimingPoint ? [] : ["interpolated"],
-      stopId: stop.id,
-      scheduledJourneyId: journey.id,
-      routePatternId: journey.routePatternId,
-      serviceRoutePublicName: service ? routeBadgeName(service.publicName) : "Bus",
-      destinationName: passengerName(destinationFor(journey, pattern, service, stopNamesById)),
-      scheduledTime: new Date(departure).toISOString(),
-      expectedTime: cancelled ? null : new Date(departure).toISOString(),
-      liveState: cancelled ? "cancelled" : "scheduled_only",
-      uncertaintySeconds: cancelled ? null : stopTime.isTimingPoint ? 120 : 300,
-      confidence,
+      row: {
+        id: journey.id,
+        provenance: journey.provenance,
+        ingestedAt: journey.ingestedAt,
+        qualityFlags: stopTime.isTimingPoint ? [] : ["interpolated"],
+        stopId: stop.id,
+        scheduledJourneyId: journey.id,
+        routePatternId: journey.routePatternId,
+        serviceRoutePublicName: service ? routeBadgeName(service.publicName) : "Bus",
+        destinationName: passengerName(destinationFor(journey, pattern, service, stopNamesById)),
+        scheduledTime,
+        expectedTime: cancelled ? null : scheduledTime,
+        liveState: cancelled ? "cancelled" : "scheduled_only",
+        uncertaintySeconds: cancelled ? null : stopTime.isTimingPoint ? 120 : 300,
+        confidence,
+      },
+      departure,
     });
   }
 
-  rows.sort((a, b) => Date.parse(a.scheduledTime ?? "") - Date.parse(b.scheduledTime ?? ""));
-  return rows.slice(0, maxRows);
+  rows.sort((a, b) => a.departure - b.departure);
+  return rows.slice(0, maxRows).map((entry) => entry.row);
 }
 
 /**
@@ -261,7 +275,8 @@ export function departuresFromRows(input: {
   const until = now.getTime() + windowMinutes * 60_000;
   const provenance = { source: "bods" as const, retrievedAt, externalIds: [] };
 
-  const board: DeparturePrediction[] = [];
+  /* The row and the epoch it leaves at, so the sort needs no parse. */
+  const board: Array<{ row: DeparturePrediction; departure: number }> = [];
   for (const row of rows) {
     const departure = row.t * 1000;
     if (departure < from || departure > until) continue;
@@ -282,30 +297,35 @@ export function departuresFromRows(input: {
       ],
     };
 
+    /* Formatted once; see the other builder above for what this used to cost twice over. */
+    const scheduledTime = new Date(departure).toISOString();
     board.push({
-      /*
-       * Deterministic in the trip, the stop and the instant, so the same row keeps the same id
-       * between requests and a client can follow it across a refresh. Namespaced as a journey
-       * because that is what it identifies a call of.
-       */
-      id: deterministicUuid("journey", `departure:${row.j}:${stop.atcoCode}:${row.t}`),
-      provenance,
-      ingestedAt: retrievedAt,
-      qualityFlags: timingPoint ? [] : ["interpolated"],
-      stopId: stop.id,
-      scheduledJourneyId: null,
-      routePatternId: row.p,
-      serviceRoutePublicName: routeBadgeName(row.r),
-      destinationName: row.d.length > 0 ? passengerName(row.d) : "Unknown destination",
-      scheduledTime: new Date(departure).toISOString(),
-      expectedTime: new Date(departure).toISOString(),
-      liveState: "scheduled_only",
-      uncertaintySeconds: timingPoint ? 120 : 300,
-      confidence,
+      row: {
+        /*
+         * Deterministic in the trip, the stop and the instant, so the same row keeps the same id
+         * between requests and a client can follow it across a refresh. Namespaced as a journey
+         * because that is what it identifies a call of.
+         */
+        id: deterministicUuid("journey", `departure:${row.j}:${stop.atcoCode}:${row.t}`),
+        provenance,
+        ingestedAt: retrievedAt,
+        qualityFlags: timingPoint ? [] : ["interpolated"],
+        stopId: stop.id,
+        scheduledJourneyId: null,
+        routePatternId: row.p,
+        serviceRoutePublicName: routeBadgeName(row.r),
+        destinationName: row.d.length > 0 ? passengerName(row.d) : "Unknown destination",
+        scheduledTime,
+        expectedTime: scheduledTime,
+        liveState: "scheduled_only",
+        uncertaintySeconds: timingPoint ? 120 : 300,
+        confidence,
+      },
+      departure,
     });
   }
 
-  // Sorted on the epoch seconds the rows carry rather than by re-parsing a nullable ISO string.
-  board.sort((a, b) => Date.parse(a.scheduledTime ?? "") - Date.parse(b.scheduledTime ?? ""));
-  return board.slice(0, maxRows);
+  // Sorted on the epoch the rows carry, which is what the comment here always claimed.
+  board.sort((a, b) => a.departure - b.departure);
+  return board.slice(0, maxRows).map((entry) => entry.row);
 }
