@@ -1270,6 +1270,13 @@ export function buildGraphFor(
       id: `${row.p}:${row.j}`,
       routeId: pattern.serviceRouteId,
       patternId: pattern.id,
+      /*
+       * Whether this is the pattern's whole sequence, which is what lets the grouping skip a
+       * comparison. True only when every call in the sequence had a time: a row with a gap is a
+       * different sequence from one without, and claiming otherwise would merge two routes and
+       * put a bus at a stop it does not call at.
+       */
+      wholePatternSequence: stopTimes.length === sequence.length,
       // Cleaned on the way out, like every other passenger-facing name: a feed that publishes
       // `X84_Leeds_Otley` should read as a route number on an itinerary, not as a database key.
       routeName: service ? routeBadgeName(service.publicName) : "Bus",
@@ -1310,12 +1317,13 @@ export function buildGraphFor(
       usableTrips.push(trip);
       continue;
     }
+    /* The corridor cut it, so it is no longer the pattern's whole sequence whatever it was. */
     if (trip.stopTimes.length - dropped < 2) continue;
     const kept: TripStopTime[] = [];
     for (const stopTime of trip.stopTimes) {
       if (usableStopIds.has(stopTime.stopId)) kept.push(stopTime);
     }
-    usableTrips.push({ ...trip, stopTimes: kept });
+    usableTrips.push({ ...trip, stopTimes: kept, wholePatternSequence: false });
   }
 
   return {

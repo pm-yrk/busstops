@@ -40,6 +40,20 @@ export interface Trip {
   /** Live adjustment in seconds applied to every stop time; positive is late. */
   delaySeconds?: number;
   cancelled?: boolean;
+  /**
+   * That `stopTimes` is the pattern's whole stop sequence, nothing skipped and nothing cut.
+   *
+   * Set by whoever built the trip, because only they know. Grouping trips into routes means
+   * finding the ones whose sequences are identical, and for a Manchester corridor the
+   * element-wise comparison that establishes it ran over 238,000 stop ids to rediscover what the
+   * pattern id already implied — two trips on one pattern have the same sequence unless something
+   * cut one of them. A trip carrying this flag needs no comparison at all: it is the pattern's
+   * sequence by construction, so every other trip with the flag and the same pattern is too.
+   *
+   * Absent means "not known to be", never "is not", so a caller that does not set it loses the
+   * saving and nothing else.
+   */
+  wholePatternSequence?: boolean;
 }
 
 export interface Transfer {
@@ -184,16 +198,28 @@ export function groupRoutes(trips: readonly Trip[]): {
    * Two different patterns that happen to have the same sequence stay separate routes. That costs
    * one extra route scan and is correct, which is the right way round.
    */
-  const byPattern = new Map<string, Trip[][]>();
+  const byPattern = new Map<string, { whole: Trip[] | null; cut: Trip[][] }>();
   for (const trip of trips) {
     if (trip.stopTimes.length < 2) continue;
-    const buckets = byPattern.get(trip.patternId);
-    if (!buckets) {
-      byPattern.set(trip.patternId, [[trip]]);
+    let entry = byPattern.get(trip.patternId);
+    if (entry === undefined) {
+      entry = { whole: null, cut: [] };
+      byPattern.set(trip.patternId, entry);
+    }
+
+    /*
+     * The trips that kept the pattern's whole sequence need no comparison: they are identical to
+     * each other by construction. That is the common case — a corridor cuts the few trips that
+     * leave it — and it is where the 238,000 stop-id comparisons went.
+     */
+    if (trip.wholePatternSequence === true) {
+      if (entry.whole === null) entry.whole = [trip];
+      else entry.whole.push(trip);
       continue;
     }
+
     let placed = false;
-    for (const bucket of buckets) {
+    for (const bucket of entry.cut) {
       const against = bucket[0]!.stopTimes;
       if (against.length !== trip.stopTimes.length) continue;
       let same = true;
@@ -209,10 +235,32 @@ export function groupRoutes(trips: readonly Trip[]): {
         break;
       }
     }
-    if (!placed) buckets.push([trip]);
+    if (!placed) entry.cut.push([trip]);
   }
+  /*
+   * A cut trip whose sequence happens to be the pattern's whole one joins the whole group, which
+   * it has to: two trips with the same sequence are one route however each of them got there.
+   */
   const bySequence: Trip[][] = [];
-  for (const buckets of byPattern.values()) bySequence.push(...buckets);
+  for (const entry of byPattern.values()) {
+    const whole = entry.whole;
+    if (whole !== null) {
+      const reference = whole[0]!.stopTimes;
+      const remaining: Trip[][] = [];
+      for (const bucket of entry.cut) {
+        const against = bucket[0]!.stopTimes;
+        let same = against.length === reference.length;
+        for (let at = 0; same && at < against.length; at++) {
+          if (against[at]!.stopId !== reference[at]!.stopId) same = false;
+        }
+        if (same) for (const trip of bucket) whole.push(trip);
+        else remaining.push(bucket);
+      }
+      bySequence.push(whole, ...remaining);
+      continue;
+    }
+    bySequence.push(...entry.cut);
+  }
 
   const routes: RouteGroup[] = [];
   const routesByStop = new Map<string, Array<{ route: RouteGroup; at: number }>>();
@@ -225,12 +273,19 @@ export function groupRoutes(trips: readonly Trip[]): {
      * admitted to a route, so an order that is not total would make which journey is found depend
      * on the order the trips happened to be read in.
      */
-    const times = new Map(group.map((trip) => [trip, effectiveStopTimes(trip)]));
-    const ordered = [...group].sort((a, b) => {
-      const byTime = times.get(a)![0]!.departureSeconds - times.get(b)![0]!.departureSeconds;
-      return byTime !== 0 ? byTime : a.id < b.id ? -1 : 1;
+    /*
+     * One object per trip, carrying its effective times and the key it sorts on, instead of a
+     * `Map` keyed by the trip object and two lookups per comparison. A sort of nine and a half
+     * thousand trips is upwards of a hundred thousand comparisons, and each one was two map
+     * probes to fetch an array in order to read one number out of its first element.
+     */
+    const entries = group.map((trip) => {
+      const times = effectiveStopTimes(trip);
+      return { trip, times, at: times[0]!.departureSeconds };
     });
-    const stopIds = times.get(ordered[0]!)!.map((stopTime) => stopTime.stopId);
+    entries.sort((a, b) => (a.at !== b.at ? a.at - b.at : a.trip.id < b.trip.id ? -1 : 1));
+    const ordered = entries;
+    const stopIds = ordered[0]!.times.map((stopTime) => stopTime.stopId);
 
     /*
      * Split into routes no bus overtakes another on. See `RouteGroup.nonOvertaking`.
@@ -241,12 +296,12 @@ export function groupRoutes(trips: readonly Trip[]): {
      * one behind all of them — which keeps this O(trips × routes × stops) rather than quadratic
      * in the trips, and in practice there is one route and the inner loop runs once.
      */
-    const buckets: Trip[][] = [];
-    for (const trip of ordered) {
-      const mine = times.get(trip)!;
+    const buckets: Array<Array<{ trip: Trip; times: TripStopTime[]; at: number }>> = [];
+    for (const entry of ordered) {
+      const mine = entry.times;
       let placed = false;
       for (const bucket of buckets) {
-        const last = times.get(bucket[bucket.length - 1]!)!;
+        const last = bucket[bucket.length - 1]!.times;
         let behind = true;
         for (let at = 0; at < mine.length; at++) {
           if (mine[at]!.departureSeconds < last[at]!.departureSeconds) {
@@ -255,16 +310,20 @@ export function groupRoutes(trips: readonly Trip[]): {
           }
         }
         if (behind) {
-          bucket.push(trip);
+          bucket.push(entry);
           placed = true;
           break;
         }
       }
-      if (!placed) buckets.push([trip]);
+      if (!placed) buckets.push([entry]);
     }
 
     for (const bucket of buckets) {
-      const route: RouteGroup = { stopIds, trips: bucket, nonOvertaking: true };
+      const route: RouteGroup = {
+        stopIds,
+        trips: bucket.map((entry) => entry.trip),
+        nonOvertaking: true,
+      };
       routes.push(route);
       for (let at = 0; at < stopIds.length; at++) {
         const stopId = stopIds[at]!;

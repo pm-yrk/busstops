@@ -567,3 +567,54 @@ and it is why the trip shards are being converted rather than something else bei
 
 The eight requests that are not "ok" with the planner off are not failures: they are the
 `feature_unavailable` the flag is supposed to return, counted honestly rather than excluded.
+
+### What the graph build is actually made of
+
+With the parse accounted for, the build was the largest item left — and "the build" turned out to be
+two unrelated pieces of work with different fixes. Measured on real corridors, one runner:
+
+| Corridor               | build | walking transfers | route grouping | search |
+| ---------------------- | ----: | ----------------: | -------------: | -----: |
+| Leeds, neighbourhood   | 33.90 |             11.61 |      **17.92** |  14.84 |
+| Manchester, urban      | 55.59 |             23.56 |      **27.65** |  16.48 |
+| Birmingham, cross-city | 68.26 |             24.76 |      **38.28** |  20.83 |
+| York, to park and ride |  8.18 |              6.30 |           1.44 |   4.18 |
+
+Grouping trips into routes costs more than computing the transfers, in every corridor but the
+smallest. That was not the expectation — the transfers are the quadratic-looking thing, 108,284
+edges over 2,063 stops in Manchester — and it is why the single number for the build could not have
+decided anything. Both are precomputable at publish time: the transfers are the same every day, and
+the grouping is the same every day _until_ the corridor filter cuts a trip's sequence short, which
+is the case that has to stay in the request.
+
+So the ladder, with the numbers for one Manchester corridor on one runner, is: the parse goes from
+18.06 ms to 0.63 (published bytes, read through typed arrays) or 5.09 (the same, with the rows the
+current graph builder takes); the transfers go from 23.56 to roughly nothing if published; the
+grouping goes from 27.65 to roughly nothing if published; and the search is 16.48, which is the
+only part that is actually transport computation and the only part no artifact can remove. Ten
+milliseconds is the budget. The search has to come down too, and the earlier attempt at it measured
+40% _slower_ because it built the object graph first and then indexed it — the artifact has to carry
+the indices or the rewrite pays for both forms.
+
+### The horizon was free
+
+The plan horizon was four hours, for every request. The corpus comparison asked what two hours
+would cost, over the same twenty queries with the deployed planner's answers as the baseline:
+
+| Change               | Same best ride | Same fastest | Same fewest changes | Journey lost | Materially worse |
+| -------------------- | -------------: | -----------: | ------------------: | -----------: | ---------------: |
+| Horizon 4h → 2h      |     **100.0%** |   **100.0%** |          **100.0%** |     **0.0%** |         **0.0%** |
+| Corridor 0.05 → 0.02 |          80.0% |        90.0% |               95.0% |         0.0% |            10.0% |
+| Change walk 10 → 5   |          70.0% |        85.0% |               90.0% |         0.0% |            10.0% |
+
+Not one of the twenty recommendations changed, for half the timetable. The other two levers both
+cost two queries in twenty, so they stay on the shelf; this one did not cost anything the corpus
+could see.
+
+What the corpus cannot see is the village whose only useful bus leaves in two hours and ten
+minutes — twenty queries in five cities at nine in the morning say nothing about it. So the horizon
+is adaptive rather than shorter: the narrow pass runs first and widens to four hours when its answer
+suggests a better one is just outside it (nothing found, no path through what was found, or a best
+option needing two changes). A wider search covers a superset of the same timetable, so its optimum
+can only be at least as good. A city journey never pays for the second read; the sparse one does,
+and gets an answer instead of an apology.

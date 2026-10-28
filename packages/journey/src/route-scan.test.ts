@@ -273,6 +273,79 @@ describe("the route scan against exhaustive enumeration", () => {
   });
 });
 
+/**
+ * The flag that lets the grouping skip a comparison must never change what it groups.
+ *
+ * `wholePatternSequence` says a trip's stop times are the pattern's whole sequence, so trips
+ * carrying it on one pattern are identical without checking — which for a Manchester corridor
+ * saves 238,000 stop-id comparisons. The risk is obvious: a flag that is wrong, or a grouping that
+ * treats a flagged trip and an unflagged one with the same sequence as two routes, splits a route
+ * in half and halves the buses the search can see on it.
+ *
+ * So the grouping is run twice over the same generated timetables — once with every trip flagged
+ * where the flag is true, once with none of them flagged — and the two have to agree about
+ * everything: the routes, their stop sequences, and which trips are on them.
+ */
+describe("the whole-pattern flag changes nothing about the grouping", () => {
+  /** Routes as a comparable shape: sequence, then the trips on it, in order. */
+  const shapeOf = (grouped: ReturnType<typeof groupRoutes>) =>
+    grouped.routes
+      .map((route) => `${route.stopIds.join(">")}|${route.trips.map((trip) => trip.id).join(",")}`)
+      .sort();
+
+  it("agrees with the element-wise comparison over two hundred timetables", () => {
+    let flaggedTrips = 0;
+    for (let seed = 1; seed <= 200; seed++) {
+      const { trips } = timetable(seed);
+      /*
+       * The flag as a trip builder would set it: these generated trips all carry their pattern's
+       * whole sequence, because nothing here cuts one.
+       */
+      const flagged = trips.map((trip) => ({ ...trip, wholePatternSequence: true }));
+      flaggedTrips += flagged.length;
+
+      expect(shapeOf(groupRoutes(flagged)), `seed ${String(seed)}`).toEqual(
+        shapeOf(groupRoutes(trips)),
+      );
+    }
+    expect(flaggedTrips).toBeGreaterThan(1_000);
+  });
+
+  it("keeps a cut trip with the flagged trips it matches, and apart from the ones it does not", () => {
+    const { trips } = timetable(7);
+    const pattern = trips[0]!.patternId;
+    const onPattern = trips.filter((trip) => trip.patternId === pattern);
+    expect(onPattern.length).toBeGreaterThan(1);
+
+    /* One trip on the pattern, unflagged but with the same sequence: one route, all of them. */
+    const sameSequence = [
+      ...onPattern.slice(1).map((trip) => ({ ...trip, wholePatternSequence: true })),
+      { ...onPattern[0]!, wholePatternSequence: false },
+    ];
+    const together = groupRoutes(sameSequence);
+    const onlyWhole = groupRoutes(
+      onPattern.map((trip) => ({ ...trip, wholePatternSequence: true })),
+    );
+    expect(shapeOf(together)).toEqual(shapeOf(onlyWhole));
+
+    /* And one genuinely cut short: a route of its own, not merged into the whole-sequence one. */
+    const cut = {
+      ...onPattern[0]!,
+      id: `${onPattern[0]!.id}-cut`,
+      stopTimes: onPattern[0]!.stopTimes.slice(0, onPattern[0]!.stopTimes.length - 1),
+      wholePatternSequence: false,
+    };
+    const mixed = groupRoutes([
+      ...onPattern.map((trip) => ({ ...trip, wholePatternSequence: true })),
+      cut,
+    ]);
+    const sequences = new Set(mixed.routes.map((route) => route.stopIds.join(">")));
+    expect(sequences.size).toBe(2);
+    const cutRoute = mixed.routes.find((route) => route.trips.some((trip) => trip.id === cut.id));
+    expect(cutRoute?.trips.map((trip) => trip.id)).toEqual([cut.id]);
+  });
+});
+
 describe("walking transfers from a grid", () => {
   /** The form it replaces: every pair, measured. */
   function allPairs(
