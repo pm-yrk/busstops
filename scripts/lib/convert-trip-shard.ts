@@ -14,6 +14,7 @@
 
 import type { BinaryObjectStore } from "@busstops/pipeline-core";
 import {
+  PatternTripShard,
   encodePatternTripShard,
   shardHoldsEveryRow,
   type PatternTripRow,
@@ -39,6 +40,11 @@ export function rowsOfShardText(text: string): PatternTripRow[] {
 /** The binary sibling of a text shard's key. */
 export function binaryKeyOf(textKey: string): string {
   return `${textKey.slice(0, -".jsonl".length)}.bin`;
+}
+
+/** And back the other way, for the undo. */
+export function textKeyOf(binaryKey: string): string {
+  return `${binaryKey.slice(0, -".bin".length)}.jsonl`;
 }
 
 export async function convertTripShard(
@@ -120,5 +126,89 @@ export async function convertTripShard(
   }
 
   await store.delete(textKey);
+  return { outcome: "converted", textBytes: text.length, binaryBytes: bytes.byteLength };
+}
+
+/**
+ * And the way back: one shard's bytes written out as JSON lines again.
+ *
+ * Here because a one-way migration is a worse migration. The binary form holds everything the
+ * lines held — that is what `shardHoldsEveryRow` proves on the way in — so the text can be
+ * rebuilt from it exactly, and the same rule applies in this direction: the bytes are deleted only
+ * after the lines that replace them have been read back out of the store and found to parse into
+ * the same rows.
+ *
+ * Nothing in the serving path needs this. What needs it is the decision to convert at all: an
+ * operator who can undo a change in twenty minutes can agree to it on a Tuesday afternoon.
+ */
+export async function revertTripShard(
+  store: BinaryObjectStore,
+  textKey: string,
+  options: { apply: boolean },
+): Promise<ShardConversion> {
+  const binaryKey = binaryKeyOf(textKey);
+  let bytes: Uint8Array | null;
+  try {
+    bytes = await store.getBytes(binaryKey);
+  } catch (error) {
+    return {
+      outcome: "unreadable",
+      textBytes: 0,
+      binaryBytes: 0,
+      reason: String(error).slice(0, 120),
+    };
+  }
+  if (bytes === null) return { outcome: "absent", textBytes: 0, binaryBytes: 0 };
+
+  let rows: PatternTripRow[];
+  try {
+    const shard = new PatternTripShard(bytes);
+    rows = [];
+    for (let trip = 0; trip < shard.tripCount; trip += 1) rows.push(shard.rowAt(trip));
+  } catch (error) {
+    return {
+      outcome: "unreadable",
+      textBytes: 0,
+      binaryBytes: bytes.byteLength,
+      reason: `bytes: ${String(error).slice(0, 100)}`,
+    };
+  }
+
+  const text = `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`;
+  if (!options.apply) {
+    return { outcome: "verified_only", textBytes: text.length, binaryBytes: bytes.byteLength };
+  }
+
+  await store.put(textKey, text);
+  const stored = await store.get(textKey);
+  if (stored === null) {
+    return {
+      outcome: "not_replaced",
+      textBytes: text.length,
+      binaryBytes: bytes.byteLength,
+      reason: "what was written is not there",
+    };
+  }
+  let readBack: PatternTripRow[];
+  try {
+    readBack = rowsOfShardText(stored);
+  } catch (error) {
+    return {
+      outcome: "not_replaced",
+      textBytes: text.length,
+      binaryBytes: bytes.byteLength,
+      reason: `what came back from the bucket would not parse: ${String(error).slice(0, 80)}`,
+    };
+  }
+  if (JSON.stringify(readBack) !== JSON.stringify(rows)) {
+    return {
+      outcome: "not_replaced",
+      textBytes: text.length,
+      binaryBytes: bytes.byteLength,
+      reason: "what came back from the bucket was not the shard",
+    };
+  }
+
+  await store.delete(binaryKey);
   return { outcome: "converted", textBytes: text.length, binaryBytes: bytes.byteLength };
 }

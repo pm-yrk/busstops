@@ -4,7 +4,9 @@ import { PatternTripShard, type PatternTripRow } from "@busstops/pipeline-static
 import {
   binaryKeyOf,
   convertTripShard,
+  revertTripShard,
   rowsOfShardText,
+  textKeyOf,
 } from "../../scripts/lib/convert-trip-shard.js";
 
 /**
@@ -130,5 +132,79 @@ describe("converting one trip shard in place", () => {
     const source = rows(3);
     const text = `${source.map((row) => JSON.stringify(row)).join("\n")}\n`;
     expect(rowsOfShardText(text)).toEqual(source);
+  });
+});
+
+/**
+ * And the undo.
+ *
+ * A one-way migration is a worse migration: an operator who can put it back in twenty minutes can
+ * agree to it on a Tuesday afternoon. The rule is the same in this direction — the bytes go only
+ * after the lines that replace them have been read back out of the store and parsed into the same
+ * rows — so the same kinds of failure are tested, and the assertion in each is that the bytes are
+ * still there.
+ */
+describe("putting a trip shard back as lines", () => {
+  async function converted(count = 30) {
+    const { store, source } = await published(count);
+    const result = await convertTripShard(store, KEY, { apply: true });
+    expect(result.outcome).toBe("converted");
+    return { store, source };
+  }
+
+  it("rebuilds exactly the rows the shard was published with, and then drops the bytes", async () => {
+    const { store, source } = await converted();
+    const back = await revertTripShard(store, KEY, { apply: true });
+
+    expect(back.outcome).toBe("converted");
+    expect(await store.getBytes(binaryKeyOf(KEY))).toBeNull();
+    const text = await store.get(KEY);
+    expect(text).not.toBeNull();
+    expect(rowsOfShardText(text!)).toEqual(source);
+  });
+
+  it("writes and deletes nothing in a dry run", async () => {
+    const { store } = await converted();
+    const back = await revertTripShard(store, KEY, { apply: false });
+    expect(back.outcome).toBe("verified_only");
+    expect(await store.get(KEY)).toBeNull();
+    expect(await store.getBytes(binaryKeyOf(KEY))).not.toBeNull();
+  });
+
+  it("keeps the bytes when what comes back as lines is not the shard", async () => {
+    const { store } = await converted();
+    const lying: BinaryObjectStore = {
+      get: async (key) => (key.endsWith(".jsonl") ? '{"p":"x","j":"y","t":[1]}\n' : store.get(key)),
+      put: (key, value) => store.put(key, value),
+      delete: (key) => store.delete(key),
+      list: (prefix) => store.list(prefix),
+      getBytes: (key) => store.getBytes(key),
+      putBytes: (key, value) => store.putBytes(key, value),
+    };
+
+    const back = await revertTripShard(lying, KEY, { apply: true });
+    expect(back.outcome).toBe("not_replaced");
+    expect(await store.getBytes(binaryKeyOf(KEY))).not.toBeNull();
+  });
+
+  it("says a shard is absent when there are no bytes to put back", async () => {
+    const { store } = await published();
+    const back = await revertTripShard(store, KEY, { apply: true });
+    expect(back.outcome).toBe("absent");
+  });
+
+  it("names the text key of a binary one, and the other way round", () => {
+    expect(textKeyOf(binaryKeyOf(KEY))).toBe(KEY);
+  });
+
+  /* Round trip, which is the property the whole migration rests on. */
+  it("survives a conversion and an undo with byte-identical lines", async () => {
+    const { store, source } = await published(60);
+    const before = await store.get(KEY);
+    expect((await convertTripShard(store, KEY, { apply: true })).outcome).toBe("converted");
+    expect((await revertTripShard(store, KEY, { apply: true })).outcome).toBe("converted");
+    const after = await store.get(KEY);
+    expect(after).toBe(before);
+    expect(rowsOfShardText(after!)).toEqual(source);
   });
 });

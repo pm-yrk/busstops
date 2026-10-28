@@ -14,3 +14,4 @@ cannot justify is not.
 | [Bad artifact and rollback](./bad-artifact.md) | A published dataset is wrong, truncated or corrupt |
 | [Daily Brief incidents](./daily-brief.md) | Briefs did not send, sent twice, or went to the wrong people |
 | [Data subject requests](./data-requests.md) | Someone asks what you hold about them, or asks you to delete it |
+| [Converting the trip shards](./convert-trip-shards.md) | The planner's shards need moving between the published line and byte forms, or putting back |

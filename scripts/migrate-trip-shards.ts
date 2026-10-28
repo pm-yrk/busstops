@@ -45,7 +45,12 @@ import {
   SHARDED,
   type NetworkIndexRecord,
 } from "@busstops/pipeline-static-network";
-import { binaryKeyOf, convertTripShard } from "./lib/convert-trip-shard.js";
+import {
+  binaryKeyOf,
+  convertTripShard,
+  revertTripShard,
+  textKeyOf,
+} from "./lib/convert-trip-shard.js";
 
 const argv = process.argv.slice(2);
 const flag = (name: string): string | undefined => {
@@ -53,6 +58,8 @@ const flag = (name: string): string | undefined => {
   return at === -1 ? undefined : argv[at + 1];
 };
 const APPLY = argv.includes("--apply");
+/** Undo: write the lines back from the bytes, and delete the bytes once they are proved. */
+const REVERSE = argv.includes("--reverse");
 const LIMIT = Number(flag("limit") ?? "100000");
 const MINUTES = Number(flag("minutes") ?? "30");
 const JSON_OUT = flag("json");
@@ -85,12 +92,28 @@ async function main(): Promise<number> {
 
   const inventory = await store.listDetailed(`data/${PATTERN_TRIPS_PREFIX}/`);
   const binaryKeys = new Set(inventory.filter((o) => o.key.endsWith(".bin")).map((o) => o.key));
-  const pending = inventory.filter(
-    (object) =>
-      object.key.endsWith(".jsonl") &&
-      versionInObjectKey(object.key) === version &&
-      !binaryKeys.has(binaryKeyOf(object.key)),
-  );
+  const textKeys = new Set(inventory.filter((o) => o.key.endsWith(".jsonl")).map((o) => o.key));
+  /*
+   * Forwards: the text shards at this version that have no binary sibling yet. Backwards: the
+   * binary shards at this version that have no text sibling — the undo, which exists because a
+   * one-way migration is a worse migration. Either way the work is keyed by the text key, so a
+   * run of each cancels out exactly.
+   */
+  const pending = REVERSE
+    ? inventory
+        .filter(
+          (object) =>
+            object.key.endsWith(".bin") &&
+            versionInObjectKey(object.key) === version &&
+            !textKeys.has(textKeyOf(object.key)),
+        )
+        .map((object) => ({ ...object, key: textKeyOf(object.key) }))
+    : inventory.filter(
+        (object) =>
+          object.key.endsWith(".jsonl") &&
+          versionInObjectKey(object.key) === version &&
+          !binaryKeys.has(binaryKeyOf(object.key)),
+      );
 
   const deadline = Date.now() + MINUTES * 60 * 1000;
   const counts = {
@@ -118,7 +141,9 @@ async function main(): Promise<number> {
       break;
     }
 
-    const conversion = await convertTripShard(store, object.key, { apply: APPLY });
+    const conversion = REVERSE
+      ? await revertTripShard(store, object.key, { apply: APPLY })
+      : await convertTripShard(store, object.key, { apply: APPLY });
     if (conversion.outcome === "absent") continue;
     if (conversion.outcome === "unreadable") {
       counts.unreadable += 1;
@@ -139,7 +164,8 @@ async function main(): Promise<number> {
   }
 
   const report = {
-    outcome: APPLY ? "migrated" : "dry_run",
+    outcome: APPLY ? (REVERSE ? "reverted" : "migrated") : "dry_run",
+    direction: REVERSE ? "bytes_to_lines" : "lines_to_bytes",
     version,
     /* Proof the keys this walks are the ones a request reads. */
     exampleTextKey: pending[0]?.key ?? null,
