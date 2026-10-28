@@ -212,9 +212,17 @@ export function groupRoutes(trips: readonly Trip[]): {
      * each other by construction. That is the common case — a corridor cuts the few trips that
      * leave it — and it is where the 238,000 stop-id comparisons went.
      */
+    /*
+     * The length is still checked, because the flag is a caller's claim and this is where a wrong
+     * one would do its damage: two sequences of different lengths in one route, and the
+     * non-overtaking scan comparing a stop that is not there. A trip whose length disagrees with
+     * the rest of its pattern's whole-sequence group goes down the comparison path instead, which
+     * is correct whatever the flag says. One integer comparison per trip keeps the saving.
+     */
     if (trip.wholePatternSequence === true) {
       if (entry.whole === null) entry.whole = [trip];
-      else entry.whole.push(trip);
+      else if (entry.whole[0]!.stopTimes.length === trip.stopTimes.length) entry.whole.push(trip);
+      else entry.cut.push([trip]);
       continue;
     }
 

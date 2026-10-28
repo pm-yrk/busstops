@@ -311,6 +311,35 @@ describe("the whole-pattern flag changes nothing about the grouping", () => {
     expect(flaggedTrips).toBeGreaterThan(1_000);
   });
 
+  /*
+   * A flag that is wrong must cost nothing but the saving.
+   *
+   * The profile harness set the flag on trips it had built without a pattern id, so every trip in
+   * a corridor grouped together under `undefined` — sequences of different lengths in one route —
+   * and the non-overtaking scan read a stop that was not there: "Cannot read properties of
+   * undefined". The flag is a caller's claim and this is where a wrong one does its damage, so the
+   * lengths are checked whatever it says.
+   */
+  it("does not take the flag's word for it when the lengths disagree", () => {
+    const base = timetable(3).trips[0]!;
+    const long = { ...base, id: "long", wholePatternSequence: true };
+    const short = {
+      ...base,
+      id: "short",
+      stopTimes: base.stopTimes.slice(0, base.stopTimes.length - 1),
+      wholePatternSequence: true,
+    };
+    expect(short.stopTimes.length).toBeGreaterThanOrEqual(2);
+
+    const grouped = groupRoutes([long, short]);
+    /* Two routes, not one route with a sequence it cannot scan. */
+    expect(grouped.routes).toHaveLength(2);
+    for (const route of grouped.routes) {
+      expect(route.trips).toHaveLength(1);
+      expect(route.stopIds).toHaveLength(route.trips[0]!.stopTimes.length);
+    }
+  });
+
   it("keeps a cut trip with the flagged trips it matches, and apart from the ones it does not", () => {
     const { trips } = timetable(7);
     const pattern = trips[0]!.patternId;

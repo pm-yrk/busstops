@@ -148,6 +148,12 @@ export async function loadCorridor(
           id: row.j,
           routeId: row.p,
           /*
+           * The pattern, named. It was missing, and with the whole-pattern flag set that put
+           * every trip in the corridor into one group keyed `undefined` — sequences of different
+           * lengths in one route, which the non-overtaking scan then read off the end of.
+           */
+          patternId: row.p,
+          /*
            * Every trip this loader emits carries its pattern's whole sequence — the length test
            * above drops the ones that do not — so the flag the grouping reads is true here, and
            * the harness measures the path the deployed reader takes rather than its fallback.
