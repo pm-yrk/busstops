@@ -1,7 +1,9 @@
 # ADR 0007 — The edge reads cheaply and computes expensively, and the computing is the problem
 
-Status: in progress, 2026-10-27. Part A decided and deployed, its target not met; Part B profiled,
-and the profile settles that the current algorithm cannot reach the budget by any arrangement.
+Status: in progress, 2026-10-28. Part A deployed and measured: the map is at 13 ms warm against a
+target of 7, and the live feed is no longer measurable in it. Part B deployed and measured: the
+search is twenty times faster and the planner is still what refuses most of the other endpoints'
+requests, which makes it the highest-value work on the platform rather than the second item.
 
 ## Context
 
@@ -222,8 +224,40 @@ available here at no cost with live freshness. Two measurements settle it:
   live bus map reads, and solving CPU by letting positions go stale is not solving it.
 
 The scan fits instead, measured: 1.99 ms locally for the real 505-vehicle feed, against a
-sub-budget of four. So the live feed is fetched per request, and whatever is left between the
-map's measured CPU and the seven-millisecond target is not in it.
+sub-budget of four.
+
+And the deployed walk now says the same thing from the other side. The CPU walk takes the five
+cities twice, once normally and once after redeploying with `liveVehicles` off, each walk proving
+the flag landed before it measures anything. Thirty requests each, CPU bucketed by how many
+requests the isolate had already served:
+
+| Isolate age  | Live feed on | Live feed off |
+| ------------ | -----------: | ------------: |
+| first        |        61 ms |         69 ms |
+| 2nd to 5th   |        18 ms |         18 ms |
+| 6th to 20th  |        13 ms |         15 ms |
+| 21st onwards |        13 ms |             — |
+
+**The live feed is not measurable in the map's CPU.** The walk without it is, if anything, a
+millisecond or two higher, which is isolate warm-up rather than a cost of not fetching. So Part
+A's live sub-budget is met twice over, and the thirteen milliseconds a warm map spends are its
+projection read, its four hundred markers and its response — not BODS.
+
+### Part A's verdict
+
+| Measure                               | Target |                               Measured |
+| ------------------------------------- | -----: | -------------------------------------: |
+| Live decode and normalise             | ≤ 4 ms | 1.99 ms local, not measurable deployed |
+| `/v1/map` total, warm                 | ≤ 7 ms |                              **13 ms** |
+| `/v1/map` total, first in its isolate | ≤ 7 ms |                           **61–69 ms** |
+| `exceededCpu` on the map              |   zero |         1 of 14, and it was a cold one |
+
+The live normalisation is gone from the request path, the viewport read is proportional to what the
+map draws rather than to what the city contains, and the one branch that could put a pattern tile
+on the path is gone. From about 96 ms to 13. **The seven-millisecond target is not met**, and the
+two reasons are measured rather than guessed: a warm map spends its thirteen milliseconds on work a
+passenger can see, and a cold one spends sixty on module evaluation, the index record and an empty
+cache, which no handler-level change reaches.
 
 ## Part B — the journey planner
 
@@ -379,3 +413,79 @@ artifact rather than being built per request.
 
 The request-time work has taken a Manchester-scale corridor from 1,322.8 ms to 93.5, which is
 fourteen times and nine times the budget. The rest is the artifact.
+
+### The most expensive thing in a journey, which the harness could not see
+
+Three rounds of profiling had been spent on the search and the graph, and the search is now
+twenty times faster. Then the `__name` finding sent me reading the _deployed_ path line by line
+rather than the one the benchmark exercises, and the biggest cost in the endpoint turned out never
+to have been measured at all.
+
+`buildGraphFor` converted every stop time like this:
+
+```ts
+secondsIntoServiceDay(new Date(departureEpoch * 1000).toISOString(), serviceDate);
+```
+
+once for the arrival and once for the departure of every call of every trip. For a Manchester
+corridor — 9,526 trips of about twenty-five calls each — that is **476,300 `Date` objects, 476,300
+ISO strings and 952,600 `Date.parse` calls**, half of them re-parsing the same midnight, to compute
+a subtraction. `Date.parse` of a string `toISOString` has just produced is the epoch it came from,
+so the whole expression is `epoch - dayStart` with midnight hoisted out of the loop.
+
+**The harness could not see it because the harness does not do it.**
+`scripts/profile-journey-search.ts` builds its trips arithmetically — it always did — so it
+measured a Manchester search at 28 ms over a corridor Cloudflare was recording at 337 to 566. I
+had read that gap as the runner being faster than the edge. It was the profile skipping the most
+expensive function in the request.
+
+The same function created three closures per trip, which at about a microsecond each in the
+deployed bundle is thirty milliseconds of its own, and rebuilt every trip's stop-time array for the
+corridor whether the corridor had cut anything or not. All four are loops now, and six tests hold
+the arithmetic against the function it replaced — second for second, across a winter date and two
+summer ones, exact midnight, an awkward minute and second, 23:59:59 and a night bus at 25 hours.
+
+The lesson is about the method, not the bug: a benchmark that reconstructs its own inputs measures
+the code it reconstructs them for, and nothing else. The deployed path and the measured path had
+drifted apart, and the only thing that found it was reading the deployed one.
+
+### What the journey planner costs every other endpoint
+
+`FeatureFlags.journeyPlanner` had existed since the flags did and nothing read it. That came out
+because the acceptance job was changed to run its peak passes once with the planner off — and the
+comparison reported the planner failing nine requests of ten with it supposedly off. A measurement
+of nothing, reported as a measurement. The flag is honoured now, with its own error code, and both
+comparison walks prove the flag landed before they measure anything.
+
+With it working, the same two peak passes on the same build, fifty-odd requests each:
+
+| Pass   | Planner on              | Planner off                |
+| ------ | ----------------------- | -------------------------- |
+| peak-1 | 22 of 52 ok, 30 refused | **46 of 54 ok, 0 refused** |
+| peak-2 | 38 of 50 ok, 12 refused | 36 of 51 ok, 7 refused     |
+
+And the per-endpoint breakdown, which is the point: with the planner on, in every sample, the map
+failed between three and eleven requests of eight to eleven, and search between three and eleven of
+eight to eleven. With it off, one pass had **nothing fail at all**.
+
+The map's own CPU is thirteen milliseconds. What takes it down is sharing an isolate with a planner
+Cloudflare records at 337 to 566, because an isolate carries some flexibility for a Worker that
+infrequently exceeds the limit and loses it for one that exceeds it consistently — Cloudflare's own
+words. So the journey planner is not only over its own budget: it is the cause of most of the
+passenger-visible failures on endpoints that are inside theirs. That makes Part B the highest-value
+work on the platform rather than the second item on a list.
+
+### What the levers cost, for the record
+
+Both were measured against the corpus rather than argued about. Twenty queries, the deployed
+planner's own answers as the baseline:
+
+| Change                     | Same best ride | Journey lost | Materially worse |
+| -------------------------- | -------------: | -----------: | ---------------: |
+| Change walk 10 minutes → 5 |          70.0% |     **0.0%** |        **10.0%** |
+
+No journey is lost, which is the outcome that would have ruled it out. But the recommendation
+changes on three queries in ten, and two of twenty are materially worse — one buying its time with
+an extra change, one arriving eight and a half minutes later. That is a real cost for about a
+quarter of the transfer edges, and it is a product decision with a number against it rather than a
+constant somebody lowered.
