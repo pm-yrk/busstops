@@ -797,3 +797,80 @@ held to that oracle — over stops deliberately clustered on tile boundaries. Th
 is held to `groupRoutes` over two hundred generated timetables containing expresses that overtake,
 trips cut short, identical departure times and patterns that must never merge; and the request-time
 fast path that reads it is held to the same two hundred.
+
+### The corpus's verdict on reading rather than computing
+
+The three families were published and the twenty-query corpus was planned twice on one runner, in
+one job, against the same corridors and the same service date: once computing the transfers and the
+grouping, once reading them from the bucket. Not rebuilding them with the publisher's own function —
+reading the objects the publisher wrote, tile by tile, the way the deployed reader reads them, so the
+encode and the upload are inside the comparison rather than beside it. All twenty corridors read
+published tiles; none fell back.
+
+| Against the planner that computes them | Result |
+| -------------------------------------- | -----: |
+| same best itinerary                    | 100.0% |
+| same fastest arrival                   | 100.0% |
+| same fewest changes                    | 100.0% |
+| journey lost                           |   0.0% |
+| materially worse                       |   0.0% |
+| journeys gained                        |      0 |
+
+Every corridor's edge count is identical too — 61,060 in Armley, 100,756 across Leeds, 186,018 for
+Didsbury to Prestwich — which is the stronger statement: not that the answers happen to agree, but
+that the graph the search walked was the same graph.
+
+What it cost, same corridors, same job:
+
+| Query                                   | Graph build, computed | Graph build, read |
+| --------------------------------------- | --------------------: | ----------------: |
+| Leeds: short hop in Armley              |              82.95 ms |          14.52 ms |
+| Leeds: city centre to Headingley        |               79.5 ms |          12.74 ms |
+| Leeds: station to the airport road      |             101.19 ms |          22.99 ms |
+| Leeds: Beeston to Seacroft              |             123.37 ms |           9.45 ms |
+| Manchester: short hop in the centre     |              70.35 ms |          14.67 ms |
+| Manchester: Piccadilly to Cheetham Hill |              86.46 ms |           7.92 ms |
+| Manchester: centre to Salford Quays     |              86.89 ms |           6.87 ms |
+| Manchester: Didsbury to Prestwich       |             193.93 ms |          10.62 ms |
+| Birmingham: short hop in the centre     |              52.63 ms |           7.87 ms |
+
+A runner's milliseconds are not Cloudflare's. What transfers is that the largest item in a journey
+request stopped being proportional to how much network the corridor contains and became
+proportional to how much of it the plan actually keeps.
+
+The same corpus over a two-hour horizon rather than four also came back 100% on all five measures,
+which is the second time that has been established and the reason the narrow pass is the default.
+
+### The migration that a refresh undoes three times a day
+
+The profile that was supposed to confirm the conversion instead measured today's Leeds corridor
+reading **eight shards as JSON lines**, with the trip-preparation stage back at 30 ms — three weeks
+after the migration had converted every text shard at this version and deleted it.
+
+Two faults, and the second is the one that matters.
+
+The harness read the two forms in the wrong order: text first, bytes second, where the Worker reads
+bytes first. So it had measured the path the request no longer takes. That is a measurement bug and
+it is fixed.
+
+The shards were genuinely there, though. The publisher that writes the live horizon runs from the
+default branch three times a day, and the default branch does not carry the binary publisher — so
+every successful refresh writes `.jsonl` back over shards that are already `.bin`. One of its runs
+also overlapped the migration: the refresh ran 22:54–00:15 and the migration 22:06–00:43, so the
+migration's inventory was taken before those writes and the shards the refresh published afterwards
+were never in its pending list. Those keys now hold **both forms** — and since every reader prefers
+the bytes, such a shard is one whose reader may be answering from the older of two timetables.
+
+Three things close it:
+
+- the publisher deletes the other form when it writes one, for the family that has two;
+- the migration no longer treats a text shard as done because a binary sibling exists: when the
+  text is the **newer** of the two, the bytes beside it are stale and a re-run repairs them;
+- the probe that stops a corridor spending its fifty subrequests on 404s counts its misses per
+  version **and service date**. Keyed by version alone, three misses on the one date a refresh had
+  written as lines turned the isolate back to parsing for every date it served afterwards — the
+  whole CPU fix, undone by the date that had not been converted yet.
+
+None of that removes the cause, which is that the default branch publishes the old form. Until it
+carries this code, a successful refresh is something that needs a `[migrate-trips]` run after it,
+and `shardsWithBothForms` in the profile is the check that it worked.
