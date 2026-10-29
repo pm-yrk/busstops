@@ -272,9 +272,23 @@ function indexIn(space: StopSpace, stopId: string): number {
 }
 
 /**
+ * The filing, packed and as long as the space already is.
+ *
+ * `new Array(n)` alone is holey, and assigning past the end of a short array leaves holes — which
+ * V8 answers by moving the array into dictionary mode, where every read is a hash lookup. That
+ * would undo the thing this exists for: the scan reads this array once per marked stop per round.
+ * So it is filled, and `fileRoute` keeps it filled as the space grows.
+ */
+function filingFor(space: StopSpace): Array<Array<{ route: RouteGroup; at: number }> | undefined> {
+  return new Array<Array<{ route: RouteGroup; at: number }> | undefined>(space.names.length).fill(
+    undefined,
+  );
+}
+
+/**
  * Routes by the index of each stop they call at, in one pass as the routes are made.
  *
- * Grown rather than sized up front: the space can gain a stop while this is being filled, which
+ * Padded rather than sized once: the space can gain a stop while this is being filled, which
  * happens when a route calls somewhere the corridor's own stop list did not mention.
  */
 function fileRoute(
@@ -431,7 +445,7 @@ function routesFromGroups(
   space: StopSpace = { indexOf: new Map<string, number>(), names: [] },
 ): GroupedRoutes {
   const routes: RouteGroup[] = [];
-  const routesByStopIndex: Array<Array<{ route: RouteGroup; at: number }> | undefined> = [];
+  const routesByStopIndex = filingFor(space);
   for (const group of groups) {
     if (group.length === 0) continue;
     let trips = group;
@@ -617,7 +631,7 @@ export function groupRoutes(trips: readonly Trip[], given?: StopSpace): GroupedR
   }
 
   const routes: RouteGroup[] = [];
-  const routesByStopIndex: Array<Array<{ route: RouteGroup; at: number }> | undefined> = [];
+  const routesByStopIndex = filingFor(space);
 
   for (const group of bySequence) {
     /*
