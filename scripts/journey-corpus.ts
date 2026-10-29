@@ -25,15 +25,19 @@
  */
 
 import { writeFileSync } from "node:fs";
-import { ArtifactStore, annotateReport, r2StoreFromEnv } from "@busstops/pipeline-core";
-import { SHARDED, type NetworkIndexRecord } from "@busstops/pipeline-static-network";
 import {
-  buildGraph,
-  buildTransferTiles,
-  groupRouteIndices,
-  mergeTransferTiles,
-  plan,
-} from "@busstops/journey";
+  ArtifactStore,
+  annotateReport,
+  objectKeyForBytes,
+  r2StoreFromEnv,
+} from "@busstops/pipeline-core";
+import {
+  SHARDED,
+  TransferTile,
+  journeyTransfersDataset,
+  type NetworkIndexRecord,
+} from "@busstops/pipeline-static-network";
+import { buildGraph, groupRouteIndices, mergeTransferTiles, plan } from "@busstops/journey";
 import { tileIdFor } from "@busstops/pipeline-core";
 import { STOP_TILE_DEGREES } from "@busstops/pipeline-static-network";
 import { loadCorridor, type CorridorQuery } from "./lib/journey-corridor.js";
@@ -270,6 +274,7 @@ async function main(): Promise<number> {
 
   const serviceDate = arg("date") ?? new Date().toISOString().slice(0, 10);
   const entries: Array<Record<string, unknown>> = [];
+  const transferSources = new Map<string, number>();
   let answered = 0;
 
   for (const query of QUERIES) {
@@ -304,21 +309,60 @@ async function main(): Promise<number> {
      * which is what the deployed reader does; without it, the same corridor is planned by
      * computing both, which is what the deployed reader did before.
      *
-     * The tiles are built here rather than read from the bucket, by the same function the
-     * publisher calls. What that leaves untested is the encode and the upload, and those are
-     * checked where they happen: the publisher reads every object back and reopens it before
-     * counting it as published, and the codec's own round trip is a test.
+     * The tiles are read from the bucket, tile by tile, exactly as the deployed reader reads
+     * them — down to falling back to building the whole corridor when any tile the corridor needs
+     * is absent, because a missing tile is a wrong answer rather than a slow one.
+     *
+     * Reading the real objects rather than rebuilding them is the point: it puts the encode and
+     * the upload inside the comparison, so a corpus that comes back identical has tested the
+     * published bytes and not only the function that made them.
      */
-    const artifactTransfers = USE_ARTIFACTS
-      ? mergeTransferTiles(
+    let transfersFrom = "computed in the request";
+    let transferTilesRead = 0;
+    let transferTilesMissing = 0;
+    let artifactTransfers: ReturnType<typeof mergeTransferTiles> = null;
+    if (USE_ARTIFACTS) {
+      const wanted = new Set<string>();
+      for (const stop of slice.stops) wanted.add(tileIdFor(stop.coordinate, STOP_TILE_DEGREES));
+      const tiles: TransferTile[] = [];
+      for (const tile of wanted) {
+        const bytes =
+          typeof store.getBytes === "function"
+            ? await store.getBytes(objectKeyForBytes(journeyTransfersDataset(tile), index.version))
+            : null;
+        if (bytes === null) {
+          transferTilesMissing += 1;
+          continue;
+        }
+        try {
+          tiles.push(new TransferTile(bytes));
+          transferTilesRead += 1;
+        } catch {
+          transferTilesMissing += 1;
+        }
+      }
+      if (transferTilesMissing === 0 && tiles.length > 0) {
+        artifactTransfers = mergeTransferTiles(
           slice.stops.map((stop) => stop.id),
-          buildTransferTiles(slice.stops, {
-            capSeconds: MAX_TRANSFER_SECONDS,
-            tileOf: (stop) => tileIdFor(stop.coordinate, STOP_TILE_DEGREES),
-          }).map((tile) => ({ ...tile, capSeconds: MAX_TRANSFER_SECONDS })),
+          tiles.map((tile) => ({
+            stopIds: tile.stopIds(),
+            offsets: tile.offsets(),
+            neighbours: tile.neighbours(),
+            seconds: tile.walkSeconds(),
+            capSeconds: tile.capSeconds,
+          })),
           MAX_TRANSFER_SECONDS,
-        )
-      : null;
+        );
+        transfersFrom = "published tiles";
+      } else {
+        /*
+         * The same fallback the Worker takes, recorded as such: a corridor planned this way still
+         * compares the grouping honestly, and the report says the transfers were not the
+         * published ones so nobody reads it as evidence that they were.
+         */
+        transfersFrom = "computed (a tile the corridor needs is absent)";
+      }
+    }
 
     let tripsForGraph = slice.trips;
     if (USE_ARTIFACTS) {
@@ -367,6 +411,7 @@ async function main(): Promise<number> {
     });
     const planMs = Number(process.hrtime.bigint() - planBegan) / 1e6;
     if (result.options.length > 0) answered += 1;
+    transferSources.set(transfersFrom, (transferSources.get(transfersFrom) ?? 0) + 1);
 
     entries.push({
       query: query.name,
@@ -376,6 +421,10 @@ async function main(): Promise<number> {
       stops: slice.stops.length,
       trips: slice.trips.length,
       transferEdges,
+      /* And where they came from, per query, so one fallen-back corridor is visible. */
+      transfersFrom,
+      transferTilesRead,
+      transferTilesMissing,
       /* A runner's milliseconds, which transfer as ratios rather than as figures. */
       buildGraphMs: Number(buildGraphMs.toFixed(2)),
       planMs: Number(planMs.toFixed(2)),
@@ -401,6 +450,12 @@ async function main(): Promise<number> {
 
   const report = {
     outcome: "recorded",
+    /*
+     * Where the transfers in these answers came from, totalled over the corpus. `computed` on an
+     * `--artifacts` run means a tile was absent and the planner fell back, which is the one case
+     * where "identical answers" would not be evidence about the published bytes.
+     */
+    transferSources: Object.fromEntries(transferSources),
     version: index.version,
     serviceDate,
     departAtSeconds: DEPART_AT_SECONDS,

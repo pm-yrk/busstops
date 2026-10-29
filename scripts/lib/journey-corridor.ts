@@ -23,7 +23,7 @@ import {
   type PatternIndexRow,
 } from "@busstops/pipeline-static-network";
 import type { JourneyStop, Trip } from "@busstops/journey";
-import { readTripShard } from "./read-trip-shard.js";
+import { readTripShard, type ReadTripShard } from "./read-trip-shard.js";
 
 export interface CorridorQuery {
   readonly name: string;
@@ -40,6 +40,15 @@ export interface CorridorSlice {
   box: { west: number; east: number; south: number; north: number };
   /** Midnight of the service date in epoch seconds, which every time here is relative to. */
   midnightSeconds: number;
+  /**
+   * The shards the slice was cut from, kept so a profile can time trip preparation both ways.
+   *
+   * The published text form is gone from the bucket, so "what the old reader cost" can no longer
+   * be measured by reading it. It can still be measured honestly against the same rows in the
+   * same process: `text` on a converted shard is those rows re-serialised, which is the work the
+   * old reader did, and `bytes` is what the new one opens.
+   */
+  shards: ReadTripShard[];
 }
 
 /**
@@ -122,6 +131,7 @@ export async function loadCorridor(
 
   /* The corridor's trips, in the windows this plan spans. */
   const trips: Trip[] = [];
+  const shards: ReadTripShard[] = [];
   let tripChars = 0;
   const windows = tripWindowsFor(from, from + windowHours * 3600, serviceDate);
   for (const tile of tripTilesForBoundingBox(box).slice(0, TRIP_TILES)) {
@@ -135,6 +145,7 @@ export async function loadCorridor(
         index.version,
       );
       if (shard === null) continue;
+      shards.push(shard);
       tripChars += shard.text.length;
       for (const row of shard.rows) {
         const sequence = stopSequenceByPattern.get(row.p);
@@ -169,5 +180,5 @@ export async function loadCorridor(
     }
   }
 
-  return { stops, trips, tripChars, box, midnightSeconds };
+  return { stops, trips, tripChars, box, midnightSeconds, shards };
 }

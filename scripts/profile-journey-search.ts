@@ -18,7 +18,12 @@
 
 import { writeFileSync } from "node:fs";
 import { ArtifactStore, annotateReport, r2StoreFromEnv } from "@busstops/pipeline-core";
-import { SHARDED, type NetworkIndexRecord } from "@busstops/pipeline-static-network";
+import {
+  PatternTripShard,
+  SHARDED,
+  type NetworkIndexRecord,
+  type PatternTripRow,
+} from "@busstops/pipeline-static-network";
 import {
   buildGraph,
   buildTransferAdjacency,
@@ -119,6 +124,40 @@ async function main(): Promise<number> {
       continue;
     }
 
+    /*
+     * Trip preparation, both ways, over the same shards.
+     *
+     * The first stage of a journey request used to be `JSON.parse` on every line of every shard
+     * the corridor touches — the single largest item in the old breakdown. The published form
+     * replaced it with opening a header and reading the rows the corridor wants out of typed
+     * arrays. Both are timed here against the same rows in the same process, because that is the
+     * only comparison a runner can make honestly now the text objects are gone from the bucket:
+     * two CI runs an hour apart disagree by more than this whole stage costs.
+     */
+    const tripParseText = timed(() => {
+      const rows: PatternTripRow[] = [];
+      for (const shard of slice.shards) {
+        for (const line of shard.text.split("\n")) {
+          if (line.length > 0) rows.push(JSON.parse(line) as PatternTripRow);
+        }
+      }
+      return rows;
+    });
+    const shardBytes = slice.shards
+      .map((shard) => shard.bytes)
+      .filter((bytes): bytes is Uint8Array => bytes !== null);
+    const tripDecodeBytes =
+      shardBytes.length === 0
+        ? null
+        : timed(() => {
+            const rows: PatternTripRow[] = [];
+            for (const bytes of shardBytes) {
+              const shard = new PatternTripShard(bytes);
+              for (let trip = 0; trip < shard.tripCount; trip += 1) rows.push(shard.rowAt(trip));
+            }
+            return rows;
+          });
+
     const built = timed(() => buildGraph({ stops, trips }));
     const graph = built.value;
 
@@ -209,6 +248,24 @@ async function main(): Promise<number> {
       transferEdges,
       stopTripEntries,
       tripChars,
+      /* What each shard form was published as, so a stage figure says which work it measured. */
+      shards: slice.shards.length,
+      shardsAsBytes: shardBytes.length,
+      shardBytes: shardBytes.reduce((total, bytes) => total + bytes.byteLength, 0),
+      /* Trip preparation: the old parse against the new decode, over the same rows. */
+      tripParseTextMs: Number(tripParseText.ms.toFixed(2)),
+      tripDecodeBytesMs: tripDecodeBytes === null ? null : Number(tripDecodeBytes.ms.toFixed(2)),
+      /*
+       * And that the decode produced the same rows the parse did. A faster stage that answers
+       * with different trips is not a faster stage.
+       */
+      tripRowsAgree:
+        tripDecodeBytes === null
+          ? null
+          : tripDecodeBytes.value.length === tripParseText.value.length &&
+            tripDecodeBytes.value.every(
+              (row, at) => JSON.stringify(row) === JSON.stringify(tripParseText.value[at]),
+            ),
       buildGraphMs: Number(built.ms.toFixed(2)),
       buildTransfersMs: Number(transfersOnly.ms.toFixed(2)),
       groupRoutesMs: Number(groupingOnly.ms.toFixed(2)),
@@ -257,6 +314,14 @@ async function main(): Promise<number> {
       `${query.name.padEnd(44)} stops ${String(stops.length).padStart(5)} trips ${String(trips.length).padStart(6)} ` +
         `transferEdges ${String(transferEdges).padStart(7)} build ${built.ms.toFixed(1).padStart(7)}ms ` +
         `plan ${planned.ms.toFixed(1).padStart(7)}ms options ${String(planned.value.options.length)}`,
+    );
+    console.log(
+      `${"".padEnd(44)} tripPrep parse ${tripParseText.ms.toFixed(1).padStart(7)}ms ` +
+        `decode ${(tripDecodeBytes === null ? NaN : tripDecodeBytes.ms).toFixed(1).padStart(7)}ms ` +
+        `transfers build ${transfersOnly.ms.toFixed(1).padStart(6)}ms merge ` +
+        `${(transfersFromArtifact.ms as number).toFixed(1).padStart(6)}ms ` +
+        `grouping compute ${groupingOnly.ms.toFixed(1).padStart(6)}ms keyed ` +
+        `${groupingFromArtifact.ms.toFixed(1).padStart(6)}ms`,
     );
     console.log(
       `${"".padEnd(44)} tripScans ${String(counters.tripScans)} effectiveStopTimes ` +
