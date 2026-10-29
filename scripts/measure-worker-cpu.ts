@@ -233,6 +233,16 @@ async function ask(endpoint: string, city: string, path: string, shape?: string)
       const meta = body.meta as Record<string, unknown> | undefined;
       const data = body.data as Record<string, unknown> | undefined;
       const diagnostics = meta?.diagnostics as Record<string, unknown> | undefined;
+      /*
+       * A journey's own diagnostics are under `data`, not `meta`.
+       *
+       * `meta.diagnostics` is the read ledger — characters decoded, residency — and the planner's
+       * own counts sit beside the itineraries. Reading the wrong one is not an empty field but a
+       * confident zero: the first run of this reported `shardsBinary: 0` on every shape, which
+       * says "the deployed journey never touched the published artifacts" when what it meant was
+       * "this script looked in the wrong object".
+       */
+      const planner = data?.diagnostics as Record<string, unknown> | undefined;
       reading.charsDecoded =
         typeof diagnostics?.charsDecoded === "number" ? diagnostics.charsDecoded : undefined;
       reading.degradation = typeof meta?.degradation === "string" ? meta.degradation : null;
@@ -247,18 +257,18 @@ async function ask(endpoint: string, city: string, path: string, shape?: string)
           typeof value === "number" ? value : null;
         reading.journey = {
           options: Array.isArray(options) ? options.length : null,
-          tripChars: number(diagnostics?.tripChars),
-          stopsInSlice: number(diagnostics?.stopsInSlice),
-          patternsInSlice: number(diagnostics?.patternsInSlice),
-          shardsBinary: number(diagnostics?.shardsBinary),
-          shardsBinaryFallback: number(diagnostics?.shardsBinaryFallback),
-          shardsGrouped: number(diagnostics?.shardsGrouped),
+          tripChars: number(planner?.tripChars),
+          stopsInSlice: number(planner?.stopsInSlice),
+          patternsInSlice: number(planner?.patternsInSlice),
+          shardsBinary: number(planner?.shardsBinary),
+          shardsBinaryFallback: number(planner?.shardsBinaryFallback),
+          shardsGrouped: number(planner?.shardsGrouped),
           transfersFromArtifact:
-            typeof diagnostics?.transfersFromArtifact === "boolean"
-              ? diagnostics.transfersFromArtifact
+            typeof planner?.transfersFromArtifact === "boolean"
+              ? planner.transfersFromArtifact
               : null,
-          horizonHours: number(diagnostics?.horizonHours),
-          code: typeof diagnostics?.code === "string" ? diagnostics.code : null,
+          horizonHours: number(planner?.horizonHours),
+          code: typeof planner?.code === "string" ? planner.code : null,
         };
       }
       const observedAt = meta?.observedAt;
@@ -615,6 +625,15 @@ async function main(): Promise<number> {
           p95CpuMs: percentile(cpu, 95),
           maxCpuMs: cpu.length === 0 ? null : Math.max(...cpu),
           exceededCpu: rows.filter((row) => row.outcome === "exceededCpu").length,
+          /*
+           * How many invocations were at or over the limit, which is what a median of exactly ten
+           * hides.
+           *
+           * A request the platform cut off reports a CPU time at the limit, so a shape where most
+           * of its invocations were killed has a p50 of 10 — and reading that as "half of them fit
+           * comfortably" is the opposite of what happened. This counts them instead.
+           */
+          atOrOverBudget: rows.filter((row) => row.cpuMs >= 10).length,
           answered,
           /* Which path served it, counted rather than assumed. */
           onBinaryShards: onBinary,
@@ -660,13 +679,14 @@ async function main(): Promise<number> {
   if (journeyShapes.length > 0) {
     console.log("");
     console.log(
-      "journey shape      n   p50 CPU   p95 CPU   max CPU   killed   answered   bytes   grouped   tiles   widened",
+      "journey shape      n   p50 CPU   p95 CPU   max CPU   killed   >=10ms   answered   bytes   grouped   tiles   widened",
     );
     for (const row of journeyShapes) {
       console.log(
         `${row.shape.padEnd(17)} ${String(row.invocations).padStart(2)}   ` +
           `${String(row.p50CpuMs ?? "-").padStart(7)}   ${String(row.p95CpuMs ?? "-").padStart(7)}   ` +
           `${String(row.maxCpuMs ?? "-").padStart(7)}   ${String(row.exceededCpu).padStart(6)}   ` +
+          `${String(row.atOrOverBudget).padStart(6)}   ` +
           `${String(row.answered).padStart(8)}   ${String(row.onBinaryShards).padStart(5)}   ` +
           `${String(row.groupingRead).padStart(7)}   ${String(row.transfersFromTiles).padStart(5)}   ` +
           `${String(row.widenedToFourHours).padStart(7)}`,
