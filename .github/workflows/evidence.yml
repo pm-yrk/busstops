@@ -1911,7 +1911,7 @@ jobs:
           URL="${{ steps.deploy.outputs.url }}"
           for attempt in 1 2 3 4 5; do
             HEALTH=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "$URL/v1/sources/health" || true)
-            BODY=$(curl -fsS --max-time 15 "$URL/v1/journeys?fromLat=53.79&fromLon=-1.54&toLat=53.80&toLon=-1.55" || true)
+            BODY=$(curl -sS --max-time 15 "$URL/v1/journeys?fromLat=53.79&fromLon=-1.54&toLat=53.80&toLon=-1.55" || true)
             if [ "$HEALTH" = "200" ] && printf '%s' "$BODY" | grep -q '"feature_unavailable"'; then
               echo "PASS: API healthy; expensive journey endpoint returns explicit safety response"
               exit 0
