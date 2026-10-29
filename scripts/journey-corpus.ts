@@ -37,7 +37,14 @@ import {
   journeyTransfersDataset,
   type NetworkIndexRecord,
 } from "@busstops/pipeline-static-network";
-import { buildGraph, groupRouteIndices, mergeTransferTiles, plan } from "@busstops/journey";
+import {
+  buildGraph,
+  callCount,
+  departureAt,
+  groupRouteIndices,
+  mergeTransferTiles,
+  plan,
+} from "@busstops/journey";
 import { tileIdFor } from "@busstops/pipeline-core";
 import { STOP_TILE_DEGREES } from "@busstops/pipeline-static-network";
 import { loadCorridor, type CorridorQuery } from "./lib/journey-corridor.js";
@@ -381,8 +388,8 @@ async function main(): Promise<number> {
       const grouped = groupRouteIndices({
         tripCount: slice.trips.length,
         patternKeyOf: (trip) => patternKeys.get(slice.trips[trip]!.patternId) ?? 0,
-        callCountOf: (trip) => slice.trips[trip]!.stopTimes.length,
-        departureOf: (trip, call) => slice.trips[trip]!.stopTimes[call]!.departureSeconds,
+        callCountOf: (trip) => callCount(slice.trips[trip]!),
+        departureOf: (trip, call) => departureAt(slice.trips[trip]!, call),
         tripIdOf: (trip) => slice.trips[trip]!.id,
       });
       const ordered: typeof slice.trips = [];

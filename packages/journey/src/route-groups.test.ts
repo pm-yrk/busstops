@@ -91,8 +91,8 @@ const fromIndices = (trips: readonly Trip[]): string[] => {
   return groupRouteIndices({
     tripCount: trips.length,
     patternKeyOf: (trip) => patternKeys.get(trips[trip]!.patternId)!,
-    callCountOf: (trip) => trips[trip]!.stopTimes.length,
-    departureOf: (trip, call) => trips[trip]!.stopTimes[call]!.departureSeconds,
+    callCountOf: (trip) => trips[trip]!.stopTimes!.length,
+    departureOf: (trip, call) => trips[trip]!.stopTimes![call]!.departureSeconds,
     tripIdOf: (trip) => trips[trip]!.id,
   })
     .map(
@@ -159,13 +159,13 @@ describe("grouping trips into routes, over indices", () => {
     const second: Trip = {
       ...base,
       id: "whole-2",
-      stopTimes: base.stopTimes.map((call) => ({
+      stopTimes: base.stopTimes!.map((call) => ({
         ...call,
         arrivalSeconds: call.arrivalSeconds + 900,
         departureSeconds: call.departureSeconds + 900,
       })),
     };
-    const cut: Trip = { ...base, id: "cut", stopTimes: base.stopTimes.slice(0, 2) };
+    const cut: Trip = { ...base, id: "cut", stopTimes: base.stopTimes!.slice(0, 2) };
 
     const trips = [base, second, cut];
     const grouped = fromIndices(trips);
@@ -182,8 +182,8 @@ describe("grouping trips into routes, over indices", () => {
     const grouped = groupRouteIndices({
       tripCount: 2,
       patternKeyOf: (trip) => trip,
-      callCountOf: () => one.stopTimes.length,
-      departureOf: (_trip, call) => one.stopTimes[call]!.departureSeconds,
+      callCountOf: () => one.stopTimes!.length,
+      departureOf: (_trip, call) => one.stopTimes![call]!.departureSeconds,
       tripIdOf: (trip) => (trip === 0 ? one.id : other.id),
     });
     expect(grouped).toHaveLength(2);
@@ -266,7 +266,7 @@ describe("grouping from the keys the publisher assigned", () => {
     const grouped = groupRoutes(shuffled);
     expect(shapeOf(grouped)).toEqual(shapeOf(groupRoutes(trips)));
     for (const route of grouped.routes) {
-      const departures = route.trips.map((trip) => trip.stopTimes[0]!.departureSeconds);
+      const departures = route.trips.map((trip) => trip.stopTimes![0]!.departureSeconds);
       expect([...departures], `route ${route.stopIds.join(">")}`).toEqual(
         [...departures].sort((a, b) => a - b),
       );
@@ -285,11 +285,11 @@ describe("grouping from the keys the publisher assigned", () => {
     const trips = keyed(timetable(17)).map((trip) => ({
       ...trip,
       /* The corridor dropped the last stop of every trip, identically, as it must. */
-      stopTimes: trip.stopTimes.slice(0, trip.stopTimes.length - 1),
+      stopTimes: trip.stopTimes!.slice(0, trip.stopTimes!.length - 1),
     }));
-    const grouped = groupRoutes(trips.filter((trip) => trip.stopTimes.length >= 2));
+    const grouped = groupRoutes(trips.filter((trip) => trip.stopTimes!.length >= 2));
     for (const route of grouped.routes) {
-      expect(route.stopIds.length).toBe(route.trips[0]!.stopTimes.length);
+      expect(route.stopIds.length).toBe(route.trips[0]!.stopTimes!.length);
     }
   });
 });

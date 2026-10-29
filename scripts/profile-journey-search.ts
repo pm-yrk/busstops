@@ -26,6 +26,8 @@ import {
 } from "@busstops/pipeline-static-network";
 import {
   buildGraph,
+  callCount,
+  departureAt,
   buildTransferAdjacency,
   buildTransferTiles,
   groupRouteIndices,
@@ -202,8 +204,8 @@ async function main(): Promise<number> {
     const indexed = groupRouteIndices({
       tripCount: trips.length,
       patternKeyOf: (trip) => patternKeys.get(trips[trip]!.patternId) ?? 0,
-      callCountOf: (trip) => trips[trip]!.stopTimes.length,
-      departureOf: (trip, call) => trips[trip]!.stopTimes[call]!.departureSeconds,
+      callCountOf: (trip) => callCount(trips[trip]!),
+      departureOf: (trip, call) => departureAt(trips[trip]!, call),
       tripIdOf: (trip) => trips[trip]!.id,
     });
     const keyOf = new Map<string, string>();
@@ -329,8 +331,8 @@ async function main(): Promise<number> {
         `${groupingFromArtifact.ms.toFixed(1).padStart(6)}ms`,
     );
     console.log(
-      `${"".padEnd(44)} tripScans ${String(counters.tripScans)} effectiveStopTimes ` +
-        `${String(counters.effectiveStopTimesCalls)} improve ${String(counters.improveAccepted)}/${String(counters.improveCalls)} ` +
+      `${"".padEnd(44)} tripScans ${String(counters.tripScans)} tripTimeReads ` +
+        `${String(counters.tripTimeReads)} improve ${String(counters.improveAccepted)}/${String(counters.improveCalls)} ` +
         `labelEntriesCopied ${String(counters.labelEntriesCopied)}`,
     );
   }

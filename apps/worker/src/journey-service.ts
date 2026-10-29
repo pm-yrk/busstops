@@ -18,7 +18,7 @@ import {
   type PlanResult,
   type TransferAdjacency,
   type Trip,
-  type TripStopTime,
+  type TripCallSource,
 } from "@busstops/journey";
 import {
   PATTERN_TRIPS_PREFIX,
@@ -1584,7 +1584,6 @@ export async function buildGraphFor(
   }
 
   const stopIds = new Set<string>();
-  const trips: Trip[] = [];
 
   /*
    * Midnight once, and arithmetic instead of a round trip through text.
@@ -1607,64 +1606,113 @@ export async function buildGraphFor(
     return { graph: null, tripsWithPattern, tripsWithoutPattern };
   }
 
+  /*
+   * Which stops the corridor's trips call at, decided per pattern rather than per call.
+   *
+   * This loop used to build a `{ stopId, arrivalSeconds, departureSeconds }` object for every call
+   * of every trip: a Manchester corridor is about nine and a half thousand trips of twenty-five
+   * calls, so four hundred thousand objects per passenger request, to express numbers that are
+   * already integers in the published shard's typed arrays. That was the trip artifact being spent
+   * on the way in, and it is what `TripCalls` exists to stop.
+   *
+   * A trip's calls are a pattern's stop sequence plus a count, and two trips of one pattern with
+   * the same count call at the same stops. So the stop set is decided once per `(pattern, count)`
+   * group — six hundred of those in Manchester, against nine and a half thousand trips — and each
+   * trip becomes a source, an index and that group's shared arrays.
+   *
+   * A row whose times are not a dense prefix of its pattern is handled on its own. `t` is dense by
+   * construction, but the old loop skipped positions without a time and so placed the rest
+   * correctly, and a hole that shifted a bus onto the wrong stop is not a thing to risk for a
+   * faster group key.
+   */
+  interface CallShape {
+    /** The pattern's whole sequence, shared by every trip on it. */
+    sequence: readonly string[];
+    /** Positions in `sequence` this shape's trips have times for. */
+    positions: Uint16Array;
+    routeId: string;
+    patternId: string;
+    routeName: string;
+  }
+  const shapes = new Map<string, CallShape>();
+  /** Per row: the shape it belongs to, or null for a row with no pattern or too few calls. */
+  const shapeOfRow: Array<CallShape | null> = [];
+
+  const source: TripCallSource = {
+    departure: (trip, call) => rows[trip]!.t[call]!,
+    arrival: (trip, call) => {
+      const row = rows[trip]!;
+      return row.a?.[call] ?? row.t[call]!;
+    },
+  };
+
   for (const row of rows) {
     const pattern = slice.patternsById.get(row.p);
     // Without the pattern there is no stop sequence, and times alone are not a trip.
     if (!pattern) {
       tripsWithoutPattern += 1;
+      shapeOfRow.push(null);
       continue;
     }
     tripsWithPattern += 1;
-    const service = slice.services.get(pattern.serviceRouteId);
 
-    /*
-     * One loop, one array. The pair of `map` and `filter` this replaces built two arrays per trip
-     * and created two closures per trip with them — and esbuild keeps function names in the
-     * deployed bundle, so each closure costs an `Object.defineProperty`, measured at about a
-     * microsecond. Three closures a trip over nine and a half thousand trips is its own thirty
-     * milliseconds, before the arrays.
-     */
     const sequence = pattern.stopSequence;
-    const stopTimes: TripStopTime[] = [];
-    for (let at = 0; at < sequence.length; at++) {
-      const departureEpoch = row.t[at];
-      if (departureEpoch === undefined) continue;
-      const arrivalEpoch = row.a?.[at] ?? departureEpoch;
-      stopTimes.push({
-        stopId: sequence[at]!,
-        arrivalSeconds: Math.round(arrivalEpoch - dayStartSeconds),
-        departureSeconds: Math.round(departureEpoch - dayStartSeconds),
-      });
+    const count = Math.min(row.t.length, sequence.length);
+    let dense = true;
+    for (let at = 0; at < count; at += 1) {
+      if (row.t[at] === undefined) {
+        dense = false;
+        break;
+      }
     }
 
-    if (stopTimes.length < 2) continue;
+    if (!dense) {
+      /* Its own positions, because this row's are not any group's. */
+      const positions: number[] = [];
+      for (let at = 0; at < sequence.length; at += 1) {
+        if (row.t[at] !== undefined) positions.push(at);
+      }
+      if (positions.length < 2) {
+        shapeOfRow.push(null);
+        continue;
+      }
+      const service = slice.services.get(pattern.serviceRouteId);
+      const shape: CallShape = {
+        sequence,
+        positions: Uint16Array.from(positions),
+        routeId: pattern.serviceRouteId,
+        patternId: pattern.id,
+        routeName: service ? routeBadgeName(service.publicName) : "Bus",
+      };
+      shapeOfRow.push(shape);
+      for (const at of positions) stopIds.add(sequence[at]!);
+      continue;
+    }
 
-    for (const stopTime of stopTimes) stopIds.add(stopTime.stopId);
+    if (count < 2) {
+      shapeOfRow.push(null);
+      continue;
+    }
 
-    trips.push({
-      id: `${row.p}:${row.j}`,
-      routeId: pattern.serviceRouteId,
-      patternId: pattern.id,
-      /*
-       * The route the published grouping put this trip on, when the shard it came from had one.
-       * A corridor cuts every trip of a pattern identically, so the key survives the cut.
-       */
-      ...((row as CorridorTripRow).routeKey === undefined
-        ? {}
-        : { routeKey: (row as CorridorTripRow).routeKey }),
-      /*
-       * Whether this is the pattern's whole sequence, which is what lets the grouping skip a
-       * comparison. True only when every call in the sequence had a time: a row with a gap is a
-       * different sequence from one without, and claiming otherwise would merge two routes and
-       * put a bus at a stop it does not call at.
-       */
-      wholePatternSequence: stopTimes.length === sequence.length,
-      // Cleaned on the way out, like every other passenger-facing name: a feed that publishes
-      // `X84_Leeds_Otley` should read as a route number on an itinerary, not as a database key.
-      routeName: service ? routeBadgeName(service.publicName) : "Bus",
-      headsign: headsignFor(slice, stopTimes[stopTimes.length - 1]!.stopId),
-      stopTimes,
-    });
+    const key = `${pattern.id}:${String(count)}`;
+    let shape = shapes.get(key);
+    if (shape === undefined) {
+      const positions = new Uint16Array(count);
+      for (let at = 0; at < count; at += 1) {
+        positions[at] = at;
+        stopIds.add(sequence[at]!);
+      }
+      const service = slice.services.get(pattern.serviceRouteId);
+      shape = {
+        sequence,
+        positions,
+        routeId: pattern.serviceRouteId,
+        patternId: pattern.id,
+        routeName: service ? routeBadgeName(service.publicName) : "Bus",
+      };
+      shapes.set(key, shape);
+    }
+    shapeOfRow.push(shape);
   }
 
   /* Stops outside the corridor cannot help this plan, and they enlarge the transfer graph. */
@@ -1683,30 +1731,102 @@ export async function buildGraphFor(
   }
 
   /*
-   * One loop again, and the filter inside it rather than a closure per trip.
+   * The corridor's cut, decided once per shape rather than once per trip.
    *
-   * A trip whose every call survives is kept as it is, so the common case allocates nothing: the
-   * old form spread every trip into a new object and built a new stop-time array for all of them,
-   * whether the corridor had cut anything or not.
+   * A corridor cuts every trip of a pattern identically — which stops survive is a property of the
+   * stops, not of the bus — so the kept positions are computed per `(pattern, count)` shape and
+   * shared. That is the same fact that lets a published route key survive the cut, and it is why
+   * this costs six hundred small arrays in Manchester rather than nine and a half thousand.
+   *
+   * `kept` is null when nothing was cut, which is the common case and the cheapest read: the
+   * accessor then indexes the sequence directly.
    */
+  interface CutShape {
+    kept: Uint16Array | null;
+    count: number;
+    headsign: string;
+    wholePatternSequence: boolean;
+  }
+  const cuts = new Map<CallShape, CutShape | null>();
+  const cutFor = (shape: CallShape): CutShape | null => {
+    const held = cuts.get(shape);
+    if (held !== undefined) return held;
+
+    const positions = shape.positions;
+    let survivors = 0;
+    for (let at = 0; at < positions.length; at += 1) {
+      if (usableStopIds.has(shape.sequence[positions[at]!]!)) survivors += 1;
+    }
+    if (survivors < 2) {
+      cuts.set(shape, null);
+      return null;
+    }
+
+    let kept: Uint16Array | null;
+    if (survivors === positions.length) {
+      /*
+       * Nothing cut. Null whenever the positions are `0, 1, 2, …`, which includes a trip that
+       * simply runs the first part of its pattern: the accessor then indexes the sequence with
+       * the call number and reads no array at all. Ascending and distinct, so the last one being
+       * `length - 1` is the whole test.
+       */
+      kept = positions[positions.length - 1] === positions.length - 1 ? null : positions;
+    } else {
+      kept = new Uint16Array(survivors);
+      let into = 0;
+      for (let at = 0; at < positions.length; at += 1) {
+        const position = positions[at]!;
+        if (usableStopIds.has(shape.sequence[position]!)) kept[into++] = position;
+      }
+    }
+
+    const lastPosition = kept === null ? survivors - 1 : kept[survivors - 1]!;
+    const cut: CutShape = {
+      kept,
+      count: survivors,
+      headsign: headsignFor(slice, shape.sequence[lastPosition]!),
+      /*
+       * Whether this is the pattern's whole sequence, which is what lets the grouping skip a
+       * comparison. True only when every stop of the sequence survived with a time: a shape with
+       * a gap is a different sequence from one without, and claiming otherwise would merge two
+       * routes and put a bus at a stop it does not call at.
+       */
+      wholePatternSequence: survivors === shape.sequence.length,
+    };
+    cuts.set(shape, cut);
+    return cut;
+  };
+
   const usableTrips: Trip[] = [];
-  for (const trip of trips) {
-    let dropped = 0;
-    for (const stopTime of trip.stopTimes) {
-      if (!usableStopIds.has(stopTime.stopId)) dropped += 1;
-    }
-    if (dropped === 0) {
-      usableTrips.push(trip);
-      continue;
-    }
-    /* The corridor cut it, so it is no longer the pattern's whole sequence whatever it was. */
-    if (trip.stopTimes.length - dropped < 2) continue;
-    const kept: TripStopTime[] = [];
-    for (const stopTime of trip.stopTimes) {
-      if (usableStopIds.has(stopTime.stopId)) kept.push(stopTime);
-    }
-    usableTrips.push({ ...trip, stopTimes: kept, wholePatternSequence: false });
-    /* `routeKey` travels with the spread: the cut is identical for every trip on the pattern. */
+  for (let at = 0; at < rows.length; at += 1) {
+    const shape = shapeOfRow[at];
+    if (shape === null || shape === undefined) continue;
+    const cut = cutFor(shape);
+    if (cut === null) continue;
+    const row = rows[at]!;
+    usableTrips.push({
+      id: `${row.p}:${row.j}`,
+      routeId: shape.routeId,
+      patternId: shape.patternId,
+      routeName: shape.routeName,
+      headsign: cut.headsign,
+      /*
+       * The route the published grouping put this trip on, when the shard it came from had one.
+       * A corridor cuts every trip of a pattern identically, so the key survives the cut.
+       */
+      ...((row as CorridorTripRow).routeKey === undefined
+        ? {}
+        : { routeKey: (row as CorridorTripRow).routeKey }),
+      wholePatternSequence: cut.wholePatternSequence,
+      calls: {
+        source,
+        trip: at,
+        sequence: shape.sequence,
+        kept: cut.kept,
+        count: cut.count,
+        dayStartSeconds,
+      },
+    });
   }
 
   /*

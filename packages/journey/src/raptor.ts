@@ -1,10 +1,4 @@
-import {
-  effectiveStopTimes,
-  type JourneyGraph,
-  type RouteGroup,
-  type Trip,
-  type TripStopTime,
-} from "./graph.js";
+import { arrivalAt, departureAt, type JourneyGraph, type RouteGroup, type Trip } from "./graph.js";
 
 /**
  * Round-based earliest-arrival search (RAPTOR-style).
@@ -83,8 +77,15 @@ export interface SearchCounters {
   tripScans: number;
   /** Calls to `boardingIndex`, each of which scans a trip's stop times. */
   boardingIndexCalls: number;
-  /** Calls to `effectiveStopTimes`, each of which may allocate a whole array. */
-  effectiveStopTimesCalls: number;
+  /**
+   * Times read out of a trip in the boardability loop.
+   *
+   * It counted calls to `effectiveStopTimes`, each of which could allocate a whole array of
+   * stop-time objects. The search reads the times in place now — a trip from a published shard has
+   * no objects to allocate — so this counts the reads rather than the allocations, which is the
+   * same loop and no longer the same cost.
+   */
+  tripTimeReads: number;
   /** Alighting labels offered, and how many survived. Garbage is the difference. */
   improveCalls: number;
   improveAccepted: number;
@@ -101,7 +102,7 @@ export function newSearchCounters(): SearchCounters {
     markedPerRound: [],
     tripScans: 0,
     boardingIndexCalls: 0,
-    effectiveStopTimesCalls: 0,
+    tripTimeReads: 0,
     improveCalls: 0,
     improveAccepted: 0,
     transferScans: 0,
@@ -130,11 +131,11 @@ function earliestBoardable(
   readyAt: number,
   riding: number,
   counters?: SearchCounters,
-): { index: number; times: readonly TripStopTime[] } | null {
+): number {
   const trips = route.trips;
   /* Nothing past the trip already being ridden can help. */
   const ceiling = riding === -1 ? trips.length : riding;
-  if (ceiling === 0) return null;
+  if (ceiling === 0) return -1;
 
   /*
    * The first index in [0, ceiling) whose departure here is at or after `readyAt`.
@@ -147,7 +148,7 @@ function earliestBoardable(
   while (low < high) {
     const mid = (low + high) >> 1;
     if (counters) counters.boardingIndexCalls += 1;
-    if (effectiveStopTimes(trips[mid]!)[at]!.departureSeconds >= readyAt) high = mid;
+    if (departureAt(trips[mid]!, at) >= readyAt) high = mid;
     else low = mid + 1;
   }
   /*
@@ -163,12 +164,11 @@ function earliestBoardable(
     if (trip.cancelled) continue;
     if (counters) {
       counters.tripScans += 1;
-      counters.effectiveStopTimesCalls += 1;
+      counters.tripTimeReads += 1;
     }
-    const times = effectiveStopTimes(trip);
-    if (times[at]!.departureSeconds >= readyAt) return { index, times };
+    if (departureAt(trip, at) >= readyAt) return index;
   }
-  return null;
+  return -1;
 }
 
 export function runRaptor(
@@ -315,7 +315,6 @@ export function runRaptor(
       const stopIds = route.stopIds;
       /** The trip being ridden: an index into `route.trips`, or -1 for none yet. */
       let riding = -1;
-      let ridingTimes: readonly TripStopTime[] | null = null;
       let boardedStopId: string | null = null;
       let boardedDeparture = 0;
 
@@ -323,18 +322,18 @@ export function runRaptor(
         const stopId = stopIds[at]!;
 
         /* Alight here, if a trip is being ridden and this is worth a label. */
-        if (ridingTimes !== null) {
-          const alight = ridingTimes[at]!;
-          if (worthLabelling(stopId, alight.arrivalSeconds)) {
+        if (riding !== -1) {
+          const arrival = arrivalAt(route.trips[riding]!, at);
+          if (worthLabelling(stopId, arrival)) {
             accept(stopId, {
-              arrivalSeconds: alight.arrivalSeconds,
+              arrivalSeconds: arrival,
               round,
               leg: {
                 kind: "board",
                 fromStopId: boardedStopId!,
                 toStopId: stopId,
                 departureSeconds: boardedDeparture,
-                arrivalSeconds: alight.arrivalSeconds,
+                arrivalSeconds: arrival,
                 trip: route.trips[riding]!,
               },
               previousStopId: boardedStopId,
@@ -348,14 +347,13 @@ export function runRaptor(
         // Boarding after a previous ride needs the interchange buffer; the first boarding does not.
         const readyAt =
           from.round === 0 ? from.arrivalSeconds : from.arrivalSeconds + minTransferSeconds;
-        if (ridingTimes !== null && ridingTimes[at]!.departureSeconds <= readyAt) continue;
+        if (riding !== -1 && departureAt(route.trips[riding]!, at) <= readyAt) continue;
 
         const earlier = earliestBoardable(route, at, readyAt, riding, counters);
-        if (earlier === null) continue;
-        riding = earlier.index;
-        ridingTimes = earlier.times;
+        if (earlier === -1) continue;
+        riding = earlier;
         boardedStopId = stopId;
-        boardedDeparture = earlier.times[at]!.departureSeconds;
+        boardedDeparture = departureAt(route.trips[riding]!, at);
       }
     }
 

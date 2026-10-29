@@ -320,17 +320,17 @@ describe("the whole-pattern flag changes nothing about the grouping", () => {
     const short = {
       ...base,
       id: "short",
-      stopTimes: base.stopTimes.slice(0, base.stopTimes.length - 1),
+      stopTimes: base.stopTimes!.slice(0, base.stopTimes!.length - 1),
       wholePatternSequence: true,
     };
-    expect(short.stopTimes.length).toBeGreaterThanOrEqual(2);
+    expect(short.stopTimes!.length).toBeGreaterThanOrEqual(2);
 
     const grouped = groupRoutes([long, short]);
     /* Two routes, not one route with a sequence it cannot scan. */
     expect(grouped.routes).toHaveLength(2);
     for (const route of grouped.routes) {
       expect(route.trips).toHaveLength(1);
-      expect(route.stopIds).toHaveLength(route.trips[0]!.stopTimes.length);
+      expect(route.stopIds).toHaveLength(route.trips[0]!.stopTimes!.length);
     }
   });
 
@@ -355,7 +355,7 @@ describe("the whole-pattern flag changes nothing about the grouping", () => {
     const cut = {
       ...onPattern[0]!,
       id: `${onPattern[0]!.id}-cut`,
-      stopTimes: onPattern[0]!.stopTimes.slice(0, onPattern[0]!.stopTimes.length - 1),
+      stopTimes: onPattern[0]!.stopTimes!.slice(0, onPattern[0]!.stopTimes!.length - 1),
       wholePatternSequence: false,
     };
     const mixed = groupRoutes([

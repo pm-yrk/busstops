@@ -27,6 +27,57 @@ export interface TripStopTime {
   departureSeconds: number;
 }
 
+/**
+ * Where a trip's times live when they were never turned into objects.
+ *
+ * The published shard holds a tile's departures and arrivals as typed arrays, indexed by trip and
+ * by call, and this is the smallest thing that lets the search read them in place. It is an
+ * interface rather than the shard's own class so the journey package does not depend on the
+ * pipeline's.
+ */
+export interface TripCallSource {
+  /**
+   * Absolute seconds, as published, for one call of one trip.
+   *
+   * `call` is the call's **position in the pattern's stop sequence**, not its ordinal among the
+   * calls this trip happens to have. That is how the published row is laid out — `t[at]` pairs
+   * with `sequence[at]`, which is the whole economy of the format — and it is what lets a trip
+   * that skips a stop in the middle of its pattern be read correctly rather than shifted one stop
+   * along. A source whose own indexing is dense therefore only satisfies this where the trip's
+   * calls are a prefix of its pattern, which is the condition the reader checks before taking the
+   * shared path.
+   */
+  departure(trip: number, call: number): number;
+  arrival(trip: number, call: number): number;
+}
+
+/**
+ * A trip's calls, as a window into a published shard rather than an array of objects.
+ *
+ * This is the last place the trip artifact was being spent on the way in. A Manchester corridor
+ * holds about nine and a half thousand trips of some thirty calls each, and turning each call into
+ * `{ stopId, arrivalSeconds, departureSeconds }` is a few hundred thousand allocations per
+ * passenger request — to express times that are already integers in a typed array, on a path
+ * allowed ten milliseconds in total.
+ *
+ * Nothing here is per-call or per-trip storage. `sequence` is the pattern's stop ids, shared by
+ * every trip on it. `kept` is which of those positions survived the corridor cut, shared per
+ * pattern too, because a corridor cuts every trip of a pattern identically — the same fact that
+ * lets a published route key survive the cut. A trip is then a source, an index and a count.
+ */
+export interface TripCalls {
+  readonly source: TripCallSource;
+  /** This trip's index in the source. */
+  readonly trip: number;
+  /** The pattern's stop sequence, whole, shared. */
+  readonly sequence: readonly string[];
+  /** Positions in `sequence` this trip still calls at, or null when it calls at all of them. */
+  readonly kept: Uint16Array | null;
+  readonly count: number;
+  /** Subtracted from the published seconds to get seconds since the service day began. */
+  readonly dayStartSeconds: number;
+}
+
 export interface Trip {
   id: string;
   /**
@@ -41,7 +92,17 @@ export interface Trip {
   patternId: string;
   routeName: string;
   headsign: string;
-  stopTimes: TripStopTime[];
+  /**
+   * The calls, as objects.
+   *
+   * Optional because a trip read from a published shard carries `calls` instead and never
+   * materialises these. Exactly one of the two is present; `effectiveStopTimes` is what every
+   * caller that genuinely needs objects goes through, and the accessors below are what the search
+   * uses so that it needs none.
+   */
+  stopTimes?: readonly TripStopTime[];
+  /** The calls, in place, when they came from a published shard. See `TripCalls`. */
+  calls?: TripCalls;
   /** Live adjustment in seconds applied to every stop time; positive is late. */
   delaySeconds?: number;
   cancelled?: boolean;
@@ -198,10 +259,12 @@ export function buildGraph(input: BuildGraphInput): JourneyGraph {
       if (tripsByStop !== null) return tripsByStop;
       const byStop = new Map<string, Trip[]>();
       for (const trip of trips) {
-        for (const stopTime of trip.stopTimes) {
-          const existing = byStop.get(stopTime.stopId);
+        const count = callCount(trip);
+        for (let at = 0; at < count; at += 1) {
+          const stopId = stopIdAt(trip, at);
+          const existing = byStop.get(stopId);
           if (existing) existing.push(trip);
-          else byStop.set(stopTime.stopId, [trip]);
+          else byStop.set(stopId, [trip]);
         }
       }
       tripsByStop = byStop;
@@ -253,23 +316,26 @@ function routesFromGroups(
     if (group.length === 0) continue;
     let trips = group;
     if (verifyOrder && group.length > 1) {
-      const departures = group.map((trip) => effectiveStopTimes(trip)[0]!.departureSeconds);
       let ordered = true;
-      for (let at = 1; at < departures.length; at += 1) {
-        if (departures[at]! < departures[at - 1]!) {
+      for (let at = 1; at < group.length; at += 1) {
+        if (departureAt(group[at]!, 0) < departureAt(group[at - 1]!, 0)) {
           ordered = false;
           break;
         }
       }
       if (!ordered) {
         trips = [...group].sort((a, b) => {
-          const left = effectiveStopTimes(a)[0]!.departureSeconds;
-          const right = effectiveStopTimes(b)[0]!.departureSeconds;
+          const left = departureAt(a, 0);
+          const right = departureAt(b, 0);
           return left !== right ? left - right : a.id < b.id ? -1 : 1;
         });
       }
     }
-    const stopIds = effectiveStopTimes(trips[0]!).map((stopTime) => stopTime.stopId);
+    const first = trips[0]!;
+    const stopIds: string[] = [];
+    for (let at = 0, count = callCount(first); at < count; at += 1) {
+      stopIds.push(stopIdAt(first, at));
+    }
     const route: RouteGroup = { stopIds, trips: [...trips], nonOvertaking: true };
     routes.push(route);
     for (let at = 0; at < stopIds.length; at += 1) {
@@ -314,7 +380,7 @@ export function groupRoutes(trips: readonly Trip[]): {
   const keyed = new Map<string, Trip[]>();
   let everyTripKeyed = true;
   for (const trip of trips) {
-    if (trip.stopTimes.length < 2) continue;
+    if (callCount(trip) < 2) continue;
     if (trip.routeKey === undefined) {
       everyTripKeyed = false;
       break;
@@ -327,7 +393,7 @@ export function groupRoutes(trips: readonly Trip[]): {
 
   const byPattern = new Map<string, { whole: Trip[] | null; cut: Trip[][] }>();
   for (const trip of trips) {
-    if (trip.stopTimes.length < 2) continue;
+    if (callCount(trip) < 2) continue;
     let entry = byPattern.get(trip.patternId);
     if (entry === undefined) {
       entry = { whole: null, cut: [] };
@@ -348,18 +414,19 @@ export function groupRoutes(trips: readonly Trip[]): {
      */
     if (trip.wholePatternSequence === true) {
       if (entry.whole === null) entry.whole = [trip];
-      else if (entry.whole[0]!.stopTimes.length === trip.stopTimes.length) entry.whole.push(trip);
+      else if (callCount(entry.whole[0]!) === callCount(trip)) entry.whole.push(trip);
       else entry.cut.push([trip]);
       continue;
     }
 
     let placed = false;
+    const mineCount = callCount(trip);
     for (const bucket of entry.cut) {
-      const against = bucket[0]!.stopTimes;
-      if (against.length !== trip.stopTimes.length) continue;
+      const against = bucket[0]!;
+      if (callCount(against) !== mineCount) continue;
       let same = true;
-      for (let at = 0; at < against.length; at++) {
-        if (against[at]!.stopId !== trip.stopTimes[at]!.stopId) {
+      for (let at = 0; at < mineCount; at++) {
+        if (stopIdAt(against, at) !== stopIdAt(trip, at)) {
           same = false;
           break;
         }
@@ -380,13 +447,15 @@ export function groupRoutes(trips: readonly Trip[]): {
   for (const entry of byPattern.values()) {
     const whole = entry.whole;
     if (whole !== null) {
-      const reference = whole[0]!.stopTimes;
+      const reference = whole[0]!;
+      const referenceCount = callCount(reference);
       const remaining: Trip[][] = [];
       for (const bucket of entry.cut) {
-        const against = bucket[0]!.stopTimes;
-        let same = against.length === reference.length;
-        for (let at = 0; same && at < against.length; at++) {
-          if (against[at]!.stopId !== reference[at]!.stopId) same = false;
+        const against = bucket[0]!;
+        const againstCount = callCount(against);
+        let same = againstCount === referenceCount;
+        for (let at = 0; same && at < againstCount; at++) {
+          if (stopIdAt(against, at) !== stopIdAt(reference, at)) same = false;
         }
         if (same) for (const trip of bucket) whole.push(trip);
         else remaining.push(bucket);
@@ -414,13 +483,13 @@ export function groupRoutes(trips: readonly Trip[]): {
      * thousand trips is upwards of a hundred thousand comparisons, and each one was two map
      * probes to fetch an array in order to read one number out of its first element.
      */
-    const entries = group.map((trip) => {
-      const times = effectiveStopTimes(trip);
-      return { trip, times, at: times[0]!.departureSeconds };
-    });
+    const entries = group.map((trip) => ({ trip, at: departureAt(trip, 0) }));
     entries.sort((a, b) => (a.at !== b.at ? a.at - b.at : a.trip.id < b.trip.id ? -1 : 1));
     const ordered = entries;
-    const stopIds = ordered[0]!.times.map((stopTime) => stopTime.stopId);
+    const firstTrip = ordered[0]!.trip;
+    const callsHere = callCount(firstTrip);
+    const stopIds: string[] = [];
+    for (let at = 0; at < callsHere; at += 1) stopIds.push(stopIdAt(firstTrip, at));
 
     /*
      * Split into routes no bus overtakes another on. See `RouteGroup.nonOvertaking`.
@@ -431,15 +500,16 @@ export function groupRoutes(trips: readonly Trip[]): {
      * one behind all of them — which keeps this O(trips × routes × stops) rather than quadratic
      * in the trips, and in practice there is one route and the inner loop runs once.
      */
-    const buckets: Array<Array<{ trip: Trip; times: TripStopTime[]; at: number }>> = [];
+    const buckets: Array<Array<{ trip: Trip; at: number }>> = [];
     for (const entry of ordered) {
-      const mine = entry.times;
+      const mine = entry.trip;
+      const mineCount = callCount(mine);
       let placed = false;
       for (const bucket of buckets) {
-        const last = bucket[bucket.length - 1]!.times;
+        const last = bucket[bucket.length - 1]!.trip;
         let behind = true;
-        for (let at = 0; at < mine.length; at++) {
-          if (mine[at]!.departureSeconds < last[at]!.departureSeconds) {
+        for (let at = 0; at < mineCount; at++) {
+          if (departureAt(mine, at) < departureAt(last, at)) {
             behind = false;
             break;
           }
@@ -472,15 +542,72 @@ export function groupRoutes(trips: readonly Trip[]): {
   return { routes, routesByStop };
 }
 
-/** Effective stop times for a trip, with any live delay applied. */
-export function effectiveStopTimes(trip: Trip): TripStopTime[] {
+/**
+ * How many calls this trip has.
+ *
+ * These four accessors are the search's whole view of a trip's times, and they exist so that a
+ * trip read from a published shard never has to be turned into objects to be searched. Each one
+ * is a module-level function rather than a method, because the deployed bundle keeps function
+ * names and a closure per trip costs about a microsecond — thirty milliseconds over a corridor,
+ * which is the entire budget.
+ */
+export function callCount(trip: Trip): number {
+  const calls = trip.calls;
+  return calls === undefined ? (trip.stopTimes?.length ?? 0) : calls.count;
+}
+
+/** The stop this trip's `at`th call is at. */
+export function stopIdAt(trip: Trip, at: number): string {
+  const calls = trip.calls;
+  if (calls === undefined) return trip.stopTimes![at]!.stopId;
+  return calls.sequence[calls.kept === null ? at : calls.kept[at]!]!;
+}
+
+/** Seconds since the service day began, with any live delay applied. */
+export function departureAt(trip: Trip, at: number): number {
+  const calls = trip.calls;
   const delay = trip.delaySeconds ?? 0;
-  if (delay === 0) return trip.stopTimes;
-  return trip.stopTimes.map((stopTime) => ({
-    stopId: stopTime.stopId,
-    arrivalSeconds: stopTime.arrivalSeconds + delay,
-    departureSeconds: stopTime.departureSeconds + delay,
-  }));
+  if (calls === undefined) return trip.stopTimes![at]!.departureSeconds + delay;
+  const call = calls.kept === null ? at : calls.kept[at]!;
+  return calls.source.departure(calls.trip, call) - calls.dayStartSeconds + delay;
+}
+
+export function arrivalAt(trip: Trip, at: number): number {
+  const calls = trip.calls;
+  const delay = trip.delaySeconds ?? 0;
+  if (calls === undefined) return trip.stopTimes![at]!.arrivalSeconds + delay;
+  const call = calls.kept === null ? at : calls.kept[at]!;
+  return calls.source.arrival(calls.trip, call) - calls.dayStartSeconds + delay;
+}
+
+/**
+ * Effective stop times for a trip, as objects, with any live delay applied.
+ *
+ * For the callers that genuinely need objects: the exhaustive oracle in the tests, the profiler,
+ * and anything presenting an itinerary. The search does not — it reads the accessors above — which
+ * is the point of this being the only place a columnar trip is ever materialised.
+ */
+export function effectiveStopTimes(trip: Trip): readonly TripStopTime[] {
+  const delay = trip.delaySeconds ?? 0;
+  const times = trip.stopTimes;
+  if (times !== undefined) {
+    if (delay === 0) return times;
+    return times.map((stopTime) => ({
+      stopId: stopTime.stopId,
+      arrivalSeconds: stopTime.arrivalSeconds + delay,
+      departureSeconds: stopTime.departureSeconds + delay,
+    }));
+  }
+  const count = callCount(trip);
+  const materialised: TripStopTime[] = [];
+  for (let at = 0; at < count; at += 1) {
+    materialised.push({
+      stopId: stopIdAt(trip, at),
+      arrivalSeconds: arrivalAt(trip, at),
+      departureSeconds: departureAt(trip, at),
+    });
+  }
+  return materialised;
 }
 
 /**

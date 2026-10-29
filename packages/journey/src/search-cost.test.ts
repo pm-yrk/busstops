@@ -63,27 +63,28 @@ function network(options: { delaySeconds?: number; cancelled?: boolean } = {}) {
 const DEPART = 9 * 3600;
 
 describe("what the search allocates", () => {
-  it("computes a trip's effective stop times once per scan, not twice", () => {
+  it("reads a trip's times once per scan, not twice", () => {
     const { graph } = network();
     const counters = newSearchCounters();
     runRaptor(graph, [{ stopId: "s0", accessSeconds: 0 }], { departAtSeconds: DEPART }, counters);
 
     expect(counters.tripScans).toBeGreaterThan(0);
-    expect(counters.effectiveStopTimesCalls, "one call per trip scanned; it used to be two").toBe(
+    expect(counters.tripTimeReads, "one read per trip scanned; it used to be two").toBe(
       counters.tripScans,
     );
   });
 
-  it("still computes them once when a trip carries a live delay", () => {
+  it("still reads them once when a trip carries a live delay", () => {
     /*
      * The case that made the doubling expensive rather than merely wasteful: for a delayed trip
-     * `effectiveStopTimes` allocates a fresh array of stop-time objects rather than returning the
-     * published one.
+     * `effectiveStopTimes` allocated a fresh array of stop-time objects rather than returning the
+     * published one. The search no longer calls it at all — it adds the delay as it reads each
+     * time — so the delay costs an addition per read instead of an array per scan.
      */
     const { graph } = network({ delaySeconds: 180 });
     const counters = newSearchCounters();
     runRaptor(graph, [{ stopId: "s0", accessSeconds: 0 }], { departAtSeconds: DEPART }, counters);
-    expect(counters.effectiveStopTimesCalls).toBe(counters.tripScans);
+    expect(counters.tripTimeReads).toBe(counters.tripScans);
   });
 
   it("offers labels without building the ones it rejects", () => {

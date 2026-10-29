@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { effectiveStopTimes } from "@busstops/journey";
 import type { RoutePattern, ServiceRoute } from "@busstops/contracts";
 import type { PatternTripRow } from "@busstops/pipeline-static-network";
 import { buildGraphFor, secondsIntoServiceDay } from "./journey-service.js";
@@ -94,10 +95,10 @@ describe("stop times into seconds of the service day", () => {
       );
       const trip = built.graph?.trips[0];
       expect(trip, `${serviceDate} produced no trip`).toBeDefined();
-      expect(trip!.stopTimes.map((stopTime) => stopTime.departureSeconds)).toEqual(
+      expect(effectiveStopTimes(trip!).map((stopTime) => stopTime.departureSeconds)).toEqual(
         departures.map((epoch) => viaText(epoch, serviceDate)),
       );
-      expect(trip!.stopTimes.map((stopTime) => stopTime.arrivalSeconds)).toEqual(
+      expect(effectiveStopTimes(trip!).map((stopTime) => stopTime.arrivalSeconds)).toEqual(
         departures.map((epoch) => viaText(epoch, serviceDate)),
       );
     }
@@ -116,8 +117,8 @@ describe("stop times into seconds of the service day", () => {
       serviceDate,
     );
     const trip = built.graph!.trips[0]!;
-    expect(trip.stopTimes[1]!.arrivalSeconds).toBe(32_880);
-    expect(trip.stopTimes[1]!.departureSeconds).toBe(33_000);
+    expect(effectiveStopTimes(trip)[1]!.arrivalSeconds).toBe(32_880);
+    expect(effectiveStopTimes(trip)[1]!.departureSeconds).toBe(33_000);
   });
 
   it("drops a call the trip has no time for, and keeps the stops in order", async () => {
@@ -132,7 +133,7 @@ describe("stop times into seconds of the service day", () => {
       serviceDate,
     );
     const trip = built.graph!.trips[0]!;
-    expect(trip.stopTimes.map((stopTime) => stopTime.stopId)).toEqual([STOP_A, STOP_C]);
+    expect(effectiveStopTimes(trip).map((stopTime) => stopTime.stopId)).toEqual([STOP_A, STOP_C]);
   });
 
   it("refuses the graph rather than inventing times for an unreadable service date", async () => {
@@ -145,6 +146,14 @@ describe("stop times into seconds of the service day", () => {
     expect(built.graph).toBeNull();
   });
 
+  /*
+   * The cheapest read, which is also the one that says the corridor cut nothing.
+   *
+   * A trip whose every call survives carries no kept-positions array at all: the accessor indexes
+   * the pattern's sequence directly. So `calls.kept` being null is the assertion, not an
+   * implementation detail — it is what "untouched" means now that a trip is a window into a shard
+   * rather than an array of objects.
+   */
   it("keeps a trip untouched when the corridor cuts nothing from it", async () => {
     const serviceDate = "2026-07-15";
     const midnight = Date.parse(`${serviceDate}T00:00:00.000Z`) / 1000;
@@ -154,7 +163,10 @@ describe("stop times into seconds of the service day", () => {
       corridor,
       serviceDate,
     );
-    expect(built.graph!.trips[0]!.stopTimes).toHaveLength(3);
+    const trip = built.graph!.trips[0]!;
+    expect(effectiveStopTimes(trip)).toHaveLength(3);
+    expect(trip.calls?.kept, "nothing was cut, so there are no kept positions").toBeNull();
+    expect(trip.stopTimes, "and no objects were built for its calls").toBeUndefined();
   });
 
   it("cuts the calls outside the corridor and drops a trip left with fewer than two", async () => {
