@@ -88,6 +88,14 @@ export async function publishSpilledJourneyTiles(
      * test double working and keeps this one decision in one place.
      */
     encodeBytes?: (lines: string[], dataset: string) => Uint8Array;
+    /**
+     * Whether writing one form of a shard should delete the other form of the same shard.
+     *
+     * Only one family has ever been published in two forms, so only one family pays for this: the
+     * planner's trips, which were converted from lines to bytes in place. Everything else has a
+     * single form and a delete per shard per publish would be an operation spent on nothing.
+     */
+    removeOtherForm?: boolean;
   },
 ): Promise<SpilledJourneyPublishResult> {
   const datasetFor = options.datasetFor ?? journeyTileDataset;
@@ -139,10 +147,27 @@ export async function publishSpilledJourneyTiles(
       if (bytes > maxBytes) {
         return { tile: entry.tile, error: null, records: lines.length, bytes, oversized: true };
       }
+      /*
+       * One form per shard, and the one just written is the one that is true.
+       *
+       * Both forms live under the same dataset path with different suffixes, and every reader
+       * prefers the bytes. So a shard that has both is a shard whose reader may be serving the
+       * older of two timetables — and that is not hypothetical: a refresh republishing the live
+       * horizon as lines ran concurrently with the migration that had already converted those
+       * keys, which left eight Leeds shards holding both forms of 29 October. Deleting the other
+       * sibling after the write makes "which one is current" unanswerable rather than silently
+       * wrong, and it costs one delete on the first publish after a format change and none after.
+       */
       if (asBytes === null || binaryStore === null) {
         await store.put(objectKeyFor(dataset, options.version), body!);
+        if (options.removeOtherForm === true) {
+          await store.delete(objectKeyForBytes(dataset, options.version));
+        }
       } else {
         await binaryStore.putBytes(objectKeyForBytes(dataset, options.version), asBytes);
+        if (options.removeOtherForm === true) {
+          await store.delete(objectKeyFor(dataset, options.version));
+        }
       }
       return {
         tile: entry.tile,

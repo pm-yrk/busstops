@@ -47,6 +47,39 @@ export function textKeyOf(binaryKey: string): string {
   return `${binaryKey.slice(0, -".bin".length)}.jsonl`;
 }
 
+/** One object as the bucket inventory describes it, which is all the choice below needs. */
+export interface ShardInventoryEntry {
+  readonly key: string;
+  readonly uploadedAt: string;
+}
+
+/**
+ * The shards a forward migration still has to convert, from the bucket inventory.
+ *
+ * Two cases, and the second is the one that was missing. A text shard with no binary sibling has
+ * never been converted. A text shard *newer* than its binary sibling has been converted and then
+ * republished as text over the top — and since every reader prefers the bytes, the bytes beside it
+ * are a timetable that will be served in place of the one just published. That is not a
+ * hypothetical: the daily refresh writes the live horizon as lines from the default branch, and
+ * one of its runs overlapped this migration, so eight Leeds shards ended up holding both forms of
+ * 29 October with the older one winning. Skipping those as "already done" would leave the fault
+ * in the bucket permanently.
+ *
+ * A text shard older than its binary sibling is left alone: it is the pre-conversion object, and
+ * the publisher that writes bytes now deletes it.
+ */
+export function pendingTripShards(
+  inventory: readonly ShardInventoryEntry[],
+  atVersion: (key: string) => boolean,
+): ShardInventoryEntry[] {
+  const uploadedAt = new Map(inventory.map((object) => [object.key, object.uploadedAt]));
+  return inventory.filter((object) => {
+    if (!object.key.endsWith(".jsonl") || !atVersion(object.key)) return false;
+    const binary = uploadedAt.get(binaryKeyOf(object.key));
+    return binary === undefined || object.uploadedAt > binary;
+  });
+}
+
 export async function convertTripShard(
   store: BinaryObjectStore,
   textKey: string,

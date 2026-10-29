@@ -612,6 +612,16 @@ async function main(): Promise<number> {
      */
     encodeBytes: (lines) =>
       encodePatternTripShard(lines.map((line) => JSON.parse(line) as PatternTripRow)).bytes,
+    /*
+     * And the text sibling goes, because this family has both forms in the bucket.
+     *
+     * The conversion happened in place, so every shard key in the live version may still have a
+     * `.jsonl` beside its `.bin` — and it did: a refresh of the live horizon ran while the
+     * migration was converting, and left eight shards holding both forms of 29 October. Every
+     * reader prefers the bytes, so a shard with both is a shard whose reader may be answering
+     * from the older of two timetables. One delete per shard per refresh removes the question.
+     */
+    removeOtherForm: true,
   });
   report.patternTrips = {
     published: tripResult.tiles.length,

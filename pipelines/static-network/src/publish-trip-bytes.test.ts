@@ -37,7 +37,7 @@ function rows(count: number): PatternTripRow[] {
   }));
 }
 
-async function publishTo(store: ObjectStore, count = 24) {
+async function publishTo(store: ObjectStore, count = 24, removeOtherForm = false) {
   const spill = new TileSpill(mkdtempSync(join(tmpdir(), "busstops-trip-bytes-")));
   const source = rows(count);
   for (const row of source) spill.append(DATASET, JSON.stringify(row));
@@ -47,6 +47,7 @@ async function publishTo(store: ObjectStore, count = 24) {
     datasetFor: (dataset) => dataset,
     encodeBytes: (lines) =>
       encodePatternTripShard(lines.map((line) => JSON.parse(line) as PatternTripRow)).bytes,
+    removeOtherForm,
   });
   spill.dispose();
   return { published, source };
@@ -100,5 +101,58 @@ describe("the planner's trip shards, published as bytes", () => {
     expect(body).not.toBeNull();
     const parsed = body!.split("\n").map((line) => JSON.parse(line) as PatternTripRow);
     expect(parsed).toEqual(source);
+  });
+});
+
+/**
+ * The shard that exists twice.
+ *
+ * Both forms live under one dataset path with different suffixes, and every reader prefers the
+ * bytes — so a key holding both is a key whose reader may be answering from the older of two
+ * timetables. It happened: the daily refresh republished the live horizon as lines while the
+ * migration was converting those same keys, and eight Leeds shards came out holding both forms of
+ * 29 October. These are the assertions that say a publish leaves one form behind.
+ */
+describe("one form per shard", () => {
+  it("deletes the text sibling when it publishes the bytes", async () => {
+    const store = new InMemoryObjectStore();
+    /* As the bucket was: a text shard published before the format changed. */
+    await store.put(objectKeyFor(DATASET, "v1"), '{"p":"stale","j":"stale","t":[1,2]}');
+
+    await publishTo(store, 12, true);
+
+    expect(await store.getBytes!(objectKeyForBytes(DATASET, "v1"))).not.toBeNull();
+    expect(await store.get(objectKeyFor(DATASET, "v1"))).toBeNull();
+  });
+
+  it("deletes the binary sibling when a store that cannot hold bytes publishes the lines", async () => {
+    const store = new InMemoryObjectStore();
+    await store.putBytes!(objectKeyForBytes(DATASET, "v1"), new Uint8Array([1, 2, 3]));
+
+    /* A store without `putBytes` is what a test double and an older deployment look like. */
+    const textOnly: ObjectStore = {
+      get: (key) => store.get(key),
+      put: (key, body) => store.put(key, body),
+      delete: (key) => store.delete(key),
+      list: (prefix) => store.list(prefix),
+    };
+
+    await publishTo(textOnly, 12, true);
+
+    expect(await store.get(objectKeyFor(DATASET, "v1"))).not.toBeNull();
+    expect(await store.getBytes!(objectKeyForBytes(DATASET, "v1"))).toBeNull();
+  });
+
+  it("leaves the other form alone when it was not asked to remove it", async () => {
+    const store = new InMemoryObjectStore();
+    await store.put(objectKeyFor(DATASET, "v1"), '{"p":"stale","j":"stale","t":[1,2]}');
+
+    await publishTo(store, 12);
+
+    /*
+     * The default, because only one family has ever had two forms and a delete per shard per
+     * publish is an operation spent on nothing for all the others.
+     */
+    expect(await store.get(objectKeyFor(DATASET, "v1"))).not.toBeNull();
   });
 });

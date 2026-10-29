@@ -48,6 +48,7 @@ import {
 import {
   binaryKeyOf,
   convertTripShard,
+  pendingTripShards,
   revertTripShard,
   textKeyOf,
 } from "./lib/convert-trip-shard.js";
@@ -93,6 +94,24 @@ async function main(): Promise<number> {
   const inventory = await store.listDetailed(`data/${PATTERN_TRIPS_PREFIX}/`);
   const binaryKeys = new Set(inventory.filter((o) => o.key.endsWith(".bin")).map((o) => o.key));
   const textKeys = new Set(inventory.filter((o) => o.key.endsWith(".jsonl")).map((o) => o.key));
+  const uploadedAt = new Map(inventory.map((object) => [object.key, object.uploadedAt]));
+
+  /**
+   * Whether a text shard that already has a binary sibling still has to be converted.
+   *
+   * It does when the text is the newer of the two, because then the bytes beside it are an older
+   * timetable and every reader prefers the bytes. That is not hypothetical: the daily refresh
+   * republishes the live horizon as lines from the default branch, and one of its runs overlapped
+   * this migration — the inventory was taken before those writes, so the shards it published
+   * afterwards kept both forms, with the reader preferring the older one. Re-running the
+   * migration has to repair that rather than skip it as already done.
+   */
+  const supersedesItsBytes = (textKey: string): boolean => {
+    const text = uploadedAt.get(textKey);
+    const binary = uploadedAt.get(binaryKeyOf(textKey));
+    if (text === undefined || binary === undefined) return false;
+    return text > binary;
+  };
   /*
    * Forwards: the text shards at this version that have no binary sibling yet. Backwards: the
    * binary shards at this version that have no text sibling — the undo, which exists because a
@@ -108,18 +127,20 @@ async function main(): Promise<number> {
             !textKeys.has(textKeyOf(object.key)),
         )
         .map((object) => ({ ...object, key: textKeyOf(object.key) }))
-    : inventory.filter(
-        (object) =>
-          object.key.endsWith(".jsonl") &&
-          versionInObjectKey(object.key) === version &&
-          !binaryKeys.has(binaryKeyOf(object.key)),
-      );
+    : pendingTripShards(inventory, (key) => versionInObjectKey(key) === version);
 
   const deadline = Date.now() + MINUTES * 60 * 1000;
   const counts = {
     shardsAtVersion: inventory.filter((o) => versionInObjectKey(o.key) === version).length,
     alreadyBinary: binaryKeys.size,
     pending: pending.length,
+    /*
+     * Of the pending shards, how many are a repair rather than a first conversion: text that was
+     * republished over an already-converted shard, where the bytes a reader prefers are stale.
+     */
+    supersedingStaleBytes: REVERSE
+      ? 0
+      : pending.filter((object) => supersedesItsBytes(object.key)).length,
     converted: 0,
     verified: 0,
     failedVerification: 0,

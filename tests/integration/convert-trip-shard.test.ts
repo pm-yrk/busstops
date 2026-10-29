@@ -4,6 +4,7 @@ import { PatternTripShard, type PatternTripRow } from "@busstops/pipeline-static
 import {
   binaryKeyOf,
   convertTripShard,
+  pendingTripShards,
   revertTripShard,
   rowsOfShardText,
   textKeyOf,
@@ -206,5 +207,46 @@ describe("putting a trip shard back as lines", () => {
     const after = await store.get(KEY);
     expect(after).toBe(before);
     expect(rowsOfShardText(after!)).toEqual(source);
+  });
+});
+
+/**
+ * Which shards a re-run still has to convert.
+ *
+ * The first pass asked one question — is there a binary sibling? — and that question is wrong the
+ * moment anything republishes a converted shard as text. The daily refresh does exactly that for
+ * the live horizon, from the default branch, and one of its runs overlapped the migration: eight
+ * Leeds shards came out with both forms of 29 October, the reader preferring the older. These
+ * cases are the four shapes an inventory can be in.
+ */
+describe("the shards a forward migration still owes", () => {
+  const atVersion = (key: string): boolean => key.includes("2026-10-22T12:49:08.474Z");
+  const text = (uploadedAt: string) => ({ key: KEY, uploadedAt });
+  const binary = (uploadedAt: string) => ({ key: binaryKeyOf(KEY), uploadedAt });
+
+  it("takes a text shard that has no binary sibling", () => {
+    expect(pendingTripShards([text("2026-10-28T10:00:00Z")], atVersion).map((o) => o.key)).toEqual([
+      KEY,
+    ]);
+  });
+
+  it("leaves a text shard that its binary sibling supersedes", () => {
+    const inventory = [text("2026-10-28T10:00:00Z"), binary("2026-10-28T23:00:00Z")];
+    expect(pendingTripShards(inventory, atVersion)).toEqual([]);
+  });
+
+  it("takes a text shard republished over its binary sibling", () => {
+    /* The refresh wrote the lines at 23:40; the migration had written the bytes at 22:30. */
+    const inventory = [text("2026-10-28T23:40:00Z"), binary("2026-10-28T22:30:00Z")];
+    expect(pendingTripShards(inventory, atVersion).map((o) => o.key)).toEqual([KEY]);
+  });
+
+  it("ignores another version's shards and the binary objects themselves", () => {
+    const otherVersion = KEY.replace("2026-10-22T12:49:08.474Z", "2026-09-30T00:00:00.000Z");
+    const inventory = [
+      { key: otherVersion, uploadedAt: "2026-10-28T10:00:00Z" },
+      binary("2026-10-28T10:00:00Z"),
+    ];
+    expect(pendingTripShards(inventory, atVersion)).toEqual([]);
   });
 });

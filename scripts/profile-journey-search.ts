@@ -251,6 +251,11 @@ async function main(): Promise<number> {
       /* What each shard form was published as, so a stage figure says which work it measured. */
       shards: slice.shards.length,
       shardsAsBytes: shardBytes.length,
+      /*
+       * Shards the bucket holds in both forms, which is a fault rather than a measurement: every
+       * reader prefers the bytes, so one of these is a timetable nothing will ever serve.
+       */
+      shardsWithBothForms: slice.shards.filter((shard) => shard.bothForms).length,
       shardBytes: shardBytes.reduce((total, bytes) => total + bytes.byteLength, 0),
       /* Trip preparation: the old parse against the new decode, over the same rows. */
       tripParseTextMs: Number(tripParseText.ms.toFixed(2)),
