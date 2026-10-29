@@ -50,42 +50,101 @@ const ENDPOINTS = (arg("endpoints") ?? "")
 const wanted = (endpoint: string): boolean =>
   ENDPOINTS.length === 0 || ENDPOINTS.includes(endpoint);
 
-/** The five probe cities, with a viewport and a journey inside each. */
+/**
+ * The five probe cities, with a viewport and the four journey shapes in each.
+ *
+ * One journey per city was not enough to accept a planner on. The corpus asks four shapes of each
+ * city — a neighbourhood hop, a cross-town trip, a cross-city trip and an awkward pair no single
+ * route joins — because a planner's cost and its correctness both vary with them, and the whole
+ * question here is Cloudflare's CPU per invocation rather than one city's median. These are the
+ * corpus's own coordinates, so the deployed walk and the golden corpus ask the same questions.
+ */
 const CITIES = [
   {
     name: "Leeds",
     bbox: "-1.62000,53.75000,-1.46000,53.84000",
     stop: { lat: 53.7996, lon: -1.5491 },
-    journey: "fromLat=53.79600&fromLon=-1.54900&toLat=53.80400&toLon=-1.56000",
+    journeys: [
+      { shape: "direct", query: "fromLat=53.7996&fromLon=-1.5491&toLat=53.8035&toLon=-1.5555" },
+      { shape: "one change", query: "fromLat=53.7965&fromLon=-1.5478&toLat=53.8198&toLon=-1.5811" },
+      { shape: "cross-city", query: "fromLat=53.7955&fromLon=-1.5491&toLat=53.8441&toLon=-1.6151" },
+      { shape: "awkward", query: "fromLat=53.7742&fromLon=-1.5678&toLat=53.8231&toLon=-1.4593" },
+    ],
     search: "leeds",
   },
   {
     name: "Manchester",
     bbox: "-2.32000,53.42000,-2.16000,53.52000",
     stop: { lat: 53.4794, lon: -2.2453 },
-    journey: "fromLat=53.47940&fromLon=-2.24530&toLat=53.50440&toLon=-2.24530",
+    journeys: [
+      { shape: "direct", query: "fromLat=53.4794&fromLon=-2.2453&toLat=53.4839&toLon=-2.2446" },
+      { shape: "one change", query: "fromLat=53.4794&fromLon=-2.2309&toLat=53.5044&toLon=-2.2453" },
+      { shape: "cross-city", query: "fromLat=53.4794&fromLon=-2.2453&toLat=53.4702&toLon=-2.2914" },
+      { shape: "awkward", query: "fromLat=53.4186&fromLon=-2.2311&toLat=53.5316&toLon=-2.2819" },
+    ],
     search: "manchester",
   },
   {
     name: "Birmingham",
     bbox: "-1.96000,52.42000,-1.80000,52.52000",
     stop: { lat: 52.4751, lon: -1.8986 },
-    journey: "fromLat=52.47510&fromLon=-1.89860&toLat=52.49000&toLon=-1.88000",
+    journeys: [
+      { shape: "direct", query: "fromLat=52.4797&fromLon=-1.8996&toLat=52.4836&toLon=-1.8936" },
+      { shape: "one change", query: "fromLat=52.4751&fromLon=-1.8986&toLat=52.5106&toLon=-1.8601" },
+      { shape: "cross-city", query: "fromLat=52.4797&fromLon=-1.8996&toLat=52.4408&toLon=-1.9342" },
+      { shape: "awkward", query: "fromLat=52.5245&fromLon=-1.8396&toLat=52.4601&toLon=-1.9537" },
+    ],
     search: "birmingham",
   },
   {
     name: "Bristol",
     bbox: "-2.65000,51.42000,-2.49000,51.52000",
     stop: { lat: 51.455, lon: -2.5879 },
-    journey: "fromLat=51.45500&fromLon=-2.58790&toLat=51.46500&toLon=-2.60000",
+    journeys: [
+      { shape: "direct", query: "fromLat=51.455&fromLon=-2.5879&toLat=51.4583&toLon=-2.5918" },
+      { shape: "one change", query: "fromLat=51.455&fromLon=-2.5879&toLat=51.4805&toLon=-2.6" },
+      { shape: "cross-city", query: "fromLat=51.4518&fromLon=-2.5906&toLat=51.4341&toLon=-2.5942" },
+      { shape: "awkward", query: "fromLat=51.4878&fromLon=-2.6022&toLat=51.4383&toLon=-2.5465" },
+    ],
     search: "bristol",
   },
   {
     name: "York",
     bbox: "-1.15000,53.92000,-1.01000,54.00000",
     stop: { lat: 53.958, lon: -1.0803 },
-    journey: "fromLat=53.95800&fromLon=-1.08030&toLat=53.96500&toLon=-1.09000",
+    journeys: [
+      { shape: "direct", query: "fromLat=53.958&fromLon=-1.0803&toLat=53.9609&toLon=-1.0859" },
+      { shape: "one change", query: "fromLat=53.958&fromLon=-1.0803&toLat=53.9512&toLon=-1.0231" },
+      { shape: "cross-city", query: "fromLat=53.9579&fromLon=-1.0934&toLat=53.9497&toLon=-1.1236" },
+      { shape: "awkward", query: "fromLat=53.9733&fromLon=-1.0931&toLat=53.9303&toLon=-1.0493" },
+    ],
     search: "york",
+  },
+] as const;
+
+/**
+ * Journeys in thinly served country, which is the shape the adaptive horizon exists for.
+ *
+ * The planner reads two hours of timetable and widens to four only when the narrow pass found
+ * nothing. In a city that never happens; on a rural pair it is the normal case, and it is the one
+ * that costs twice. Two of them, and a pair far enough apart that the planner refuses rather than
+ * plans — the honest "no journey" answer, which has to be cheap as well as honest.
+ */
+const SPARSE = [
+  {
+    name: "North Yorkshire",
+    shape: "sparse (widens)",
+    query: "fromLat=54.0820&fromLon=-1.3410&toLat=54.1370&toLon=-1.5230",
+  },
+  {
+    name: "Somerset",
+    shape: "sparse (widens)",
+    query: "fromLat=51.1290&fromLon=-2.7140&toLat=51.0810&toLon=-2.5920",
+  },
+  {
+    name: "Leeds to Bristol",
+    shape: "no journey",
+    query: "fromLat=53.7996&fromLon=-1.5491&toLat=51.4550&toLon=-2.5879",
   },
 ] as const;
 
@@ -93,6 +152,8 @@ interface Reading {
   endpoint: string;
   city: string;
   path: string;
+  /** Which journey shape this was, for the per-shape table. Absent for other endpoints. */
+  shape?: string;
   status: number | null;
   platform: boolean;
   cfRay: string | null;
@@ -111,6 +172,23 @@ interface Reading {
    * two numbers side by side are what tell them apart.
    */
   requestsServed?: number;
+  /**
+   * What a journey said about where its timetable came from.
+   *
+   * The point of publishing the transfers, the grouping and the binary trips is that a request
+   * reads them instead of computing them — and a walk that reports `transfersFromArtifact: false`
+   * or `shardsBinaryFallback` above zero is measuring the old path and saying nothing about the
+   * new one, however good its milliseconds look.
+   */
+  journey?: {
+    options: number | null;
+    shardsBinary: number | null;
+    shardsBinaryFallback: number | null;
+    shardsGrouped: number | null;
+    transfersFromArtifact: boolean | null;
+    horizonHours: number | null;
+    code: string | null;
+  };
 }
 
 interface TailRecord {
@@ -123,7 +201,7 @@ interface TailRecord {
 
 const readings: Reading[] = [];
 
-async function ask(endpoint: string, city: string, path: string): Promise<void> {
+async function ask(endpoint: string, city: string, path: string, shape?: string): Promise<void> {
   if (!wanted(endpoint)) return;
   const began = Date.now();
   try {
@@ -137,6 +215,7 @@ async function ask(endpoint: string, city: string, path: string): Promise<void> 
       platform: false,
       cfRay: response.headers.get("cf-ray"),
       ms: Date.now() - began,
+      ...(shape === undefined ? {} : { shape }),
     };
     try {
       const body = JSON.parse(text) as Record<string, unknown>;
@@ -151,6 +230,23 @@ async function ask(endpoint: string, city: string, path: string): Promise<void> 
       const residency = diagnostics?.residency as Record<string, unknown> | undefined;
       reading.requestsServed =
         typeof residency?.requestsServed === "number" ? residency.requestsServed : undefined;
+      if (endpoint === "journey") {
+        const options = (data?.options ?? data?.journeys) as unknown;
+        const number = (value: unknown): number | null =>
+          typeof value === "number" ? value : null;
+        reading.journey = {
+          options: Array.isArray(options) ? options.length : null,
+          shardsBinary: number(diagnostics?.shardsBinary),
+          shardsBinaryFallback: number(diagnostics?.shardsBinaryFallback),
+          shardsGrouped: number(diagnostics?.shardsGrouped),
+          transfersFromArtifact:
+            typeof diagnostics?.transfersFromArtifact === "boolean"
+              ? diagnostics.transfersFromArtifact
+              : null,
+          horizonHours: number(diagnostics?.horizonHours),
+          code: typeof diagnostics?.code === "string" ? diagnostics.code : null,
+        };
+      }
       const observedAt = meta?.observedAt;
       reading.sourceAgeSeconds =
         typeof observedAt === "string"
@@ -169,6 +265,7 @@ async function ask(endpoint: string, city: string, path: string): Promise<void> 
       platform: true,
       cfRay: null,
       ms: Date.now() - began,
+      ...(shape === undefined ? {} : { shape }),
       degradation: `request failed: ${error instanceof Error ? error.message : String(error)}`,
     });
   }
@@ -278,13 +375,18 @@ async function main(): Promise<number> {
   for (let round = 1; round <= ROUNDS; round += 1) {
     for (const city of CITIES) {
       await ask("map", city.name, `/v1/map?bbox=${city.bbox}&zoom=14`);
-      await ask("journey", city.name, `/v1/journeys?${city.journey}`);
+      for (const journey of city.journeys) {
+        await ask("journey", city.name, `/v1/journeys?${journey.query}`, journey.shape);
+      }
       await ask(
         "nearby",
         city.name,
         `/v1/nearby?lat=${String(city.stop.lat)}&lon=${String(city.stop.lon)}&radius=600`,
       );
       await ask("search", city.name, `/v1/search?q=${city.search}`);
+    }
+    for (const sparse of SPARSE) {
+      await ask("journey", sparse.name, `/v1/journeys?${sparse.query}`, sparse.shape);
     }
     console.log(`round ${String(round)} of ${String(ROUNDS)} done`);
   }
@@ -337,7 +439,15 @@ async function main(): Promise<number> {
     list.sort((a, b) => (a.eventTimestamp ?? 0) - (b.eventTimestamp ?? 0));
   }
   const seenPerPath = new Map<string, number>();
-  const paired: Array<{ endpoint: string; cpuMs: number; requestsServed: number | null }> = [];
+  const paired: Array<{
+    endpoint: string;
+    cpuMs: number;
+    requestsServed: number | null;
+    shape: string | null;
+    city: string;
+    outcome: string | null;
+    journey: Reading["journey"] | null;
+  }> = [];
   for (const reading of readings) {
     const at = seenPerPath.get(reading.path) ?? 0;
     seenPerPath.set(reading.path, at + 1);
@@ -347,6 +457,10 @@ async function main(): Promise<number> {
       endpoint: reading.endpoint,
       cpuMs: record.cpuTime,
       requestsServed: reading.requestsServed ?? null,
+      shape: reading.shape ?? null,
+      city: reading.city,
+      outcome: record.outcome ?? null,
+      journey: reading.journey ?? null,
     });
   }
   /*
@@ -396,6 +510,53 @@ async function main(): Promise<number> {
     };
   };
 
+  /*
+   * Journeys by shape, which is what a journey acceptance is actually judged on.
+   *
+   * An endpoint median mixes a neighbourhood hop with a cross-city trip and a rural pair that
+   * widens its horizon, and those are different amounts of timetable — so one journey figure
+   * cannot say whether the endpoint fits. This splits them, and carries what each one said about
+   * where its timetable came from: a shape measured on the text fallback is not evidence about
+   * the published form, however good its milliseconds look.
+   */
+  const journeyShapes = (() => {
+    const shapes = new Map<string, typeof paired>();
+    for (const row of paired) {
+      if (row.endpoint !== "journey") continue;
+      const key = row.shape ?? "(unlabelled)";
+      const list = shapes.get(key) ?? [];
+      list.push(row);
+      shapes.set(key, list);
+    }
+    return [...shapes]
+      .map(([shape, rows]) => {
+        const cpu = rows.map((row) => row.cpuMs);
+        const answered = rows.filter((row) => (row.journey?.options ?? 0) > 0).length;
+        const onBinary = rows.filter((row) => (row.journey?.shardsBinary ?? 0) > 0).length;
+        const fellBack = rows.filter((row) => (row.journey?.shardsBinaryFallback ?? 0) > 0).length;
+        const grouped = rows.filter((row) => (row.journey?.shardsGrouped ?? 0) > 0).length;
+        const fromTiles = rows.filter((row) => row.journey?.transfersFromArtifact === true).length;
+        const widened = rows.filter((row) => (row.journey?.horizonHours ?? 0) > 2).length;
+        return {
+          shape,
+          invocations: rows.length,
+          p50CpuMs: percentile(cpu, 50),
+          p95CpuMs: percentile(cpu, 95),
+          maxCpuMs: cpu.length === 0 ? null : Math.max(...cpu),
+          exceededCpu: rows.filter((row) => row.outcome === "exceededCpu").length,
+          answered,
+          /* Which path served it, counted rather than assumed. */
+          onBinaryShards: onBinary,
+          fellBackToText: fellBack,
+          groupingRead: grouped,
+          transfersFromTiles: fromTiles,
+          widenedToFourHours: widened,
+          withinBudget: (percentile(cpu, 95) ?? Number.POSITIVE_INFINITY) <= 10,
+        };
+      })
+      .sort((a, b) => (b.maxCpuMs ?? 0) - (a.maxCpuMs ?? 0));
+  })();
+
   const table = [...byEndpoint]
     .map(([endpoint, entry]) => ({
       endpoint,
@@ -421,6 +582,23 @@ async function main(): Promise<number> {
         `${String(row.p50CpuMs ?? "-").padStart(7)}   ${String(row.p95CpuMs ?? "-").padStart(7)}   ` +
         `${String(row.maxCpuMs ?? "-").padStart(7)}   ${String(row.exceededCpu).padStart(11)}`,
     );
+  }
+
+  if (journeyShapes.length > 0) {
+    console.log("");
+    console.log(
+      "journey shape      n   p50 CPU   p95 CPU   max CPU   killed   answered   bytes   grouped   tiles   widened",
+    );
+    for (const row of journeyShapes) {
+      console.log(
+        `${row.shape.padEnd(17)} ${String(row.invocations).padStart(2)}   ` +
+          `${String(row.p50CpuMs ?? "-").padStart(7)}   ${String(row.p95CpuMs ?? "-").padStart(7)}   ` +
+          `${String(row.maxCpuMs ?? "-").padStart(7)}   ${String(row.exceededCpu).padStart(6)}   ` +
+          `${String(row.answered).padStart(8)}   ${String(row.onBinaryShards).padStart(5)}   ` +
+          `${String(row.groupingRead).padStart(7)}   ${String(row.transfersFromTiles).padStart(5)}   ` +
+          `${String(row.widenedToFourHours).padStart(7)}`,
+      );
+    }
   }
 
   /* Per city, which is what the map's own acceptance table asks for. */
@@ -449,6 +627,8 @@ async function main(): Promise<number> {
     tailRecords: tail.records.length,
     tailNotes: tail.notes.slice(0, 8),
     byEndpoint: table,
+    /* The journey endpoint split by the shape of the question, which is the acceptance table. */
+    journeyShapes,
     cities,
     worstOffenders: readings
       .filter((r) => r.platform)
