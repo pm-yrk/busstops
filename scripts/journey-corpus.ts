@@ -326,17 +326,28 @@ async function main(): Promise<number> {
       for (const trip of slice.trips) {
         if (!patternKeys.has(trip.patternId)) patternKeys.set(trip.patternId, patternKeys.size);
       }
-      const keyOf = new Map<string, string>();
-      groupRouteIndices({
+      /*
+       * In the publisher's order, route by route, which is what the reader hands the graph.
+       *
+       * Not the corridor's own order with keys attached: a route's trips must reach the graph in
+       * departure order because the scan binary-searches them, and this harness mimicking the
+       * reader badly is how a real ordering bug in the reader was first measured — four of ten
+       * recommendations changed, one by 4,050 seconds.
+       */
+      const grouped = groupRouteIndices({
         tripCount: slice.trips.length,
         patternKeyOf: (trip) => patternKeys.get(slice.trips[trip]!.patternId) ?? 0,
         callCountOf: (trip) => slice.trips[trip]!.stopTimes.length,
         departureOf: (trip, call) => slice.trips[trip]!.stopTimes[call]!.departureSeconds,
         tripIdOf: (trip) => slice.trips[trip]!.id,
-      }).forEach((group, at) => {
-        for (const trip of group.trips) keyOf.set(slice.trips[trip]!.id, `r${String(at)}`);
       });
-      tripsForGraph = slice.trips.map((trip) => ({ ...trip, routeKey: keyOf.get(trip.id) }));
+      const ordered: typeof slice.trips = [];
+      grouped.forEach((group, at) => {
+        for (const trip of group.trips) {
+          ordered.push({ ...slice.trips[trip]!, routeKey: `r${String(at)}` });
+        }
+      });
+      tripsForGraph = ordered;
     }
 
     const graphBegan = process.hrtime.bigint();

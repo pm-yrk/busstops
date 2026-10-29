@@ -815,6 +815,41 @@ describe("a corridor whose route grouping is published", () => {
     expect(outcome.diagnostics.tripsInGraph).toBeGreaterThan(0);
   });
 
+  /*
+   * The order a route's trips reach the graph in, which is what the grouping is really for.
+   *
+   * `earliestBoardable` binary-searches them, so they have to be in departure order. The shard's
+   * own order is not — it is whatever the pipeline wrote — and a reader that walks the shard and
+   * only tags each trip with its route loses the ordering the publisher did. That was a real bug
+   * here, measured by the corpus as four of ten recommendations changed, one arriving 4,050
+   * seconds later.
+   */
+  it("hands the graph each route's trips in departure order, not the shard's", async () => {
+    const { store, datasets } = await publishBinaryTrips();
+    await publishGrouping(store, datasets);
+    const outcome = await new JourneyService(store).planJourney(slice(), request);
+    expect(outcome.ok).toBe(true);
+    expect(outcome.diagnostics.shardsGrouped).toBeGreaterThan(0);
+
+    /* The same journey, planned without the grouping, must be the same journey. */
+    const plain = new InMemoryObjectStore();
+    for (const key of await store.list("")) {
+      if (key.includes("journey-routes")) continue;
+      const text = await store.get(key);
+      if (text !== null) await plain.put(key, text);
+      else {
+        const bytes = await store.getBytes(key);
+        if (bytes !== null) await plain.putBytes(key, bytes);
+      }
+    }
+    const without = await new JourneyService(plain).planJourney(slice(), request);
+    expect(without.ok).toBe(true);
+    expect(without.diagnostics.shardsGrouped).toBe(0);
+    expect(JSON.stringify(outcome.ok ? outcome.result : null)).toBe(
+      JSON.stringify(without.ok ? without.result : null),
+    );
+  });
+
   it("asks each shard's grouping once per isolate", async () => {
     const { store, datasets } = await publishBinaryTrips();
     await publishGrouping(store, datasets);

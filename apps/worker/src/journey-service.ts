@@ -457,7 +457,10 @@ export class JourneyService {
    * `null` records a shard with no usable grouping — none published, or one that does not describe
    * the shard that was read — so a corridor ahead of the publisher asks once.
    */
-  private readonly groupings = new Map<string, readonly (string | undefined)[] | null>();
+  private readonly groupings = new Map<
+    string,
+    { keys: readonly (string | undefined)[]; order: readonly number[] } | null
+  >();
 
   constructor(
     private readonly store: ObjectStore,
@@ -1276,19 +1279,37 @@ export class JourneyService {
       const grouping = await this.readGrouping(dataset, version, shard);
       const rows: PatternTripRow[] = [];
       let filtered = 0;
-      for (let trip = 0; trip < shard.tripCount; trip += 1) {
+      /*
+       * In the grouping's order when there is one, not the shard's.
+       *
+       * A route's trips have to reach the graph in departure order, because the scan binary-searches
+       * them for the earliest one it can catch. The grouping lists them that way; the shard does
+       * not, and the first version of this walked the shard and merely tagged each trip with its
+       * route — so the order was lost and the search boarded a later bus. The corpus priced it at
+       * four of ten recommendations changed, one of them arriving 4,050 seconds later.
+       *
+       * Every trip that can reach the graph is in the grouping: a trip with fewer than two calls
+       * cannot be ridden and is dropped by the graph builder anyway.
+       */
+      const order = grouping === null ? null : grouping.order;
+      const visit = (trip: number): void => {
         if (shard.lastDeparture(trip) < from || shard.firstDeparture(trip) > to) {
           filtered += 1;
-          continue;
+          return;
         }
         if (wanted !== null && !wanted[shard.patternOf(trip)]) {
           filtered += 1;
-          continue;
+          return;
         }
         const row = shard.rowAt(trip) as CorridorTripRow;
         /* Always set, even to undefined, so every row has the same shape. */
-        row.routeKey = grouping === null ? undefined : grouping[trip];
+        row.routeKey = grouping === null ? undefined : grouping.keys[trip];
         rows.push(row);
+      };
+      if (order === null) {
+        for (let trip = 0; trip < shard.tripCount; trip += 1) visit(trip);
+      } else {
+        for (const trip of order) visit(trip);
       }
       return {
         kind: "binary",
@@ -1316,7 +1337,7 @@ export class JourneyService {
     dataset: string,
     version: string,
     shard: PatternTripShard,
-  ): Promise<readonly (string | undefined)[] | null> {
+  ): Promise<{ keys: readonly (string | undefined)[]; order: readonly number[] } | null> {
     if (!canHoldBytes(this.store)) return null;
     const parts = tripShardParts(dataset);
     if (parts === null) return null;
@@ -1349,22 +1370,30 @@ export class JourneyService {
         return null;
       }
       const keyOf: (string | undefined)[] = new Array<string | undefined>(shard.tripCount);
+      /* The order the publisher wrote: route by route, and within a route by departure. */
+      const order: number[] = [];
       for (let route = 0; route < grouping.routeCount; route += 1) {
         const key = `${dataset}#${String(route)}`;
         for (let at = grouping.firstTrip(route); at < grouping.tripEnd(route); at += 1) {
           const trip = grouping.tripAt(at);
-          if (trip < shard.tripCount) keyOf[trip] = key;
+          if (trip >= shard.tripCount) continue;
+          keyOf[trip] = key;
+          order.push(trip);
         }
       }
-      this.rememberGrouping(cacheKey, keyOf);
-      return keyOf;
+      const read = { keys: keyOf, order };
+      this.rememberGrouping(cacheKey, read);
+      return read;
     } catch {
       this.rememberGrouping(cacheKey, null);
       return null;
     }
   }
 
-  private rememberGrouping(key: string, keys: readonly (string | undefined)[] | null): void {
+  private rememberGrouping(
+    key: string,
+    keys: { keys: readonly (string | undefined)[]; order: readonly number[] } | null,
+  ): void {
     if (this.groupings.size >= MAX_CACHED_GROUPINGS) {
       const oldest = this.groupings.keys().next().value;
       if (oldest !== undefined) this.groupings.delete(oldest);

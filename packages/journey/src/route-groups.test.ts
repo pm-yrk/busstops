@@ -244,6 +244,35 @@ describe("grouping from the keys the publisher assigned", () => {
     }
   });
 
+  /*
+   * The order within a route is load-bearing, and this is the test that was missing.
+   *
+   * `earliestBoardable` binary-searches a route's trips, which is only sound if they are in
+   * departure order. The published grouping lists them that way; the first reader of it walked the
+   * shard in index order and merely tagged each trip with its route, so the order was lost and the
+   * search boarded a later bus. The corpus caught it — four of ten recommendations changed, one
+   * arriving 4,050 seconds later — and nothing in this file did, because the helper above happened
+   * to emit trips in route order.
+   */
+  it("orders a route's trips by departure even when the keys arrive shuffled", () => {
+    const trips = keyed(timetable(21));
+    const shuffled = [...trips];
+    /* A deterministic shuffle: the shard's own order has no reason to match the publisher's. */
+    for (let at = shuffled.length - 1; at > 0; at -= 1) {
+      const swap = (at * 7 + 3) % (at + 1);
+      [shuffled[at], shuffled[swap]] = [shuffled[swap]!, shuffled[at]!];
+    }
+
+    const grouped = groupRoutes(shuffled);
+    expect(shapeOf(grouped)).toEqual(shapeOf(groupRoutes(trips)));
+    for (const route of grouped.routes) {
+      const departures = route.trips.map((trip) => trip.stopTimes[0]!.departureSeconds);
+      expect([...departures], `route ${route.stopIds.join(">")}`).toEqual(
+        [...departures].sort((a, b) => a - b),
+      );
+    }
+  });
+
   it("goes the long way when even one trip has no key", () => {
     const trips = keyed(timetable(13));
     /* A mixture cannot be grouped by key: an unkeyed trip may belong in a keyed trip's route, and

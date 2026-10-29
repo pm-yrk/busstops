@@ -227,7 +227,23 @@ export function buildGraph(input: BuildGraphInput): JourneyGraph {
  * effective times, as it does in the long path, so a corridor that cut the sequence is reflected
  * here too.
  */
-function routesFromGroups(groups: readonly Trip[][]): {
+function routesFromGroups(
+  groups: readonly Trip[][],
+  /**
+   * Check the order rather than trust it.
+   *
+   * A route's trips must be in departure order: `earliestBoardable` binary-searches them, which is
+   * only sound if they are sorted. The published grouping lists them in that order — and the first
+   * reader of it walked the shard in *index* order and merely tagged each trip with its route, so
+   * the order was lost and a binary search over unsorted departures returned a later bus. The
+   * corpus caught it as four of ten recommendations changed, one arriving 4,050 seconds later.
+   *
+   * So this does not take the caller's word for it. One comparison per trip says whether the group
+   * is ordered, and a group that is not gets sorted — which costs something only when the input is
+   * wrong, and turns a silently worse journey into a slightly slower request.
+   */
+  verifyOrder = false,
+): {
   routes: RouteGroup[];
   routesByStop: Map<string, Array<{ route: RouteGroup; at: number }>>;
 } {
@@ -235,8 +251,26 @@ function routesFromGroups(groups: readonly Trip[][]): {
   const routesByStop = new Map<string, Array<{ route: RouteGroup; at: number }>>();
   for (const group of groups) {
     if (group.length === 0) continue;
-    const stopIds = effectiveStopTimes(group[0]!).map((stopTime) => stopTime.stopId);
-    const route: RouteGroup = { stopIds, trips: [...group], nonOvertaking: true };
+    let trips = group;
+    if (verifyOrder && group.length > 1) {
+      const departures = group.map((trip) => effectiveStopTimes(trip)[0]!.departureSeconds);
+      let ordered = true;
+      for (let at = 1; at < departures.length; at += 1) {
+        if (departures[at]! < departures[at - 1]!) {
+          ordered = false;
+          break;
+        }
+      }
+      if (!ordered) {
+        trips = [...group].sort((a, b) => {
+          const left = effectiveStopTimes(a)[0]!.departureSeconds;
+          const right = effectiveStopTimes(b)[0]!.departureSeconds;
+          return left !== right ? left - right : a.id < b.id ? -1 : 1;
+        });
+      }
+    }
+    const stopIds = effectiveStopTimes(trips[0]!).map((stopTime) => stopTime.stopId);
+    const route: RouteGroup = { stopIds, trips: [...trips], nonOvertaking: true };
     routes.push(route);
     for (let at = 0; at < stopIds.length; at += 1) {
       const stopId = stopIds[at]!;
@@ -289,7 +323,7 @@ export function groupRoutes(trips: readonly Trip[]): {
     if (existing) existing.push(trip);
     else keyed.set(trip.routeKey, [trip]);
   }
-  if (everyTripKeyed && keyed.size > 0) return routesFromGroups([...keyed.values()]);
+  if (everyTripKeyed && keyed.size > 0) return routesFromGroups([...keyed.values()], true);
 
   const byPattern = new Map<string, { whole: Trip[] | null; cut: Trip[][] }>();
   for (const trip of trips) {
