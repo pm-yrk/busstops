@@ -441,8 +441,26 @@ export class JourneyService {
    * Isolate-lifetime, like the service itself, because whether the bucket has been converted is a
    * property of the bucket and not of a request. It exists to stop a corridor spending its fifty
    * subrequests on 404s while the migration is still running.
+   *
+   * Counted per version *and service date*, not per version. The shards are keyed by date and the
+   * refresh that writes the live horizon runs ahead of the conversion, so one date can be text
+   * while every other date is bytes. Keyed by version alone, three misses on that one date would
+   * turn the whole isolate back to parsing — including the dates that were converted — and the
+   * endpoint's CPU would quietly go with it.
    */
   private readonly binaryMisses = new Map<string, number>();
+
+  /**
+   * The part of a shard dataset that decides whether its binary form exists: the service date.
+   *
+   * `network/pattern-trips/<date>/<window>/<tile>`. Taken by position rather than parsed, because
+   * this runs on the request path and the shape is this codebase's own.
+   */
+  private static binaryProbeKey(dataset: string, version: string): string {
+    const begin = dataset.indexOf("/", dataset.indexOf("/") + 1);
+    const end = begin === -1 ? -1 : dataset.indexOf("/", begin + 1);
+    return end === -1 ? version : `${version}:${dataset.slice(begin + 1, end)}`;
+  }
   /**
    * Decoded transfer tiles, for the life of the isolate.
    *
@@ -1243,7 +1261,8 @@ export class JourneyService {
      * through the migration recovers as soon as one converted shard is read, and a new isolate
      * tries again from scratch.
      */
-    const misses = this.binaryMisses.get(version) ?? 0;
+    const probeKey = JourneyService.binaryProbeKey(dataset, version);
+    const misses = this.binaryMisses.get(probeKey) ?? 0;
     if (misses >= BINARY_PROBE_MISSES) return null;
     let bytes: Uint8Array | null;
     try {
@@ -1253,10 +1272,10 @@ export class JourneyService {
       return { kind: "unreadable" };
     }
     if (bytes === null) {
-      this.binaryMisses.set(version, misses + 1);
+      this.binaryMisses.set(probeKey, misses + 1);
       return null;
     }
-    this.binaryMisses.set(version, 0);
+    this.binaryMisses.set(probeKey, 0);
 
     try {
       const shard = new PatternTripShard(bytes);

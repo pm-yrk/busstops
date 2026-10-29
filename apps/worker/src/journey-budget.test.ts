@@ -1100,6 +1100,83 @@ describe("a corridor published as bytes", () => {
     expect(probes.filter((key) => key.endsWith(".bin")).length).toBeLessThanOrEqual(shards * 3);
   });
 
+  /*
+   * And the date it gave up on does not take the other dates with it.
+   *
+   * The shards are keyed by service date, and the refresh that writes the live horizon runs ahead
+   * of the conversion: one date can be lines while every other date is bytes. Counting the misses
+   * per version alone, three 404s on that one date would turn the isolate back to parsing for
+   * every date it serves afterwards — the endpoint's whole CPU fix, undone by the one date that
+   * had not been converted yet.
+   */
+  it("gives up on the date with no bytes without giving up on the dates that have them", async () => {
+    const converted = "2026-09-18";
+    const { store, shards } = await publish(8);
+    const midnight = Date.parse(`${converted}T00:00:00.000Z`) / 1000;
+    const windows = tripWindowsFor(
+      midnight + DEPART_AT,
+      midnight + DEPART_AT + 4 * 3600,
+      converted,
+    );
+    const rows = [
+      {
+        p: "p-a2",
+        j: "trip-0",
+        t: [midnight + DEPART_AT + 600, midnight + DEPART_AT + 1500, midnight + DEPART_AT + 2100],
+      },
+      {
+        p: "p-a2",
+        j: "trip-1",
+        t: [midnight + DEPART_AT + 1800, midnight + DEPART_AT + 2700, midnight + DEPART_AT + 3300],
+      },
+    ] satisfies PatternTripRow[];
+    for (const tile of tripTilesForBoundingBox(corridor)) {
+      for (const window of windows) {
+        await store.putBytes(
+          objectKeyForBytes(patternTripsDataset(converted, tile, window), "v1"),
+          encodePatternTripShard(rows).bytes,
+        );
+      }
+    }
+
+    const probes: string[] = [];
+    const counting = {
+      get: (key: string) => store.get(key),
+      put: (key: string, value: string) => store.put(key, value),
+      delete: (key: string) => store.delete(key),
+      list: (prefix: string) => store.list(prefix),
+      getStream: (key: string) => store.getStream(key),
+      getBytes: async (key: string) => {
+        probes.push(key);
+        return store.getBytes(key);
+      },
+      putBytes: (key: string, value: Uint8Array) => store.putBytes(key, value),
+    };
+    const service = new JourneyService(counting as unknown as InMemoryObjectStore);
+
+    /* Enough plans on the unconverted date to exhaust its probe budget several times over. */
+    let lastProbes = 0;
+    for (let plan = 0; plan < 5; plan += 1) {
+      const before = probes.length;
+      const outcome = await service.planJourney(slice(), {
+        ...request,
+        departAtSeconds: DEPART_AT + plan * 60,
+      });
+      expect(outcome.ok).toBe(true);
+      expect(outcome.diagnostics.shardsBinary).toBe(0);
+      lastProbes = probes.length - before;
+    }
+    /* It did give up on this date: the last plan asked the store for nothing. */
+    expect(lastProbes).toBe(0);
+    expect(shards).toBeGreaterThan(0);
+
+    /* The same isolate, a date that was converted: it still reads the bytes. */
+    const after = await service.planJourney(slice(), { ...request, serviceDate: converted });
+    expect(after.ok).toBe(true);
+    expect(after.diagnostics.shardsBinary).toBeGreaterThan(0);
+    expect(after.diagnostics.shardsBinaryFallback).toBe(0);
+  });
+
   it("refuses rather than planning on half a corridor when the bytes are the only copy", async () => {
     /* No text sibling and bytes that cannot be opened: there is nothing to plan from, and a
      * confident itinerary built on the shards that happened to work is the one answer that must
