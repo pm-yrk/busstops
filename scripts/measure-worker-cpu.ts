@@ -182,6 +182,17 @@ interface Reading {
    */
   journey?: {
     options: number | null;
+    /*
+     * Characters of *trip shard* text, against the request's total.
+     *
+     * The split matters more than either number. Trips are published as bytes now, so a plan that
+     * decodes megabytes is decoding something else — the corridor's stops and its pattern
+     * sequences, which are still JSON lines — and a figure that lumps them together would read as
+     * a conversion that did not work.
+     */
+    tripChars: number | null;
+    stopsInSlice: number | null;
+    patternsInSlice: number | null;
     shardsBinary: number | null;
     shardsBinaryFallback: number | null;
     shardsGrouped: number | null;
@@ -236,6 +247,9 @@ async function ask(endpoint: string, city: string, path: string, shape?: string)
           typeof value === "number" ? value : null;
         reading.journey = {
           options: Array.isArray(options) ? options.length : null,
+          tripChars: number(diagnostics?.tripChars),
+          stopsInSlice: number(diagnostics?.stopsInSlice),
+          patternsInSlice: number(diagnostics?.patternsInSlice),
           shardsBinary: number(diagnostics?.shardsBinary),
           shardsBinaryFallback: number(diagnostics?.shardsBinaryFallback),
           shardsGrouped: number(diagnostics?.shardsGrouped),
@@ -593,6 +607,7 @@ async function main(): Promise<number> {
         const grouped = rows.filter((row) => (row.journey?.shardsGrouped ?? 0) > 0).length;
         const fromTiles = rows.filter((row) => row.journey?.transfersFromArtifact === true).length;
         const widened = rows.filter((row) => (row.journey?.horizonHours ?? 0) > 2).length;
+        const tripChars = rows.map((row) => row.journey?.tripChars ?? 0);
         return {
           shape,
           invocations: rows.length,
@@ -607,6 +622,8 @@ async function main(): Promise<number> {
           groupingRead: grouped,
           transfersFromTiles: fromTiles,
           widenedToFourHours: widened,
+          /* Trip text still being decoded. Zero is what a converted corridor looks like. */
+          maxTripChars: tripChars.length === 0 ? null : Math.max(...tripChars),
           withinBudget: (percentile(cpu, 95) ?? Number.POSITIVE_INFINITY) <= 10,
         };
       })
