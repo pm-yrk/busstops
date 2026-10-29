@@ -1541,6 +1541,63 @@ describe("GET /v1/journeys", () => {
       expect(option.confidence.score).toBeGreaterThanOrEqual(0);
     }
   });
+
+  /*
+   * Which object the planner's own counts live in, pinned.
+   *
+   * They are under `data`, beside the itineraries; `meta.diagnostics` is the read ledger. A
+   * deployed walk that reads the wrong one does not come back empty — it comes back with a
+   * confident `shardsBinary: 0`, `shardsGrouped: 0`, `transfersFromArtifact: false`, which says
+   * the request never touched the three published artifacts. That happened, and the walk's
+   * conclusion was wrong rather than missing, which is the worse failure. So the contract the
+   * measurement depends on is a test.
+   */
+  it("reports the planner's own counts under data, and the read ledger under meta", async () => {
+    const store = await publishedStore();
+    const network = completeNetwork();
+    await publishPatternTrips(store, network);
+
+    const pattern = network.patterns[0]!;
+    const boardingStop = network.stops.find((stop) => stop.id === pattern.stopSequence[0])!;
+    const alightingStop = network.stops.find(
+      (stop) => stop.id === pattern.stopSequence[pattern.stopSequence.length - 1],
+    )!;
+    /* Ten minutes before the first published departure, so a plan is actually built: the fields
+     * that say which path served it do not exist on a corridor that was never searched. */
+    const departAt =
+      (Date.parse(network.journeys[0]!.stopTimes[0]!.scheduledDeparture) -
+        Date.parse("2026-09-02T00:00:00.000Z")) /
+        1000 -
+      600;
+
+    const response = await worker.fetch(
+      get(
+        `/v1/journeys?fromLat=${boardingStop.locationCoordinate.lat}&fromLon=${boardingStop.locationCoordinate.lon}` +
+          `&toLat=${alightingStop.locationCoordinate.lat}&toLon=${alightingStop.locationCoordinate.lon}` +
+          `&date=2026-09-02&departAt=${Math.round(departAt)}`,
+      ),
+      makeEnv(store),
+      ctx,
+    );
+    const body = (await response.json()) as {
+      data: { diagnostics?: Record<string, unknown> };
+      meta: { diagnostics?: Record<string, unknown> };
+    };
+
+    /* The planner's counts, including the three that say which path served the request. */
+    expect(body.data.diagnostics?.code).toBe("planned");
+    expect(body.data.diagnostics).toBeDefined();
+    expect(typeof body.data.diagnostics?.shardsRead).toBe("number");
+    expect(body.data.diagnostics).toHaveProperty("shardsBinary");
+    expect(body.data.diagnostics).toHaveProperty("shardsGrouped");
+    expect(body.data.diagnostics).toHaveProperty("transfersFromArtifact");
+
+    /* And not in the ledger, which is what the walk had been reading. */
+    expect(body.meta.diagnostics?.shardsBinary).toBeUndefined();
+    expect(body.meta.diagnostics?.transfersFromArtifact).toBeUndefined();
+    /* The ledger has its own, which the walk also needs. */
+    expect(typeof body.meta.diagnostics?.charsDecoded).toBe("number");
+  });
 });
 
 describe("GET /v1/vehicles/:ref", () => {
