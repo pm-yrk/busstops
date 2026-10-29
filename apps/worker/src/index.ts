@@ -1475,6 +1475,18 @@ router.get("/v1/journeys", async (_request, { env, url }) => {
   const state = governorState(env);
   const now = new Date();
 
+  // The free Worker CPU limit cannot reliably support the on-request journey graph.
+  // Honour the same feature flag as preview: refuse cheaply rather than trigger a 1102
+  // and potentially disrupt unrelated stop boards or maps in the same isolate.
+  if (!readFeatureFlags(env).journeyPlanner) {
+    return errorResponse(
+      "safe_mode",
+      "Journey planning is temporarily paused to protect the free service. Stops and scheduled departures remain available.",
+      503,
+      60,
+    );
+  }
+
   const originLat = Number(url.searchParams.get("fromLat"));
   const originLon = Number(url.searchParams.get("fromLon"));
   const destinationLat = Number(url.searchParams.get("toLat"));
