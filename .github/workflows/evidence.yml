@@ -31,7 +31,7 @@ env:
   R2_BUCKET_ARTIFACTS: busstops-artifacts-preview
 
 jobs:
-  # The live-data question: why does a viewport with hundreds of buses in it come back empty
+  # Full Cloudflare load tests now require repository variable\n  # ALLOW_CLOUDFLARE_STRESS_TESTS=true in addition to their commit markers.\n  # Ordinary pushes and CPU safety deployments cannot run them accidentally.\n  # The live-data question: why does a viewport with hundreds of buses in it come back empty
   # through the deployment? The Worker is redeployed first, so the probe runs against this commit.
   probe:
     name: Probe the deployed API, and ask BODS the same question
@@ -474,7 +474,7 @@ jobs:
 
   classify_1102:
     name: Classify a real 1102 from Cloudflare
-    if: contains(join(github.event.commits.*.message), '[classify]')
+    if: contains(join(github.event.commits.*.message), '[classify]') && vars.ALLOW_CLOUDFLARE_STRESS_TESTS == 'true'
     runs-on: ubuntu-latest
     # Forty-five, because thirty was not enough and the overrun was not the measurement. The
     # script printed its whole report and then sat there: `npx wrangler tail` is a shell wrapping
@@ -570,7 +570,7 @@ jobs:
     # exactly like a real one. `always()` so a skipped or failed classification does not cancel
     # the samples; the ordering is what is wanted, not the outcome.
     needs: classify_1102
-    if: always() && contains(join(github.event.commits.*.message), '[acceptance]')
+    if: always() && contains(join(github.event.commits.*.message), '[acceptance]') && vars.ALLOW_CLOUDFLARE_STRESS_TESTS == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -858,7 +858,7 @@ jobs:
     # A commit that asks for the walk without the CPU proof still gets it: `always()` lets a
     # skipped dependency through, and the marker test below is what decides whether this runs.
     needs: [acceptance, worker_cpu]
-    if: always() && contains(join(github.event.commits.*.message), '[regress]')
+    if: always() && contains(join(github.event.commits.*.message), '[regress]') && vars.ALLOW_CLOUDFLARE_STRESS_TESTS == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -1057,7 +1057,7 @@ jobs:
   worker_cpu:
     name: Cloudflare CPU per endpoint and city
     needs: [classify_1102, acceptance]
-    if: always() && contains(join(github.event.commits.*.message), '[cpu-proof]')
+    if: always() && contains(join(github.event.commits.*.message), '[cpu-proof]') && vars.ALLOW_CLOUDFLARE_STRESS_TESTS == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
