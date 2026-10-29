@@ -99,6 +99,14 @@ versions are present and how many bytes each holds.
 
 There is no capability flag to revert, by design: a reader that finds nothing computes it.
 
+### Proving it without running it
+
+`[rollback-check]` runs all three in report mode against the live bucket and prints what each would
+restore or remove — the grouping objects it would delete, the transfer tiles it would delete, and
+the first twenty shards it would write back as lines. It writes nothing. A rollback nobody has
+asked the bucket about is a paragraph, not a rollback, so this is what makes the claim above
+checkable on any commit.
+
 Each removal takes only the live version's objects; other versions are untouched, because a
 rollback is not a prune. Without `--apply` all three report what they would do and change nothing.
 
