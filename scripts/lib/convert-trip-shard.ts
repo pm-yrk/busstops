@@ -80,6 +80,65 @@ export function pendingTripShards(
   });
 }
 
+/**
+ * The text shards a re-run should delete rather than convert.
+ *
+ * A `.jsonl` whose `.bin` sibling is **newer** is a leftover: the bytes beside it already hold a
+ * later version of the same shard, every reader prefers the bytes, and nothing will ever read the
+ * text again. The refresh that republishes the live horizon as lines from the default branch
+ * leaves 3,137 of them at the live version — the first conversion deleted the text it converted,
+ * and these were written after its inventory was taken, by a run that overlapped it.
+ *
+ * Kept separate from `pendingTripShards` because the two do opposite things to the same object,
+ * and which one applies turns entirely on which of the pair is newer. Equal timestamps count as
+ * superseded: the bytes are there and hold the rows, which is what a reader needs.
+ */
+export function supersededTripShards(
+  inventory: readonly ShardInventoryEntry[],
+  atVersion: (key: string) => boolean,
+): ShardInventoryEntry[] {
+  const uploadedAt = new Map(inventory.map((object) => [object.key, object.uploadedAt]));
+  return inventory.filter((object) => {
+    if (!object.key.endsWith(".jsonl") || !atVersion(object.key)) return false;
+    const binary = uploadedAt.get(binaryKeyOf(object.key));
+    return binary !== undefined && object.uploadedAt <= binary;
+  });
+}
+
+/**
+ * Deletes a text shard whose bytes are already there, after reading those bytes back.
+ *
+ * Fail closed: the bytes are fetched and opened before anything is removed, and a shard whose
+ * bytes cannot be read or hold no trips keeps its text. The timestamp said the bytes were newer;
+ * this is the bucket saying they are usable, which is a different claim and the one that matters
+ * when the alternative is a shard of England's timetable existing in neither form.
+ */
+export async function dropSupersededTripShard(
+  store: BinaryObjectStore,
+  textKey: string,
+  options: { apply: boolean },
+): Promise<{ outcome: "dropped" | "verified_only" | "kept" | "absent"; reason?: string }> {
+  const binaryKey = binaryKeyOf(textKey);
+  let bytes: Uint8Array | null;
+  try {
+    bytes = await store.getBytes(binaryKey);
+  } catch (error) {
+    return { outcome: "kept", reason: `bytes unreadable: ${String(error).slice(0, 100)}` };
+  }
+  if (bytes === null) return { outcome: "kept", reason: "no bytes beside it after all" };
+
+  try {
+    const shard = new PatternTripShard(bytes);
+    if (shard.tripCount === 0) return { outcome: "kept", reason: "the bytes hold no trips" };
+  } catch (error) {
+    return { outcome: "kept", reason: `bytes will not open: ${String(error).slice(0, 100)}` };
+  }
+
+  if (!options.apply) return { outcome: "verified_only" };
+  await store.delete(textKey);
+  return { outcome: "dropped" };
+}
+
 export async function convertTripShard(
   store: BinaryObjectStore,
   textKey: string,

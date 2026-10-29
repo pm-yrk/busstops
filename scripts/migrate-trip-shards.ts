@@ -48,8 +48,10 @@ import {
 import {
   binaryKeyOf,
   convertTripShard,
+  dropSupersededTripShard,
   pendingTripShards,
   revertTripShard,
+  supersededTripShards,
   textKeyOf,
 } from "./lib/convert-trip-shard.js";
 
@@ -129,6 +131,18 @@ async function main(): Promise<number> {
         .map((object) => ({ ...object, key: textKeyOf(object.key) }))
     : pendingTripShards(inventory, (key) => versionInObjectKey(key) === version);
 
+  /*
+   * And the leftovers: text shards whose bytes are already newer.
+   *
+   * Nothing will read these again — every reader prefers the bytes — so they are storage spent on
+   * a timetable that is served from elsewhere. There were 3,137 of them at the live version after
+   * a refresh overlapped the first conversion. Deleted only after the bytes beside them have been
+   * fetched and opened, which is the bucket confirming what the timestamps claimed.
+   */
+  const superseded = REVERSE
+    ? []
+    : supersededTripShards(inventory, (key) => versionInObjectKey(key) === version);
+
   const deadline = Date.now() + MINUTES * 60 * 1000;
   const counts = {
     shardsAtVersion: inventory.filter((o) => versionInObjectKey(o.key) === version).length,
@@ -146,6 +160,10 @@ async function main(): Promise<number> {
     failedVerification: 0,
     unreadable: 0,
     textDeleted: 0,
+    /** Leftover text shards found, and removed, whose bytes were already newer. */
+    supersededFound: superseded.length,
+    supersededDropped: 0,
+    supersededKept: 0,
     bytesText: 0,
     bytesBinary: 0,
     stoppedBy: null as "limit" | "clock" | null,
@@ -182,6 +200,27 @@ async function main(): Promise<number> {
     counts.bytesText += conversion.textBytes;
     counts.bytesBinary += conversion.binaryBytes;
     if (conversion.outcome === "converted") counts.textDeleted += 1;
+  }
+
+  /*
+   * After the conversions, and on the same clock: a run that has used its budget converting is a
+   * run that should come back for these rather than overrun. They are cheap — one read and one
+   * delete each — but there can be thousands.
+   */
+  for (const object of superseded) {
+    if (Date.now() > deadline) {
+      counts.stoppedBy ??= "clock";
+      break;
+    }
+    const dropped = await dropSupersededTripShard(store, object.key, { apply: APPLY });
+    if (dropped.outcome === "dropped" || dropped.outcome === "verified_only") {
+      counts.supersededDropped += 1;
+      continue;
+    }
+    counts.supersededKept += 1;
+    if (dropped.reason !== undefined) {
+      failures.push({ key: object.key, reason: `superseded: ${dropped.reason}` });
+    }
   }
 
   const report = {

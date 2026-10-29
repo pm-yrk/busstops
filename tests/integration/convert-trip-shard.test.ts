@@ -4,8 +4,10 @@ import { PatternTripShard, type PatternTripRow } from "@busstops/pipeline-static
 import {
   binaryKeyOf,
   convertTripShard,
+  dropSupersededTripShard,
   pendingTripShards,
   revertTripShard,
+  supersededTripShards,
   rowsOfShardText,
   textKeyOf,
 } from "../../scripts/lib/convert-trip-shard.js";
@@ -248,5 +250,91 @@ describe("the shards a forward migration still owes", () => {
       binary("2026-10-28T10:00:00Z"),
     ];
     expect(pendingTripShards(inventory, atVersion)).toEqual([]);
+  });
+});
+
+/**
+ * The leftovers, and the one thing that must be true before deleting any of them.
+ *
+ * A text shard whose bytes are newer will never be read again, so it is storage spent on a
+ * timetable served from elsewhere — 3,137 of them at the live version after a refresh overlapped
+ * the first conversion. But "the timestamp says the bytes are newer" and "the bytes are there and
+ * usable" are different claims, and only the second one makes a delete safe: the alternative is a
+ * shard of England's timetable existing in neither form.
+ */
+describe("the text shards whose bytes already won", () => {
+  const atVersion = (key: string): boolean => key.includes("2026-10-22T12:49:08.474Z");
+  const text = (uploadedAt: string) => ({ key: KEY, uploadedAt });
+  const binary = (uploadedAt: string) => ({ key: binaryKeyOf(KEY), uploadedAt });
+
+  it("finds a text shard its bytes supersede", () => {
+    const inventory = [text("2026-10-28T10:00:00Z"), binary("2026-10-28T23:00:00Z")];
+    expect(supersededTripShards(inventory, atVersion).map((o) => o.key)).toEqual([KEY]);
+  });
+
+  it("counts equal timestamps as superseded, because the bytes are there", () => {
+    const same = "2026-10-28T23:00:00Z";
+    expect(supersededTripShards([text(same), binary(same)], atVersion)).toHaveLength(1);
+  });
+
+  it("leaves a text shard that supersedes its bytes, which is the other function's work", () => {
+    const inventory = [text("2026-10-28T23:40:00Z"), binary("2026-10-28T22:30:00Z")];
+    expect(supersededTripShards(inventory, atVersion)).toEqual([]);
+    expect(pendingTripShards(inventory, atVersion).map((o) => o.key)).toEqual([KEY]);
+  });
+
+  it("deletes the text once it has read the bytes back", async () => {
+    const store = new InMemoryObjectStore() as InMemoryObjectStore & BinaryObjectStore;
+    const source = rows(12);
+    await store.put(KEY, `${source.map((row) => JSON.stringify(row)).join("\n")}\n`);
+    await convertTripShard(store, KEY, { apply: true });
+    /* As a refresh leaves it: the lines back, over bytes that are already current. */
+    await store.put(KEY, `${source.map((row) => JSON.stringify(row)).join("\n")}\n`);
+
+    expect(await dropSupersededTripShard(store, KEY, { apply: true })).toEqual({
+      outcome: "dropped",
+    });
+    expect(await store.get(KEY)).toBeNull();
+    expect(await store.getBytes(binaryKeyOf(KEY))).not.toBeNull();
+  });
+
+  it("keeps the text when the bytes are not there after all", async () => {
+    const store = new InMemoryObjectStore() as InMemoryObjectStore & BinaryObjectStore;
+    await store.put(
+      KEY,
+      `${rows(4)
+        .map((row) => JSON.stringify(row))
+        .join("\n")}\n`,
+    );
+    const kept = await dropSupersededTripShard(store, KEY, { apply: true });
+    expect(kept.outcome).toBe("kept");
+    expect(await store.get(KEY)).not.toBeNull();
+  });
+
+  it("keeps the text when the bytes will not open", async () => {
+    const store = new InMemoryObjectStore() as InMemoryObjectStore & BinaryObjectStore;
+    await store.put(
+      KEY,
+      `${rows(4)
+        .map((row) => JSON.stringify(row))
+        .join("\n")}\n`,
+    );
+    await store.putBytes(binaryKeyOf(KEY), new Uint8Array([1, 2, 3, 4]));
+    const kept = await dropSupersededTripShard(store, KEY, { apply: true });
+    expect(kept.outcome).toBe("kept");
+    expect(await store.get(KEY)).not.toBeNull();
+  });
+
+  it("changes nothing without --apply", async () => {
+    const store = new InMemoryObjectStore() as InMemoryObjectStore & BinaryObjectStore;
+    const source = rows(6);
+    await store.put(KEY, `${source.map((row) => JSON.stringify(row)).join("\n")}\n`);
+    await convertTripShard(store, KEY, { apply: true });
+    await store.put(KEY, `${source.map((row) => JSON.stringify(row)).join("\n")}\n`);
+
+    expect(await dropSupersededTripShard(store, KEY, { apply: false })).toEqual({
+      outcome: "verified_only",
+    });
+    expect(await store.get(KEY)).not.toBeNull();
   });
 });
