@@ -237,14 +237,61 @@ export interface JourneyGraph {
 }
 
 /**
- * The placeholder a route carries until the graph gives it the real one.
+ * The integer space routes are filed under, built once and extended as routes are met.
  *
- * `groupRoutes` decides which trips are one route; it has no stop space to express the sequence
- * in, because the space belongs to the graph. Shared and empty rather than allocated per route,
- * and a search over a route still holding it would visit no stops — which is why `buildGraph`
- * fills every one of them before the graph exists.
+ * `groupRoutes` decides which trips are one route, and filing those routes under the stops they
+ * call at used to mean a `Map` keyed by stop id with an entry object per occurrence — 2,737 keys
+ * and about 21,000 entries for a Birmingham corridor, built per request to express what the
+ * corridor's stop list already numbers. Given the space, the same filing is an array of arrays,
+ * and the string map nothing reads is never built at all.
  */
-const NO_INDICES = new Int32Array(0);
+export interface StopSpace {
+  readonly indexOf: Map<string, number>;
+  readonly names: string[];
+}
+
+function spaceOver(stops: readonly { id: string }[]): StopSpace {
+  const indexOf = new Map<string, number>();
+  const names: string[] = [];
+  for (const stop of stops) {
+    if (indexOf.has(stop.id)) continue;
+    indexOf.set(stop.id, names.length);
+    names.push(stop.id);
+  }
+  return { indexOf, names };
+}
+
+/** A stop's index, assigning one if the corridor never listed it. */
+function indexIn(space: StopSpace, stopId: string): number {
+  const held = space.indexOf.get(stopId);
+  if (held !== undefined) return held;
+  const index = space.names.length;
+  space.indexOf.set(stopId, index);
+  space.names.push(stopId);
+  return index;
+}
+
+/**
+ * Routes by the index of each stop they call at, in one pass as the routes are made.
+ *
+ * Grown rather than sized up front: the space can gain a stop while this is being filled, which
+ * happens when a route calls somewhere the corridor's own stop list did not mention.
+ */
+function fileRoute(
+  byIndex: Array<Array<{ route: RouteGroup; at: number }> | undefined>,
+  space: StopSpace,
+  route: RouteGroup,
+): void {
+  const indices = route.stopIndices;
+  for (let at = 0; at < indices.length; at += 1) {
+    const index = indices[at]!;
+    const list = byIndex[index];
+    if (list) list.push({ route, at });
+    else byIndex[index] = [{ route, at }];
+  }
+  /* Keep it as long as the space, so an index assigned here is still a valid subscript. */
+  while (byIndex.length < space.names.length) byIndex.push(undefined);
+}
 
 export const WALK_SPEED_METRES_PER_SECOND = WALK_SPEED;
 
@@ -290,46 +337,24 @@ export function buildGraph(input: BuildGraphInput): JourneyGraph {
    * both keep working unchanged.
    */
   let tripsByStop: Map<string, Trip[]> | null = null;
-
-  const grouped = groupRoutes(input.trips);
+  let routesByStop: Map<string, Array<{ route: RouteGroup; at: number }>> | null = null;
 
   /*
-   * The integer space, and the route sequences in it.
+   * The integer space, the grouping in it, and the route sequences already numbered.
    *
    * The corridor's own stops first, so the common indices are the ones the transfers are keyed on,
    * then any stop a route calls at that the corridor did not list — those are reachable and have
    * no walking edges, and leaving them out of the space would mean a label the search could not
-   * record.
+   * record. The grouping is handed the space and files its routes under indices directly, which is
+   * what removes the string-keyed map and its entry object per occurrence.
    */
-  const stopIndexOf = new Map<string, number>();
-  const stopIdByIndex: string[] = [];
-  for (const stop of input.stops) {
-    if (stopIndexOf.has(stop.id)) continue;
-    stopIndexOf.set(stop.id, stopIdByIndex.length);
-    stopIdByIndex.push(stop.id);
-  }
-  for (const route of grouped.routes) {
-    const indices = new Int32Array(route.stopIds.length);
-    for (let at = 0; at < route.stopIds.length; at += 1) {
-      const stopId = route.stopIds[at]!;
-      let index = stopIndexOf.get(stopId);
-      if (index === undefined) {
-        index = stopIdByIndex.length;
-        stopIndexOf.set(stopId, index);
-        stopIdByIndex.push(stopId);
-      }
-      indices[at] = index;
-    }
-    route.stopIndices = indices;
-  }
-
-  const routesByStopIndex: Array<Array<{ route: RouteGroup; at: number }> | undefined> = new Array(
-    stopIdByIndex.length,
-  );
-  for (const [stopId, entries] of grouped.routesByStop) {
-    const index = stopIndexOf.get(stopId);
-    if (index !== undefined) routesByStopIndex[index] = entries;
-  }
+  const space = spaceOver(input.stops);
+  const grouped = groupRoutes(input.trips, space);
+  const stopIndexOf = space.indexOf;
+  const stopIdByIndex = space.names;
+  const routesByStopIndex = grouped.routesByStopIndex;
+  /* The filing is as long as the space, so every index is a valid subscript. */
+  while (routesByStopIndex.length < stopIdByIndex.length) routesByStopIndex.push(undefined);
 
   /* And each stop's place in the adjacency, resolved once rather than once per edge walked. */
   const transferIndexByStop = new Int32Array(stopIdByIndex.length);
@@ -360,7 +385,14 @@ export function buildGraph(input: BuildGraphInput): JourneyGraph {
       return byStop;
     },
     routes: grouped.routes,
-    routesByStop: grouped.routesByStop,
+    /*
+     * Built on demand, because nothing on the request path reads it: the scan walks indices. It
+     * stays for the exhaustive oracle and anything else that wants stop ids.
+     */
+    get routesByStop(): Map<string, Array<{ route: RouteGroup; at: number }>> {
+      routesByStop ??= routesByStopFrom(grouped.routes);
+      return routesByStop;
+    },
     transfers,
   };
 }
@@ -396,12 +428,10 @@ function routesFromGroups(
    * wrong, and turns a silently worse journey into a slightly slower request.
    */
   verifyOrder = false,
-): {
-  routes: RouteGroup[];
-  routesByStop: Map<string, Array<{ route: RouteGroup; at: number }>>;
-} {
+  space: StopSpace = { indexOf: new Map<string, number>(), names: [] },
+): GroupedRoutes {
   const routes: RouteGroup[] = [];
-  const routesByStop = new Map<string, Array<{ route: RouteGroup; at: number }>>();
+  const routesByStopIndex: Array<Array<{ route: RouteGroup; at: number }> | undefined> = [];
   for (const group of groups) {
     if (group.length === 0) continue;
     let trips = group;
@@ -422,32 +452,54 @@ function routesFromGroups(
       }
     }
     const first = trips[0]!;
-    const stopIds: string[] = [];
-    for (let at = 0, count = callCount(first); at < count; at += 1) {
-      stopIds.push(stopIdAt(first, at));
+    const count = callCount(first);
+    const stopIds: string[] = new Array<string>(count);
+    const stopIndices = new Int32Array(count);
+    for (let at = 0; at < count; at += 1) {
+      const stopId = stopIdAt(first, at);
+      stopIds[at] = stopId;
+      stopIndices[at] = indexIn(space, stopId);
     }
-    const route: RouteGroup = {
-      stopIds,
-      /* Filled in by `buildGraph`, which is the only thing that knows the space. */
-      stopIndices: NO_INDICES,
-      trips: [...trips],
-      nonOvertaking: true,
-    };
+    const route: RouteGroup = { stopIds, stopIndices, trips: [...trips], nonOvertaking: true };
     routes.push(route);
-    for (let at = 0; at < stopIds.length; at += 1) {
-      const stopId = stopIds[at]!;
-      const list = routesByStop.get(stopId);
-      if (list) list.push({ route, at });
-      else routesByStop.set(stopId, [{ route, at }]);
-    }
+    fileRoute(routesByStopIndex, space, route);
   }
-  return { routes, routesByStop };
+  return { routes, routesByStopIndex, space };
 }
 
-export function groupRoutes(trips: readonly Trip[]): {
+/**
+ * The routes a corridor's trips make, and the index they are searched through.
+ *
+ * `routesByStop` is not here. Nothing on the request path read it — the scan walks indices — and
+ * building it meant a string-keyed map with an entry object per route occurrence per stop. The
+ * string map is available from `routesByStopFrom` for anything that genuinely wants it; nothing
+ * currently does.
+ */
+export interface GroupedRoutes {
   routes: RouteGroup[];
-  routesByStop: Map<string, Array<{ route: RouteGroup; at: number }>>;
-} {
+  routesByStopIndex: Array<Array<{ route: RouteGroup; at: number }> | undefined>;
+  /** The space the indices are in, which the caller may have supplied and this may have grown. */
+  space: StopSpace;
+}
+
+/** The same filing keyed by stop id, for a caller that wants strings. Built on demand. */
+export function routesByStopFrom(
+  routes: readonly RouteGroup[],
+): Map<string, Array<{ route: RouteGroup; at: number }>> {
+  const byStop = new Map<string, Array<{ route: RouteGroup; at: number }>>();
+  for (const route of routes) {
+    for (let at = 0; at < route.stopIds.length; at += 1) {
+      const stopId = route.stopIds[at]!;
+      const list = byStop.get(stopId);
+      if (list) list.push({ route, at });
+      else byStop.set(stopId, [{ route, at }]);
+    }
+  }
+  return byStop;
+}
+
+export function groupRoutes(trips: readonly Trip[], given?: StopSpace): GroupedRoutes {
+  const space: StopSpace = given ?? { indexOf: new Map<string, number>(), names: [] };
   /*
    * Grouped by pattern first, then by sequence inside it, and the order matters for cost.
    *
@@ -485,7 +537,9 @@ export function groupRoutes(trips: readonly Trip[]): {
     if (existing) existing.push(trip);
     else keyed.set(trip.routeKey, [trip]);
   }
-  if (everyTripKeyed && keyed.size > 0) return routesFromGroups([...keyed.values()], true);
+  if (everyTripKeyed && keyed.size > 0) {
+    return routesFromGroups([...keyed.values()], true, space);
+  }
 
   const byPattern = new Map<string, { whole: Trip[] | null; cut: Trip[][] }>();
   for (const trip of trips) {
@@ -563,7 +617,7 @@ export function groupRoutes(trips: readonly Trip[]): {
   }
 
   const routes: RouteGroup[] = [];
-  const routesByStop = new Map<string, Array<{ route: RouteGroup; at: number }>>();
+  const routesByStopIndex: Array<Array<{ route: RouteGroup; at: number }> | undefined> = [];
 
   for (const group of bySequence) {
     /*
@@ -584,8 +638,13 @@ export function groupRoutes(trips: readonly Trip[]): {
     const ordered = entries;
     const firstTrip = ordered[0]!.trip;
     const callsHere = callCount(firstTrip);
-    const stopIds: string[] = [];
-    for (let at = 0; at < callsHere; at += 1) stopIds.push(stopIdAt(firstTrip, at));
+    const stopIds: string[] = new Array<string>(callsHere);
+    const stopIndices = new Int32Array(callsHere);
+    for (let at = 0; at < callsHere; at += 1) {
+      const stopId = stopIdAt(firstTrip, at);
+      stopIds[at] = stopId;
+      stopIndices[at] = indexIn(space, stopId);
+    }
 
     /*
      * Split into routes no bus overtakes another on. See `RouteGroup.nonOvertaking`.
@@ -622,21 +681,16 @@ export function groupRoutes(trips: readonly Trip[]): {
     for (const bucket of buckets) {
       const route: RouteGroup = {
         stopIds,
-        stopIndices: NO_INDICES,
+        stopIndices,
         trips: bucket.map((entry) => entry.trip),
         nonOvertaking: true,
       };
       routes.push(route);
-      for (let at = 0; at < stopIds.length; at++) {
-        const stopId = stopIds[at]!;
-        const list = routesByStop.get(stopId);
-        if (list) list.push({ route, at });
-        else routesByStop.set(stopId, [{ route, at }]);
-      }
+      fileRoute(routesByStopIndex, space, route);
     }
   }
 
-  return { routes, routesByStop };
+  return { routes, routesByStopIndex, space };
 }
 
 /**

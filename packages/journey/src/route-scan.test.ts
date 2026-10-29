@@ -209,8 +209,9 @@ describe("the route scan against exhaustive enumeration", () => {
       "express",
       "slow",
     ]);
-    /* Both are reachable from the first stop, which is what the scan queues from. */
-    expect(grouped.routesByStop.get("A")).toHaveLength(2);
+    /* Both are reachable from the first stop, which is what the scan queues from — asserted over
+     * the index filing, because that is the one the scan reads. */
+    expect(grouped.routesByStopIndex[grouped.space.indexOf.get("A")!]).toHaveLength(2);
   });
 
   it("keeps one route when nothing overtakes, and orders it by departure", () => {
@@ -251,7 +252,9 @@ describe("the route scan against exhaustive enumeration", () => {
       })),
     };
     const grouped = groupRoutes([loop]);
-    expect(grouped.routesByStop.get("A")?.map((entry) => entry.at)).toEqual([0, 2]);
+    expect(
+      grouped.routesByStopIndex[grouped.space.indexOf.get("A")!]?.map((entry) => entry.at),
+    ).toEqual([0, 2]);
   });
 
   it("ignores a trip with fewer than two calls, which is not a ride", () => {
