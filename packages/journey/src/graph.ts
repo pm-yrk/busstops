@@ -161,6 +161,14 @@ export interface Transfer {
 export interface RouteGroup {
   /** The stop sequence every trip in this group follows, in order. */
   stopIds: string[];
+  /**
+   * The same sequence as indices into the graph's stop space.
+   *
+   * Filled in by `buildGraph`, because only the graph knows the space. The scan walks this rather
+   * than `stopIds`: a round of RAPTOR is tens of thousands of label lookups, and a lookup keyed by
+   * a UUID string hashes it every time where an index is an array offset.
+   */
+  stopIndices: Int32Array;
   /** The trips, in departure order at the first stop. */
   trips: Trip[];
   /**
@@ -183,6 +191,16 @@ export interface RouteGroup {
 
 export interface JourneyGraph {
   stops: Map<string, JourneyStop>;
+  /**
+   * The corridor's stops as an integer space, so the search needs no string hashing.
+   *
+   * Every stop the search can reach has an index: the corridor's own stops first, then any stop a
+   * route calls at that the corridor did not list. The search keeps its labels in typed arrays
+   * over this space and turns them back into maps once, at the end, for the itinerary builder and
+   * the oracle — which is why the result shape is unchanged.
+   */
+  stopIndexOf: ReadonlyMap<string, number>;
+  stopIdByIndex: readonly string[];
   trips: Trip[];
   /** Trips serving each stop, precomputed so the search does not rescan every trip. */
   tripsByStop: Map<string, Trip[]>;
@@ -196,6 +214,16 @@ export interface JourneyGraph {
    * stop holds, which is why the position travels with it.
    */
   routesByStop: Map<string, Array<{ route: RouteGroup; at: number }>>;
+  /** The same, over the integer space: the lookup a round does once per marked stop. */
+  routesByStopIndex: ReadonlyArray<ReadonlyArray<{ route: RouteGroup; at: number }> | undefined>;
+  /**
+   * Each stop's index in the transfer adjacency, by graph stop index, or -1 where it has none.
+   *
+   * The adjacency has its own space — it is built, or read, from the stop ids it was given — and
+   * resolving a stop in it by id was a string hash per edge walked. Two thousand lookups once per
+   * search replaces fifty thousand.
+   */
+  transferIndexByStop: Int32Array;
   /**
    * Walking transfers, as three parallel arrays over an integer index space.
    *
@@ -207,6 +235,16 @@ export interface JourneyGraph {
    */
   transfers: TransferAdjacency;
 }
+
+/**
+ * The placeholder a route carries until the graph gives it the real one.
+ *
+ * `groupRoutes` decides which trips are one route; it has no stop space to express the sequence
+ * in, because the space belongs to the graph. Shared and empty rather than allocated per route,
+ * and a search over a route still holding it would visit no stops — which is why `buildGraph`
+ * fills every one of them before the graph exists.
+ */
+const NO_INDICES = new Int32Array(0);
 
 export const WALK_SPEED_METRES_PER_SECOND = WALK_SPEED;
 
@@ -252,9 +290,60 @@ export function buildGraph(input: BuildGraphInput): JourneyGraph {
    * both keep working unchanged.
    */
   let tripsByStop: Map<string, Trip[]> | null = null;
+
+  const grouped = groupRoutes(input.trips);
+
+  /*
+   * The integer space, and the route sequences in it.
+   *
+   * The corridor's own stops first, so the common indices are the ones the transfers are keyed on,
+   * then any stop a route calls at that the corridor did not list — those are reachable and have
+   * no walking edges, and leaving them out of the space would mean a label the search could not
+   * record.
+   */
+  const stopIndexOf = new Map<string, number>();
+  const stopIdByIndex: string[] = [];
+  for (const stop of input.stops) {
+    if (stopIndexOf.has(stop.id)) continue;
+    stopIndexOf.set(stop.id, stopIdByIndex.length);
+    stopIdByIndex.push(stop.id);
+  }
+  for (const route of grouped.routes) {
+    const indices = new Int32Array(route.stopIds.length);
+    for (let at = 0; at < route.stopIds.length; at += 1) {
+      const stopId = route.stopIds[at]!;
+      let index = stopIndexOf.get(stopId);
+      if (index === undefined) {
+        index = stopIdByIndex.length;
+        stopIndexOf.set(stopId, index);
+        stopIdByIndex.push(stopId);
+      }
+      indices[at] = index;
+    }
+    route.stopIndices = indices;
+  }
+
+  const routesByStopIndex: Array<Array<{ route: RouteGroup; at: number }> | undefined> = new Array(
+    stopIdByIndex.length,
+  );
+  for (const [stopId, entries] of grouped.routesByStop) {
+    const index = stopIndexOf.get(stopId);
+    if (index !== undefined) routesByStopIndex[index] = entries;
+  }
+
+  /* And each stop's place in the adjacency, resolved once rather than once per edge walked. */
+  const transferIndexByStop = new Int32Array(stopIdByIndex.length);
+  for (let index = 0; index < stopIdByIndex.length; index += 1) {
+    transferIndexByStop[index] = transfers.indexOf(stopIdByIndex[index]!);
+  }
+
   return {
     stops,
     trips,
+    stopIndexOf,
+    stopIdByIndex,
+    routesByStopIndex,
+    transferIndexByStop,
     get tripsByStop(): Map<string, Trip[]> {
       if (tripsByStop !== null) return tripsByStop;
       const byStop = new Map<string, Trip[]>();
@@ -270,7 +359,8 @@ export function buildGraph(input: BuildGraphInput): JourneyGraph {
       tripsByStop = byStop;
       return byStop;
     },
-    ...groupRoutes(input.trips),
+    routes: grouped.routes,
+    routesByStop: grouped.routesByStop,
     transfers,
   };
 }
@@ -336,7 +426,13 @@ function routesFromGroups(
     for (let at = 0, count = callCount(first); at < count; at += 1) {
       stopIds.push(stopIdAt(first, at));
     }
-    const route: RouteGroup = { stopIds, trips: [...trips], nonOvertaking: true };
+    const route: RouteGroup = {
+      stopIds,
+      /* Filled in by `buildGraph`, which is the only thing that knows the space. */
+      stopIndices: NO_INDICES,
+      trips: [...trips],
+      nonOvertaking: true,
+    };
     routes.push(route);
     for (let at = 0; at < stopIds.length; at += 1) {
       const stopId = stopIds[at]!;
@@ -526,6 +622,7 @@ export function groupRoutes(trips: readonly Trip[]): {
     for (const bucket of buckets) {
       const route: RouteGroup = {
         stopIds,
+        stopIndices: NO_INDICES,
         trips: bucket.map((entry) => entry.trip),
         nonOvertaking: true,
       };

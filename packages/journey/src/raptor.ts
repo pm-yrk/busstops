@@ -180,75 +180,145 @@ export function runRaptor(
   const maxRounds = options.maxRounds ?? 4;
   const minTransferSeconds = options.minTransferSeconds ?? DEFAULT_MIN_TRANSFER_SECONDS;
 
-  const best = new Map<string, StopLabel>();
-  const labelsByRound: Array<Map<string, StopLabel>> = [];
-
-  const round0 = new Map<string, StopLabel>();
-  for (const origin of origins) {
-    const arrival = options.departAtSeconds + origin.accessSeconds;
-    const existing = round0.get(origin.stopId);
-    if (!existing || arrival < existing.arrivalSeconds) {
-      const label: StopLabel = {
-        arrivalSeconds: arrival,
-        round: 0,
-        leg: null,
-        previousStopId: null,
-      };
-      round0.set(origin.stopId, label);
-      const bestExisting = best.get(origin.stopId);
-      if (!bestExisting || arrival < bestExisting.arrivalSeconds) best.set(origin.stopId, label);
-    }
-  }
-  // Initial footpaths: a passenger can walk from the stop they started at to a nearby one and
-  // board there. Without this the search silently misses itineraries a person would obviously
-  // take, which is exactly what the brute-force comparison catches.
+  /*
+   * The whole search runs over integer stop indices, and becomes maps once at the end.
+   *
+   * A round is tens of thousands of label lookups — 42,924 offers and 49,179 transfer edges for
+   * one Leeds plan — and every one of them was a `Map` keyed by a stop UUID, so every one hashed
+   * a thirty-six character string. The labels live in typed arrays over the graph's stop space
+   * instead, and the result is materialised into the maps the itinerary builder and the oracle
+   * read, which is why nothing outside this function changed.
+   *
+   * `legs` and `previousStop` are the only non-numeric state, and a leg is still built only for a
+   * label that was accepted.
+   */
+  const stopCount = graph.stopIdByIndex.length;
+  const indexOf = graph.stopIndexOf;
+  const names = graph.stopIdByIndex;
   const walks = graph.transfers;
+  const walkIndex = graph.transferIndexByStop;
+
+  const UNREACHED = 0x7fffffff;
+
+  const bestArrival = new Int32Array(stopCount).fill(UNREACHED);
+  const bestRound = new Int32Array(stopCount).fill(-1);
+  const bestLeg: Array<SearchLeg | null> = new Array(stopCount).fill(null);
+  const bestPrevious = new Int32Array(stopCount).fill(-1);
+
+  const arrival = new Int32Array(stopCount).fill(UNREACHED);
+  const labelRound = new Int32Array(stopCount).fill(-1);
+  const legs: Array<SearchLeg | null> = new Array(stopCount).fill(null);
+  const previousStop = new Int32Array(stopCount).fill(-1);
+
+  /** Per round, the labels as they stood at its end, so each change count survives the search. */
+  const snapshots: Array<{
+    arrival: Int32Array;
+    round: Int32Array;
+    legs: Array<SearchLeg | null>;
+    previous: Int32Array;
+    /** How many stops had a label, which is what the copy used to cost. */
+    labelled: number;
+  }> = [];
+
+  const snapshot = (): void => {
+    let labelled = 0;
+    for (let stop = 0; stop < stopCount; stop += 1) {
+      if (arrival[stop]! !== UNREACHED) labelled += 1;
+    }
+    snapshots.push({
+      arrival: arrival.slice(),
+      round: labelRound.slice(),
+      legs: [...legs],
+      previous: previousStop.slice(),
+      labelled,
+    });
+  };
+
+  const improve = (stop: number, seconds: number, leg: SearchLeg | null, from: number): void => {
+    arrival[stop] = seconds;
+    labelRound[stop] = 0;
+    legs[stop] = leg;
+    previousStop[stop] = from;
+    if (seconds < bestArrival[stop]!) {
+      bestArrival[stop] = seconds;
+      bestRound[stop] = 0;
+      bestLeg[stop] = leg;
+      bestPrevious[stop] = from;
+    }
+  };
+
+  for (const origin of origins) {
+    const stop = indexOf.get(origin.stopId);
+    if (stop === undefined) continue;
+    const seconds = options.departAtSeconds + origin.accessSeconds;
+    if (seconds >= arrival[stop]!) continue;
+    improve(stop, seconds, null, -1);
+  }
+
+  /*
+   * Initial footpaths: a passenger can walk from the stop they started at to a nearby one and
+   * board there. Without this the search silently misses itineraries a person would obviously
+   * take, which is exactly what the brute-force comparison catches.
+   */
   const allowInitialFootpaths = options.allowInitialFootpaths ?? true;
-  for (const originStopId of allowInitialFootpaths ? [...round0.keys()] : []) {
-    const from = round0.get(originStopId)!;
-    const fromIndex = walks.indexOf(originStopId);
-    const lastEdge = fromIndex < 0 ? 0 : walks.offsets[fromIndex + 1]!;
-    for (let edge = fromIndex < 0 ? 0 : walks.offsets[fromIndex]!; edge < lastEdge; edge += 1) {
-      const toStopId = walks.stopIds[walks.neighbours[edge]!]!;
-      const arrival = from.arrivalSeconds + walks.seconds[edge]!;
-      const existing = round0.get(toStopId);
-      if (existing && existing.arrivalSeconds <= arrival) continue;
-
-      const label: StopLabel = {
-        arrivalSeconds: arrival,
-        round: 0,
-        leg: {
-          kind: "transfer",
-          fromStopId: originStopId,
-          toStopId,
-          departureSeconds: from.arrivalSeconds,
-          arrivalSeconds: arrival,
-        },
-        previousStopId: originStopId,
-      };
-      round0.set(toStopId, label);
-
-      const bestExisting = best.get(toStopId);
-      if (!bestExisting || arrival < bestExisting.arrivalSeconds) best.set(toStopId, label);
+  if (allowInitialFootpaths) {
+    /* The origins only, taken before any of them is extended, as the map version did. */
+    const seeds: number[] = [];
+    for (let stop = 0; stop < stopCount; stop += 1) {
+      if (arrival[stop]! !== UNREACHED) seeds.push(stop);
+    }
+    for (const stop of seeds) {
+      const from = arrival[stop]!;
+      const fromIndex = walkIndex[stop]!;
+      if (fromIndex < 0) continue;
+      const lastEdge = walks.offsets[fromIndex + 1]!;
+      for (let edge = walks.offsets[fromIndex]!; edge < lastEdge; edge += 1) {
+        const neighbour = walks.stopIds[walks.neighbours[edge]!]!;
+        const to = indexOf.get(neighbour);
+        if (to === undefined) continue;
+        const reached = from + walks.seconds[edge]!;
+        if (reached >= arrival[to]!) continue;
+        improve(
+          to,
+          reached,
+          {
+            kind: "transfer",
+            fromStopId: names[stop]!,
+            toStopId: neighbour,
+            departureSeconds: from,
+            arrivalSeconds: reached,
+          },
+          stop,
+        );
+      }
     }
   }
 
-  labelsByRound.push(round0);
+  snapshot();
 
-  let marked = new Set(round0.keys());
+  let marked: number[] = [];
+  for (let stop = 0; stop < stopCount; stop += 1) {
+    if (arrival[stop]! !== UNREACHED) marked.push(stop);
+  }
 
-  for (let round = 1; round <= maxRounds && marked.size > 0; round++) {
+  /** Whether a stop is already in `nextMarked`, so the list holds each stop once. */
+  const queued = new Uint8Array(stopCount);
+
+  for (let round = 1; round <= maxRounds && marked.length > 0; round++) {
     if (counters) {
       counters.rounds += 1;
-      counters.markedPerRound.push(marked.size);
+      counters.markedPerRound.push(marked.length);
       counters.labelMapCopies += 1;
-      counters.labelEntriesCopied += labelsByRound[round - 1]!.size;
+      counters.labelEntriesCopied += snapshots[round - 1]!.labelled;
     }
-    const current = new Map<string, StopLabel>(labelsByRound[round - 1]!);
-    const nextMarked = new Set<string>();
+
+    const previousArrival = snapshots[round - 1]!.arrival;
+    const previousRound = snapshots[round - 1]!.round;
+    const nextMarked: number[] = [];
+    queued.fill(0);
 
     /**
-     * Whether a stop reached at `arrivalSeconds` in this round is worth a label.
+     * Whether a stop reached at `seconds` in this round is worth a label.
      *
      * Separated from building the label, which is the whole point. Profiled over real corridors,
      * this was called 6,510,009 times for a Manchester plan and accepted 24,105 of them — an
@@ -256,28 +326,33 @@ export function runRaptor(
      * every one of those calls. Thirteen million objects allocated to keep twenty-four thousand,
      * per journey, on a path allowed ten milliseconds of CPU in total.
      *
-     * The test is the same test it always was, in the same order, on the same numbers. What
-     * changed is that the answer is now known before anything is built.
+     * The test is the same test it always was, in the same order, on the same numbers.
      */
-    const worthLabelling = (stopId: string, arrivalSeconds: number): boolean => {
+    const worthLabelling = (stop: number, seconds: number): boolean => {
       if (counters) counters.improveCalls += 1;
-      const existing = current.get(stopId);
-      if (existing && existing.arrivalSeconds <= arrivalSeconds) return false;
+      if (seconds >= arrival[stop]!) return false;
       // Pruning against the global best is what keeps the search bounded.
-      const globalBest = best.get(stopId);
-      if (globalBest && globalBest.arrivalSeconds <= arrivalSeconds && globalBest.round <= round) {
-        return false;
-      }
+      if (seconds >= bestArrival[stop]! && bestRound[stop]! <= round) return false;
       return true;
     };
 
     /** Records a label the test above has already accepted. */
-    const accept = (stopId: string, label: StopLabel) => {
+    const accept = (stop: number, seconds: number, leg: SearchLeg, from: number): void => {
       if (counters) counters.improveAccepted += 1;
-      current.set(stopId, label);
-      const globalBest = best.get(stopId);
-      if (!globalBest || label.arrivalSeconds < globalBest.arrivalSeconds) best.set(stopId, label);
-      nextMarked.add(stopId);
+      arrival[stop] = seconds;
+      labelRound[stop] = round;
+      legs[stop] = leg;
+      previousStop[stop] = from;
+      if (seconds < bestArrival[stop]!) {
+        bestArrival[stop] = seconds;
+        bestRound[stop] = round;
+        bestLeg[stop] = leg;
+        bestPrevious[stop] = from;
+      }
+      if (queued[stop] === 0) {
+        queued[stop] = 1;
+        nextMarked.push(stop);
+      }
     };
 
     /*
@@ -288,14 +363,14 @@ export function runRaptor(
      * so riding through it adds a change for nothing.
      */
     const queue = new Map<RouteGroup, number>();
-    for (const stopId of marked) {
-      for (const entry of graph.routesByStop.get(stopId) ?? []) {
+    for (const stop of marked) {
+      const entries = graph.routesByStopIndex[stop];
+      if (entries === undefined) continue;
+      for (const entry of entries) {
         const existing = queue.get(entry.route);
         if (existing === undefined || entry.at < existing) queue.set(entry.route, entry.at);
       }
     }
-
-    const previous = labelsByRound[round - 1]!;
 
     /*
      * One pass along each route, carrying the trip currently being ridden.
@@ -312,96 +387,145 @@ export function runRaptor(
      * timetables with delays, cancellations, loops and overtaking.
      */
     for (const [route, startAt] of queue) {
-      const stopIds = route.stopIds;
+      const stopIndices = route.stopIndices;
       /** The trip being ridden: an index into `route.trips`, or -1 for none yet. */
       let riding = -1;
-      let boardedStopId: string | null = null;
+      let boardedStop = -1;
       let boardedDeparture = 0;
 
-      for (let at = startAt; at < stopIds.length; at++) {
-        const stopId = stopIds[at]!;
+      for (let at = startAt; at < stopIndices.length; at++) {
+        const stop = stopIndices[at]!;
 
         /* Alight here, if a trip is being ridden and this is worth a label. */
         if (riding !== -1) {
-          const arrival = arrivalAt(route.trips[riding]!, at);
-          if (worthLabelling(stopId, arrival)) {
-            accept(stopId, {
-              arrivalSeconds: arrival,
-              round,
-              leg: {
+          const reached = arrivalAt(route.trips[riding]!, at);
+          if (worthLabelling(stop, reached)) {
+            accept(
+              stop,
+              reached,
+              {
                 kind: "board",
-                fromStopId: boardedStopId!,
-                toStopId: stopId,
+                fromStopId: names[boardedStop]!,
+                toStopId: names[stop]!,
                 departureSeconds: boardedDeparture,
-                arrivalSeconds: arrival,
+                arrivalSeconds: reached,
                 trip: route.trips[riding]!,
               },
-              previousStopId: boardedStopId,
-            });
+              boardedStop,
+            );
           }
         }
 
         /* Board here, if the previous round reached this stop in time for something earlier. */
-        const from = previous.get(stopId);
-        if (!from) continue;
+        const from = previousArrival[stop]!;
+        if (from === UNREACHED) continue;
         // Boarding after a previous ride needs the interchange buffer; the first boarding does not.
-        const readyAt =
-          from.round === 0 ? from.arrivalSeconds : from.arrivalSeconds + minTransferSeconds;
+        const readyAt = previousRound[stop]! === 0 ? from : from + minTransferSeconds;
         if (riding !== -1 && departureAt(route.trips[riding]!, at) <= readyAt) continue;
 
         const earlier = earliestBoardable(route, at, readyAt, riding, counters);
         if (earlier === -1) continue;
         riding = earlier;
-        boardedStopId = stopId;
+        boardedStop = stop;
         boardedDeparture = departureAt(route.trips[riding]!, at);
       }
     }
 
-    // Walking transfers from anything improved this round. They do not consume a round, since
-    // walking is not a boarding, but they only extend stops this round actually reached.
-    for (const stopId of [...nextMarked]) {
-      const from = current.get(stopId);
-      if (!from) continue;
+    /*
+     * Walking transfers from anything improved this round. They do not consume a round, since
+     * walking is not a boarding, but they only extend stops this round actually reached.
+     *
+     * One hop, from the stops the rides reached — the length is taken before the loop, so a stop
+     * reached *by walking* is marked for the next round but is not itself walked from here. That
+     * is what the map version did, by iterating a copy of the marked set, and walking the chain
+     * instead would find itineraries with two consecutive walks in them: a different planner, not
+     * a faster one.
+     */
+    const reachedByRiding = nextMarked.length;
+    for (let queuedAt = 0; queuedAt < reachedByRiding; queuedAt += 1) {
+      const stop = nextMarked[queuedAt]!;
+      const from = arrival[stop]!;
+      if (from === UNREACHED) continue;
 
       /*
        * Over the adjacency's arrays, not over a list of objects.
        *
-       * This is where the published transfers are spent: an index for the stop, then integer
-       * arithmetic per edge and one array read for the neighbour's id. The structure it walks is
-       * the same one the artifact decodes into, which is the whole point of publishing it.
+       * This is where the published transfers are spent: integer arithmetic per edge and one array
+       * read for the neighbour. The structure it walks is the same one the artifact decodes into,
+       * which is the whole point of publishing it, and the stop's place in that structure was
+       * resolved once when the graph was built rather than hashed per edge here.
        */
-      const fromIndex = walks.indexOf(stopId);
+      const fromIndex = walkIndex[stop]!;
       if (fromIndex < 0) continue;
       const lastEdge = walks.offsets[fromIndex + 1]!;
       for (let edge = walks.offsets[fromIndex]!; edge < lastEdge; edge += 1) {
         if (counters) counters.transferScans += 1;
-        const toStopId = walks.stopIds[walks.neighbours[edge]!]!;
-        const arrival = from.arrivalSeconds + walks.seconds[edge]!;
-        const existing = current.get(toStopId);
-        if (existing && existing.arrivalSeconds <= arrival) continue;
+        const neighbour = walks.stopIds[walks.neighbours[edge]!]!;
+        const to = indexOf.get(neighbour);
+        if (to === undefined) continue;
+        const reached = from + walks.seconds[edge]!;
+        if (reached >= arrival[to]!) continue;
 
-        const label: StopLabel = {
-          arrivalSeconds: arrival,
-          round,
-          leg: {
-            kind: "transfer",
-            fromStopId: stopId,
-            toStopId,
-            departureSeconds: from.arrivalSeconds,
-            arrivalSeconds: arrival,
-          },
-          previousStopId: stopId,
+        const leg: SearchLeg = {
+          kind: "transfer",
+          fromStopId: names[stop]!,
+          toStopId: neighbour,
+          departureSeconds: from,
+          arrivalSeconds: reached,
         };
-        current.set(toStopId, label);
-
-        const globalBest = best.get(toStopId);
-        if (!globalBest || arrival < globalBest.arrivalSeconds) best.set(toStopId, label);
-        nextMarked.add(toStopId);
+        arrival[to] = reached;
+        labelRound[to] = round;
+        legs[to] = leg;
+        previousStop[to] = stop;
+        if (reached < bestArrival[to]!) {
+          bestArrival[to] = reached;
+          bestRound[to] = round;
+          bestLeg[to] = leg;
+          bestPrevious[to] = stop;
+        }
+        /* Marked for the next round, not for this one: see `reachedByRiding` above. */
+        if (queued[to] === 0) {
+          queued[to] = 1;
+          nextMarked.push(to);
+        }
       }
     }
 
-    labelsByRound.push(current);
+    snapshot();
     marked = nextMarked;
+  }
+
+  /*
+   * And back into the maps everything else reads.
+   *
+   * One pass per round over the stops that have a label, which is what building these maps cost
+   * before — the saving is in the rounds, not here.
+   */
+  const labelsByRound: Array<Map<string, StopLabel>> = snapshots.map((snapshot) => {
+    const labels = new Map<string, StopLabel>();
+    for (let stop = 0; stop < stopCount; stop += 1) {
+      if (snapshot.arrival[stop]! === UNREACHED) continue;
+      const from = snapshot.previous[stop]!;
+      labels.set(names[stop]!, {
+        arrivalSeconds: snapshot.arrival[stop]!,
+        round: snapshot.round[stop]!,
+        leg: snapshot.legs[stop] ?? null,
+        previousStopId: from < 0 ? null : names[from]!,
+      });
+    }
+    return labels;
+  });
+
+  const best = new Map<string, StopLabel>();
+  for (let stop = 0; stop < stopCount; stop += 1) {
+    if (bestArrival[stop]! === UNREACHED) continue;
+    const from = bestPrevious[stop]!;
+    best.set(names[stop]!, {
+      arrivalSeconds: bestArrival[stop]!,
+      round: bestRound[stop]!,
+      leg: bestLeg[stop] ?? null,
+      previousStopId: from < 0 ? null : names[from]!,
+    });
   }
 
   return { labelsByRound, best };
