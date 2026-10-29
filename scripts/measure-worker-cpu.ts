@@ -180,6 +180,16 @@ interface Reading {
    * or `shardsBinaryFallback` above zero is measuring the old path and saying nothing about the
    * new one, however good its milliseconds look.
    */
+  /**
+   * Characters decoded per artifact family.
+   *
+   * The total alone said a journey decoded 3,728,562 characters against a Worker whose trip shards
+   * are bytes, which reads as a conversion that did not work. The split says what it actually
+   * decoded: the corridor's stops and its pattern sequences, both still JSON lines, and neither of
+   * them one of the three families that were published. A figure nobody can attribute is a figure
+   * nobody can act on.
+   */
+  familyChars?: Record<string, number>;
   journey?: {
     options: number | null;
     /*
@@ -251,6 +261,14 @@ async function ask(endpoint: string, city: string, path: string, shape?: string)
       const residency = diagnostics?.residency as Record<string, unknown> | undefined;
       reading.requestsServed =
         typeof residency?.requestsServed === "number" ? residency.requestsServed : undefined;
+      const families = diagnostics?.families as Record<string, { chars?: number }> | undefined;
+      if (families !== undefined) {
+        const split: Record<string, number> = {};
+        for (const [family, cost] of Object.entries(families)) {
+          if (typeof cost?.chars === "number" && cost.chars > 0) split[family] = cost.chars;
+        }
+        if (Object.keys(split).length > 0) reading.familyChars = split;
+      }
       if (endpoint === "journey") {
         const options = (data?.options ?? data?.journeys) as unknown;
         const number = (value: unknown): number | null =>
@@ -709,6 +727,33 @@ async function main(): Promise<number> {
     };
   });
 
+  /*
+   * Where every endpoint's decoded characters went, by family, worst request per endpoint.
+   *
+   * Not a total and not an average: the request that decoded the most is the one that gets killed,
+   * and what it spent its characters on is the thing to publish differently or read less of.
+   */
+  const charsByFamily = (() => {
+    const worst = new Map<string, Reading>();
+    for (const reading of readings) {
+      if (reading.familyChars === undefined) continue;
+      const total = Object.values(reading.familyChars).reduce((sum, chars) => sum + chars, 0);
+      const held = worst.get(reading.endpoint);
+      const heldTotal =
+        held?.familyChars === undefined
+          ? -1
+          : Object.values(held.familyChars).reduce((sum, chars) => sum + chars, 0);
+      if (total > heldTotal) worst.set(reading.endpoint, reading);
+    }
+    return [...worst].map(([endpoint, reading]) => ({
+      endpoint,
+      city: reading.city,
+      ...(reading.shape === undefined ? {} : { shape: reading.shape }),
+      totalChars: Object.values(reading.familyChars!).reduce((sum, chars) => sum + chars, 0),
+      byFamily: reading.familyChars,
+    }));
+  })();
+
   const report = {
     outcome: "measured",
     worker: WORKER,
@@ -722,6 +767,8 @@ async function main(): Promise<number> {
     byEndpoint: table,
     /* The journey endpoint split by the shape of the question, which is the acceptance table. */
     journeyShapes,
+    /* And what the heaviest request of each endpoint spent its characters on. */
+    charsByFamily,
     cities,
     worstOffenders: readings
       .filter((r) => r.platform)
