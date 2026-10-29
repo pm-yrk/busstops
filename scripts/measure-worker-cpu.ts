@@ -367,6 +367,55 @@ async function main(): Promise<number> {
     return 2;
   }
 
+  /*
+   * A stop and a route in each city, discovered before the tail is attached.
+   *
+   * The final CPU table wants every passenger endpoint, and `/v1/stops/:id` and `/v1/routes/:id`
+   * need real identifiers rather than coordinates. Hardcoding them would rot with the next
+   * national publish, so they are found the way a passenger finds them — the nearest stops, then
+   * the first route on that stop's board — with plain fetches that are deliberately *not*
+   * recorded, so the discovery traffic is not in the measurement.
+   */
+  const targets = new Map<string, { stopId: string | null; routeId: string | null }>();
+  for (const city of CITIES) {
+    const found: { stopId: string | null; routeId: string | null } = {
+      stopId: null,
+      routeId: null,
+    };
+    try {
+      const near = await fetch(
+        `${WORKER}/v1/nearby?lat=${String(city.stop.lat)}&lon=${String(city.stop.lon)}&radius=800`,
+        { signal: AbortSignal.timeout(30_000) },
+      );
+      const body = (await near.json()) as {
+        data?: { results?: Array<{ kind?: string; id?: string }> };
+      };
+      for (const result of body.data?.results ?? []) {
+        if (result.kind !== "stop" || typeof result.id !== "string") continue;
+        const board = await fetch(`${WORKER}/v1/stops/${encodeURIComponent(result.id)}`, {
+          signal: AbortSignal.timeout(30_000),
+        });
+        const page = (await board.json()) as {
+          data?: { routes?: Array<{ id?: string }>; departures?: unknown[] };
+        };
+        const routeId = page.data?.routes?.[0]?.id;
+        /* A stop no service calls at opens fine and measures nothing, so keep looking. */
+        if (typeof routeId === "string" && routeId.length > 0) {
+          found.stopId = result.id;
+          found.routeId = routeId;
+          break;
+        }
+        if (found.stopId === null) found.stopId = result.id;
+      }
+    } catch {
+      /* A city whose stop could not be found is reported as such rather than guessed at. */
+    }
+    targets.set(city.name, found);
+    console.log(
+      `${city.name.padEnd(12)} stop ${found.stopId ?? "(none)"} route ${found.routeId ?? "(none)"}`,
+    );
+  }
+
   console.log(`Attaching a tail, then walking ${String(ROUNDS)} round(s)`);
   const tail = startTail();
   /* Long enough for wrangler to negotiate the tail before the first request arrives. */
@@ -384,6 +433,13 @@ async function main(): Promise<number> {
         `/v1/nearby?lat=${String(city.stop.lat)}&lon=${String(city.stop.lon)}&radius=600`,
       );
       await ask("search", city.name, `/v1/search?q=${city.search}`);
+      const target = targets.get(city.name);
+      if (target?.stopId) {
+        await ask("stop", city.name, `/v1/stops/${encodeURIComponent(target.stopId)}`);
+      }
+      if (target?.routeId) {
+        await ask("route", city.name, `/v1/routes/${encodeURIComponent(target.routeId)}`);
+      }
     }
     for (const sparse of SPARSE) {
       await ask("journey", sparse.name, `/v1/journeys?${sparse.query}`, sparse.shape);
