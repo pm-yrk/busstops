@@ -1856,3 +1856,67 @@ jobs:
           ls -la evidence || true
           node scripts/commit-evidence.mjs run \
             "probe: ${{ needs.probe.result }} · gtfs: ${{ needs.gtfs.result }}"
+
+  # Explicitly triggered, LOW-LOAD containment deployment. This is deliberately separate
+  # from [acceptance]/[cpu-proof] load tests, which themselves exhausted the free CPU.
+  # Only the preview Worker is deployed; no Pages, R2 publishes or paid plan changes.
+  cpu_hotfix_preview:
+    name: Apply and verify preview CPU safety mode
+    if: contains(github.event.head_commit.message, '[preview-cpu-hotfix]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - run: npm ci --no-audit --no-fund
+
+      - name: Confirm both expensive features are disabled before deployment
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
+          const toml = readFileSync('apps/worker/wrangler.toml', 'utf8');
+          const preview = toml.split('[env.preview.vars]')[1]?.split('[[env.preview.r2_buckets]]')[0] ?? '';
+          const raw = /^FEATURE_FLAGS_JSON\s*=\s*'([^']+)'/m.exec(preview)?.[1];
+          if (!raw) throw new Error('Preview feature flags missing or not a single-quoted TOML JSON string');
+          const flags = JSON.parse(raw);
+          if (flags.liveVehicles !== false || flags.journeyPlanner !== false) {
+            throw new Error('Refusing hotfix deployment without both CPU-intensive features disabled');
+          }
+          console.log('Safety settings verified; deploying preview only.');
+          NODE
+
+      - name: Verify Worker configuration tests
+        run: npx --no-install vitest run apps/worker/src/wrangler-config.test.ts
+
+      - name: Deploy preview Worker without altering storage or secrets
+        id: deploy
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          npx --no-install wrangler deploy --config apps/worker/wrangler.toml --env preview 2>&1 | tee cpu-hotfix-deploy.log
+          URL=$(grep -oE 'https://[a-z0-9.-]+\.workers\.dev' cpu-hotfix-deploy.log | head -1)
+          [ -n "$URL" ] || { echo "::error::Preview Worker URL not reported by Wrangler"; exit 1; }
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke check two cheap routes (not a stress test)
+        run: |
+          set -euo pipefail
+          URL="${{ steps.deploy.outputs.url }}"
+          for attempt in 1 2 3 4 5; do
+            HEALTH=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "$URL/v1/sources/health" || true)
+            BODY=$(curl -fsS --max-time 15 "$URL/v1/journeys?fromLat=53.79&fromLon=-1.54&toLat=53.80&toLon=-1.55" || true)
+            if [ "$HEALTH" = "200" ] && printf '%s' "$BODY" | grep -q '"feature_unavailable"'; then
+              echo "PASS: API healthy; expensive journey endpoint returns explicit safety response"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::Preview safety mode did not become active"
+          exit 1
