@@ -1280,6 +1280,19 @@ describe("Bus Stops Pro", () => {
 });
 
 describe("GET /v1/journeys", () => {
+  it("refuses costly planning immediately while the free-tier safety flag is off", async () => {
+    const store = new InMemoryObjectStore();
+    const response = await worker.fetch(
+      get("/v1/journeys?fromLat=53.79&fromLon=-1.54&toLat=53.80&toLon=-1.55"),
+      makeEnv(store, { FEATURE_FLAGS_JSON: '{"liveVehicles":false,"journeyPlanner":false}' }),
+      ctx,
+    );
+    expect(response.status).toBe(503);
+    const body = (await response.json()) as { error: { code: string; message: string } };
+    expect(body.error.code).toBe("safe_mode");
+    expect(body.error.message).toContain("temporarily paused");
+  });
+
   it("rejects a request missing either endpoint", async () => {
     const store = await publishedStore();
     const response = await worker.fetch(
