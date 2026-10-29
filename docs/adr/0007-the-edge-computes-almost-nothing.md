@@ -874,3 +874,87 @@ Three things close it:
 None of that removes the cause, which is that the default branch publishes the old form. Until it
 carries this code, a successful refresh is something that needs a `[migrate-trips]` run after it,
 and `shardsWithBothForms` in the profile is the check that it worked.
+
+### What the three artifacts did not fix
+
+The artifacts were published, the corpus said they changed no answer, and the graph build on a
+runner fell five to thirteenfold. Then Cloudflare was asked.
+
+| Endpoint | invocations | p50 CPU | p95 CPU | max CPU | exceededCpu |
+| -------- | ----------: | ------: | ------: | ------: | ----------: |
+| journey  |        ~132 |    10\* |  202 ms |  321 ms |      **80** |
+| map      |           — |    10\* |   44 ms |  105 ms |          13 |
+| search   |          12 |   13 ms |   38 ms |   38 ms |           9 |
+| nearby   |          19 |    6 ms |   10 ms |   10 ms |           2 |
+
+\* A request the platform cuts off reports a CPU time at the limit, so a median of exactly ten on a
+sample that is 60% killed is the limit rather than a healthy middle. That is why the table now
+counts invocations at or over the budget beside the kills.
+
+By isolate age, journeys: 176 ms on an isolate's first request, 200–224 on its second to fifth, 132
+on its sixth to twentieth, 60 on its twenty-first and later. Even thoroughly warm — index resident,
+transfer tiles decoded and held, groupings held — a journey is six times its budget.
+
+The regression walk on the same deployment failed on 1102s rather than on data: stop boards in five
+cities, route pages in Leeds and Manchester, `/v1/search`, two of eight journeys, and three of five
+operator lookups, with a breadcrumb reporting **thirteen requests started and not finished** in one
+isolate and the unfinished one being a journey that had reached `journey:plan:begin`. The journey
+endpoint is still the generator of the cascade, and the cascade is what takes the rest of the
+product down with it.
+
+A separate walk of the map alone, with the planner's traffic absent, is the clean measurement Part A
+never had: **p50 20 ms, p95 112, max 112, nothing killed** — 112 on an isolate's first request and
+20–21 warm. So the map is twice its budget on its own, which the contaminated figure above could not
+have established.
+
+### A measurement that was wrong rather than missing
+
+The same walk reported `shardsBinary: 0`, `shardsGrouped: 0` and `transfersFromArtifact: false` on
+every journey shape — which states that the deployed planner never touched the three artifacts it
+had just been given. It is not what it meant. A journey's own counts are under `data`, beside the
+itineraries; `meta.diagnostics` is the read ledger. The script read the ledger, found nothing, and
+reported absence as zero.
+
+Nothing failed. There was no error, no empty field, no warning — just a confident number saying the
+opposite of the truth, in the one place the whole migration's evidence rests. The contract is now a
+test: a successful plan must carry those fields under `data`, and must not carry them under `meta`.
+
+### The stage table, after the artifacts and before the deployed proof
+
+One runner, one process, one corridor per row, each stage timed against the thing it replaced:
+
+| Query               | trip parse → decode | transfers build → merge | grouping compute → keyed |
+| ------------------- | ------------------: | ----------------------: | -----------------------: |
+| Leeds neighbourhood | 30.44 → **14.6 ms** |     21.44 → **1.14 ms** |        8.9 → **6.21 ms** |
+| Manchester urban    |  39.3 → **9.63 ms** |     34.89 → **1.79 ms** |      11.24 → **7.62 ms** |
+| Bristol difficult   | 19.32 → **4.66 ms** |     16.14 → **0.70 ms** |       4.59 → **2.82 ms** |
+| York cross-city     |  3.02 → **0.75 ms** |      8.59 → **0.42 ms** |       0.78 → **0.61 ms** |
+
+Every row of every shard round-trips: `tripRowsAgree` is true throughout, and the plans built over
+the columnar trips are identical to the plans built over objects (`columnarPlanAgrees`, all five
+queries).
+
+Two honest qualifications. The decode is not free — 14.6 ms for Leeds — because it still builds a
+row object with two arrays per trip, which is the next thing to remove. And the graph build and the
+search measured _no faster_ over columnar trips on this runner (34.38 against 46.29 in Leeds, 59.28
+against 54.4 in Manchester): the harness builds its object trips before the timer starts, so neither
+form pays for materialisation there, and reading a time through an accessor costs slightly more than
+indexing an array. What the Worker saves is the four hundred thousand objects it no longer builds,
+which is a cost this harness never measured for either form. Only Cloudflare can price it.
+
+Also, every shard the profile read had **both forms** in the bucket — `shardsWithBothForms` equals
+`shardsAsBytes` on all five corridors — which is the refresh overlap, measured from the outside.
+
+### The rollback, asked of the bucket
+
+Each in report mode, against the live version, writing nothing:
+
+| Family            |                                  What a rollback would do |
+| ----------------- | --------------------------------------------------------: |
+| route grouping    |                                      remove 5,574 objects |
+| walking transfers |                                        remove 460 objects |
+| trip shards       | write lines back; 20 of 20 verified in the bounded sample |
+
+The grouping and the transfers are a straight removal because the reader computes what it cannot
+find. The trip shards are the only family whose rollback writes, and the sample says the lines can
+be reconstructed from the bytes.
