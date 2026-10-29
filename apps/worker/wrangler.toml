@@ -23,7 +23,9 @@ enabled = true
 
 [vars]
 GOVERNOR_MODE = "green"
-FEATURE_FLAGS_JSON = "{}"
+# Temporary CPU containment: preserve stops, search and departure boards while
+# the journey search and on-request BODS live XML parsing are redesigned off-edge.
+FEATURE_FLAGS_JSON = '{"liveVehicles":false,"journeyPlanner":false}'
 # The Pages origin allowed to call this Worker from a browser. Cloudflare Pages URLs are
 # deterministic — `<project>.pages.dev` for production and `<branch>.<project>.pages.dev` for a
 # branch — so CORS can be configured before Pages has ever been deployed, with no lookup and
@@ -47,7 +49,8 @@ enabled = true
 
 [env.preview.vars]
 GOVERNOR_MODE = "green"
-FEATURE_FLAGS_JSON = "{}"
+# Preview safety profile validated by the gated hotfix deployment workflow.
+FEATURE_FLAGS_JSON = '{"liveVehicles":false,"journeyPlanner":false}'
 PUBLIC_BASE_URL = "https://preview.busstops.pages.dev"
 
 [[env.preview.r2_buckets]]
