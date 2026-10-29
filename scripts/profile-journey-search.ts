@@ -160,8 +160,18 @@ async function main(): Promise<number> {
             return rows;
           });
 
+    /*
+     * The graph build and the search, over trips as objects and over the same trips as windows.
+     *
+     * This is the last stage of the three the artifacts were published for: reading the shard as
+     * bytes removed the parse, but the builder still turned every call into an object before the
+     * search could look at it. Both forms are timed here in one process over one corridor, and
+     * the plans are required to match, because a faster stage that answers differently is not a
+     * faster stage.
+     */
     const built = timed(() => buildGraph({ stops, trips }));
     const graph = built.value;
+    const builtColumnar = timed(() => buildGraph({ stops, trips: slice.columnarTrips }));
 
     /*
      * And the build, split into the two things it does.
@@ -237,6 +247,9 @@ async function main(): Promise<number> {
     const planned = timed(() =>
       plan(graph, { origin: query.from, destination: query.to, departAtSeconds }),
     );
+    const plannedColumnar = timed(() =>
+      plan(builtColumnar.value, { origin: query.from, destination: query.to, departAtSeconds }),
+    );
 
     /* The same search again, counted. */
     const counters = newSearchCounters();
@@ -274,6 +287,11 @@ async function main(): Promise<number> {
               (row, at) => JSON.stringify(row) === JSON.stringify(tripParseText.value[at]),
             ),
       buildGraphMs: Number(built.ms.toFixed(2)),
+      /* The same build and search with the calls read in place rather than materialised. */
+      buildGraphColumnarMs: Number(builtColumnar.ms.toFixed(2)),
+      planColumnarMs: Number(plannedColumnar.ms.toFixed(2)),
+      /* And that it is the same plan, which is the only thing that makes the figures worth having. */
+      columnarPlanAgrees: JSON.stringify(plannedColumnar.value) === JSON.stringify(planned.value),
       buildTransfersMs: Number(transfersOnly.ms.toFixed(2)),
       groupRoutesMs: Number(groupingOnly.ms.toFixed(2)),
       groupRoutesUnflaggedMs: Number(groupingUnflagged.ms.toFixed(2)),
@@ -325,6 +343,8 @@ async function main(): Promise<number> {
     console.log(
       `${"".padEnd(44)} tripPrep parse ${tripParseText.ms.toFixed(1).padStart(7)}ms ` +
         `decode ${(tripDecodeBytes === null ? NaN : tripDecodeBytes.ms).toFixed(1).padStart(7)}ms ` +
+        `columnar build ${builtColumnar.ms.toFixed(1).padStart(6)}ms plan ` +
+        `${plannedColumnar.ms.toFixed(1).padStart(6)}ms ` +
         `transfers build ${transfersOnly.ms.toFixed(1).padStart(6)}ms merge ` +
         `${(transfersFromArtifact.ms as number).toFixed(1).padStart(6)}ms ` +
         `grouping compute ${groupingOnly.ms.toFixed(1).padStart(6)}ms keyed ` +

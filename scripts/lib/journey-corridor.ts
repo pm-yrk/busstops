@@ -22,7 +22,7 @@ import {
   type NetworkIndexRecord,
   type PatternIndexRow,
 } from "@busstops/pipeline-static-network";
-import type { JourneyStop, Trip } from "@busstops/journey";
+import type { JourneyStop, Trip, TripCallSource } from "@busstops/journey";
 import { readTripShard, type ReadTripShard } from "./read-trip-shard.js";
 
 export interface CorridorQuery {
@@ -34,6 +34,15 @@ export interface CorridorQuery {
 export interface CorridorSlice {
   stops: JourneyStop[];
   trips: Trip[];
+  /**
+   * The same trips as windows into typed arrays, which is the form the deployed reader builds.
+   *
+   * Both forms are kept so a profile can time the graph build and the search over each of them in
+   * one process, against the same corridor. Two CI runs an hour apart disagreed by more than this
+   * whole difference — 68.26 ms and 91.91 ms of graph build on an unchanged corridor — so a
+   * controlled pair inside one process is the only honest way to measure it.
+   */
+  columnarTrips: Trip[];
   /** Characters of trip text the slice cost, which is the figure the CPU budget is spent on. */
   tripChars: number;
   /** The box the slice was taken from, so a report can say how wide the question was. */
@@ -131,6 +140,9 @@ export async function loadCorridor(
 
   /* The corridor's trips, in the windows this plan spans. */
   const trips: Trip[] = [];
+  /** Each accepted row's times, by position in its pattern's sequence, as a published row is. */
+  const departures: Int32Array[] = [];
+  const sequences: Array<readonly string[]> = [];
   const shards: ReadTripShard[] = [];
   let tripChars = 0;
   const windows = tripWindowsFor(from, from + windowHours * 3600, serviceDate);
@@ -155,6 +167,13 @@ export async function loadCorridor(
          * place it never calls, which is a worse answer than one option fewer.
          */
         if (!sequence || sequence.length !== row.t.length) continue;
+        const times = new Int32Array(sequence.length);
+        for (let at = 0; at < sequence.length; at += 1) {
+          times[at] = row.t[at]! - midnightSeconds;
+        }
+        departures.push(times);
+        sequences.push(sequence);
+
         trips.push({
           id: row.j,
           routeId: row.p,
@@ -180,5 +199,34 @@ export async function loadCorridor(
     }
   }
 
-  return { stops, trips, tripChars, box, midnightSeconds, shards };
+  /*
+   * And the columnar form over those same numbers.
+   *
+   * One source for the whole corridor, indexed by position in the pattern's sequence, which is how
+   * a published row is laid out. Every trip here kept its pattern's whole sequence — the length
+   * test above drops the rest — so no trip needs a kept-positions array, which is also the shape
+   * the deployed reader sees for a corridor that cut nothing.
+   */
+  const source: TripCallSource = {
+    departure: (trip, call) => departures[trip]![call]!,
+    arrival: (trip, call) => departures[trip]![call]!,
+  };
+  const columnarTrips: Trip[] = trips.map((trip, at) => ({
+    id: trip.id,
+    routeId: trip.routeId,
+    patternId: trip.patternId,
+    routeName: trip.routeName,
+    headsign: trip.headsign,
+    wholePatternSequence: true,
+    calls: {
+      source,
+      trip: at,
+      sequence: sequences[at]!,
+      kept: null,
+      count: sequences[at]!.length,
+      dayStartSeconds: 0,
+    },
+  }));
+
+  return { stops, trips, columnarTrips, tripChars, box, midnightSeconds, shards };
 }
