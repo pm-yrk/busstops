@@ -44,6 +44,30 @@ than assumed:
   calls, first and last departure — because it names trips by index, and a reader whose shard
   disagrees groups the long way instead of mapping an index onto another bus.
 
+### The one that bites: two forms of the same shard
+
+The trip conversion happened **in place**, and the publisher that writes the live horizon three
+times a day runs from the default branch. Until that branch carries the binary publisher, every
+successful refresh writes `.jsonl` back over shards that are already `.bin` — and since every
+reader prefers the bytes, such a shard is one whose reader may be answering from the older of two
+timetables.
+
+It has happened. The refresh of 28 October ran 22:54–00:15 while the migration ran 22:06–00:43:
+the migration took its inventory before those writes, so the shards the refresh published
+afterwards kept both forms, and the Leeds corridor for 29 October read eight of them as lines.
+
+Two things make it visible and repairable:
+
+- the publisher deletes the other form when it writes one (`removeOtherForm`, set for the trips
+  family in `run-daily.ts`), so a refresh that carries this code leaves one form behind;
+- re-running `[migrate-trips]` repairs the drift rather than skipping it: a text shard **newer**
+  than its binary sibling is converted again, over the stale bytes, and then deleted.
+  `supersedingStaleBytes` in the migration report counts exactly those.
+
+Until the default branch carries this, treat a successful refresh as something that needs a
+`[migrate-trips]` run after it, and read `shardsWithBothForms` in `[journey-profile]` as the check
+that it worked.
+
 A journey's diagnostics say which path answered: `shardsBinary`, `shardsBinaryFallback`,
 `shardsGrouped`, `transfersFromArtifact`, `transferTilesRead`, `transferTilesMissing`.
 
@@ -62,6 +86,18 @@ npx tsx scripts/publish-journey-transfers.ts --remove --apply
 # 3. the trip shards: lines written back from the bytes, verified, then the bytes deleted
 npx tsx scripts/migrate-trip-shards.ts --reverse --apply --minutes 30
 ```
+
+### 4. The whole family, by version
+
+The three commands above roll back the _representation_. Rolling back the **network** — the
+version every one of these objects is addressed by — is a different act and needs none of them:
+the index record names the version, so publishing an index that names the previous one moves every
+family at once, atomically, and the new objects are simply never asked for again. That is only
+available while the previous version's objects are still in the bucket, which is what
+`KEEP_NETWORK_VERSIONS` in the prune job decides; `[prune]` without `[prune-apply]` reports which
+versions are present and how many bytes each holds.
+
+There is no capability flag to revert, by design: a reader that finds nothing computes it.
 
 Each removal takes only the live version's objects; other versions are untouched, because a
 rollback is not a prune. Without `--apply` all three report what they would do and change nothing.
