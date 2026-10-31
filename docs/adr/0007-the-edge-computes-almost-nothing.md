@@ -958,3 +958,57 @@ Each in report mode, against the live version, writing nothing:
 The grouping and the transfers are a straight removal because the reader computes what it cannot
 find. The trip shards are the only family whose rollback writes, and the sample says the lines can
 be reconstructed from the bytes.
+
+### The migration expires, and nothing in this branch can stop it
+
+Two days after the conversion, the profile asked the bucket what form the live horizon was in.
+
+```
+small (neighbourhood, Leeds)   shards 8  shardsAsBytes 0  tripChars 5,124,218
+normal urban (Manchester)      shards 8  shardsAsBytes 0  tripChars 7,209,793
+cross-city (Birmingham)        shards 4  shardsAsBytes 0  tripChars 8,547,843
+difficult (Bristol)            shards 4  shardsAsBytes 0  tripChars 2,759,784
+cross-city (York)              shards 8  shardsAsBytes 0  tripChars   629,245
+```
+
+**Not one binary shard.** On 29 October the same five corridors reported eight, eight, four, four
+and eight. The trip shards are keyed by service date; the refresh publishes a rolling three-day
+horizon three times a day; and it runs from the default branch, where the publisher still writes
+JSON lines. So the conversion only ever applied to the dates that existed at the moment it ran, and
+by 31 October every date a passenger can ask about had been published after it, in the old form,
+with no binary sibling to prefer.
+
+The deployed cost follows exactly: a journey's CPU is back at a p50 of 187 ms and a max of 206,
+with 7.2 MB of trip text parsed per request, which is the figure from before any of this began.
+
+So the binary trip form is **correct and used when present** — the 29 October walk read bytes on
+every city corridor with no text fallback, the grouping with them, and the transfers from published
+tiles — and it is **not durable**. It cannot be, until the publisher that writes bytes is on the
+branch the scheduled refresh runs from. Re-running `[migrate-trips]` repairs a horizon but has to
+be re-run after every refresh, which is a patch three times a day rather than a fix.
+
+That is also where this branch runs out of room. The migration job needs the regression suite to
+have passed first — deliberately, because it deletes the text form and the deployed reader has to
+be verified before anything is deleted — and the regression suite is now behind a repository
+variable. With the variable unset the suite is skipped, the migration is skipped with it, and there
+is no path from here to a repaired horizon.
+
+### Where a journey's characters actually go
+
+The family split, from the heaviest request of each endpoint:
+
+| Endpoint | Decoded | Where                                  |
+| -------- | ------: | -------------------------------------- |
+| journey  | 2.32 MB | **patterns 2,098,153** · stops 217,947 |
+| route    | 0.86 MB | route-patterns 491,520 · stops 370,768 |
+| search   | 0.63 MB | search 627,423                         |
+| map      | 0.27 MB | stops 265,801                          |
+| nearby   | 0.22 MB | stops 217,947                          |
+| stop     | 0.07 MB | services 66,618                        |
+
+Ninety-one per cent of a journey's decoded text is the pattern index: 5,123 lines scanned to keep
+the 1,090 its trips name. That is what the isolate-level pattern cache is for — a pattern is
+immutable for its artifact version, so an isolate holds what it resolved and asks only for what it
+is missing, and a second journey through a city reads none of it. What this run could not show is
+how much that saves, because the trip shards it was measured against had reverted to text and the
+parse dominates everything else.

@@ -68,6 +68,22 @@ Until the default branch carries this, treat a successful refresh as something t
 `[migrate-trips]` run after it, and read `shardsWithBothForms` in `[journey-profile]` as the check
 that it worked.
 
+**And the stronger version of the same problem.** The shards are keyed by service date, and the
+refresh publishes a rolling three-day horizon. A conversion therefore only ever applies to the
+dates that exist when it runs: two days after the first one, the profile found **zero** binary
+shards on all five probe corridors, because every date a passenger can ask about had been published
+after it. Journey CPU went back to a p50 of 187 ms with 7.2 MB of trip text per request — the
+pre-migration figure.
+
+So the conversion is a repair, not a fix, and the fix is one line of publisher code on the branch
+the refresh runs from (`encodeBytes` plus `removeOtherForm` in `run-daily.ts`). Nothing else in this
+repository makes the binary trip form durable.
+
+There is also no path from a feature branch to a repaired horizon while the regression suite is
+gated: `migrate_trip_shards` requires `needs.regress.result == 'success'`, deliberately, and
+`regress` requires the repository variable `ALLOW_CLOUDFLARE_STRESS_TESTS=true`. Both doors have to
+be open for the conversion to run at all.
+
 A journey's diagnostics say which path answered: `shardsBinary`, `shardsBinaryFallback`,
 `shardsGrouped`, `transfersFromArtifact`, `transferTilesRead`, `transferTilesMissing`.
 
