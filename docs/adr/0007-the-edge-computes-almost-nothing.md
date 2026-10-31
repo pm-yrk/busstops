@@ -1012,3 +1012,44 @@ immutable for its artifact version, so an isolate holds what it resolved and ask
 is missing, and a second journey through a city reads none of it. What this run could not show is
 how much that saves, because the trip shards it was measured against had reverted to text and the
 parse dominates everything else.
+
+### What a pattern-stop projection would cost, measured before proposing it
+
+The pattern index is 91% of a journey's decoded characters, and the isolate cache only helps the
+_second_ journey through a city. The architectural answer to the first one is a projection a reader
+takes by pattern id rather than by scanning a tile — a fourth published family, in a bucket with
+863 MB of headroom. So it was costed against the live index first, reading nothing else and
+publishing nothing.
+
+|                          |                                                    |
+| ------------------------ | -------------------------------------------------: |
+| Pattern index tiles      |                                              2,097 |
+| Patterns                 |                                            124,960 |
+| Calls                    |                                          5,095,167 |
+| Distinct stops           |                                            306,160 |
+| Calls per pattern        |                                               40.8 |
+| Published today, as text |                                  225,978,836 bytes |
+| Projected, columnar      |                               **48,872,144 bytes** |
+| Ratio                    |                                          **0.216** |
+| Objects                  |                                  2,097 — unchanged |
+| Largest object           |                                      315,676 bytes |
+| Average object           |                                       23,306 bytes |
+| Reads per query          | unchanged: the same tiles a corridor already opens |
+
+And the bucket, which is the part that decides whether it is possible at all — a publish is not
+atomic, and the text form cannot be deleted until the new one has been read back and proved:
+
+|                            |         Bytes | Within the free allowance |
+| -------------------------- | ------------: | :-----------------------: |
+| Now                        | 9,873,932,749 |            yes            |
+| Peak, both forms present   | 9,922,804,893 |   **yes**, 814 MB spare   |
+| Steady state, text removed | 9,696,826,057 |            yes            |
+
+So it does not just fit, it **reclaims 177 MB** once the text form goes, and its publish peak costs
+49 MB against 814 MB of room. The layout costed is sixteen-byte pattern keys so a reader can
+binary-search by id, u32 call offsets, u32 stop indices into the tile's own stop table, and each
+distinct stop id stored once — which is where the saving is, because the text form repeats a
+36-character UUID in every sequence the stop appears in.
+
+Not published. The order matters: measure the cache that already exists, and only then decide
+whether the first journey in a city still needs this.
