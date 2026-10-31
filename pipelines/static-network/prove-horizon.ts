@@ -11,7 +11,12 @@
  */
 
 import { writeFileSync } from "node:fs";
-import { ArtifactStore, r2StoreFromEnv, type ObjectStore } from "@busstops/pipeline-core";
+import {
+  ArtifactStore,
+  r2StoreFromEnv,
+  versionInObjectKey,
+  type ObjectStore,
+} from "@busstops/pipeline-core";
 import {
   DEPARTURE_BUCKETS,
   DEPARTURES_PREFIX,
@@ -112,14 +117,21 @@ async function main(): Promise<number> {
    * date look covered while the edge, which addresses shards at the version the index names, read
    * nothing — the exact failure this is here to rule out.
    */
-  const suffix = `/${index.version}.jsonl`;
+  /*
+   * By the version in the key rather than by a suffix, because the two families are no longer
+   * published in the same form: the planner's trip shards are bytes and the departure shards are
+   * lines. Counting `<version>.jsonl` reported every converted day as having **no trips at all** —
+   * three dates at zero on the first refresh that published the binary form — which is the exact
+   * failure this job exists to notice, produced by the job itself.
+   */
+  const atThisVersion = (key: string): boolean => versionInObjectKey(key) === index.version;
   const rows: Array<{ date: string; departures: number; patternTrips: number }> = [];
   for (const date of serviceDates) {
-    const departures = (await store.list(`data/${DEPARTURES_PREFIX}/${date}/`)).filter((key) =>
-      key.endsWith(suffix),
+    const departures = (await store.list(`data/${DEPARTURES_PREFIX}/${date}/`)).filter(
+      atThisVersion,
     ).length;
-    const patternTrips = (await store.list(`data/${PATTERN_TRIPS_PREFIX}/${date}/`)).filter((key) =>
-      key.endsWith(suffix),
+    const patternTrips = (await store.list(`data/${PATTERN_TRIPS_PREFIX}/${date}/`)).filter(
+      atThisVersion,
     ).length;
     rows.push({ date, departures, patternTrips });
     console.log(
