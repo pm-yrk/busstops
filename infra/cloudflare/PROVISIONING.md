@@ -293,6 +293,7 @@ one only to override it. These are public by definition and must not be secrets.
 | `BATCH_BUDGET_MS`                                                 | 300,000                         |
 | `EMAIL_PROVIDER`, `EMAIL_PROVIDER_ENDPOINT`, `EMAIL_FROM_ADDRESS` | Unset; email delivery skipped   |
 | `KEEP_NETWORK_VERSIONS`                                           | 2 — the live one and a rollback |
+| `ALLOW_CLOUDFLARE_STRESS_TESTS`                                   | Unset; the four load tests skip |
 
 `KEEP_NETWORK_VERSIONS` is the one of these worth a sentence. A national network version occupies
 six to seven gigabytes, so keeping two of them is thirteen against R2's ten-gigabyte free

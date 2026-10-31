@@ -31,7 +31,13 @@ env:
   R2_BUCKET_ARTIFACTS: busstops-artifacts-preview
 
 jobs:
-  # Full Cloudflare load tests now require repository variable\n  # ALLOW_CLOUDFLARE_STRESS_TESTS=true in addition to their commit markers.\n  # Ordinary pushes and CPU safety deployments cannot run them accidentally.\n  # The live-data question: why does a viewport with hundreds of buses in it come back empty
+  # The four Cloudflare load tests — [classify], [acceptance], [cpu-proof], [regress] — need the
+  # repository variable ALLOW_CLOUDFLARE_STRESS_TESTS=true as well as their commit markers, so an
+  # ordinary push cannot start a deliberate stress test of the deployment by accident. With it
+  # unset they are skipped, and this repository then has no measurement of per-invocation CPU at
+  # all: the Cloudflare tail those jobs attach is the only place that number comes from.
+  #
+  # The live-data question: why does a viewport with hundreds of buses in it come back empty
   # through the deployment? The Worker is redeployed first, so the probe runs against this commit.
   probe:
     name: Probe the deployed API, and ask BODS the same question
