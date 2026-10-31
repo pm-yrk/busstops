@@ -1268,7 +1268,15 @@ jobs:
           echo "::error::The Worker did not become healthy."
           exit 1
 
-      - name: One round, with a tail attached
+      # The cheap endpoints first, before a journey has touched an isolate.
+      #
+      # The previous per-endpoint table was taken while journeys were being killed beside it, and a
+      # killed request takes its isolate: the next request starts cold, pays the first-request
+      # costs, and is likelier to be killed itself. So map, search, nearby, stop and route were
+      # measured against a deployment the planner was burning down, which is not a measurement of
+      # them. This pass runs first and asks for nothing else, which is the only way to get their
+      # baseline without switching the planner off.
+      - name: The cheap endpoints, before any journey
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -1276,15 +1284,35 @@ jobs:
           set -o pipefail
           npx tsx scripts/measure-worker-cpu.ts \
             --worker "${{ steps.worker.outputs.url }}" \
-            --rounds 1 \
+            --rounds 2 \
+            --endpoints map,search,nearby,stop,route \
+            --json cpu-sample-clean.json 2>&1 | tee cpu-sample-clean.log
+
+      # Then the journeys, twice through each city so the pattern cache has a repeat to be read on.
+      - name: The journeys, with a tail attached
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -o pipefail
+          npx tsx scripts/measure-worker-cpu.ts \
+            --worker "${{ steps.worker.outputs.url }}" \
+            --rounds 2 \
             --journey-shapes 1 \
+            --endpoints journey \
             --json cpu-sample.json 2>&1 | tee cpu-sample.log
 
       - name: Summarise
         if: always()
         run: |
           {
-            echo "## One CPU sample"
+            echo "## The cheap endpoints, before any journey"
+            echo
+            echo '```'
+            sed -n '1,120p' cpu-sample-clean.log 2>/dev/null || echo "no cpu-sample-clean.log"
+            echo '```'
+            echo
+            echo "## The journeys, and the pattern cache on the repeat"
             echo
             echo '```'
             sed -n '1,160p' cpu-sample.log 2>/dev/null || echo "no cpu-sample.log"
@@ -1298,6 +1326,8 @@ jobs:
           path: |
             cpu-sample.json
             cpu-sample.log
+            cpu-sample-clean.json
+            cpu-sample-clean.log
           retention-days: 14
           if-no-files-found: ignore
 
