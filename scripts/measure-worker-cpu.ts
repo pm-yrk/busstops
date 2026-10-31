@@ -43,6 +43,14 @@ const ROUNDS = Number(arg("rounds") ?? "3");
  * walk with one of them switched off — `FEATURE_FLAGS_JSON` turns the live feed off without a code
  * change — and compare. That walk only wants the map.
  */
+/**
+ * How many journey shapes per city to ask for, so a small sample can stay small.
+ *
+ * The four shapes are what an acceptance needs; one of them is what a thirty-request sanity
+ * sample needs. Defaults to all of them, so the heavy walk is unchanged.
+ */
+const JOURNEY_SHAPES = Number(arg("journey-shapes") ?? "99");
+
 const ENDPOINTS = (arg("endpoints") ?? "")
   .split(",")
   .map((name) => name.trim())
@@ -466,7 +474,7 @@ async function main(): Promise<number> {
   for (let round = 1; round <= ROUNDS; round += 1) {
     for (const city of CITIES) {
       await ask("map", city.name, `/v1/map?bbox=${city.bbox}&zoom=14`);
-      for (const journey of city.journeys) {
+      for (const journey of city.journeys.slice(0, Math.max(1, JOURNEY_SHAPES))) {
         await ask("journey", city.name, `/v1/journeys?${journey.query}`, journey.shape);
       }
       await ask(
@@ -483,7 +491,7 @@ async function main(): Promise<number> {
         await ask("route", city.name, `/v1/routes/${encodeURIComponent(target.routeId)}`);
       }
     }
-    for (const sparse of SPARSE) {
+    for (const sparse of SPARSE.slice(0, JOURNEY_SHAPES >= 99 ? SPARSE.length : 1)) {
       await ask("journey", sparse.name, `/v1/journeys?${sparse.query}`, sparse.shape);
     }
     console.log(`round ${String(round)} of ${String(ROUNDS)} done`);
@@ -758,6 +766,20 @@ async function main(): Promise<number> {
     outcome: "measured",
     worker: WORKER,
     rounds: ROUNDS,
+    journeyShapesPerCity: JOURNEY_SHAPES >= 99 ? "all" : JOURNEY_SHAPES,
+    /*
+     * What a sample this size can and cannot support.
+     *
+     * A percentile wants a distribution behind it, and a thirty-request walk does not have one —
+     * the figures that survive a small sample are the maximum, the kill count, and which path
+     * served each request. Said here rather than left for a reader to infer, because a p95 taken
+     * from seven invocations has already been quoted in this project as though it meant something.
+     */
+    sampleNote:
+      ROUNDS <= 1
+        ? "One round: read the maximum, the kill count and the artifact counters. The percentiles " +
+          "have too few invocations behind them to be read as percentiles."
+        : null,
     endpoints: ENDPOINTS.length === 0 ? "all" : ENDPOINTS.join(","),
     freeCpuBudgetMs: 10,
     requests: readings.length,

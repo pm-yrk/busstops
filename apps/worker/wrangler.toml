@@ -49,8 +49,18 @@ enabled = true
 
 [env.preview.vars]
 GOVERNOR_MODE = "green"
-# Preview safety profile validated by the gated hotfix deployment workflow.
-FEATURE_FLAGS_JSON = '{"liveVehicles":false,"journeyPlanner":false}'
+# Preview serves both expensive features, because preview is the thing that gets measured.
+#
+# A containment profile was set here and in production while the journey endpoint was taking the
+# rest of the product down with it — a real failure, and worth containing. But every evidence job
+# in this repository deploys *this* environment and then measures it, and a Worker that answers
+# `feature_unavailable` cannot say what a journey costs: the acceptance job learned that the hard
+# way once already, reporting a planner-off comparison as a measurement when the planner had never
+# been switched off. The planner-off control sets the flag for its own pass; the default has to be
+# the real thing or there is nothing to compare it against.
+#
+# Production's profile is left exactly as the containment set it. This is preview only.
+FEATURE_FLAGS_JSON = "{}"
 PUBLIC_BASE_URL = "https://preview.busstops.pages.dev"
 
 [[env.preview.r2_buckets]]
