@@ -27,6 +27,8 @@ import {
   type SpilledJourneyPublishResult,
 } from "./src/publish-spilled-journeys.js";
 import { encodeDepartureShardFromJsonl } from "./src/departures-index.js";
+import type { PatternTripRow } from "./src/departures-index.js";
+import { encodePatternTripShard } from "./src/binary-trips.js";
 import { MAX_PUBLISH_BYTES, publishNetworkShards } from "./src/publish-shards.js";
 import { serviceDateHorizonFromEnv } from "./src/service-dates.js";
 import { earliestServiceDateToKeep, pruneExpiredServiceDates } from "./src/prune-service-dates.js";
@@ -601,6 +603,32 @@ async function main(): Promise<number> {
   const tripResult = await publishSpilledJourneyTiles(store, assembled.patternTripSpill, {
     version,
     datasetFor: (dataset) => dataset,
+    /*
+     * Published columnar, because this is the family a passenger request cannot afford to parse.
+     *
+     * On real published data a Manchester corridor spent 24.26 ms of a ten-millisecond budget
+     * turning these lines into objects — more than building the graph and searching it together —
+     * and a journey measured 7.2 MB of trip text per request with a p50 of 187 ms. The reader
+     * opens the bytes through typed arrays instead, and they are about 46% of the text, which is
+     * the only reason a format change is affordable in a bucket this close to its free allowance.
+     *
+     * This belongs here rather than in a migration. The shards are keyed by service date and this
+     * job publishes a rolling three-day horizon three times a day, so a one-off conversion only
+     * ever applies to the dates that existed when it ran: two days after the first one, every
+     * date a passenger could ask about had been republished as lines and journey CPU was back
+     * where it started. The publisher is the only place the new form can be permanent.
+     */
+    encodeBytes: (lines) =>
+      encodePatternTripShard(lines.map((line) => JSON.parse(line) as PatternTripRow)).bytes,
+    /*
+     * And the text sibling goes, because this family has both forms in the bucket.
+     *
+     * Every reader prefers the bytes, so a shard holding both is a shard whose reader may be
+     * answering from the older of two timetables — which happened: a refresh overlapped the
+     * conversion and left 3,137 shards with both forms at the live version. One delete per shard
+     * per refresh removes the question.
+     */
+    removeOtherForm: true,
   });
   report.patternTrips = {
     published: tripResult.tiles.length,

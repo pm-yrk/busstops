@@ -44,10 +44,60 @@ export interface ObjectStore {
    * not, rather than estimating a projection from numbers it invented.
    */
   listDetailed?(prefix: string): Promise<StoredObject[]>;
+  /**
+   * The object's body as a stream, for a reader that wants its lines rather than its text.
+   *
+   * Optional, and the reason it is optional is the reason it exists. Cloudflare's first listed
+   * remedy for a Worker that exceeds its 128 MB isolate is to stream large payloads instead of
+   * buffering them, and `get` cannot do that: it returns one string the size of the object. A
+   * store that can hand back a body implements this and the large reads take it; a store that
+   * cannot — or an object small enough that it makes no difference — keeps `get`.
+   *
+   * Null means the object is absent, exactly as `get` does. A throw means it exists and could not
+   * be read, which is a different answer and every caller here keeps them apart.
+   */
+  getStream?(key: string): Promise<ReadableStream<Uint8Array> | null>;
+  /**
+   * The object's body as bytes, for an artifact that is not text.
+   *
+   * Optional for the same reason `getStream` is: a store may not be able to, and a caller that
+   * needs bytes checks first and reads the text sibling when it cannot. The pattern-trips shards
+   * are published in a columnar binary form because `JSON.parse` over eight megabytes was the
+   * largest single item in a journey request's CPU, and a string cannot carry that form —
+   * `get` would decode the bytes as UTF-8 and hand back something that is neither the object nor
+   * an error.
+   *
+   * Null means absent, exactly as `get` does. A throw means it exists and could not be read.
+   */
+  getBytes?(key: string): Promise<Uint8Array | null>;
+  /** Write bytes. Optional, and for the same reason. */
+  putBytes?(key: string, value: Uint8Array): Promise<void>;
+}
+
+/** An object store that can stream a body. Narrowed from `ObjectStore` by `canStream`. */
+export interface StreamingObjectStore extends ObjectStore {
+  getStream(key: string): Promise<ReadableStream<Uint8Array> | null>;
+}
+
+/** Whether this store can hand back bodies as streams, so a caller can take the cheaper path. */
+export function canStream(store: ObjectStore): store is StreamingObjectStore {
+  return typeof store.getStream === "function";
+}
+
+/** An object store that can read and write bytes. Narrowed from `ObjectStore` by `canHoldBytes`. */
+export interface BinaryObjectStore extends ObjectStore {
+  getBytes(key: string): Promise<Uint8Array | null>;
+  putBytes(key: string, value: Uint8Array): Promise<void>;
+}
+
+/** Whether this store can carry an artifact that is not text. */
+export function canHoldBytes(store: ObjectStore): store is BinaryObjectStore {
+  return typeof store.getBytes === "function" && typeof store.putBytes === "function";
 }
 
 export class InMemoryObjectStore implements ObjectStore {
   private readonly objects = new Map<string, string>();
+  private readonly bytes = new Map<string, Uint8Array>();
   private readonly uploadedAt = new Map<string, string>();
 
   constructor(private readonly now: () => Date = () => new Date()) {}
@@ -55,29 +105,84 @@ export class InMemoryObjectStore implements ObjectStore {
   async get(key: string): Promise<string | null> {
     return this.objects.get(key) ?? null;
   }
+
+  /**
+   * The same body, as a stream, in several chunks.
+   *
+   * Chunked deliberately rather than enqueued whole: a fixture that delivers an object in one
+   * piece exercises none of what a streaming reader exists to handle — no line split across a
+   * boundary, no multi-byte character on one — and would let a reader that silently buffered pass
+   * every test in the suite.
+   */
+  async getStream(key: string): Promise<ReadableStream<Uint8Array> | null> {
+    const body = this.objects.get(key);
+    if (body === undefined) return null;
+    const bytes = new TextEncoder().encode(body);
+    const size = Math.max(1, Math.ceil(bytes.length / 7));
+    let offset = 0;
+    return new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (offset >= bytes.length) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(bytes.slice(offset, offset + size));
+        offset += size;
+      },
+    });
+  }
+
   async put(key: string, value: string): Promise<void> {
     this.objects.set(key, value);
+    this.bytes.delete(key);
     this.uploadedAt.set(key, this.now().toISOString());
   }
+
+  /**
+   * The same object as bytes.
+   *
+   * A text object asked for as bytes is still that object, so it is encoded rather than reported
+   * absent: a fixture written with `put` can be read either way, which is what lets a reader that
+   * prefers a binary artifact be tested against a store holding only the text one.
+   */
+  async getBytes(key: string): Promise<Uint8Array | null> {
+    const held = this.bytes.get(key);
+    if (held !== undefined) return held;
+    const text = this.objects.get(key);
+    return text === undefined ? null : new TextEncoder().encode(text);
+  }
+
+  async putBytes(key: string, value: Uint8Array): Promise<void> {
+    this.bytes.set(key, value);
+    this.objects.delete(key);
+    this.uploadedAt.set(key, this.now().toISOString());
+  }
+
   async delete(key: string): Promise<void> {
     this.objects.delete(key);
+    this.bytes.delete(key);
     this.uploadedAt.delete(key);
   }
   async list(prefix: string): Promise<string[]> {
-    return [...this.objects.keys()].filter((k) => k.startsWith(prefix)).sort();
+    return [...this.objects.keys(), ...this.bytes.keys()]
+      .filter((k) => k.startsWith(prefix))
+      .sort();
   }
   async listDetailed(prefix: string): Promise<StoredObject[]> {
-    return [...this.objects.entries()]
+    const sizes = new Map<string, number>();
+    for (const [key, value] of this.objects) sizes.set(key, new TextEncoder().encode(value).length);
+    for (const [key, value] of this.bytes) sizes.set(key, value.byteLength);
+    return [...sizes.entries()]
       .filter(([key]) => key.startsWith(prefix))
-      .map(([key, value]) => ({
+      .map(([key, sizeBytes]) => ({
         key,
-        sizeBytes: new TextEncoder().encode(value).length,
+        sizeBytes,
         uploadedAt: this.uploadedAt.get(key) ?? this.now().toISOString(),
       }))
       .sort((a, b) => a.key.localeCompare(b.key));
   }
   get size(): number {
-    return this.objects.size;
+    return this.objects.size + this.bytes.size;
   }
 }
 
@@ -151,6 +256,40 @@ export function objectKeyFor(dataset: string, version: string): string {
   return `data/${dataset}/${version}.jsonl`;
 }
 
+/**
+ * The same object, for a dataset published as bytes rather than as lines.
+ *
+ * The pattern-trips shards are published columnar and binary because `JSON.parse` over a
+ * corridor's worth of timetable was the largest single item in a journey request's CPU. They live
+ * beside the text objects under the same dataset path, with a suffix that says what they are.
+ */
+export function objectKeyForBytes(dataset: string, version: string): string {
+  return `data/${dataset}/${version}.bin`;
+}
+
+/**
+ * The suffixes a published data object can carry.
+ *
+ * Everything that walks the bucket — pruning by version, pruning by service date, the storage
+ * inventory — recognises an object by this suffix, so a form that is not listed here is a form
+ * nothing can clean up. That is not a hypothetical: this bucket already carried a 3.27 GB
+ * artifact nothing pointed at, and its free allowance is account-wide.
+ */
+export const ARTIFACT_OBJECT_SUFFIXES = [".jsonl", ".bin"] as const;
+
+/** `data/<dataset>/<version>.jsonl` or `.bin` — the version is the last segment, less its suffix. */
+export function versionInObjectKey(key: string): string | null {
+  const lastSlash = key.lastIndexOf("/");
+  if (lastSlash < 0) return null;
+  const name = key.slice(lastSlash + 1);
+  for (const suffix of ARTIFACT_OBJECT_SUFFIXES) {
+    if (!name.endsWith(suffix)) continue;
+    const version = name.slice(0, -suffix.length);
+    return version.length > 0 ? version : null;
+  }
+  return null;
+}
+
 export class ArtifactStore {
   constructor(private readonly store: ObjectStore) {}
 
@@ -195,8 +334,7 @@ export class ArtifactStore {
    */
   async listVersions(dataset: string): Promise<string[]> {
     const keys = await this.store.list(`data/${dataset}/`);
-    return keys
-      .map((key) => /\/([^/]+)\.jsonl$/.exec(key)?.[1] ?? null)
+    return [...new Set(keys.map(versionInObjectKey))]
       .filter((version): version is string => version !== null)
       .sort()
       .reverse();

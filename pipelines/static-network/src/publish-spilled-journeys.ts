@@ -1,5 +1,10 @@
 import type { ObjectStore } from "@busstops/pipeline-core";
-import { mapWithConcurrency, objectKeyFor } from "@busstops/pipeline-core";
+import {
+  canHoldBytes,
+  mapWithConcurrency,
+  objectKeyFor,
+  objectKeyForBytes,
+} from "@busstops/pipeline-core";
 import { journeyTileDataset, TILE_PUBLISH_CONCURRENCY } from "./publish.js";
 // The same byte budget the in-memory shard families already publish against, for the same two
 // measured reasons: R2 refuses a larger body with 413, and the runtime refuses to build the
@@ -73,11 +78,32 @@ export async function publishSpilledJourneyTiles(
      * whole tile in hand and so belongs here rather than at the point each row is emitted.
      */
     encode?: (lines: string[], dataset: string) => string;
+    /**
+     * How a tile's spilled lines become bytes, for a family published in a binary form.
+     *
+     * The planner's trip shards take this. `JSON.parse` over a corridor's worth of them measured
+     * 24.26 ms of a ten-millisecond request — more than building the graph and searching it put
+     * together — so they are published columnar and read through typed arrays instead. The text
+     * encoder above still decides what a store that cannot hold bytes gets, which keeps every
+     * test double working and keeps this one decision in one place.
+     */
+    encodeBytes?: (lines: string[], dataset: string) => Uint8Array;
+    /**
+     * Whether writing one form of a shard should delete the other form of the same shard.
+     *
+     * Only one family has ever been published in two forms, so only one family pays for this: the
+     * planner's trips, which were converted from lines to bytes in place. Everything else has a
+     * single form and a delete per shard per publish would be an operation spent on nothing.
+     */
+    removeOtherForm?: boolean;
   },
 ): Promise<SpilledJourneyPublishResult> {
   const datasetFor = options.datasetFor ?? journeyTileDataset;
   const maxBytes = options.maxBytes ?? MAX_SHARD_BYTES;
   const encode = options.encode ?? ((lines: string[]) => lines.join("\n"));
+  /* Narrowed once: a family published as bytes needs a store that can hold them, and a store that
+   * cannot gets the text form rather than a failure. */
+  const binaryStore = options.encodeBytes !== undefined && canHoldBytes(store) ? store : null;
   const startedAt = Date.now();
   // Written before anything is read back, because a buffered tail would otherwise be published
   // as a shorter tile than the build produced — a silent, partial timetable.
@@ -110,8 +136,9 @@ export async function publishSpilledJourneyTiles(
         return { tile: entry.tile, error: null, records: 0, bytes: 0, oversized: false };
       }
 
-      const body = encode(lines, dataset);
-      const bytes = Buffer.byteLength(body, "utf8");
+      const asBytes = binaryStore === null ? null : options.encodeBytes!(lines, dataset);
+      const body = asBytes === null ? encode(lines, dataset) : null;
+      const bytes = asBytes === null ? Buffer.byteLength(body!, "utf8") : asBytes.byteLength;
       /*
        * Measured before the put, not discovered by it. R2 answering 413 tells you afterwards
        * and tells you nothing about which shard key was wrong; this refuses the write, names
@@ -120,7 +147,28 @@ export async function publishSpilledJourneyTiles(
       if (bytes > maxBytes) {
         return { tile: entry.tile, error: null, records: lines.length, bytes, oversized: true };
       }
-      await store.put(objectKeyFor(dataset, options.version), body);
+      /*
+       * One form per shard, and the one just written is the one that is true.
+       *
+       * Both forms live under the same dataset path with different suffixes, and every reader
+       * prefers the bytes. So a shard that has both is a shard whose reader may be serving the
+       * older of two timetables — and that is not hypothetical: a refresh republishing the live
+       * horizon as lines ran concurrently with the migration that had already converted those
+       * keys, which left eight Leeds shards holding both forms of 29 October. Deleting the other
+       * sibling after the write makes "which one is current" unanswerable rather than silently
+       * wrong, and it costs one delete on the first publish after a format change and none after.
+       */
+      if (asBytes === null || binaryStore === null) {
+        await store.put(objectKeyFor(dataset, options.version), body!);
+        if (options.removeOtherForm === true) {
+          await store.delete(objectKeyForBytes(dataset, options.version));
+        }
+      } else {
+        await binaryStore.putBytes(objectKeyForBytes(dataset, options.version), asBytes);
+        if (options.removeOtherForm === true) {
+          await store.delete(objectKeyFor(dataset, options.version));
+        }
+      }
       return {
         tile: entry.tile,
         error: null,

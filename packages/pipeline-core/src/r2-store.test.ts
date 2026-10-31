@@ -32,13 +32,39 @@ function storeWith(statuses: number[], sleeps: number[] = []) {
 }
 
 describe("R2ObjectStore retries", () => {
-  for (const status of [429, 502, 503, 504]) {
+  /*
+   * 500 and the 52x family are here for the same reason as 503.
+   *
+   * The walking-transfer publisher reads every stop tile in the country in one pass and died on
+   * `R2 get failed for data/network/stops-tile/217_-10/...: 500` — one tile of about four hundred,
+   * after hundreds of identical reads had succeeded. Tolerating the tile instead of retrying it
+   * would have published transfers with a city's stops missing from them, so the only options are
+   * retry or fail the run.
+   */
+  for (const status of [429, 500, 502, 503, 504, 520, 522, 524, 527]) {
     it(`waits out a ${status} rather than giving up on the object`, async () => {
       const { store, attempts } = storeWith([status, status, 200]);
       await store.put("data/network/stops-tile/103_-1/v1.jsonl", "{}");
       expect(attempts.length).toBe(3);
     });
   }
+
+  /* And the ones that will not change if asked again, which must not be retried. */
+  for (const status of [400, 403, 413, 505]) {
+    it(`answers a ${status} at once rather than retrying what will not change`, async () => {
+      const { store, attempts } = storeWith([status]);
+      await expect(store.get("data/network/stops-tile/103_-1/v1.jsonl")).rejects.toThrow(
+        String(status),
+      );
+      expect(attempts.length).toBe(1);
+    });
+  }
+
+  it("reports an absent object as absent, without retrying it", async () => {
+    const { store, attempts } = storeWith([404]);
+    expect(await store.get("data/network/stops-tile/103_-1/v1.jsonl")).toBeNull();
+    expect(attempts.length).toBe(1);
+  });
 
   it("gives up after the configured number of attempts rather than looping", async () => {
     const { store, attempts } = storeWith([503]);

@@ -16,3 +16,4 @@ export * from "./departures-index.js";
 export * from "./reconcile.js";
 export * from "./service-buckets.js";
 export * from "./service-names.js";
+export * from "./binary-trips.js";

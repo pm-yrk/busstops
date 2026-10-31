@@ -9,6 +9,14 @@ name: Preview departures — daily refresh
 # scheduled rebuild (static-network-daily.yml) writes to the *production* bucket, and the preview's
 # only route to a current artifact was a manual deploy with bootstrap_data on.
 #
+# Both families are published in the form their reader wants: the departure index encoded, and the
+# planner's trips columnar and binary, with the text form of each shard deleted as the bytes are
+# written. That belongs here rather than in a one-off conversion, and the reason is this workflow's
+# own shape: the shards are keyed by service date and this publishes a rolling three-day horizon
+# three times a day, so a migration only ever converts the dates that existed when it ran. One did,
+# and two days later every date a passenger could ask about had been republished as lines, with
+# journey CPU back at a p50 of 187 ms and 7.2 MB of trip text per request.
+#
 # This refreshes the two date-keyed families only, at the version already serving traffic. Those are
 # about 1,850 objects a day against the 11,594 an undated rebuild writes, and nothing undated — the
 # stops, the patterns, the search index — ever expires, so republishing it would be paying for

@@ -17,6 +17,19 @@ on:
         options: ["preview", "production"]
         default: "preview"
 
+# A deployment from this branch cannot read the published trip shards.
+#
+# The rolling refresh publishes `network/pattern-trips` in the columnar binary form and deletes the
+# text, which is what stops a journey parsing 7.2 MB per request. The reader that opens that form
+# lives on the platform build branch, not here. So a Worker deployed from this branch finds no trip
+# shards it can read and `/v1/journeys` answers "no timetable published" — an honest degradation
+# rather than a wrong itinerary, and currently moot because `journeyPlanner` is switched off in
+# both environments, so nothing reads that family at all.
+#
+# Before turning `journeyPlanner` back on, the branch carrying the binary reader has to land here.
+# Nothing automatic deploys this workflow; it is dispatch-only, which is the only reason the
+# publisher could go ahead of the reader.
+
 permissions:
   contents: read
 
