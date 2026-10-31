@@ -1301,6 +1301,56 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
+  # What a fourth published family would cost, before anyone proposes publishing it.
+  #
+  # Read-only, and deliberately separate from the publishers: the bucket has about 863 MB of
+  # headroom, a publish is not atomic, and the old form of a family cannot be deleted until the new
+  # one has been read back — so the number that decides whether this is possible at all is the peak
+  # while both exist, not the steady state.
+  pattern_projection_size:
+    name: Size a journey pattern-stop projection
+    if: contains(join(github.event.commits.*.message), '[pattern-size]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - run: npm ci --no-audit --no-fund
+
+      - name: Measure
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          NODE_OPTIONS: "--max-old-space-size=8192"
+        run: |
+          set -o pipefail
+          npx tsx scripts/size-journey-patterns.ts \
+            --json pattern-projection-size.json 2>&1 | tee pattern-projection-size.log
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "## What a pattern-stop projection would cost"
+            echo
+            echo '```'
+            sed -n '1,120p' pattern-projection-size.log 2>/dev/null || echo "not written"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-pattern-projection-size
+          path: |
+            pattern-projection-size.json
+            pattern-projection-size.log
+          retention-days: 14
+          if-no-files-found: ignore
+
   journey_profile:
     name: Profile the journey search
     if: contains(join(github.event.commits.*.message), '[journey-profile]')
