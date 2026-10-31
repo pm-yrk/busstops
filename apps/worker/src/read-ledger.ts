@@ -151,6 +151,15 @@ function emptyStreamCost(): StreamCost {
 export interface LedgerCounts {
   /** Patterns assembled from what was read. */
   patterns?: number;
+  /**
+   * Of those, the ones the isolate already had and did not read.
+   *
+   * A journey corridor scans about 3.6 MB of pattern index to parse the two hundred patterns its
+   * trips run on, and a pattern is immutable for its artifact version. So the figure that says
+   * whether the second journey through a city is cheap is how many of its patterns were already
+   * resolved — and `patternsHeld` equal to `patterns` means the request read none of it.
+   */
+  patternsHeld?: number;
   /** Trips loaded for the planner. */
   trips?: number;
   /** Stops resolved. */

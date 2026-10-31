@@ -380,6 +380,76 @@ describe("the edge never reads a national dataset", () => {
     expect(ledger.toJSON().charsDecoded).toBe(0);
   });
 
+  /*
+   * The second journey through a city, which used to cost exactly as much as the first.
+   *
+   * A corridor scans about 3.6 MB of pattern index to parse the two hundred patterns its trips run
+   * on — 5,123 lines read to keep 1,090 — and a pattern is immutable for its artifact version. So
+   * the isolate keeps what it resolved, and a later request naming the same patterns reads none of
+   * it. Measured against the ledger rather than asserted about the cache, because what matters is
+   * that the bucket was not asked.
+   */
+  it("asks the bucket once for a pattern, however many requests want it", async () => {
+    const { reader } = await publishedReader();
+    const index = (await reader.networkIndex())!;
+    const tiles = index.patternIndexTiles ?? [];
+    const built = network();
+    const wanted = built.patterns.slice(0, 2).map((pattern) => pattern.id);
+    expect(wanted.length).toBeGreaterThan(0);
+
+    const first = new ReadLedger(5_000_000);
+    const once = await reader.patternsInIndexTiles(tiles, Date.now(), first, undefined, wanted);
+    expect(once.patterns.size).toBe(wanted.length);
+    expect(first.toJSON().charsDecoded).toBeGreaterThan(0);
+
+    const again = new ReadLedger(5_000_000);
+    const twice = await reader.patternsInIndexTiles(tiles, Date.now(), again, undefined, wanted);
+
+    /* The same patterns, and the second request did not read a character. */
+    expect([...twice.patterns.keys()].sort()).toEqual([...once.patterns.keys()].sort());
+    expect(twice.complete).toBe(true);
+    expect(twice.available).toBe(true);
+    expect(again.toJSON().charsDecoded).toBe(0);
+    expect(again.toJSON().counts.patternsHeld).toBe(wanted.length);
+  });
+
+  it("reads only the patterns it is still missing, not the ones it already holds", async () => {
+    const { reader } = await publishedReader();
+    const index = (await reader.networkIndex())!;
+    const tiles = index.patternIndexTiles ?? [];
+    const built = network();
+    const held = built.patterns[0]!.id;
+
+    await reader.patternsInIndexTiles(tiles, Date.now(), undefined, undefined, [held]);
+
+    /* One it has and one it has never seen, so the read happens for the second alone. */
+    const second = new ReadLedger(5_000_000);
+    const both = await reader.patternsInIndexTiles(tiles, Date.now(), second, undefined, [
+      held,
+      "0191bd0a-0000-7c1e-9a2b-000000000000",
+    ]);
+
+    /* It still had to go and look, it still answered with the one that exists, and it said how
+     * much of the answer it already had. */
+    expect([...both.patterns.keys()]).toEqual([held]);
+    expect(second.toJSON().charsDecoded).toBeGreaterThan(0);
+    expect(second.toJSON().counts.patternsHeld).toBe(1);
+  });
+
+  it("holds nothing for a caller that asked for the whole tile", async () => {
+    /*
+     * A whole-tile read cannot tell whether it has all of an answer later, and filling the isolate
+     * with patterns nobody named is how a memory bound gets spent on the wrong thing.
+     */
+    const { reader } = await publishedReader();
+    const index = (await reader.networkIndex())!;
+    const tiles = index.patternIndexTiles ?? [];
+
+    await reader.patternsInIndexTiles(tiles, Date.now());
+
+    expect(reader.heldPatternCalls).toBe(0);
+  });
+
   it("declines to read the patterns at all when the board has no budget left", async () => {
     const { reader } = await publishedReader();
     const built = network();

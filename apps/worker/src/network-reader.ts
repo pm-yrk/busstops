@@ -202,6 +202,16 @@ const MAX_REQUEST_SHARD_CHARS = 12 * 1024 * 1024;
 const MAX_PATTERN_REQUEST_CHARS = 3 * 1024 * 1024;
 
 /**
+ * How many pattern stop-sequence entries an isolate may keep resolved.
+ *
+ * The thing being bounded is memory, and a pattern's memory is its stop sequence: 150,000 entries
+ * is about five thousand patterns of thirty calls, roughly 5.4 MB of stop ids against an isolate's
+ * 128 MB — enough for several cities' worth of corridors, and far short of a limit that would
+ * trade a 1102 for an `exceededMemory`.
+ */
+const MAX_HELD_PATTERN_CALLS = 150_000;
+
+/**
  * How many search buckets one query may open. A hundred and twenty characters of query is a lot
  * of words, and each word is at least one object; the bound is on the reading, not on the typing.
  */
@@ -961,6 +971,23 @@ export class NetworkReader {
    */
   private placeLinesCache: string[] | null = null;
   private routeTilesCache: Map<string, string[]> | null = null;
+  /**
+   * Pattern stop sequences already resolved in this isolate, keyed by version and id.
+   *
+   * A journey corridor scans about 3.6 MB of pattern index to find the two hundred patterns its
+   * trips run on — 5,123 lines read to parse 1,090 — and does it again on the next request. A
+   * pattern is immutable for its artifact version, so the second journey through a city should
+   * read none of it. This is what makes that true: the ids already held are answered from here,
+   * and only the ones missing are asked of the bucket. When none are missing there is no read at
+   * all.
+   *
+   * Bounded by stop-sequence entries rather than by pattern count, because that is what the
+   * memory actually is, and cleared whole when the version moves — mixing versions is the one
+   * thing the version pinning exists to prevent.
+   */
+  private readonly patternsHeld = new Map<string, RoutePattern>();
+  private patternsHeldVersion: string | null = null;
+  private patternsHeldEntries = 0;
 
   constructor(
     private readonly store: ObjectStore,
@@ -968,6 +995,44 @@ export class NetworkReader {
     /** Overridable so a test can make the budget bite on a fixture too small to reach it. */
     private readonly requestChars = MAX_REQUEST_SHARD_CHARS,
   ) {}
+
+  /**
+   * Keeps a resolved pattern for the rest of the isolate's life, within the bound.
+   *
+   * Oldest out first, by insertion order, which is what a `Map` iterates. There is no cleverer
+   * policy worth having here: corridors cluster, so the patterns a second journey wants are the
+   * ones a first journey just put in.
+   */
+  private holdPattern(version: string, pattern: RoutePattern): void {
+    const key = `${version}:${pattern.id}`;
+    if (this.patternsHeld.has(key)) return;
+    const calls = pattern.stopSequence.length;
+    while (
+      this.patternsHeldEntries + calls > MAX_HELD_PATTERN_CALLS &&
+      this.patternsHeld.size > 0
+    ) {
+      const oldest = this.patternsHeld.keys().next().value;
+      if (oldest === undefined) break;
+      const held = this.patternsHeld.get(oldest);
+      this.patternsHeld.delete(oldest);
+      this.patternsHeldEntries -= held?.stopSequence.length ?? 0;
+    }
+    this.patternsHeld.set(key, pattern);
+    this.patternsHeldEntries += calls;
+  }
+
+  /** Drops everything held for a version that is no longer the one being served. */
+  private forgetPatternsOfOtherVersions(version: string): void {
+    if (this.patternsHeldVersion === version) return;
+    this.patternsHeld.clear();
+    this.patternsHeldEntries = 0;
+    this.patternsHeldVersion = version;
+  }
+
+  /** How many pattern stop-sequence entries this isolate is holding. Exposed so a test can bound it. */
+  get heldPatternCalls(): number {
+    return this.patternsHeldEntries;
+  }
 
   /**
    * The pattern budget, never above the request's own.
@@ -2540,6 +2605,32 @@ export class NetworkReader {
       return { patterns: new Map(), complete: true, available: true };
     }
 
+    /*
+     * The ones this isolate already has, and the ones it still has to go and get.
+     *
+     * Only when the caller named them: a caller that wants the whole tile is asking a different
+     * question and this cannot tell whether it has all of the answer. Named is the planner's case,
+     * which is the one that costs 3.6 MB of scanning per request.
+     */
+    this.forgetPatternsOfOtherVersions(index.version);
+    const patterns = new Map<string, RoutePattern>();
+    let missing: readonly string[] | undefined = wantedPatternIds;
+    if (wantedPatternIds) {
+      const stillWanted: string[] = [];
+      for (const id of wantedPatternIds) {
+        const held = this.patternsHeld.get(`${index.version}:${id}`);
+        if (held) patterns.set(held.id, held);
+        else stillWanted.push(id);
+      }
+      missing = stillWanted;
+      ledger?.count({ patternsHeld: patterns.size });
+      /* Nothing missing, so nothing is read: the whole answer was already in the isolate. */
+      if (stillWanted.length === 0) {
+        ledger?.count({ patterns: patterns.size });
+        return { patterns, complete: true, available: true };
+      }
+    }
+
     const result = await this.readTiles<[string, PatternIndexRow]>(
       patternIndexTileDataset,
       tiles,
@@ -2548,16 +2639,19 @@ export class NetworkReader {
       now,
       Math.min(budgetChars ?? this.requestChars, this.requestChars),
       ledger ? { ledger, family: "patterns", budgetReason: "pattern_index_budget" } : undefined,
-      wantedPatternIds ? wantedPatternLineFilter(wantedPatternIds) : undefined,
+      missing ? wantedPatternLineFilter(missing) : undefined,
     );
 
-    const patterns = new Map<string, RoutePattern>();
     for (const line of result.records) {
       // The header line parses as an object rather than a pair; a row is always `[id, row]`.
       if (!Array.isArray(line) || line.length !== 2) continue;
       const row = line[1];
       if (row && typeof row === "object" && "stopSequence" in row) {
-        patterns.set(row.id, toRoutePattern(row));
+        const pattern = toRoutePattern(row);
+        patterns.set(pattern.id, pattern);
+        /* Held only when the caller named what it wanted, so a whole-tile read cannot fill the
+         * isolate with patterns nobody asked for. */
+        if (wantedPatternIds) this.holdPattern(index.version, pattern);
       }
     }
     ledger?.count({ patterns: patterns.size });
