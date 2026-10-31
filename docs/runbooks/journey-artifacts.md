@@ -115,6 +115,22 @@ versions are present and how many bytes each holds.
 
 There is no capability flag to revert, by design: a reader that finds nothing computes it.
 
+### What one form per shard costs in operations
+
+The publisher deletes the text sibling of every trip shard it writes, and a delete is an R2 Class A
+operation whether or not anything was there. The refresh publishes the two date-keyed families
+three times a day — about 1,850 objects a run — of which the trips are roughly half, so the
+invariant adds on the order of 2,700 deletes a day, about 80,000 a month, against a free allowance
+of a million Class A operations. Measured against the puts it sits beside (around 5,550 a day) it
+is well inside the budget.
+
+It is also mostly waste once the transition is over: after the first refresh that carries the
+binary publisher, no text sibling exists and every delete is a no-op. The cheap fix, if the
+operation budget ever matters, is an `exists` on the store — a HEAD is Class B, with a ten-million
+allowance — so the delete only happens when there is something to delete. Not done now, because
+during the transition the delete has to happen unconditionally and a wrong guess leaves a shard
+with two forms.
+
 ### Proving it without running it
 
 `[rollback-check]` runs all three in report mode against the live bucket and prints what each would
