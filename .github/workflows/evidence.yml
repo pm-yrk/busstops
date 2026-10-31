@@ -1288,7 +1288,14 @@ jobs:
             --endpoints map,search,nearby,stop,route \
             --json cpu-sample-clean.json 2>&1 | tee cpu-sample-clean.log
 
-      # Then the journeys, twice through each city so the pattern cache has a repeat to be read on.
+      # Then the journeys, six times through each city rather than twice.
+      #
+      # Two rounds priced the pattern cache — first journey against repeat, and the repeat reads no
+      # pattern index at all — but they never reached a warm isolate: the age buckets came back
+      # first=170 ms, 2nd-to-5th=148, 6th-to-20th=74, and nothing at all in 21st-and-later, which
+      # is where a steady-state figure lives. Six rounds of one shape in five cities is about
+      # thirty-six journeys, still a fraction of what the gated acceptance walk asks for, and it
+      # fills the bucket that says what a journey costs once an isolate has stopped being new.
       - name: The journeys, with a tail attached
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -1297,7 +1304,7 @@ jobs:
           set -o pipefail
           npx tsx scripts/measure-worker-cpu.ts \
             --worker "${{ steps.worker.outputs.url }}" \
-            --rounds 2 \
+            --rounds 6 \
             --journey-shapes 1 \
             --endpoints journey \
             --json cpu-sample.json 2>&1 | tee cpu-sample.log
