@@ -198,6 +198,16 @@ interface Reading {
    * nobody can act on.
    */
   familyChars?: Record<string, number>;
+  /**
+   * What the pattern index cost this request, and how much of it the isolate already had.
+   *
+   * The pair is the whole measurement of the isolate-level pattern cache: a journey resolves the
+   * two hundred patterns its trips name, and `patternsFromCache` says how many of those it did not
+   * have to read. Equal to `patternsResolved` means the request read no pattern index at all.
+   */
+  patternsResolved?: number;
+  patternsFromCache?: number;
+  patternChars?: number;
   journey?: {
     options: number | null;
     /*
@@ -270,12 +280,16 @@ async function ask(endpoint: string, city: string, path: string, shape?: string)
       reading.requestsServed =
         typeof residency?.requestsServed === "number" ? residency.requestsServed : undefined;
       const families = diagnostics?.families as Record<string, { chars?: number }> | undefined;
+      const counts = diagnostics?.counts as Record<string, unknown> | undefined;
+      if (typeof counts?.patterns === "number") reading.patternsResolved = counts.patterns;
+      if (typeof counts?.patternsHeld === "number") reading.patternsFromCache = counts.patternsHeld;
       if (families !== undefined) {
         const split: Record<string, number> = {};
         for (const [family, cost] of Object.entries(families)) {
           if (typeof cost?.chars === "number" && cost.chars > 0) split[family] = cost.chars;
         }
         if (Object.keys(split).length > 0) reading.familyChars = split;
+        if (typeof split.patterns === "number") reading.patternChars = split.patterns;
       }
       if (endpoint === "journey") {
         const options = (data?.options ?? data?.journeys) as unknown;
@@ -553,6 +567,9 @@ async function main(): Promise<number> {
     city: string;
     outcome: string | null;
     journey: Reading["journey"] | null;
+    patternChars?: number;
+    patternsResolved?: number;
+    patternsFromCache?: number;
   }> = [];
   for (const reading of readings) {
     const at = seenPerPath.get(reading.path) ?? 0;
@@ -567,6 +584,9 @@ async function main(): Promise<number> {
       city: reading.city,
       outcome: record.outcome ?? null,
       journey: reading.journey ?? null,
+      patternChars: reading.patternChars,
+      patternsResolved: reading.patternsResolved,
+      patternsFromCache: reading.patternsFromCache,
     });
   }
   /*
@@ -762,6 +782,70 @@ async function main(): Promise<number> {
     }));
   })();
 
+  /*
+   * The pattern cache, first journey against repeat journey, per city.
+   *
+   * Ninety-one per cent of a journey's decoded characters were the pattern index: 5,123 lines
+   * scanned to keep the 1,090 its trips name. A pattern is immutable for its artifact version, so
+   * an isolate holds what it resolved — and the claim that makes is about the *second* journey
+   * through a city, which cannot be read from a total or an average. Journeys are listed here in
+   * the order they were asked, per city, with the CPU Cloudflare charged each one beside what it
+   * read and what it already had.
+   *
+   * `cpuMs` comes from the tail, paired on the path and the request order, so a figure here is
+   * Cloudflare's own rather than wall time.
+   */
+  const patternCache = (() => {
+    const perCity = new Map<string, Array<(typeof paired)[number]>>();
+    for (const row of paired) {
+      if (row.endpoint !== "journey") continue;
+      const list = perCity.get(row.city) ?? [];
+      list.push(row);
+      perCity.set(row.city, list);
+    }
+    return [...perCity]
+      .map(([city, rows]) => ({
+        city,
+        journeys: rows.map((row, at) => ({
+          nth: at + 1,
+          cpuMs: row.cpuMs,
+          killed: row.outcome === "exceededCpu",
+          patternChars: row.patternChars ?? null,
+          patternsResolved: row.patternsResolved ?? null,
+          patternsFromCache: row.patternsFromCache ?? null,
+          readNoPatternIndex:
+            row.patternChars === 0 ||
+            (row.patternsResolved !== undefined &&
+              row.patternsResolved === row.patternsFromCache &&
+              row.patternsResolved > 0),
+          onBinaryShards: row.journey?.shardsBinary ?? null,
+          fellBackToText: row.journey?.shardsBinaryFallback ?? null,
+          tripChars: row.journey?.tripChars ?? null,
+        })),
+      }))
+      .filter((city) => city.journeys.length > 0);
+  })();
+
+  if (patternCache.length > 0) {
+    console.log("");
+    console.log(
+      "city           nth   CPU   patternChars   resolved   fromCache   bytes   tripChars",
+    );
+    for (const city of patternCache) {
+      for (const journey of city.journeys) {
+        console.log(
+          `${city.city.padEnd(14)} ${String(journey.nth).padStart(3)}   ` +
+            `${String(journey.cpuMs).padStart(3)}   ` +
+            `${String(journey.patternChars ?? "-").padStart(12)}   ` +
+            `${String(journey.patternsResolved ?? "-").padStart(8)}   ` +
+            `${String(journey.patternsFromCache ?? "-").padStart(9)}   ` +
+            `${String(journey.onBinaryShards ?? "-").padStart(5)}   ` +
+            `${String(journey.tripChars ?? "-").padStart(9)}`,
+        );
+      }
+    }
+  }
+
   const report = {
     outcome: "measured",
     worker: WORKER,
@@ -791,6 +875,8 @@ async function main(): Promise<number> {
     journeyShapes,
     /* And what the heaviest request of each endpoint spent its characters on. */
     charsByFamily,
+    /* First journey against repeat journey in each city: the pattern cache, priced. */
+    patternCache,
     cities,
     worstOffenders: readings
       .filter((r) => r.platform)
