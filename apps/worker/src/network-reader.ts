@@ -2811,7 +2811,13 @@ export class NetworkReader {
           at += 1;
           continue;
         }
-        patterns.push(open.patternAt(index) as PlannerPattern);
+        /* Built here rather than cast from the tile's own record: the three fields a plan reads,
+         * and nothing of the artifact's shape leaks past this line. */
+        patterns.push({
+          id: open.patternIdAt(index),
+          serviceRouteId: open.serviceRouteIdAt(index),
+          stopSequence: open.stopSequenceAt(index),
+        });
         /* Struck off by swapping the last one in: order does not matter and this stays linear. */
         missing[at] = missing[missing.length - 1]!;
         missing.pop();
