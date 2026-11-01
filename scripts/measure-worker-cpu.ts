@@ -208,6 +208,20 @@ interface Reading {
   patternsResolved?: number;
   patternsFromCache?: number;
   patternChars?: number;
+  /**
+   * What the published pattern-stop projection answered, and what it cost.
+   *
+   * The cache measures the second journey through a city; this measures the first, which is the
+   * one that cannot be cached and which measured 39 to 41 ms. `patternsProjected` equal to
+   * `patternsResolved` with `patternChars` at zero is the architecture working: the patterns came
+   * out of the keyed form and no line of the text index was scanned. `patternStopTilesMissing`
+   * above zero means the family is half published and the request read both forms, so a profile
+   * showing it is a profile of an unfinished publish rather than of the design.
+   */
+  patternsProjected?: number;
+  patternStopTiles?: number;
+  patternStopTilesMissing?: number;
+  patternStopBytes?: number;
   journey?: {
     options: number | null;
     /*
@@ -283,6 +297,18 @@ async function ask(endpoint: string, city: string, path: string, shape?: string)
       const counts = diagnostics?.counts as Record<string, unknown> | undefined;
       if (typeof counts?.patterns === "number") reading.patternsResolved = counts.patterns;
       if (typeof counts?.patternsHeld === "number") reading.patternsFromCache = counts.patternsHeld;
+      if (typeof counts?.patternsProjected === "number") {
+        reading.patternsProjected = counts.patternsProjected;
+      }
+      if (typeof counts?.patternStopTiles === "number") {
+        reading.patternStopTiles = counts.patternStopTiles;
+      }
+      if (typeof counts?.patternStopTilesMissing === "number") {
+        reading.patternStopTilesMissing = counts.patternStopTilesMissing;
+      }
+      if (typeof counts?.patternStopBytes === "number") {
+        reading.patternStopBytes = counts.patternStopBytes;
+      }
       if (families !== undefined) {
         const split: Record<string, number> = {};
         for (const [family, cost] of Object.entries(families)) {
@@ -570,6 +596,10 @@ async function main(): Promise<number> {
     patternChars?: number;
     patternsResolved?: number;
     patternsFromCache?: number;
+    patternsProjected?: number;
+    patternStopTiles?: number;
+    patternStopTilesMissing?: number;
+    patternStopBytes?: number;
   }> = [];
   for (const reading of readings) {
     const at = seenPerPath.get(reading.path) ?? 0;
@@ -587,6 +617,10 @@ async function main(): Promise<number> {
       patternChars: reading.patternChars,
       patternsResolved: reading.patternsResolved,
       patternsFromCache: reading.patternsFromCache,
+      patternsProjected: reading.patternsProjected,
+      patternStopTiles: reading.patternStopTiles,
+      patternStopTilesMissing: reading.patternStopTilesMissing,
+      patternStopBytes: reading.patternStopBytes,
     });
   }
   /*
@@ -813,6 +847,10 @@ async function main(): Promise<number> {
           patternChars: row.patternChars ?? null,
           patternsResolved: row.patternsResolved ?? null,
           patternsFromCache: row.patternsFromCache ?? null,
+          patternsProjected: row.patternsProjected ?? null,
+          patternStopTiles: row.patternStopTiles ?? null,
+          patternStopTilesMissing: row.patternStopTilesMissing ?? null,
+          patternStopBytes: row.patternStopBytes ?? null,
           readNoPatternIndex:
             row.patternChars === 0 ||
             (row.patternsResolved !== undefined &&
@@ -829,7 +867,8 @@ async function main(): Promise<number> {
   if (patternCache.length > 0) {
     console.log("");
     console.log(
-      "city           nth   CPU   patternChars   resolved   fromCache   bytes   tripChars",
+      "city           nth   CPU   patternChars   resolved   fromCache   projected   psTiles   " +
+        "psMissing   psBytes   bytes   tripChars",
     );
     for (const city of patternCache) {
       for (const journey of city.journeys) {
@@ -839,6 +878,10 @@ async function main(): Promise<number> {
             `${String(journey.patternChars ?? "-").padStart(12)}   ` +
             `${String(journey.patternsResolved ?? "-").padStart(8)}   ` +
             `${String(journey.patternsFromCache ?? "-").padStart(9)}   ` +
+            `${String(journey.patternsProjected ?? "-").padStart(9)}   ` +
+            `${String(journey.patternStopTiles ?? "-").padStart(7)}   ` +
+            `${String(journey.patternStopTilesMissing ?? "-").padStart(9)}   ` +
+            `${String(journey.patternStopBytes ?? "-").padStart(7)}   ` +
             `${String(journey.onBinaryShards ?? "-").padStart(5)}   ` +
             `${String(journey.tripChars ?? "-").padStart(9)}`,
         );
