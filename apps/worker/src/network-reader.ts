@@ -9,8 +9,10 @@ import type {
 import { compareRouteNames, type RouteStop } from "./network-queries.js";
 import {
   ArtifactStore,
+  canHoldBytes,
   canStream,
   objectKeyFor,
+  objectKeyForBytes,
   type ObjectStore,
   haversineMetres,
 } from "@busstops/pipeline-core";
@@ -18,7 +20,9 @@ import { readFilteredLinesStreaming, type StreamLineStats } from "./stream-lines
 import { NearestLines, tileFloorMetres } from "./nearest-lines.js";
 import {
   DATASETS,
+  PatternStopsTile,
   SHARDED,
+  journeyPatternStopsDataset,
   type NetworkIndexRecord,
   type PatternTileLine,
   type PatternTileRecord,
@@ -210,6 +214,26 @@ const MAX_PATTERN_REQUEST_CHARS = 3 * 1024 * 1024;
  * trade a 1102 for an `exceededMemory`.
  */
 const MAX_HELD_PATTERN_CALLS = 150_000;
+
+/**
+ * How many published pattern-stop tiles an isolate keeps open.
+ *
+ * A corridor crosses at most eight, and the largest tile in the country is 316 KB, so twelve is
+ * two corridors' worth at under four megabytes of an isolate's 128. Holding the tile rather than
+ * only the patterns taken out of it is what makes a *different* corridor in the same city cheap:
+ * it wants other patterns out of the same bytes.
+ */
+const MAX_CACHED_PATTERN_STOPS_TILES = 12;
+
+/**
+ * How many missing tiles it takes to stop asking for this family at all.
+ *
+ * The projection is published per version by a script, so an isolate serving a version that has
+ * not been published yet would otherwise pay a 404 per corridor tile on every request for nothing.
+ * Three misses with no hit means the family is not there; a single hit means it is, and then a
+ * missing tile is just that one tile. Counted per version, because the next publish fixes it.
+ */
+const PATTERN_STOPS_PROBES = 3;
 
 /**
  * How many search buckets one query may open. A hundred and twenty characters of query is a lot
@@ -815,6 +839,18 @@ interface CachedShard {
   usedAt: number;
 }
 
+/**
+ * A pattern as a plan reads it: three fields, not the published record.
+ *
+ * `buildGraphFor` takes the stop sequence, names the leg's route by `serviceRouteId` and keys its
+ * call shapes by `id`. It reads no direction, no shape reference and no pattern distance, and the
+ * published projection the planner now takes its patterns from does not carry them — so this is
+ * the type that says what a plan is entitled to, and a full `RoutePattern` satisfies it. Typed
+ * narrowly rather than cast, so nothing downstream can quietly start depending on a field the
+ * projection does not bring.
+ */
+export type PlannerPattern = Pick<RoutePattern, "id" | "serviceRouteId" | "stopSequence">;
+
 /** What a bounded area's worth of network looks like to code that does not read shards. */
 export interface NetworkSlice {
   /*
@@ -826,7 +862,7 @@ export interface NetworkSlice {
    * quietly start depending on a field the corridor no longer brings.
    */
   stopsById: ReadonlyMap<string, RouteStop>;
-  patternsById: ReadonlyMap<string, RoutePattern>;
+  patternsById: ReadonlyMap<string, PlannerPattern>;
   services: ReadonlyMap<string, ServiceRoute>;
 }
 
@@ -985,9 +1021,18 @@ export class NetworkReader {
    * memory actually is, and cleared whole when the version moves — mixing versions is the one
    * thing the version pinning exists to prevent.
    */
-  private readonly patternsHeld = new Map<string, RoutePattern>();
+  private readonly patternsHeld = new Map<string, PlannerPattern>();
   private patternsHeldVersion: string | null = null;
   private patternsHeldEntries = 0;
+  /**
+   * Published pattern-stop tiles this isolate has open, and the ones it has found to be absent.
+   *
+   * `null` is "asked for and not there", which is as worth remembering as the bytes: a corridor in
+   * an area the projection has not reached asks once per isolate rather than once per request.
+   */
+  private readonly patternStopsTiles = new Map<string, PatternStopsTile | null>();
+  private patternStopsHits = 0;
+  private patternStopsMisses = 0;
 
   constructor(
     private readonly store: ObjectStore,
@@ -1003,7 +1048,7 @@ export class NetworkReader {
    * policy worth having here: corridors cluster, so the patterns a second journey wants are the
    * ones a first journey just put in.
    */
-  private holdPattern(version: string, pattern: RoutePattern): void {
+  private holdPattern(version: string, pattern: PlannerPattern): void {
     const key = `${version}:${pattern.id}`;
     if (this.patternsHeld.has(key)) return;
     const calls = pattern.stopSequence.length;
@@ -1026,6 +1071,9 @@ export class NetworkReader {
     if (this.patternsHeldVersion === version) return;
     this.patternsHeld.clear();
     this.patternsHeldEntries = 0;
+    this.patternStopsTiles.clear();
+    this.patternStopsHits = 0;
+    this.patternStopsMisses = 0;
     this.patternsHeldVersion = version;
   }
 
@@ -2585,7 +2633,7 @@ export class NetworkReader {
      * — hundreds of patterns per tile to keep the couple of hundred a corridor runs on.
      */
     wantedPatternIds?: readonly string[],
-  ): Promise<{ patterns: Map<string, RoutePattern>; complete: boolean; available: boolean }> {
+  ): Promise<{ patterns: Map<string, PlannerPattern>; complete: boolean; available: boolean }> {
     const index = await this.networkIndex(now);
     const published = index?.patternIndexTiles;
     if (!index || !published || published.length === 0) {
@@ -2613,7 +2661,7 @@ export class NetworkReader {
      * which is the one that costs 3.6 MB of scanning per request.
      */
     this.forgetPatternsOfOtherVersions(index.version);
-    const patterns = new Map<string, RoutePattern>();
+    const patterns = new Map<string, PlannerPattern>();
     let missing: readonly string[] | undefined = wantedPatternIds;
     if (wantedPatternIds) {
       const stillWanted: string[] = [];
@@ -2626,6 +2674,46 @@ export class NetworkReader {
       ledger?.count({ patternsHeld: patterns.size });
       /* Nothing missing, so nothing is read: the whole answer was already in the isolate. */
       if (stillWanted.length === 0) {
+        ledger?.count({ patterns: patterns.size });
+        return { patterns, complete: true, available: true };
+      }
+    }
+
+    /*
+     * The published projection, before the text index.
+     *
+     * Same tiles, keyed form: the ids this corridor named are taken out of them by binary search
+     * over sixteen-byte keys rather than by parsing every line. What it cannot answer — a tile not
+     * published yet, a pattern filed in a tile this corridor does not cross — falls through to the
+     * scan below with only the ids still missing, so the fallback is never worse than not having
+     * the projection at all, and a complete answer skips the text read entirely.
+     */
+    if (missing && missing.length > 0) {
+      const taken = await this.patternsFromProjection(tiles, published, index.version, missing);
+      for (const pattern of taken.patterns) {
+        patterns.set(pattern.id, pattern);
+        this.holdPattern(index.version, pattern);
+      }
+      ledger?.count({
+        patternStopTiles: taken.tilesRead,
+        patternStopTilesMissing: taken.tilesMissing,
+        patternStopBytes: taken.bytes,
+        patternsProjected: taken.patterns.length,
+      });
+      missing = taken.missing;
+      /*
+       * Covered, not empty: the test is whether every tile was read, not whether every id was
+       * found.
+       *
+       * A published tile holds every pattern its text tile holds, so a reader that opened all of
+       * this corridor's tiles has already seen everything the scan below could find — including
+       * nothing, for an id filed in a tile the corridor does not cross, which the scan would not
+       * find either. Testing `missing.length` instead would send a request back through the whole
+       * text index because of one pattern that is not in it, which is most requests: a corridor's
+       * trips can name a pattern whose shape runs outside the corridor's tiles, and the planner
+       * already reports those as trips without a pattern.
+       */
+      if (taken.covered) {
         ledger?.count({ patterns: patterns.size });
         return { patterns, complete: true, available: true };
       }
@@ -2656,6 +2744,135 @@ export class NetworkReader {
     }
     ledger?.count({ patterns: patterns.size });
     return { patterns, complete: !result.truncated, available: true };
+  }
+
+  /**
+   * The named patterns this corridor's tiles hold in the published projection.
+   *
+   * Each tile is opened once per isolate and kept, because a second corridor in the same city
+   * wants different patterns out of the same bytes. Ids are struck off as they are found, so each
+   * tile after the first searches only what is left, and the loop stops as soon as nothing is
+   * missing — a corridor whose patterns all live in its first tile reads one object.
+   *
+   * It never reports a pattern it did not find, and it never throws: everything it cannot answer
+   * is returned as still missing, and the caller reads the text index for those. That is what
+   * makes publishing this family safe to do a tile at a time.
+   */
+  private async patternsFromProjection(
+    tiles: readonly string[],
+    published: readonly string[],
+    version: string,
+    wanted: readonly string[],
+  ): Promise<{
+    patterns: PlannerPattern[];
+    missing: string[];
+    /** Every published tile this corridor crosses was read, so the text scan can find nothing new. */
+    covered: boolean;
+    tilesRead: number;
+    tilesMissing: number;
+    bytes: number;
+  }> {
+    const missing = [...wanted];
+    const patterns: PlannerPattern[] = [];
+    const nothing = {
+      patterns,
+      missing,
+      covered: false,
+      tilesRead: 0,
+      tilesMissing: 0,
+      bytes: 0,
+    };
+    if (!canHoldBytes(this.store)) return nothing;
+    /* Not published for this version: stop paying a 404 a tile for it on every request. */
+    if (this.patternStopsHits === 0 && this.patternStopsMisses >= PATTERN_STOPS_PROBES) {
+      return nothing;
+    }
+
+    const inNetwork = new Set(published);
+    const crossed = new Set(tiles.filter((tile) => inNetwork.has(tile)));
+    let tilesRead = 0;
+    let tilesMissing = 0;
+    let bytes = 0;
+    for (const tile of crossed) {
+      /* Every tile, even once nothing is missing: coverage is what lets the text read be skipped,
+       * and a tile left unopened is a tile the scan might have had something in. */
+      const open = await this.patternStopsTile(tile, version);
+      if (open === null) {
+        tilesMissing += 1;
+        if (this.patternStopsHits === 0 && this.patternStopsMisses >= PATTERN_STOPS_PROBES) break;
+        continue;
+      }
+      tilesRead += 1;
+      bytes += open.byteLength;
+      let at = 0;
+      while (at < missing.length) {
+        const index = open.indexOf(missing[at]!);
+        if (index < 0) {
+          at += 1;
+          continue;
+        }
+        patterns.push(open.patternAt(index) as PlannerPattern);
+        /* Struck off by swapping the last one in: order does not matter and this stays linear. */
+        missing[at] = missing[missing.length - 1]!;
+        missing.pop();
+      }
+    }
+    return {
+      patterns,
+      missing,
+      covered: tilesRead === crossed.size && crossed.size > 0,
+      tilesRead,
+      tilesMissing,
+      bytes,
+    };
+  }
+
+  /** One projection tile, opened once per isolate — absence included. */
+  private async patternStopsTile(tile: string, version: string): Promise<PatternStopsTile | null> {
+    const key = `${version}:${tile}`;
+    const held = this.patternStopsTiles.get(key);
+    if (held !== undefined) return held;
+    if (!canHoldBytes(this.store)) return null;
+
+    let bytes: Uint8Array | null;
+    try {
+      bytes = await this.store.getBytes(
+        objectKeyForBytes(journeyPatternStopsDataset(tile), version),
+      );
+    } catch {
+      /* Not remembered: a read that failed is not a tile that is absent. */
+      this.patternStopsMisses += 1;
+      return null;
+    }
+    if (bytes === null) {
+      this.patternStopsMisses += 1;
+      this.rememberPatternStopsTile(key, null);
+      return null;
+    }
+    let open: PatternStopsTile;
+    try {
+      open = new PatternStopsTile(bytes);
+    } catch {
+      /*
+       * Bytes that will not open are remembered as absent rather than retried. A tile this isolate
+       * cannot read is a tile the text index has to answer for, and asking again costs a read to
+       * learn the same thing.
+       */
+      this.patternStopsMisses += 1;
+      this.rememberPatternStopsTile(key, null);
+      return null;
+    }
+    this.patternStopsHits += 1;
+    this.rememberPatternStopsTile(key, open);
+    return open;
+  }
+
+  private rememberPatternStopsTile(key: string, tile: PatternStopsTile | null): void {
+    if (this.patternStopsTiles.size >= MAX_CACHED_PATTERN_STOPS_TILES) {
+      const oldest = this.patternStopsTiles.keys().next().value;
+      if (oldest !== undefined) this.patternStopsTiles.delete(oldest);
+    }
+    this.patternStopsTiles.set(key, tile);
   }
 
   /** Pattern geometries covering a viewport, for matching live vehicles to routes. */

@@ -1,4 +1,4 @@
-import type { Coordinate, RoutePattern, ServiceRoute } from "@busstops/contracts";
+import type { Coordinate, ServiceRoute } from "@busstops/contracts";
 import {
   canHoldBytes,
   canStream,
@@ -38,7 +38,7 @@ import {
   type ArtifactLayout,
   type PatternTripRow,
 } from "@busstops/pipeline-static-network";
-import type { NetworkSlice } from "./network-reader.js";
+import type { NetworkSlice, PlannerPattern } from "./network-reader.js";
 
 /**
  * Journey planning at the edge.
@@ -94,7 +94,7 @@ export interface JourneyPlanRequest {
    */
   resolvePatterns?: (
     patternIds: readonly string[],
-  ) => Promise<{ patterns: Map<string, RoutePattern>; complete: boolean; available: boolean }>;
+  ) => Promise<{ patterns: Map<string, PlannerPattern>; complete: boolean; available: boolean }>;
   /**
    * The services of the patterns this plan ended up with, asked for once they are known.
    *

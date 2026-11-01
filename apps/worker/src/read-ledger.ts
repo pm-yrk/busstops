@@ -160,6 +160,19 @@ export interface LedgerCounts {
    * resolved — and `patternsHeld` equal to `patterns` means the request read none of it.
    */
   patternsHeld?: number;
+  /**
+   * The published pattern-stop projection, as this request used it.
+   *
+   * `patternsProjected` is how many patterns came out of the keyed form without a line being
+   * scanned; `patternStopTiles` and `patternStopBytes` are what that cost in objects and bytes.
+   * `patternStopTilesMissing` is the figure that says the family is not fully published — a
+   * request with misses read the text index as well, so a profile showing both is a profile of a
+   * half-finished publish rather than of the architecture.
+   */
+  patternsProjected?: number;
+  patternStopTiles?: number;
+  patternStopTilesMissing?: number;
+  patternStopBytes?: number;
   /** Trips loaded for the planner. */
   trips?: number;
   /** Stops resolved. */

@@ -42,6 +42,16 @@ export const SHARDED = {
   journeyTransfers: "network/journey-transfers",
   /** Route grouping, per trip shard. Immutable for a published network. */
   journeyRoutes: "network/journey-routes",
+  /**
+   * Pattern stop sequences a journey can take by id, per pattern index tile.
+   *
+   * The same patterns the index tiles hold, in a form a reader opens rather than scans. A journey
+   * reads its trips first and the trips name their patterns, so what it wants is a few hundred
+   * sequences out of a tile holding a few hundred more — and the text form makes it read every
+   * line to find them: 2,098,153 of a journey's 2,316,100 decoded characters, 5,123 lines scanned
+   * to keep 1,090.
+   */
+  journeyPatternStops: "network/journey-pattern-stops",
 } as const;
 
 /**

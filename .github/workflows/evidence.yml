@@ -1676,6 +1676,78 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
+  # Publishing the pattern-stop projection a journey takes its patterns from.
+  #
+  # The pattern index is the last large text read in a journey: 2,098,153 of a request's 2,316,100
+  # decoded characters and 5,123 lines scanned to keep the 1,090 the corridor's trips named. The
+  # isolate cache took the repeat journey through a city from 170 ms of reading to 74 and cannot
+  # help the first one, which measures 39 to 41 ms against a budget of ten. This is the same
+  # patterns keyed by id, costed before it was built: 225,978,836 bytes of text project to
+  # 48,872,144, over 2,097 tiles, with reads per query unchanged.
+  #
+  # Additive, not a replacement: the route and line endpoints read the direction and distance
+  # fields this family leaves out, so the text index stays. The dry run reports the family's size
+  # against `--max-bytes` and the publish refuses rather than part-fills the bucket.
+  publish_pattern_stops:
+    name: Publish the pattern-stop projection
+    if: contains(join(github.event.commits.*.message), '[pattern-stops]')
+    runs-on: ubuntu-latest
+    # One object per pattern index tile, 2,097 of them, each read out of its text form first.
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - run: npm ci --no-audit --no-fund
+
+      - name: What the projection would cost
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          NODE_OPTIONS: "--max-old-space-size=8192"
+        run: |
+          set -o pipefail
+          npx tsx scripts/publish-journey-pattern-stops.ts --minutes 20 \
+            --json pattern-stops-dry.json 2>&1 | tee pattern-stops-dry.log
+
+      - name: Publish
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          NODE_OPTIONS: "--max-old-space-size=8192"
+        run: |
+          set -o pipefail
+          npx tsx scripts/publish-journey-pattern-stops.ts --apply --minutes 260 \
+            --json pattern-stops.json 2>&1 | tee pattern-stops.log
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "## What the pattern-stop projection would cost"
+            echo '```'
+            sed -n '1,60p' pattern-stops-dry.log 2>/dev/null || echo "not measured"
+            echo '```'
+            echo "## What was published"
+            echo '```'
+            sed -n '1,60p' pattern-stops.log 2>/dev/null || echo "not run"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-pattern-stops
+          path: |
+            pattern-stops-dry.json
+            pattern-stops-dry.log
+            pattern-stops.json
+            pattern-stops.log
+          retention-days: 14
+          if-no-files-found: ignore
+
   journey_corpus:
     name: Record what the current planner answers
     if: contains(join(github.event.commits.*.message), '[corpus]')
