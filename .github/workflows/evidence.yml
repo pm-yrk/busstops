@@ -1689,6 +1689,17 @@ jobs:
           cache: "npm"
       - run: npm ci --no-audit --no-fund
 
+      # One service date for every run in this job, decided once.
+      #
+      # Each corpus run read `new Date()` for itself, so a job that started before midnight and
+      # finished after it recorded its baseline on one day and its candidates on the next — and
+      # then reported percentages across the two. That happened: a 31 October baseline against a
+      # 1 November artifacts run came back at 30% same best itinerary, and the only clue was that a
+      # second candidate reported exactly the same figures. A Saturday timetable is not a Sunday's.
+      - name: Pin the service date for the whole job
+        id: corpus_date
+        run: echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
       - name: Plan every query in the corpus
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -1697,6 +1708,7 @@ jobs:
         run: |
           set -o pipefail
           npx tsx scripts/journey-corpus.ts \
+            --date "${{ steps.corpus_date.outputs.date }}" \
             --json journey-corpus.json 2>&1 | tee journey-corpus.log
 
       # What a tighter walk between buses would cost, as five numbers rather than as an opinion.
@@ -1717,6 +1729,7 @@ jobs:
         run: |
           set -o pipefail
           npx tsx scripts/journey-corpus.ts \
+            --date "${{ steps.corpus_date.outputs.date }}" \
             --max-transfer-seconds 300 \
             --json journey-corpus-300.json 2>&1 | tee journey-corpus-300.log
 
@@ -1729,6 +1742,7 @@ jobs:
         run: |
           set -o pipefail
           npx tsx scripts/journey-corpus.ts \
+            --date "${{ steps.corpus_date.outputs.date }}" \
             --corridor-margin-degrees 0.02 \
             --json journey-corpus-narrow.json 2>&1 | tee journey-corpus-narrow.log
 
@@ -1754,6 +1768,7 @@ jobs:
         run: |
           set -o pipefail
           npx tsx scripts/journey-corpus.ts --artifacts \
+            --date "${{ steps.corpus_date.outputs.date }}" \
             --json journey-corpus-artifacts.json 2>&1 | tee journey-corpus-artifacts.log
 
       - name: What the artifacts cost
@@ -1776,6 +1791,7 @@ jobs:
         run: |
           set -o pipefail
           npx tsx scripts/journey-corpus.ts \
+            --date "${{ steps.corpus_date.outputs.date }}" \
             --window-hours 2 \
             --json journey-corpus-2h.json 2>&1 | tee journey-corpus-2h.log
 

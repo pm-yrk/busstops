@@ -54,6 +54,45 @@ export interface Corpus {
   entries: Entry[];
 }
 
+/**
+ * Whether two corpora are about the same question at all.
+ *
+ * Checked before anything is compared, because the percentages cannot say that they are not. The
+ * corpus job records five runs in sequence and each one read `new Date()` for its service date, so
+ * a job that started before midnight and finished after it recorded its baseline on one day and
+ * its candidates on the next — and then reported 30% same best itinerary as though the planner had
+ * changed. A Saturday timetable is not a Sunday's, and the only clue was that a second candidate
+ * reported exactly the same figures.
+ *
+ * The artifact version matters for the same reason: a corpus recorded against one published
+ * network and compared against another measures the publish, not the planner.
+ *
+ * Both fields were already in the report. Nothing read them, which is the failure — the output was
+ * wrong rather than missing.
+ */
+export function comparableCorpora(
+  baseline: Corpus,
+  candidate: Corpus,
+): { ok: true } | { ok: false; reason: string; baseline?: string; candidate?: string } {
+  if (baseline.serviceDate !== candidate.serviceDate) {
+    return {
+      ok: false,
+      reason: "the two corpora were recorded for different service dates",
+      baseline: baseline.serviceDate,
+      candidate: candidate.serviceDate,
+    };
+  }
+  if (baseline.version !== candidate.version) {
+    return {
+      ok: false,
+      reason: "the two corpora were recorded against different artifact versions",
+      baseline: baseline.version,
+      candidate: candidate.version,
+    };
+  }
+  return { ok: true };
+}
+
 export interface Comparison {
   queries: number;
   comparable: number;

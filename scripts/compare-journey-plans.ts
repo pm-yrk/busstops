@@ -14,7 +14,7 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { annotateReport } from "@busstops/pipeline-core";
-import { comparePlans, type Corpus } from "./lib/compare-plans.js";
+import { comparableCorpora, comparePlans, type Corpus } from "./lib/compare-plans.js";
 
 const arg = (name: string): string | undefined => {
   const at = process.argv.indexOf(`--${name}`);
@@ -35,6 +35,27 @@ function main(): number {
 
   const baseline = read(baselinePath);
   const candidate = read(candidatePath);
+
+  /*
+   * Refused rather than flagged, because a flag on a number this load-bearing would be read past.
+   * See `comparableCorpora` for what happened when nothing checked.
+   */
+  const comparable = comparableCorpora(baseline, candidate);
+  if (!comparable.ok) {
+    const report = {
+      outcome: "incomparable",
+      reason: comparable.reason,
+      baseline: { path: baselinePath, value: comparable.baseline },
+      candidate: { path: candidatePath, value: comparable.candidate },
+      note:
+        "Pin one service date across every run of a corpus job — the corpus takes `--date` — or a " +
+        "job that straddles midnight compares one day's timetable against another's.",
+    };
+    annotateReport("journey correctness", report);
+    console.error(JSON.stringify(report, null, 1));
+    return 1;
+  }
+
   const comparison = comparePlans(baseline, candidate);
 
   const report = {

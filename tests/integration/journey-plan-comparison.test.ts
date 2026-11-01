@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { comparePlans, type Corpus, type Option } from "../../scripts/lib/compare-plans.js";
+import {
+  comparableCorpora,
+  comparePlans,
+  type Corpus,
+  type Option,
+} from "../../scripts/lib/compare-plans.js";
 
 /**
  * The gate on a replacement planner, tested on cases built by hand.
@@ -148,5 +153,52 @@ describe("holding a candidate planner against the deployed one", () => {
     /* The shown option is identical; the second-best is not, so the fastest arrival differs. */
     expect(comparison.sameBestItinerary).toBe("100.0%");
     expect(comparison.sameFastestArrival).toBe("0.0%");
+  });
+});
+
+/**
+ * Whether the two corpora are about the same question, which the percentages cannot say.
+ *
+ * The corpus job records five runs in sequence, each reading the clock for its own service date.
+ * A job that started at 23:5x and finished after midnight recorded its baseline on 31 October and
+ * its candidates on 1 November, and the comparison reported 30% same best itinerary and 30%
+ * materially worse — a Saturday timetable held against a Sunday's. The only clue was that a second
+ * candidate reported exactly the same figures, which is what a moved baseline looks like.
+ *
+ * Both dates were in the report already. Nothing read them.
+ */
+describe("whether two corpora can be compared at all", () => {
+  const corpus = (over: Partial<Corpus> = {}): Corpus => ({
+    version: "2026-10-22T12:49:08.474Z",
+    serviceDate: "2026-10-31",
+    entries: [],
+    ...over,
+  });
+
+  it("accepts two corpora of the same day and the same published network", () => {
+    expect(comparableCorpora(corpus(), corpus())).toEqual({ ok: true });
+  });
+
+  it("refuses a comparison across two service dates", () => {
+    const refused = comparableCorpora(corpus(), corpus({ serviceDate: "2026-11-01" }));
+    expect(refused.ok).toBe(false);
+    expect(refused).toMatchObject({
+      reason: "the two corpora were recorded for different service dates",
+      baseline: "2026-10-31",
+      candidate: "2026-11-01",
+    });
+  });
+
+  it("refuses a comparison across two artifact versions", () => {
+    const refused = comparableCorpora(corpus(), corpus({ version: "2026-09-30T16:56:04.815Z" }));
+    expect(refused.ok).toBe(false);
+    expect(refused).toMatchObject({
+      reason: "the two corpora were recorded against different artifact versions",
+    });
+  });
+
+  it("refuses when one of them does not say which day it is about", () => {
+    /* An absent date cannot be shown to match, and a comparison that assumed it did is the bug. */
+    expect(comparableCorpora(corpus(), corpus({ serviceDate: undefined })).ok).toBe(false);
   });
 });
