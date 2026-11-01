@@ -979,7 +979,27 @@ describe("how far ahead a plan looks", () => {
 });
 
 describe("a corridor published as bytes", () => {
-  async function publishBinary(options: { alsoText: boolean; corrupt?: boolean }) {
+  async function publishBinary(options: {
+    alsoText: boolean;
+    corrupt?: boolean;
+    /**
+     * Give every trip an arrival that is not its departure.
+     *
+     * The fixture's trips wait nowhere, so both columns of the shard hold the same numbers and a
+     * reader that confused them would pass. A trip from a binary shard carries no copied arrays
+     * any more — the graph builder reads the typed arrays in place — and reading a departure where
+     * an arrival belongs would put a bus at a stop at the wrong minute rather than fail.
+     */
+    layover?: boolean;
+    /**
+     * Write the lines and no bytes, which is the only way to get a text-form plan out of this.
+     *
+     * `alsoText` writes both, and every reader prefers the bytes — so a comparison of `alsoText`
+     * against bytes-only compares the binary path with itself. The first version of the layover
+     * test did exactly that and passed with the arrival column deliberately broken.
+     */
+    withoutBytes?: boolean;
+  }) {
     const store = new InMemoryObjectStore();
     const tiles = tripTilesForBoundingBox(corridor);
     const midnight = Date.parse(`${SERVICE_DATE}T00:00:00.000Z`) / 1000;
@@ -993,21 +1013,53 @@ describe("a corridor published as bytes", () => {
       tripLine(1, DEPART_AT + 1800),
       ...Array.from({ length: 8 }, (_, i) => fillerLine(i)),
     ];
-    const rows = lines.map((line) => JSON.parse(line) as PatternTripRow);
+    const rows = lines.map((line) => {
+      const row = JSON.parse(line) as PatternTripRow;
+      if (options.layover !== true) return row;
+      /* Two minutes early at every call after the first, which is what a layover looks like. */
+      return { ...row, a: row.t.map((seconds, at) => (at === 0 ? seconds : seconds - 120)) };
+    });
+    const textLines = rows.map((row) => JSON.stringify(row));
     let shards = 0;
     for (const tile of tiles) {
       for (const window of windows) {
         const dataset = patternTripsDataset(SERVICE_DATE, tile, window);
-        if (options.alsoText) await store.put(objectKeyFor(dataset, "v1"), `${lines.join("\n")}\n`);
-        const bytes = options.corrupt
-          ? new TextEncoder().encode("this is not a shard")
-          : encodePatternTripShard(rows).bytes;
-        await store.putBytes(objectKeyForBytes(dataset, "v1"), bytes);
+        if (options.alsoText) {
+          await store.put(objectKeyFor(dataset, "v1"), `${textLines.join("\n")}\n`);
+        }
+        if (options.withoutBytes !== true) {
+          const bytes = options.corrupt
+            ? new TextEncoder().encode("this is not a shard")
+            : encodePatternTripShard(rows).bytes;
+          await store.putBytes(objectKeyForBytes(dataset, "v1"), bytes);
+        }
         shards += 1;
       }
     }
     return { store, shards };
   }
+
+  it("reads the arrival column, not the departure column twice", async () => {
+    /*
+     * Both forms of the same trips, with an arrival at every call that is genuinely a different
+     * number from the departure. The fixture elsewhere waits nowhere, so the two columns hold the
+     * same numbers and this is the only case that can tell them apart.
+     */
+    const textOnly = await publishBinary({ alsoText: true, withoutBytes: true, layover: true });
+    const { store: bytesStore, shards } = await publishBinary({ alsoText: false, layover: true });
+
+    const fromText = await new JourneyService(textOnly.store).planJourney(slice(), request);
+    const fromBytes = await new JourneyService(bytesStore).planJourney(slice(), request);
+
+    /* One plan from each form, which is what makes the comparison mean anything. */
+    expect(fromText.diagnostics.shardsBinary).toBe(0);
+    expect(fromBytes.diagnostics.shardsBinary).toBe(shards);
+    expect(fromBytes.diagnostics.shardsBinaryFallback).toBe(0);
+    expect(fromText.ok && fromText.result.options.length).toBeGreaterThan(0);
+    expect(JSON.stringify(fromBytes.ok ? fromBytes.result : null)).toBe(
+      JSON.stringify(fromText.ok ? fromText.result : null),
+    );
+  });
 
   it("plans the same journey from the bytes as from the text", async () => {
     const { store: textStore } = await publish(8);

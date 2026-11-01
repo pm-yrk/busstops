@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { effectiveStopTimes } from "@busstops/journey";
 import type { RoutePattern, ServiceRoute } from "@busstops/contracts";
 import type { PatternTripRow } from "@busstops/pipeline-static-network";
+import { PatternTripShard, encodePatternTripShard } from "@busstops/pipeline-static-network";
 import { buildGraphFor, secondsIntoServiceDay } from "./journey-service.js";
 import type { RouteStop } from "./network-queries.js";
 
@@ -182,5 +183,74 @@ describe("stop times into seconds of the service day", () => {
     );
     expect(built.graph!.trips).toEqual([]);
     expect(built.tripsWithPattern).toBe(1);
+  });
+});
+
+/**
+ * The same times, read out of a published shard instead of a parsed line.
+ *
+ * A trip from a binary shard no longer carries copied arrays: `rowAt` built two per trip — about
+ * twenty thousand arrays and a quarter of a million number writes for a Manchester corridor — and
+ * the graph builder reads the typed arrays in place now. The risk in that change is narrow and
+ * nasty: reading a departure where an arrival belongs, or the reverse, which would put a bus at a
+ * stop at the wrong minute rather than fail.
+ *
+ * So the shard is built from the same rows the line-based cases use, and the graph is required to
+ * produce the same stop times either way — including the layover, where the arrival is genuinely a
+ * different number from the departure.
+ */
+describe("a trip read out of the shard rather than out of a line", () => {
+  const serviceDate = "2026-07-15";
+  const midnight = Date.parse(`${serviceDate}T00:00:00.000Z`) / 1000;
+  const departures = [midnight + 32_400, midnight + 33_000, midnight + 33_600];
+  /* A layover: the bus arrives two minutes before it leaves the middle stop. */
+  const arrivals = [midnight + 32_400, midnight + 32_880, midnight + 33_600];
+
+  /** The shard's own rows, as a reader would get them back out of the bytes. */
+  function rowsFromShard(source: readonly PatternTripRow[]): PatternTripRow[] {
+    const shard = new PatternTripShard(encodePatternTripShard([...source]).bytes);
+    return Array.from({ length: shard.tripCount }, (_, trip) => shard.rowAt(trip));
+  }
+
+  it("keeps the arrival apart from the departure", async () => {
+    const source = [row(departures, arrivals)];
+    const built = await buildGraphFor(
+      slice([STOP_A, STOP_B, STOP_C]),
+      source,
+      corridor,
+      serviceDate,
+    );
+    const fromBytes = await buildGraphFor(
+      slice([STOP_A, STOP_B, STOP_C]),
+      rowsFromShard(source),
+      corridor,
+      serviceDate,
+    );
+
+    const times = effectiveStopTimes(built.graph!.trips[0]!);
+    const bytes = effectiveStopTimes(fromBytes.graph!.trips[0]!);
+    expect(bytes).toEqual(times);
+    /* And the layover really is in there, so the comparison is not of two identical columns. */
+    expect(bytes[1]!.arrivalSeconds).toBe(32_880);
+    expect(bytes[1]!.departureSeconds).toBe(33_000);
+  });
+
+  it("agrees when the feed publishes no separate arrival at all", async () => {
+    const source = [row(departures)];
+    const built = await buildGraphFor(
+      slice([STOP_A, STOP_B, STOP_C]),
+      source,
+      corridor,
+      serviceDate,
+    );
+    const fromBytes = await buildGraphFor(
+      slice([STOP_A, STOP_B, STOP_C]),
+      rowsFromShard(source),
+      corridor,
+      serviceDate,
+    );
+    expect(effectiveStopTimes(fromBytes.graph!.trips[0]!)).toEqual(
+      effectiveStopTimes(built.graph!.trips[0]!),
+    );
   });
 });
