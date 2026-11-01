@@ -307,87 +307,6 @@ const MAX_CACHED_GROUPINGS = 48;
 /** A corridor's trip row, carrying the route the published grouping put it on. */
 type CorridorTripRow = PatternTripRow & { routeKey?: string };
 
-/**
- * A trip from a binary shard, as a reference into it rather than a copy of it.
- *
- * `rowAt` built the row the old reader wanted: an object with two fresh arrays holding every call's
- * departure and arrival, copied out of the typed arrays they already sat in. For a Manchester
- * corridor that is about ten thousand trips of twenty-five calls — twenty thousand arrays and a
- * quarter of a million number writes per passenger request, to move integers from one place in
- * memory to another. It was the last place the trip artifact was being spent on the way in.
- *
- * This holds the shard and an index instead. `t` and `a` stay on the type because a handful of
- * callers genuinely want arrays — a diagnostic, a test — and they materialise on demand; nothing
- * on the request path reads them, which is what makes the laziness worth having. The accessors
- * below are what the graph builder uses, and they read the typed arrays in place.
- *
- * `patternIds` is the shard's pattern table, decoded once per shard rather than once per trip:
- * `patternId` decodes a string every time it is called, and a shard holds a few hundred patterns
- * against its thousands of trips.
- */
-class ShardTripRow implements CorridorTripRow {
-  constructor(
-    readonly p: string,
-    readonly j: string,
-    private readonly shard: PatternTripShard,
-    private readonly trip: number,
-    readonly routeKey: string | undefined,
-  ) {}
-
-  /** How many calls this trip has. Dense by construction: a binary shard cannot hold a gap. */
-  get calls(): number {
-    return this.shard.callsIn(this.trip);
-  }
-
-  departureAt(call: number): number {
-    return this.shard.departure(this.trip, call);
-  }
-
-  arrivalAt(call: number): number {
-    return this.shard.arrival(this.trip, call);
-  }
-
-  /** The departures as an array, built only if something asks. */
-  get t(): number[] {
-    const count = this.shard.callsIn(this.trip);
-    const times = new Array<number>(count);
-    for (let call = 0; call < count; call += 1) times[call] = this.shard.departure(this.trip, call);
-    return times;
-  }
-
-  get a(): number[] {
-    const count = this.shard.callsIn(this.trip);
-    const times = new Array<number>(count);
-    for (let call = 0; call < count; call += 1) times[call] = this.shard.arrival(this.trip, call);
-    return times;
-  }
-}
-
-/**
- * How many calls a corridor trip has, whichever form it came in.
- *
- * One `instanceof` rather than a copied array. The binary form knows its own count; a parsed line
- * carries one array and its length is the count.
- */
-function callsOfRow(row: CorridorTripRow): number {
-  return row instanceof ShardTripRow ? row.calls : row.t.length;
-}
-
-/** Whether this trip has a time at this position in its pattern's sequence. */
-function rowHasCall(row: CorridorTripRow, position: number): boolean {
-  return row instanceof ShardTripRow ? position < row.calls : row.t[position] !== undefined;
-}
-
-/** Published seconds for one call. See `TripCallSource` for why the index is a position. */
-function rowDeparture(row: CorridorTripRow, position: number): number {
-  return row instanceof ShardTripRow ? row.departureAt(position) : row.t[position]!;
-}
-
-function rowArrival(row: CorridorTripRow, position: number): number {
-  if (row instanceof ShardTripRow) return row.arrivalAt(position);
-  return row.a?.[position] ?? row.t[position]!;
-}
-
 /** `network/pattern-trips/<date>/<window>/<tile>` → its three parts, for the sibling grouping. */
 function tripShardParts(
   dataset: string,
@@ -1407,15 +1326,10 @@ export class JourneyService {
           filtered += 1;
           return;
         }
-        rows.push(
-          new ShardTripRow(
-            patternIdOf[shard.patternOf(trip)]!,
-            shard.tripId(trip),
-            shard,
-            trip,
-            grouping === null ? undefined : grouping.keys[trip],
-          ),
-        );
+        const row = shard.rowAtWith(trip, patternIdOf[shard.patternOf(trip)]!) as CorridorTripRow;
+        /* Always set, even to undefined, so every row has the same shape. */
+        row.routeKey = grouping === null ? undefined : grouping.keys[trip];
+        rows.push(row);
       };
       if (order === null) {
         for (let trip = 0; trip < shard.tripCount; trip += 1) visit(trip);
@@ -1730,9 +1644,18 @@ export async function buildGraphFor(
   /** Per row: the shape it belongs to, or null for a row with no pattern or too few calls. */
   const shapeOfRow: Array<CallShape | null> = [];
 
+  /*
+   * A copy per trip, read through a plain array. The window-into-the-shard form that avoided the
+   * copy measured worse where it counts — see `PatternTripShard.rowAtWith` — because the search
+   * reads a trip's times many times over and resolving each read through the shard does not
+   * amortise.
+   */
   const source: TripCallSource = {
-    departure: (trip, call) => rowDeparture(rows[trip] as CorridorTripRow, call),
-    arrival: (trip, call) => rowArrival(rows[trip] as CorridorTripRow, call),
+    departure: (trip, call) => rows[trip]!.t[call]!,
+    arrival: (trip, call) => {
+      const row = rows[trip]!;
+      return row.a?.[call] ?? row.t[call]!;
+    },
   };
 
   for (const row of rows) {
@@ -1746,14 +1669,10 @@ export async function buildGraphFor(
     tripsWithPattern += 1;
 
     const sequence = pattern.stopSequence;
-    const count = Math.min(callsOfRow(row), sequence.length);
-    /*
-     * A binary shard cannot hold a gap — its calls are stored densely — so the check is only ever
-     * about a parsed line, and `rowHasCall` answers it without building an array either way.
-     */
+    const count = Math.min(row.t.length, sequence.length);
     let dense = true;
     for (let at = 0; at < count; at += 1) {
-      if (!rowHasCall(row, at)) {
+      if (row.t[at] === undefined) {
         dense = false;
         break;
       }
@@ -1763,7 +1682,7 @@ export async function buildGraphFor(
       /* Its own positions, because this row's are not any group's. */
       const positions: number[] = [];
       for (let at = 0; at < sequence.length; at += 1) {
-        if (rowHasCall(row, at)) positions.push(at);
+        if (row.t[at] !== undefined) positions.push(at);
       }
       if (positions.length < 2) {
         shapeOfRow.push(null);

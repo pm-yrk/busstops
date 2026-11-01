@@ -310,21 +310,40 @@ export class PatternTripShard {
    * itinerary — does not have to reach into the views.
    */
   rowAt(trip: number): PatternTripRow {
+    return this.rowAtWith(trip, this.patternId(this.patternOf(trip)));
+  }
+
+  /**
+   * The same row, told which pattern it is on.
+   *
+   * `patternId` decodes a string on every call, and a shard holds a few hundred patterns against
+   * its thousands of trips — so a reader walking a whole shard decodes the same handful of strings
+   * over and over. Given the pattern table once, it decodes none of them.
+   *
+   * The arrivals are scanned before they are stored rather than collected and then thrown away.
+   * Most trips wait nowhere, so most rows need no arrival array at all, and the old form allocated
+   * one per trip to discover that — a second array across every trip in the corridor, built only
+   * to be dropped. The scan reads the same values and allocates only when they differ.
+   *
+   * A copy rather than a window into the shard, deliberately. Reading the typed arrays in place
+   * looked like the obvious saving and measured worse where it counts: journey CPU went from a p50
+   * of 19 ms to 51, p95 from 86 to 222, and twelve of thirty-six invocations were killed where
+   * none had been. The search reads a trip's times many times over — a binary search and then a
+   * scan — so copying once amortises, and resolving each read through the shard does not.
+   */
+  rowAtWith(trip: number, patternId: string): PatternTripRow {
     const calls = this.callsIn(trip);
     const times: number[] = new Array<number>(calls);
     let differs = false;
-    const arrivals: number[] = new Array<number>(calls);
     for (let call = 0; call < calls; call += 1) {
       times[call] = this.departure(trip, call);
-      arrivals[call] = this.arrival(trip, call);
-      if (arrivals[call] !== times[call]) differs = true;
+      if (!differs && this.arrival(trip, call) !== times[call]) differs = true;
     }
-    const row: PatternTripRow = {
-      p: this.patternId(this.patternOf(trip)),
-      j: this.tripId(trip),
-      t: times,
-    };
-    return differs ? { ...row, a: arrivals } : row;
+    const row: PatternTripRow = { p: patternId, j: this.tripId(trip), t: times };
+    if (!differs) return row;
+    const arrivals: number[] = new Array<number>(calls);
+    for (let call = 0; call < calls; call += 1) arrivals[call] = this.arrival(trip, call);
+    return { ...row, a: arrivals };
   }
 }
 
