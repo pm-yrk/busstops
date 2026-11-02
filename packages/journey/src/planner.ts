@@ -26,6 +26,8 @@ export interface PlanRequest {
   maxAccessWalkSeconds?: number;
   maxCandidateStops?: number;
   maxRounds?: number;
+  /** Diagnostic control for comparing the optimisation against the same unpruned timetable. */
+  targetPruning?: boolean;
 }
 
 export interface PlannedLeg {
@@ -226,10 +228,13 @@ export function plan(graph: JourneyGraph, request: PlanRequest): PlanResult {
   const result = runRaptor(graph, searchOrigins, {
     departAtSeconds: request.departAtSeconds,
     maxRounds,
-    targetPruning: {
-      destinations: searchDestinations,
-      slackSeconds: targetPruningSlackSeconds,
-    },
+    targetPruning:
+      request.targetPruning === false
+        ? undefined
+        : {
+            destinations: searchDestinations,
+            slackSeconds: targetPruningSlackSeconds,
+          },
   });
 
   // One itinerary per round preserves genuinely different change counts, which is what makes

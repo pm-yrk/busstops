@@ -417,6 +417,15 @@ async function main(): Promise<number> {
       departAtSeconds: DEPART_AT_SECONDS,
     });
     const planMs = Number(process.hrtime.bigint() - planBegan) / 1e6;
+    // The same graph, date and ranking rules, changing only pruning. Separate corpus runs can
+    // observe a rolling refresh between reads and cannot isolate this optimisation's effect.
+    const unpruned = plan(graph, {
+      origin: query.from,
+      destination: query.to,
+      departAtSeconds: DEPART_AT_SECONDS,
+      targetPruning: false,
+    });
+    const targetPruningAgrees = JSON.stringify(result) === JSON.stringify(unpruned);
     if (result.options.length > 0) answered += 1;
     transferSources.set(transfersFrom, (transferSources.get(transfersFrom) ?? 0) + 1);
 
@@ -425,6 +434,7 @@ async function main(): Promise<number> {
       from: query.from,
       to: query.to,
       outcome: result.options.length > 0 ? "answered" : "unanswered",
+      targetPruningAgrees,
       stops: slice.stops.length,
       trips: slice.trips.length,
       transferEdges,
@@ -500,6 +510,7 @@ async function main(): Promise<number> {
       return {
         query: entry.query,
         outcome: entry.outcome,
+        targetPruningAgrees: entry.targetPruningAgrees,
         stops: entry.stops,
         trips: entry.trips,
         transferEdges: entry.transferEdges,
@@ -517,7 +528,7 @@ async function main(): Promise<number> {
     }),
   });
   console.log(`\nAnswered ${String(answered)} of ${String(QUERIES.length)} queries.`);
-  return 0;
+  return entries.some((entry) => entry.targetPruningAgrees === false) ? 1 : 0;
 }
 
 main()

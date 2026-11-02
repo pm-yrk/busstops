@@ -133,6 +133,28 @@ describe("candidate stops", () => {
 });
 
 describe("RAPTOR search", () => {
+  it("preserves complete ranked plans against the unpruned control", () => {
+    for (const maxRounds of [1, 2, 3, 5]) {
+      for (const minutes of [0, 4, 8, 15, 30]) {
+        for (const cancelled of [false, true]) {
+          const comparisonGraph = buildGraph({
+            stops,
+            trips: trips.map((row) => (row.id === "t2" ? { ...row, cancelled } : row)),
+            maxTransferSeconds: 600,
+          });
+          const request = {
+            origin,
+            destination,
+            departAtSeconds: departAt + minutes * MIN,
+            maxRounds,
+          };
+          expect(plan(comparisonGraph, request)).toEqual(
+            plan(comparisonGraph, { ...request, targetPruning: false }),
+          );
+        }
+      }
+    }
+  });
   const origins = [
     { stopId: "A", accessSeconds: 30 },
     { stopId: "B", accessSeconds: 300 },

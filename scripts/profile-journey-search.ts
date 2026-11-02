@@ -250,6 +250,14 @@ async function main(): Promise<number> {
     const plannedColumnar = timed(() =>
       plan(builtColumnar.value, { origin: query.from, destination: query.to, departAtSeconds }),
     );
+    const plannedUnpruned = timed(() =>
+      plan(builtColumnar.value, {
+        origin: query.from,
+        destination: query.to,
+        departAtSeconds,
+        targetPruning: false,
+      }),
+    );
 
     /* The same search again, counted. */
     const counters = newSearchCounters();
@@ -290,6 +298,9 @@ async function main(): Promise<number> {
       /* The same build and search with the calls read in place rather than materialised. */
       buildGraphColumnarMs: Number(builtColumnar.ms.toFixed(2)),
       planColumnarMs: Number(plannedColumnar.ms.toFixed(2)),
+      planColumnarUnprunedMs: Number(plannedUnpruned.ms.toFixed(2)),
+      targetPruningPlanAgrees:
+        JSON.stringify(plannedColumnar.value) === JSON.stringify(plannedUnpruned.value),
       /* And that it is the same plan, which is the only thing that makes the figures worth having. */
       columnarPlanAgrees: JSON.stringify(plannedColumnar.value) === JSON.stringify(planned.value),
       buildTransfersMs: Number(transfersOnly.ms.toFixed(2)),
@@ -372,7 +383,7 @@ async function main(): Promise<number> {
   console.log(JSON.stringify(report, null, 1));
   if (JSON_OUT) writeFileSync(JSON_OUT, JSON.stringify(report, null, 1));
   annotateReport("journey profile", report);
-  return 0;
+  return results.some((row) => row.targetPruningPlanAgrees === false) ? 1 : 0;
 }
 
 main()
