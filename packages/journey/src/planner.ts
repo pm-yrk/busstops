@@ -96,6 +96,9 @@ export const PLANNER_DEFAULTS = {
   fragileTransferThresholdSeconds: 240,
 } as const;
 
+const LEAST_WALKING_ARRIVAL_SLACK_SECONDS = 900;
+const FEWEST_CHANGES_ARRIVAL_SLACK_SECONDS = 1200;
+
 /** Beyond this, walking the whole way stops being a reasonable suggestion. */
 export const MAX_DIRECT_WALK_SECONDS = 45 * 60;
 
@@ -202,9 +205,31 @@ export function plan(graph: JourneyGraph, request: PlanRequest): PlanResult {
     egressSeconds: candidate.walkSeconds,
   }));
 
+  /*
+   * RAPTOR may stop exploring labels that cannot influence any answer we expose, but the bound
+   * must preserve more than the raw earliest arrival. A slightly later itinerary can still win
+   * "least walking", "fewest changes", or the reliability-adjusted fastest score.
+   *
+   * The first two have explicit arrival windows below. The largest reliability advantage an
+   * itinerary can have is one change's transfer + fragility penalty per extra boarding, so keep
+   * at least that much headroom too. This is deliberately conservative.
+   */
+  const maxReliabilityAdvantageSeconds =
+    Math.max(0, maxRounds - 1) *
+    (PLANNER_DEFAULTS.transferPenaltySeconds + PLANNER_DEFAULTS.fragileTransferPenaltySeconds);
+  const targetPruningSlackSeconds = Math.max(
+    LEAST_WALKING_ARRIVAL_SLACK_SECONDS,
+    FEWEST_CHANGES_ARRIVAL_SLACK_SECONDS,
+    maxReliabilityAdvantageSeconds,
+  );
+
   const result = runRaptor(graph, searchOrigins, {
     departAtSeconds: request.departAtSeconds,
     maxRounds,
+    targetPruning: {
+      destinations: searchDestinations,
+      slackSeconds: targetPruningSlackSeconds,
+    },
   });
 
   // One itinerary per round preserves genuinely different change counts, which is what makes
@@ -320,6 +345,8 @@ export function arrivalFromSingleStop(
   const result = runRaptor(graph, [{ stopId: origin.stop.id, accessSeconds: origin.walkSeconds }], {
     departAtSeconds: request.departAtSeconds,
     maxRounds,
+    // This helper asks only for the earliest arrival, so it needs no ranking headroom.
+    targetPruning: { destinations, slackSeconds: 0 },
     // The question is "what can I reach boarding here", so walking off to a different stop
     // first would answer a different question and make the comparison meaningless.
     allowInitialFootpaths: false,
@@ -532,11 +559,15 @@ export function rankOptions(options: readonly PlannedOption[]): PlannedOption[] 
 
   // Least walking, subject to not arriving unreasonably later than the best option.
   const leastWalking = [...options]
-    .filter((o) => o.arrivalSeconds <= earliestArrival + 900)
+    .filter(
+      (o) => o.arrivalSeconds <= earliestArrival + LEAST_WALKING_ARRIVAL_SLACK_SECONDS,
+    )
     .sort((a, b) => a.totalWalkSeconds - b.totalWalkSeconds)[0];
 
   const fewestChanges = [...options]
-    .filter((o) => o.arrivalSeconds <= earliestArrival + 1200)
+    .filter(
+      (o) => o.arrivalSeconds <= earliestArrival + FEWEST_CHANGES_ARRIVAL_SLACK_SECONDS,
+    )
     .sort((a, b) => a.changeCount - b.changeCount || a.arrivalSeconds - b.arrivalSeconds)[0];
 
   const chosen: PlannedOption[] = [{ ...fastest, ranking: "fastest" }];
