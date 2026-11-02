@@ -229,12 +229,12 @@ export function plan(graph: JourneyGraph, request: PlanRequest): PlanResult {
     departAtSeconds: request.departAtSeconds,
     maxRounds,
     targetPruning:
-      request.targetPruning === false
-        ? undefined
-        : {
+      request.targetPruning === true
+        ? {
             destinations: searchDestinations,
             slackSeconds: targetPruningSlackSeconds,
-          },
+          }
+        : undefined,
   });
 
   // One itinerary per round preserves genuinely different change counts, which is what makes

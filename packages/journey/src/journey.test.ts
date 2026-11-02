@@ -148,7 +148,7 @@ describe("RAPTOR search", () => {
             departAtSeconds: departAt + minutes * MIN,
             maxRounds,
           };
-          expect(plan(comparisonGraph, request)).toEqual(
+          expect(plan(comparisonGraph, { ...request, targetPruning: true })).toEqual(
             plan(comparisonGraph, { ...request, targetPruning: false }),
           );
         }

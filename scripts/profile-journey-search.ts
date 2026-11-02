@@ -56,6 +56,11 @@ const JSON_OUT = arg("json");
  */
 const QUERIES = [
   {
+    name: "Manchester: Didsbury to Prestwich, across the city",
+    from: { lat: 53.4186, lon: -2.2311 },
+    to: { lat: 53.5316, lon: -2.2819 },
+  },
+  {
     name: "small (neighbourhood, Leeds)",
     from: { lat: 53.7996, lon: -1.5491 },
     to: { lat: 53.8035, lon: -1.5555 },
@@ -248,7 +253,12 @@ async function main(): Promise<number> {
       plan(graph, { origin: query.from, destination: query.to, departAtSeconds }),
     );
     const plannedColumnar = timed(() =>
-      plan(builtColumnar.value, { origin: query.from, destination: query.to, departAtSeconds }),
+      plan(builtColumnar.value, {
+        origin: query.from,
+        destination: query.to,
+        departAtSeconds,
+        targetPruning: true,
+      }),
     );
     const plannedUnpruned = timed(() =>
       plan(builtColumnar.value, {
@@ -301,6 +311,11 @@ async function main(): Promise<number> {
       planColumnarUnprunedMs: Number(plannedUnpruned.ms.toFixed(2)),
       targetPruningPlanAgrees:
         JSON.stringify(plannedColumnar.value) === JSON.stringify(plannedUnpruned.value),
+      ...(JSON.stringify(plannedColumnar.value) === JSON.stringify(plannedUnpruned.value)
+        ? {}
+        : {
+            pruningDifference: { pruned: plannedColumnar.value, unpruned: plannedUnpruned.value },
+          }),
       /* And that it is the same plan, which is the only thing that makes the figures worth having. */
       columnarPlanAgrees: JSON.stringify(plannedColumnar.value) === JSON.stringify(planned.value),
       buildTransfersMs: Number(transfersOnly.ms.toFixed(2)),

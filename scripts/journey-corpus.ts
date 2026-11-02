@@ -284,7 +284,9 @@ async function main(): Promise<number> {
   const transferSources = new Map<string, number>();
   let answered = 0;
 
-  for (const query of QUERIES) {
+  for (const query of QUERIES.filter(
+    (query) => !arg("query") || query.name.includes(arg("query")!),
+  )) {
     const slice = await loadCorridor(
       store,
       index,
@@ -415,6 +417,7 @@ async function main(): Promise<number> {
       origin: query.from,
       destination: query.to,
       departAtSeconds: DEPART_AT_SECONDS,
+      targetPruning: true,
     });
     const planMs = Number(process.hrtime.bigint() - planBegan) / 1e6;
     // The same graph, date and ranking rules, changing only pruning. Separate corpus runs can
@@ -435,6 +438,7 @@ async function main(): Promise<number> {
       to: query.to,
       outcome: result.options.length > 0 ? "answered" : "unanswered",
       targetPruningAgrees,
+      ...(targetPruningAgrees ? {} : { pruningDifference: { pruned: result, unpruned } }),
       stops: slice.stops.length,
       trips: slice.trips.length,
       transferEdges,
@@ -511,6 +515,7 @@ async function main(): Promise<number> {
         query: entry.query,
         outcome: entry.outcome,
         targetPruningAgrees: entry.targetPruningAgrees,
+        ...(entry.pruningDifference ? { pruningDifference: entry.pruningDifference } : {}),
         stops: entry.stops,
         trips: entry.trips,
         transferEdges: entry.transferEdges,
