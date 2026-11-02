@@ -1748,6 +1748,59 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
+  # Why `shardsGrouped` is zero on every deployed journey.
+  #
+  # The route grouping was published and verified — 5,574 objects — and two deployed CPU samples
+  # report that no request used any of it. On a runner the long way costs 11.73 ms in Leeds and
+  # 7.43 in Bristol against 4.86 and 3.37 from the artifact, so this is the largest stage the
+  # published families were meant to remove and did not. Either the object is missing for the
+  # dates being served, or it describes a shard the rolling refresh has since replaced; the fix
+  # differs, so the cause is read rather than guessed.
+  #
+  # Read-only, and ungated: it opens published objects and writes nothing.
+  grouping_proof:
+    name: Prove whether the grouping answers for today's shards
+    if: contains(join(github.event.commits.*.message), '[grouping-check]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - run: npm ci --no-audit --no-fund
+
+      - name: Read the shards and their groupings
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          NODE_OPTIONS: "--max-old-space-size=8192"
+        run: |
+          set -o pipefail
+          npx tsx scripts/prove-grouping.ts --limit 400 \
+            --json grouping-proof.json 2>&1 | tee grouping-proof.log
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "## Whether the published grouping answers"
+            echo '```'
+            sed -n '1,80p' grouping-proof.log 2>/dev/null || echo "not run"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-grouping-proof
+          path: |
+            grouping-proof.json
+            grouping-proof.log
+          retention-days: 14
+          if-no-files-found: ignore
+
   journey_corpus:
     name: Record what the current planner answers
     if: contains(join(github.event.commits.*.message), '[corpus]')
