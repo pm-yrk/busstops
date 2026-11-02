@@ -204,6 +204,32 @@ describe("RAPTOR search", () => {
     expect(comparisons).toBeGreaterThan(5);
   });
 
+  it("keeps later destination rounds that are inside the caller's pruning slack", () => {
+    const reachableOrigins = [
+      { stopId: "A", accessSeconds: 30 },
+      { stopId: "C", accessSeconds: 0 },
+    ];
+
+    const withRankingSlack = runRaptor(graph, reachableOrigins, {
+      departAtSeconds: departAt,
+      maxRounds: 3,
+      targetPruning: { destinations, slackSeconds: 20 * MIN },
+    });
+    const tightEarliestOnly = runRaptor(graph, reachableOrigins, {
+      departAtSeconds: departAt,
+      maxRounds: 3,
+      targetPruning: { destinations, slackSeconds: 0 },
+    });
+
+    // The direct bus reaches D in round 1. The two-bus alternative via E arrives five minutes
+    // later in round 2. A passenger-ranking search must keep it; a pure earliest-arrival search
+    // is allowed to prune it once the direct target is known.
+    expect(bestArrival(withRankingSlack.labelsByRound[2]!, destinations)?.arrivalSeconds).toBe(
+      departAt + 24 * MIN + 30,
+    );
+    expect(bestArrival(tightEarliestOnly.labelsByRound[2]!, destinations)).toBeNull();
+  });
+
   it("never boards a cancelled trip", () => {
     const cancelledGraph = buildGraph({
       stops,
