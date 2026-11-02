@@ -207,6 +207,30 @@ export function patternTripsDataset(serviceDate: string, tile: string, window: n
 }
 
 /**
+ * The same path read back into its parts, so a sibling artifact can be keyed from a shard.
+ *
+ * Beside `patternTripsDataset` rather than wherever it happens to be needed: a reader of the
+ * layout and a writer of it that live apart are a layout that can disagree with itself, and this
+ * one already has to agree with the route grouping published next to every shard. Returns null for
+ * anything that is not a shard dataset, so a caller handed something else writes nothing rather
+ * than writing somewhere unintended.
+ */
+export function patternTripsDatasetParts(
+  dataset: string,
+): { serviceDate: string; window: number; tile: string } | null {
+  const prefix = `${PATTERN_TRIPS_PREFIX}/`;
+  if (!dataset.startsWith(prefix)) return null;
+  const rest = dataset.slice(prefix.length).split("/");
+  if (rest.length !== 3) return null;
+  const [serviceDate, window, tile] = rest as [string, string, string];
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(serviceDate)) return null;
+  const windowNumber = Number(window);
+  if (!Number.isInteger(windowNumber) || windowNumber < 0) return null;
+  if (tile.length === 0) return null;
+  return { serviceDate, window: windowNumber, tile };
+}
+
+/**
  * The wire format version. Bumped when the shard layout changes shape, so a reader meeting an
  * older publish says so rather than silently misreading integers as different integers.
  */

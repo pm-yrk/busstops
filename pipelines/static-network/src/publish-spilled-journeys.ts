@@ -57,6 +57,21 @@ export interface SpilledJourneyPublishResult {
    * the next one says which number the layout is really up against.
    */
   throughput: { objects: number; bytes: number; seconds: number; objectsPerSecond: number };
+  /**
+   * The derived objects written beside the shards, and the ones that would not verify.
+   *
+   * A derived artifact belongs to the publish that wrote the data it describes, not to a later
+   * pass: the route grouping names its trips by index in a shard the refresh republishes three
+   * times a day, and a grouping published once for a rolling horizon stops describing anything
+   * within days. A read of 400 shards of the newest service date found 400 with no grouping at
+   * all. So the shard and its grouping are written together or the grouping is reported here as
+   * unverified, and the reader falls back to grouping in the request.
+   */
+  derived: {
+    published: number;
+    verified: number;
+    failed: Array<{ dataset: string; reason: string }>;
+  };
 }
 
 export async function publishSpilledJourneyTiles(
@@ -96,6 +111,26 @@ export async function publishSpilledJourneyTiles(
      * single form and a delete per shard per publish would be an operation spent on nothing.
      */
     removeOtherForm?: boolean;
+    /**
+     * A second object derived from the bytes just written, published beside them.
+     *
+     * Handed the bytes rather than the lines, and called after they are stored, so a derived
+     * artifact describes exactly what a reader will open — for the route grouping that is not a
+     * nicety but the whole correctness argument, since it names trips by their index in the shard
+     * and carries that shard's fingerprint. Deriving it here makes agreement structural: there is
+     * no window in which a shard exists without its grouping, no separate pass to fall behind the
+     * rolling horizon, and no key whose mere existence could stand in for a grouping that
+     * describes a shard since replaced.
+     *
+     * It returns null for a shard it has nothing to add, and `verify` is given what came back out
+     * of the bucket so a derived object that stored wrong is reported rather than trusted.
+     */
+    derive?: (
+      asBytes: Uint8Array,
+      dataset: string,
+    ) => { dataset: string; bytes: Uint8Array } | null;
+    /** Whether what came back out of the bucket is the derived object that was written. */
+    verify?: (stored: Uint8Array, asBytes: Uint8Array, dataset: string) => boolean;
   },
 ): Promise<SpilledJourneyPublishResult> {
   const datasetFor = options.datasetFor ?? journeyTileDataset;
@@ -133,7 +168,16 @@ export async function publishSpilledJourneyTiles(
       const lines: string[] = [];
       for await (const line of spill.read(entry.tile)) lines.push(line);
       if (lines.length === 0) {
-        return { tile: entry.tile, error: null, records: 0, bytes: 0, oversized: false };
+        return {
+          tile: entry.tile,
+          error: null,
+          records: 0,
+          bytes: 0,
+          oversized: false,
+          derivedPublished: 0,
+          derivedVerified: 0,
+          derivedError: null,
+        };
       }
 
       const asBytes = binaryStore === null ? null : options.encodeBytes!(lines, dataset);
@@ -145,7 +189,16 @@ export async function publishSpilledJourneyTiles(
        * the shard and lets the build report it as a layout problem.
        */
       if (bytes > maxBytes) {
-        return { tile: entry.tile, error: null, records: lines.length, bytes, oversized: true };
+        return {
+          tile: entry.tile,
+          error: null,
+          records: lines.length,
+          bytes,
+          oversized: true,
+          derivedPublished: 0,
+          derivedVerified: 0,
+          derivedError: null,
+        };
       }
       /*
        * One form per shard, and the one just written is the one that is true.
@@ -169,12 +222,50 @@ export async function publishSpilledJourneyTiles(
           await store.delete(objectKeyFor(dataset, options.version));
         }
       }
+
+      /*
+       * And whatever is derived from those bytes, written unconditionally.
+       *
+       * Unconditionally because the shard under it has just changed: a derived object already at
+       * that key describes the shard this refresh replaced, and skipping on the key being present
+       * is exactly how every journey came to ignore a grouping that was sitting in the bucket.
+       * Overwriting costs one write per shard per refresh and leaves nothing stale behind.
+       */
+      let derivedPublished = 0;
+      let derivedVerified = 0;
+      let derivedError: { dataset: string; reason: string } | null = null;
+      if (asBytes !== null && binaryStore !== null && options.derive !== undefined) {
+        const beside = options.derive(asBytes, dataset);
+        if (beside !== null) {
+          const key = objectKeyForBytes(beside.dataset, options.version);
+          await binaryStore.putBytes(key, beside.bytes);
+          derivedPublished = 1;
+          const stored = await binaryStore.getBytes(key);
+          if (stored === null) {
+            derivedError = { dataset: beside.dataset, reason: "what was written is not there" };
+          } else if (
+            options.verify !== undefined &&
+            !options.verify(stored, asBytes, beside.dataset)
+          ) {
+            derivedError = {
+              dataset: beside.dataset,
+              reason: "what came back does not describe this shard",
+            };
+          } else {
+            derivedVerified = 1;
+          }
+        }
+      }
+
       return {
         tile: entry.tile,
         error: null,
         oversized: false,
         records: lines.length,
         bytes,
+        derivedPublished,
+        derivedVerified,
+        derivedError,
       };
     } catch (error) {
       return {
@@ -183,6 +274,9 @@ export async function publishSpilledJourneyTiles(
         records: 0,
         bytes: 0,
         oversized: false,
+        derivedPublished: 0,
+        derivedVerified: 0,
+        derivedError: null,
       };
     }
   });
@@ -214,6 +308,17 @@ export async function publishSpilledJourneyTiles(
     }
   }
 
+  const derived = {
+    published: 0,
+    verified: 0,
+    failed: [] as Array<{ dataset: string; reason: string }>,
+  };
+  for (const outcome of outcomes) {
+    derived.published += outcome.derivedPublished;
+    derived.verified += outcome.derivedVerified;
+    if (outcome.derivedError !== null) derived.failed.push(outcome.derivedError);
+  }
+
   const seconds = (Date.now() - startedAt) / 1000;
   let bytesWritten = 0;
   for (const outcome of outcomes) if (!outcome.oversized) bytesWritten += outcome.bytes;
@@ -224,6 +329,7 @@ export async function publishSpilledJourneyTiles(
     records,
     largest,
     oversized,
+    derived,
     throughput: {
       objects: tiles.length,
       bytes: bytesWritten,

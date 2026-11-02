@@ -125,7 +125,12 @@ async function main(): Promise<number> {
    * failure this job exists to notice, produced by the job itself.
    */
   const atThisVersion = (key: string): boolean => versionInObjectKey(key) === index.version;
-  const rows: Array<{ date: string; departures: number; patternTrips: number }> = [];
+  const rows: Array<{
+    date: string;
+    departures: number;
+    patternTrips: number;
+    grouping: number;
+  }> = [];
   for (const date of serviceDates) {
     const departures = (await store.list(`data/${DEPARTURES_PREFIX}/${date}/`)).filter(
       atThisVersion,
@@ -133,15 +138,31 @@ async function main(): Promise<number> {
     const patternTrips = (await store.list(`data/${PATTERN_TRIPS_PREFIX}/${date}/`)).filter(
       atThisVersion,
     ).length;
-    rows.push({ date, departures, patternTrips });
+    /*
+     * And the route grouping, counted beside the shards rather than assumed.
+     *
+     * One per trip shard, written by the same publish, because a grouping names its trips by their
+     * index in the shard it was built from. Counting it here is what makes the pair provable: a
+     * grouping published by a separate pass fell behind this rolling horizon until 400 of 400
+     * shards of the newest service date had none, every journey grouped the long way, and nothing
+     * said so. A count short of the shards is that state, visible.
+     */
+    const grouping = (await store.list(`data/${SHARDED.journeyRoutes}/${date}/`)).filter(
+      atThisVersion,
+    ).length;
+    rows.push({ date, departures, patternTrips, grouping });
     console.log(
       `${date}  ${String(departures).padStart(5)} departure shard(s)  ` +
-        `${String(patternTrips).padStart(5)} pattern-trip shard(s)` +
+        `${String(patternTrips).padStart(5)} pattern-trip shard(s)  ` +
+        `${String(grouping).padStart(5)} grouping(s)` +
         (departures === 0
           ? "   <-- no board outside London can answer for this day"
           : departures < DEPARTURE_BUCKETS
             ? `   <-- ${DEPARTURE_BUCKETS - departures} bucket(s) missing of ${DEPARTURE_BUCKETS}`
-            : ""),
+            : grouping < patternTrips
+              ? `   <-- ${patternTrips - grouping} shard(s) have no grouping; journeys there ` +
+                `group their own trips`
+              : ""),
     );
   }
   report.coverage = rows;

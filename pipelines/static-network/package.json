@@ -12,6 +12,7 @@
     "@busstops/adapters": "*",
     "@busstops/contracts": "*",
     "@busstops/governor": "*",
+    "@busstops/journey": "*",
     "@busstops/pipeline-core": "*",
     "zod": "^3.24.1"
   },

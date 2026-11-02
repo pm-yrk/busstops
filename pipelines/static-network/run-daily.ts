@@ -28,7 +28,10 @@ import {
 } from "./src/publish-spilled-journeys.js";
 import { encodeDepartureShardFromJsonl } from "./src/departures-index.js";
 import type { PatternTripRow } from "./src/departures-index.js";
-import { encodePatternTripShard } from "./src/binary-trips.js";
+import { PatternTripShard, encodePatternTripShard } from "./src/binary-trips.js";
+import { encodeRouteGrouping, journeyRoutesDataset, RouteGrouping } from "./src/journey-routes.js";
+import { patternTripsDatasetParts } from "./src/departures-index.js";
+import { groupRouteIndices } from "@busstops/journey";
 import { MAX_PUBLISH_BYTES, publishNetworkShards } from "./src/publish-shards.js";
 import { serviceDateHorizonFromEnv } from "./src/service-dates.js";
 import { earliestServiceDateToKeep, pruneExpiredServiceDates } from "./src/prune-service-dates.js";
@@ -629,6 +632,52 @@ async function main(): Promise<number> {
      * per refresh removes the question.
      */
     removeOtherForm: true,
+    /*
+     * The route grouping of the shard just written, written beside it.
+     *
+     * A journey groups a corridor's trips into routes before it can search them — the sets running
+     * the same stop sequence, split so no bus in a route overtakes another — and that decision is
+     * derived from this timetable and nothing else. Measured on real corridors it cost 27.65 ms
+     * against the ten a Workers Free invocation gets, more than the walking transfers did.
+     *
+     * It belongs here rather than in a pass of its own, and the reason is this workflow's shape.
+     * The grouping names each trip by its index in the shard it was built from and carries that
+     * shard's fingerprint, so it is meaningful for that one shard and no other; the shards are
+     * keyed by service date and this publishes a rolling horizon three times a day. A grouping
+     * published once therefore stops describing anything within days — and did: a read of 400
+     * shards of the newest service date found 400 with no grouping at all, while every deployed
+     * journey reported `shardsGrouped: 0` and grouped the long way with the artifact sitting in
+     * the bucket. The same failure the binary trip form had before its publisher moved here.
+     *
+     * Derived from the bytes that were stored, not from the lines they came from, so the
+     * fingerprint is the fingerprint of what a reader will open. Nothing has to be checked
+     * afterwards because there is no moment at which the pair can disagree.
+     */
+    derive: (asBytes, dataset) => {
+      const parts = patternTripsDatasetParts(dataset);
+      if (parts === null) return null;
+      const shard = new PatternTripShard(asBytes);
+      const routes = groupRouteIndices({
+        tripCount: shard.tripCount,
+        patternKeyOf: (trip) => shard.patternOf(trip),
+        callCountOf: (trip) => shard.callsIn(trip),
+        departureOf: (trip, call) => shard.departure(trip, call),
+        tripIdOf: (trip) => shard.tripId(trip),
+      });
+      return {
+        dataset: journeyRoutesDataset(parts.serviceDate, parts.tile, parts.window),
+        bytes: encodeRouteGrouping({ fingerprint: shard.fingerprint(), routes }).bytes,
+      };
+    },
+    /* The reader's own check, against the shard the refresh just wrote: a grouping that does not
+     * describe it is reported rather than left for a passenger request to discover and ignore. */
+    verify: (stored, asBytes) => {
+      try {
+        return new RouteGrouping(stored).describes(new PatternTripShard(asBytes).fingerprint());
+      } catch {
+        return false;
+      }
+    },
   });
   report.patternTrips = {
     published: tripResult.tiles.length,
@@ -637,11 +686,27 @@ async function main(): Promise<number> {
     failed: tripResult.failed.slice(0, 10),
     oversized: tripResult.oversized.slice(0, 10),
     largest: tripResult.largest,
+    grouping: {
+      published: tripResult.derived.published,
+      verified: tripResult.derived.verified,
+      failed: tripResult.derived.failed.slice(0, 10),
+    },
   };
   console.log(
     `Pattern trips: ${tripResult.records} trips across ${tripResult.tiles.length} shards, ` +
       `largest ${tripResult.largest?.bytes ?? 0} bytes. ${throughput(tripResult)}`,
   );
+  console.log(
+    `Route grouping: ${tripResult.derived.verified} of ${tripResult.derived.published} shards' ` +
+      `groupings verified against the shard they describe.`,
+  );
+  if (tripResult.derived.failed.length > 0) {
+    console.error(
+      `${tripResult.derived.failed.length} route grouping(s) did not verify; journeys through ` +
+        `those tiles will group their own trips rather than use a grouping that may not describe ` +
+        `the shard they read.`,
+    );
+  }
   if (tripResult.failed.length > 0 || tripResult.oversized.length > 0) {
     console.error(
       `${tripResult.failed.length} pattern-trip shard(s) failed and ` +

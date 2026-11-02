@@ -33,6 +33,20 @@ export const SHARDED = {
   searchPrefix: "network/search-prefix",
   stopLocator: "network/stop-locator",
   routeTiles: "network/route-tiles",
+  /**
+   * The route grouping of one binary trip shard, published beside it.
+   *
+   * Grouping a corridor's trips into routes — the sets running the same stop sequence, split so no
+   * bus overtakes another — is derived from the published timetable alone, and a request was
+   * deriving it every time: 27.65 ms against the ten a Workers Free invocation gets for
+   * everything. It is a few integers per trip, under two per cent of the shard it describes.
+   *
+   * Written by the refresh that writes the shard, not by a separate pass, because it names trips
+   * by their index in that shard and is meaningless for any other. A grouping published once for
+   * a rolling horizon stops describing anything within days: a read of 400 shards of the newest
+   * service date found 400 with no grouping at all, and every journey grouped the long way.
+   */
+  journeyRoutes: "network/journey-routes",
 } as const;
 
 /**
