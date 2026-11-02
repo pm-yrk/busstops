@@ -1567,7 +1567,7 @@ router.get("/v1/journeys", async (_request, { env, url }) => {
   if (!readFeatureFlags(env).journeyPlanner) {
     return errorResponse(
       "feature_unavailable",
-      "Journey planning is switched off at the moment. Live buses, stops and departures are unaffected.",
+      "Journey planning is switched off at the moment. Stops and scheduled departures remain available.",
       503,
       60,
     );
