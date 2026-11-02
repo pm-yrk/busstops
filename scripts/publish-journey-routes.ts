@@ -61,6 +61,24 @@ const JSON_OUT = flag("json");
  * "compute it". Needs `--apply` as well, like everything else here that writes.
  */
 const REMOVE = argv.includes("--remove");
+/**
+ * Only the service dates a passenger can ask about, counting today.
+ *
+ * The refresh republishes a rolling horizon of dates three times a day and leaves the rest alone,
+ * so a run after a refresh has nothing to do outside that horizon. Unset means every date at the
+ * live version, which is what a first publish wants.
+ */
+const HORIZON_DAYS = flag("horizon-days") === undefined ? null : Number(flag("horizon-days"));
+
+/** The service dates within the horizon, counting today, as the keys spell them. */
+function datesInHorizon(days: number, now = new Date()): Set<string> {
+  const dates = new Set<string>();
+  for (let day = 0; day < days; day += 1) {
+    const at = new Date(now.getTime() + day * 24 * 60 * 60 * 1000);
+    dates.add(at.toISOString().slice(0, 10));
+  }
+  return dates;
+}
 
 /** `data/network/pattern-trips/<date>/<window>/<tile>/<version>.bin` → its three parts. */
 function shardParts(key: string): { serviceDate: string; window: number; tile: string } | null {
@@ -136,12 +154,15 @@ async function main(): Promise<number> {
       (key) => versionInObjectKey(key) === index.version,
     ),
   );
+  const horizon = HORIZON_DAYS === null ? null : datesInHorizon(HORIZON_DAYS);
 
   const deadline = Date.now() + MINUTES * 60 * 1000;
   const counts = {
     shards: trips.length,
     published: 0,
     skipped: 0,
+    replaced: 0,
+    outsideHorizon: 0,
     unreadable: 0,
     routes: 0,
     tripsGrouped: 0,
@@ -161,8 +182,8 @@ async function main(): Promise<number> {
       journeyRoutesDataset(parts.serviceDate, parts.tile, parts.window),
       index.version,
     );
-    if (already.has(target)) {
-      counts.skipped += 1;
+    if (horizon !== null && !horizon.has(parts.serviceDate)) {
+      counts.outsideHorizon += 1;
       continue;
     }
     if (counts.published >= LIMIT) {
@@ -189,6 +210,40 @@ async function main(): Promise<number> {
       counts.unreadable += 1;
       failures.push({ key, reason: `opening the shard failed: ${String(error).slice(0, 100)}` });
       continue;
+    }
+
+    /*
+     * Skip only a grouping that describes *this* shard, not merely one that exists.
+     *
+     * A grouping names its trips by their index in the shard it was built from and carries that
+     * shard's fingerprint, and a reader whose shard disagrees ignores it and groups the long way.
+     * The refresh republishes a service date's shards three times a day, so a publisher that
+     * skipped on the key being present would leave the first grouping in place for ever and every
+     * journey through that tile would quietly go the long way — which is the state this was found
+     * in: 400 of 400 shards of the newest service date had no grouping at all, and the ones that
+     * did have one had it from a shard since replaced. One read per shard says which, and saying
+     * it is the whole point of the fingerprint.
+     */
+    if (already.has(target)) {
+      let standing: Uint8Array | null = null;
+      try {
+        standing = await store.getBytes(target);
+      } catch {
+        standing = null;
+      }
+      if (standing !== null) {
+        let agrees = false;
+        try {
+          agrees = new RouteGrouping(standing).describes(shard.fingerprint());
+        } catch {
+          agrees = false;
+        }
+        if (agrees) {
+          counts.skipped += 1;
+          continue;
+        }
+        counts.replaced += 1;
+      }
     }
 
     /*
@@ -241,7 +296,10 @@ async function main(): Promise<number> {
     failures: failures.slice(0, 20),
     note:
       "One object per binary trip shard, naming trips by their index in it and carrying that " +
-      "shard's fingerprint. A reader whose shard disagrees groups in the request instead.",
+      "shard's fingerprint. A reader whose shard disagrees groups in the request instead. A " +
+      "shard is skipped only when the grouping already there describes it: `replaced` counts the " +
+      "ones whose shard had been republished since, which a skip on mere existence would have " +
+      "left stale for ever. `--horizon-days` limits the run to the dates a refresh rewrites.",
   };
 
   console.log(JSON.stringify(report, null, 1));
