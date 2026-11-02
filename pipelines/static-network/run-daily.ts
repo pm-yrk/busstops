@@ -939,6 +939,20 @@ main()
   })
   .catch((error: unknown) => {
     console.error("Daily static-network job failed:", error);
+    /*
+     * Annotated, not only logged.
+     *
+     * A refresh that fails leaves the log as the only account of why, and a log is the one thing
+     * about a failed run that is hardest to get at: a run on 2 November died sixteen minutes into
+     * a step that normally takes seventy, and establishing what went wrong meant reasoning from
+     * timings because the reason was in a log nobody could fetch. The annotation travels with the
+     * check run, so the next failure says what it was.
+     */
+    annotateReport("static network", {
+      outcome: "failed",
+      error: error instanceof Error ? error.message : String(error),
+      where: error instanceof Error ? (error.stack ?? "").split("\n").slice(0, 6).join(" | ") : "",
+    });
     process.exitCode = 1;
   })
   .finally(() => cleanUp());
