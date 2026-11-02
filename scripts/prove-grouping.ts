@@ -20,6 +20,13 @@
  * reader's own check is used — `RouteGrouping.describes` — rather than a reimplementation, so a
  * verdict here means what the Worker would decide.
  *
+ * It also checks the pair the other way round, over the five areas a passenger walk uses: for each
+ * of Leeds, Manchester, Birmingham, Bristol and York, every shard of every service date in that
+ * area is opened and asked four things — is the binary form there, is the superseded text form
+ * gone, is there a grouping, and does that grouping describe this shard. A refresh that produces a
+ * coherent trip-and-grouping pair answers yes to all four on dates it has just written, which is
+ * the only proof that the artifact no longer expires.
+ *
  *   npx tsx scripts/prove-grouping.ts [--limit 400] [--json grouping-proof.json]
  */
 
@@ -36,9 +43,30 @@ import {
   PatternTripShard,
   RouteGrouping,
   SHARDED,
+  TRIP_TILE_DEGREES,
   journeyRoutesDataset,
+  patternTripsDataset,
   type NetworkIndexRecord,
 } from "@busstops/pipeline-static-network";
+import { objectKeyFor, tilesForBoundingBox } from "@busstops/pipeline-core";
+
+/**
+ * The five areas a passenger walk covers, as the trip grid files them.
+ *
+ * Named areas rather than a sample of keys, because "400 shards sorted by key" is 400 shards of
+ * whichever corner of the country sorts first — it proved the defect but it cannot prove the fix
+ * for the places anyone actually asks about.
+ */
+const AREAS: Array<{
+  name: string;
+  bbox: { west: number; south: number; east: number; north: number };
+}> = [
+  { name: "Leeds", bbox: { west: -1.62, south: 53.75, east: -1.46, north: 53.85 } },
+  { name: "Manchester", bbox: { west: -2.32, south: 53.42, east: -2.18, north: 53.52 } },
+  { name: "Birmingham", bbox: { west: -1.96, south: 52.42, east: -1.8, north: 52.52 } },
+  { name: "Bristol", bbox: { west: -2.68, south: 51.4, east: -2.52, north: 51.5 } },
+  { name: "York", bbox: { west: -1.14, south: 53.92, east: -1.0, north: 54.0 } },
+];
 
 const argv = process.argv.slice(2);
 const flag = (name: string): string | undefined => {
@@ -219,10 +247,100 @@ async function main(): Promise<number> {
           ? "the grouping is mostly not published for the dates being served"
           : "the grouping is mostly published but describes a different shard than the one served";
 
+  /*
+   * And the pair over the five probe areas, on every date the horizon holds.
+   *
+   * Four questions per shard, which together are the whole of "did the refresh produce a coherent
+   * trip and grouping": the binary form a request reads, the absence of the text form it
+   * supersedes, the grouping, and whether that grouping describes this shard rather than one the
+   * refresh has replaced.
+   */
+  const byArea: Array<{
+    area: string;
+    tiles: number;
+    serviceDates: string[];
+    shards: number;
+    binaryPresent: number;
+    textRemaining: number;
+    groupingPresent: number;
+    groupingAgrees: number;
+    groupingStale: number;
+    coherentPairs: number;
+  }> = [];
+  for (const area of AREAS) {
+    const tiles = tilesForBoundingBox(area.bbox, TRIP_TILE_DEGREES);
+    const tileSet = new Set(tiles);
+    const mine = shards.filter((key) => {
+      const parts = shardParts(key);
+      return parts !== null && tileSet.has(parts.tile);
+    });
+    const verdict = {
+      area: area.name,
+      tiles: tiles.length,
+      serviceDates: [...new Set(mine.map((key) => shardParts(key)!.serviceDate))].sort(),
+      shards: mine.length,
+      binaryPresent: 0,
+      textRemaining: 0,
+      groupingPresent: 0,
+      groupingAgrees: 0,
+      groupingStale: 0,
+      coherentPairs: 0,
+    };
+    for (const key of mine) {
+      const parts = shardParts(key)!;
+      let shard: PatternTripShard | null = null;
+      try {
+        const bytes = await store.getBytes(key);
+        if (bytes !== null) {
+          shard = new PatternTripShard(bytes);
+          verdict.binaryPresent += 1;
+        }
+      } catch {
+        shard = null;
+      }
+      /* The superseded text sibling, which must not remain beside the bytes: every reader prefers
+       * the bytes, so a shard with both is a shard whose reader may serve the older timetable. */
+      const asText = await store.get(
+        objectKeyFor(
+          patternTripsDataset(parts.serviceDate, parts.tile, parts.window),
+          index.version,
+        ),
+      );
+      if (asText !== null) verdict.textRemaining += 1;
+
+      let agrees = false;
+      const groupingBytes = await store.getBytes(
+        objectKeyForBytes(
+          journeyRoutesDataset(parts.serviceDate, parts.tile, parts.window),
+          index.version,
+        ),
+      );
+      if (groupingBytes !== null) {
+        verdict.groupingPresent += 1;
+        try {
+          agrees =
+            shard !== null && new RouteGrouping(groupingBytes).describes(shard.fingerprint());
+        } catch {
+          agrees = false;
+        }
+        if (agrees) verdict.groupingAgrees += 1;
+        else verdict.groupingStale += 1;
+      }
+      if (shard !== null && asText === null && agrees) verdict.coherentPairs += 1;
+    }
+    byArea.push(verdict);
+  }
+
+  const areasCoherent = byArea.every(
+    (area) => area.shards > 0 && area.coherentPairs === area.shards,
+  );
+
   const report = {
     outcome: "measured",
     version: index.version,
     shardsAtVersion: shards.length,
+    byArea,
+    areasCoherent,
     serviceDates: dates.length,
     limit: LIMIT,
     ...totals,
@@ -231,7 +349,9 @@ async function main(): Promise<number> {
     examples,
     note:
       "Read-only. The verdict per shard is the reader's own `RouteGrouping.describes` against the " +
-      "shard's fingerprint, so 'stale' means the Worker would ignore it and group the long way.",
+      "shard's fingerprint, so 'stale' means the Worker would ignore it and group the long way. " +
+      "`areasCoherent` is true only when every shard in all five probe areas has the binary form, " +
+      "no text form beside it, and a grouping that describes it.",
   };
 
   console.log(JSON.stringify(report, null, 1));
