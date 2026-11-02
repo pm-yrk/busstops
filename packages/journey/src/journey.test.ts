@@ -205,29 +205,56 @@ describe("RAPTOR search", () => {
   });
 
   it("keeps later destination rounds that are inside the caller's pruning slack", () => {
+    // Separate destination stops prevent global earliest-arrival dominance at D from hiding
+    // the later candidate; no walking edges may turn the second boarding into a direct ride.
+    const rankingGraph = buildGraph({
+      stops,
+      trips: [
+        trip("direct", "direct", [
+          ["A", departAt + 2 * MIN],
+          ["D", departAt + 19 * MIN],
+        ]),
+        trip("first", "first", [
+          ["C", departAt + 5 * MIN],
+          ["B", departAt + 12 * MIN],
+        ]),
+        trip("second", "second", [
+          ["B", departAt + 16 * MIN],
+          ["E", departAt + 24 * MIN],
+        ]),
+      ],
+      maxTransferSeconds: 1,
+    });
+    const rankingDestinations = [
+      { stopId: "D", egressSeconds: 30 },
+      { stopId: "E", egressSeconds: 30 },
+    ];
     const reachableOrigins = [
       { stopId: "A", accessSeconds: 30 },
       { stopId: "C", accessSeconds: 0 },
     ];
 
-    const withRankingSlack = runRaptor(graph, reachableOrigins, {
+    const withRankingSlack = runRaptor(rankingGraph, reachableOrigins, {
       departAtSeconds: departAt,
       maxRounds: 3,
-      targetPruning: { destinations, slackSeconds: 20 * MIN },
+      targetPruning: { destinations: rankingDestinations, slackSeconds: 20 * MIN },
     });
-    const tightEarliestOnly = runRaptor(graph, reachableOrigins, {
+    const tightEarliestOnly = runRaptor(rankingGraph, reachableOrigins, {
       departAtSeconds: departAt,
       maxRounds: 3,
-      targetPruning: { destinations, slackSeconds: 0 },
+      targetPruning: { destinations: rankingDestinations, slackSeconds: 0 },
     });
 
-    // The direct bus reaches D in round 1. The two-bus alternative via E arrives five minutes
+    // The direct bus reaches D in round 1. The two-bus alternative to E arrives five minutes
     // later in round 2. A passenger-ranking search must keep it; a pure earliest-arrival search
     // is allowed to prune it once the direct target is known.
-    expect(bestArrival(withRankingSlack.labelsByRound[2]!, destinations)?.arrivalSeconds).toBe(
-      departAt + 24 * MIN + 30,
-    );
-    expect(bestArrival(tightEarliestOnly.labelsByRound[2]!, destinations)).toBeNull();
+    expect(
+      bestArrival(withRankingSlack.labelsByRound[2]!, [{ stopId: "E", egressSeconds: 30 }])
+        ?.arrivalSeconds,
+    ).toBe(departAt + 24 * MIN + 30);
+    expect(
+      bestArrival(tightEarliestOnly.labelsByRound[2]!, [{ stopId: "E", egressSeconds: 30 }]),
+    ).toBeNull();
   });
 
   it("never boards a cancelled trip", () => {
