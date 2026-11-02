@@ -559,15 +559,11 @@ export function rankOptions(options: readonly PlannedOption[]): PlannedOption[] 
 
   // Least walking, subject to not arriving unreasonably later than the best option.
   const leastWalking = [...options]
-    .filter(
-      (o) => o.arrivalSeconds <= earliestArrival + LEAST_WALKING_ARRIVAL_SLACK_SECONDS,
-    )
+    .filter((o) => o.arrivalSeconds <= earliestArrival + LEAST_WALKING_ARRIVAL_SLACK_SECONDS)
     .sort((a, b) => a.totalWalkSeconds - b.totalWalkSeconds)[0];
 
   const fewestChanges = [...options]
-    .filter(
-      (o) => o.arrivalSeconds <= earliestArrival + FEWEST_CHANGES_ARRIVAL_SLACK_SECONDS,
-    )
+    .filter((o) => o.arrivalSeconds <= earliestArrival + FEWEST_CHANGES_ARRIVAL_SLACK_SECONDS)
     .sort((a, b) => a.changeCount - b.changeCount || a.arrivalSeconds - b.arrivalSeconds)[0];
 
   const chosen: PlannedOption[] = [{ ...fastest, ranking: "fastest" }];
