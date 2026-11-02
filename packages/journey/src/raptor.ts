@@ -31,6 +31,19 @@ export interface RaptorOptions {
    * *at this stop*", which is what the nearest-versus-fastest explanation actually compares.
    */
   allowInitialFootpaths?: boolean;
+  /**
+   * Optional destination-aware pruning.
+   *
+   * Once a transit label reaches one of these destinations, labels later than the best known
+   * final arrival plus `slackSeconds` cannot contribute to an answer the caller cares about.
+   * The caller owns the slack: a pure earliest-arrival query can use zero, while the passenger
+   * planner keeps enough room for its least-walking, fewest-changes and reliability-adjusted
+   * rankings.
+   */
+  targetPruning?: {
+    destinations: readonly SearchDestination[];
+    slackSeconds: number;
+  };
 }
 
 export type LegKind = "board" | "transfer";
@@ -91,6 +104,11 @@ export interface SearchCounters {
   improveAccepted: number;
   /** Transfer edges walked. */
   transferScans: number;
+  /** Work skipped because a destination-aware upper bound made it unable to affect an answer. */
+  targetPrunedLabels: number;
+  targetPrunedBoardings: number;
+  targetPrunedTransferStops: number;
+  targetPrunedTransfers: number;
   /** Label maps copied, and the entries copied with them. */
   labelMapCopies: number;
   labelEntriesCopied: number;
@@ -106,6 +124,10 @@ export function newSearchCounters(): SearchCounters {
     improveCalls: 0,
     improveAccepted: 0,
     transferScans: 0,
+    targetPrunedLabels: 0,
+    targetPrunedBoardings: 0,
+    targetPrunedTransferStops: 0,
+    targetPrunedTransfers: 0,
     labelMapCopies: 0,
     labelEntriesCopied: 0,
   };
@@ -199,6 +221,37 @@ export function runRaptor(
   const walkIndex = graph.transferIndexByStop;
 
   const UNREACHED = 0x7fffffff;
+
+  /*
+   * Destination-aware upper bound.
+   *
+   * This deliberately starts unreachable. Initial access walking must not create the bound: the
+   * passenger planner rejects a walk-only label as a transit answer, so pruning against one would
+   * be able to erase every bus journey before the first bus was boarded. The bound is updated only
+   * by labels accepted in a transit round.
+   */
+  const targetPruning = options.targetPruning;
+  const targetEgress = targetPruning ? new Int32Array(stopCount).fill(UNREACHED) : null;
+  if (targetPruning && targetEgress) {
+    for (const destination of targetPruning.destinations) {
+      const stop = indexOf.get(destination.stopId);
+      if (stop === undefined) continue;
+      const egress = Math.max(0, Math.round(destination.egressSeconds));
+      if (egress < targetEgress[stop]!) targetEgress[stop] = egress;
+    }
+  }
+  const targetSlackSeconds = Math.max(0, Math.round(targetPruning?.slackSeconds ?? 0));
+  let bestTargetFinal = UNREACHED;
+  let targetCutoff = UNREACHED;
+  const recordTargetArrival = (stop: number, seconds: number): void => {
+    if (!targetEgress) return;
+    const egress = targetEgress[stop]!;
+    if (egress === UNREACHED) return;
+    const finalArrival = seconds + egress;
+    if (finalArrival >= bestTargetFinal) return;
+    bestTargetFinal = finalArrival;
+    targetCutoff = Math.min(UNREACHED, finalArrival + targetSlackSeconds);
+  };
 
   const bestArrival = new Int32Array(stopCount).fill(UNREACHED);
   const bestRound = new Int32Array(stopCount).fill(-1);
@@ -330,6 +383,11 @@ export function runRaptor(
      */
     const worthLabelling = (stop: number, seconds: number): boolean => {
       if (counters) counters.improveCalls += 1;
+      // Strictly greater preserves an option exactly on the caller's ranking boundary.
+      if (seconds > targetCutoff) {
+        if (counters) counters.targetPrunedLabels += 1;
+        return false;
+      }
       if (seconds >= arrival[stop]!) return false;
       // Pruning against the global best is what keeps the search bounded.
       if (seconds >= bestArrival[stop]! && bestRound[stop]! <= round) return false;
@@ -349,6 +407,7 @@ export function runRaptor(
         bestLeg[stop] = leg;
         bestPrevious[stop] = from;
       }
+      recordTargetArrival(stop, seconds);
       if (queued[stop] === 0) {
         queued[stop] = 1;
         nextMarked.push(stop);
@@ -364,6 +423,7 @@ export function runRaptor(
      */
     const queue = new Map<RouteGroup, number>();
     for (const stop of marked) {
+      if (previousArrival[stop]! > targetCutoff) continue;
       const entries = graph.routesByStopIndex[stop];
       if (entries === undefined) continue;
       for (const entry of entries) {
@@ -422,6 +482,10 @@ export function runRaptor(
         // Boarding after a previous ride needs the interchange buffer; the first boarding does not.
         const readyAt = previousRound[stop]! === 0 ? from : from + minTransferSeconds;
         if (riding !== -1 && departureAt(route.trips[riding]!, at) <= readyAt) continue;
+        if (readyAt > targetCutoff) {
+          if (counters) counters.targetPrunedBoardings += 1;
+          continue;
+        }
 
         const earlier = earliestBoardable(route, at, readyAt, riding, counters);
         if (earlier === -1) continue;
@@ -446,6 +510,10 @@ export function runRaptor(
       const stop = nextMarked[queuedAt]!;
       const from = arrival[stop]!;
       if (from === UNREACHED) continue;
+      if (from > targetCutoff) {
+        if (counters) counters.targetPrunedTransferStops += 1;
+        continue;
+      }
 
       /*
        * Over the adjacency's arrays, not over a list of objects.
@@ -464,6 +532,10 @@ export function runRaptor(
         const to = indexOf.get(neighbour);
         if (to === undefined) continue;
         const reached = from + walks.seconds[edge]!;
+        if (reached > targetCutoff) {
+          if (counters) counters.targetPrunedTransfers += 1;
+          continue;
+        }
         if (reached >= arrival[to]!) continue;
 
         const leg: SearchLeg = {
@@ -483,6 +555,7 @@ export function runRaptor(
           bestLeg[to] = leg;
           bestPrevious[to] = stop;
         }
+        recordTargetArrival(to, reached);
         /* Marked for the next round, not for this one: see `reachedByRiding` above. */
         if (queued[to] === 0) {
           queued[to] = 1;
