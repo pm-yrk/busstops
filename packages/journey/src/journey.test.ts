@@ -180,14 +180,23 @@ describe("RAPTOR search", () => {
 
       const randomGraph = buildGraph({ stops, trips: randomTrips, maxTransferSeconds: 600 });
       const raptor = runRaptor(randomGraph, origins, { departAtSeconds: departAt, maxRounds: 3 });
+      const pruned = runRaptor(randomGraph, origins, {
+        departAtSeconds: departAt,
+        maxRounds: 3,
+        targetPruning: { destinations, slackSeconds: 1200 },
+      });
       const raptorArrival = bestArrival(raptor.best, destinations);
+      const prunedArrival = bestArrival(pruned.best, destinations);
       const brute = bruteForceEarliestArrival(randomGraph, origins, destinations, departAt, 3);
 
       if (brute === null) {
         expect(raptorArrival).toBeNull();
+        expect(prunedArrival).toBeNull();
       } else {
         expect(raptorArrival).not.toBeNull();
+        expect(prunedArrival).not.toBeNull();
         expect(raptorArrival!.arrivalSeconds).toBe(brute.arrivalSeconds);
+        expect(prunedArrival!.arrivalSeconds).toBe(brute.arrivalSeconds);
         comparisons += 1;
       }
     }
