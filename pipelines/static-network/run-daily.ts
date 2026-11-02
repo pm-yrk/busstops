@@ -920,6 +920,16 @@ function writeReport(report: Record<string, unknown>): void {
     publishedDatasets: Array.isArray(report.published) ? report.published.length : undefined,
     failed: report.failed,
     departureShards: report.departureShards,
+    /*
+     * Whether this refresh wrote a grouping for every shard it wrote, and whether each one
+     * described the shard beside it.
+     *
+     * The digest is a selected list of fields, and the grouping was not on it: the first refresh
+     * to publish the pair reported nothing about the pair, so the only evidence was a count in the
+     * bucket proof, which cannot tell a grouping that describes its shard from one that does not.
+     * `verified` short of `published` is a tile whose journeys will group their own trips.
+     */
+    tripShardGrouping: (report.patternTrips as { grouping?: unknown } | undefined)?.grouping,
     counts: report.counts,
     // Named rather than included whole: a source that is down is the thing worth seeing.
     sourcesDown: Array.isArray(report.sourceHealth)
