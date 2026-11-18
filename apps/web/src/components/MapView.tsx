@@ -152,13 +152,7 @@ export function MapView({
   const selectVehicleRef = useRef(onSelectVehicle);
   const [failed, setFailed] = useState(false);
   const [ready, setReady] = useState(false);
-  /*
-   * Whether there is a map on the screen, read from inside MapLibre's own error handler.
-   *
-   * A ref rather than `ready`, because the handler is registered once when the map is created and
-   * would close over the first render's value of any state it read.
-   */
-  const drawn = useRef(false);
+  const [slow, setSlow] = useState(false);
   const [scale, setScale] = useState<MapScale>(() => scaleForZoom(14));
   const styleUrl = configuredStyleUrl();
 
@@ -236,27 +230,9 @@ export function MapView({
      */
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-left");
 
-    /*
-     * A renderer error is fatal only until the map is actually up.
-     *
-     * This replaced the whole map with the list for *any* error MapLibre raised, and MapLibre
-     * raises one for a single tile that 404s, a sprite that arrives late, or a glyph range the
-     * basemap does not serve. The basemap is somebody else's free service, so those happen — and
-     * the deployed sweep caught the consequence three times in one run at desktop: "The map could
-     * not be loaded", with the API healthy and the buses listed underneath it.
-     *
-     * Before the style has loaded there is nothing on screen and the list-only fallback is the
-     * right answer. After it, the map is drawn, every layer is attached and the stops and buses
-     * are on it; throwing all of that away because one tile failed is a worse answer than a map
-     * with a gap in its background. The error is still surfaced, in the console, where a
-     * developer looks.
-     */
+    const startupTimer = setTimeout(() => setSlow(true), 8_000);
     map.on("error", (event) => {
-      if (drawn.current) {
-        console.warn("map error after load, keeping the map", event.error ?? event);
-        return;
-      }
-      setFailed(true);
+      console.warn("Map resource failed to load", event.error ?? event);
     });
 
     map.on("moveend", () => {
@@ -273,23 +249,24 @@ export function MapView({
       );
     });
 
-    map.on("load", () => {
-      void (async () => {
-        for (const icon of MAP_ICONS) {
-          const data = await rasterise(icon);
-          // A missing icon means that layer does not draw. The map still works, which is a better
-          // answer than a map that fails to load because one texture could not be made.
-          if (data && !map.hasImage(icon.name)) map.addImage(icon.name, data, { pixelRatio: 1 });
-        }
-        // Built here rather than fetched: the directional mark must not depend on a font.
-        if (!map.hasImage("direction-pip")) {
-          map.addImage("direction-pip", trianglePip(), { pixelRatio: 1, sdf: true });
-        }
-        addSourcesAndLayers(map);
-        drawn.current = true;
-        setReady(true);
-        setScale(scaleForZoom(map.getZoom()));
-      })();
+    // The style is usable before the first background tiles finish loading.
+    // Install passenger layers while those independent requests are still in flight.
+    map.once("style.load", () => {
+      clearTimeout(startupTimer);
+      addSourcesAndLayers(map);
+      if (!map.hasImage("direction-pip")) {
+        map.addImage("direction-pip", trianglePip(), { pixelRatio: 1, sdf: true });
+      }
+      setReady(true);
+      setScale(scaleForZoom(map.getZoom()));
+
+      for (const icon of MAP_ICONS) {
+        void rasterise(icon).then((data) => {
+          if (data && mapRef.current === map && !map.hasImage(icon.name)) {
+            map.addImage(icon.name, data, { pixelRatio: 1 });
+          }
+        });
+      }
     });
 
     // A stop is chosen by clicking the thing that represents it, at whatever scale that is.
@@ -347,6 +324,7 @@ export function MapView({
     (globalThis as { __busstopsMap?: MapLibreMap }).__busstopsMap = map;
 
     return () => {
+      clearTimeout(startupTimer);
       map.remove();
       mapRef.current = null;
       delete (globalThis as { __busstopsMap?: MapLibreMap }).__busstopsMap;
@@ -429,6 +407,11 @@ export function MapView({
   return (
     <div className="map-view" data-scale={scale}>
       <div ref={containerRef} className="map-view__canvas" />
+      {!ready && slow && (
+        <p className="map-view__degraded small" role="status">
+          The map background is taking longer than usual. You can use the stops list below.
+        </p>
+      )}
       <p className="visually-hidden" role="status">
         {describeView(scale, stopData.features.length, vehicleData.features.length, degraded)} The
         same items are listed below this map.

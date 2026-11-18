@@ -93,3 +93,51 @@ interface MapLikeForTest {
     properties?: Record<string, unknown> | null;
   }>;
 }
+
+test("installs stop layers while the basemap is still loading", async ({ page }) => {
+  await page.addInitScript(
+    (style) => {
+      (globalThis as { __busstopsMapStyle?: unknown }).__busstopsMapStyle = style;
+    },
+    {
+      ...GLYPHLESS_STYLE,
+      sources: { background: { type: "vector", url: "/pending-tilejson.json" } },
+      layers: [
+        ...GLYPHLESS_STYLE.layers,
+        { id: "roads", type: "line", source: "background", "source-layer": "roads" },
+      ],
+    },
+  );
+
+  let release = () => {};
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/pending-tilejson.json", async (route) => {
+    await pending;
+    await route.abort();
+  });
+  await mockApi(page, { "/v1/map": MAP_WITH_TRAFFIC });
+  try {
+    await page.goto("/live?bbox=-1.6,53.775,-1.49,53.825");
+    await expect
+      .poll(
+        () =>
+          page.evaluate(() => {
+            const map = (
+              globalThis as {
+                __busstopsMap?: {
+                  getLayer(id: string): unknown;
+                };
+              }
+            ).__busstopsMap;
+            return Boolean(map?.getLayer("stop-pips"));
+          }),
+        { timeout: 8_000 },
+      )
+      .toBe(true);
+  } finally {
+    release();
+  }
+  await expect(page.locator(".map-view__canvas")).toBeVisible();
+});

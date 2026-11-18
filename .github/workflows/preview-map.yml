@@ -1,0 +1,64 @@
+name: Verify and deploy preview map
+
+on:
+  push:
+    branches: [claude/bus-stops-platform-build-f7qztb]
+    paths:
+      - apps/web/src/components/MapView.tsx
+      - tests/e2e/map-paints.spec.ts
+      - .github/workflows/preview-map.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-preview
+  cancel-in-progress: false
+
+jobs:
+  preview-map:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      API_ORIGIN: https://busstops-api-preview.paulmurrin13.workers.dev
+      MAP_ORIGIN: https://tiles.openfreemap.org
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npx --no-install playwright install --with-deps chromium
+      - name: Check the map at desktop and phone widths
+        run: npx --no-install playwright test tests/e2e/map-paints.spec.ts --project=desktop --project=phone
+      - name: Build the preview
+        env:
+          VITE_API_URL: ${{ env.API_ORIGIN }}
+          VITE_MAP_STYLE_URL: ${{ env.MAP_ORIGIN }}/styles/liberty
+        run: |
+          npm run build --workspace @busstops/web
+          node scripts/generate-headers.mjs apps/web/dist "$API_ORIGIN" "$MAP_ORIGIN"
+      - name: Publish the frontend
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          npx --no-install wrangler pages deploy apps/web/dist --project-name busstops --branch preview
+      - name: Verify the deployed map
+        run: |
+          node --input-type=module <<'JS'
+          import { chromium } from 'playwright';
+          const browser = await chromium.launch();
+          try {
+            const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+            await page.goto('https://preview.busstops.pages.dev/live?bbox=-1.14,53.92,-1.03,53.99');
+            await page.waitForFunction(() => {
+              const source = globalThis.__busstopsMap?.getSource('busstops-stops');
+              return !!source && source.serialize().data?.features?.length > 0;
+            }, undefined, { timeout: 20000 });
+            console.log('The deployed mobile map opened and loaded stop markers.');
+          } finally {
+            await browser.close();
+          }
+          JS
