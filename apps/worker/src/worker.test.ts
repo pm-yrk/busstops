@@ -3107,7 +3107,7 @@ describe("the feature flags are switches rather than declarations", () => {
     expect(body.error?.code).toBe("feature_unavailable");
     expect(body.error?.message).toMatch(/switched off/i);
     /* And it says what still works, because a passenger wants to know. */
-    expect(body.error?.message).toMatch(/live buses/i);
+    expect(body.error?.message).toMatch(/scheduled departures/i);
   });
 
   it("plans a journey when the flag is left alone", async () => {
