@@ -5,6 +5,7 @@ on:
     branches: [claude/bus-stops-platform-build-f7qztb]
     paths:
       - apps/web/src/components/MapView.tsx
+      - apps/web/src/pages/LiveMapPage.tsx
       - tests/e2e/map-paints.spec.ts
       - .github/workflows/preview-map.yml
 

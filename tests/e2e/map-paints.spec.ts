@@ -141,3 +141,20 @@ test("installs stop layers while the basemap is still loading", async ({ page })
   }
   await expect(page.locator(".map-view__canvas")).toBeVisible();
 });
+
+test("shows stops when the combined request and live buses are unavailable", async ({ page }) => {
+  await mockApi(page);
+  await page.route("**/api/v1/map?*", async (route) => {
+    const layer = new URL(route.request().url()).searchParams.get("layer");
+    if (layer === "stops") {
+      await route.fulfill({
+        json: { ...MAP_WITH_TRAFFIC, data: { ...MAP_WITH_TRAFFIC.data, vehicles: [] } },
+      });
+      return;
+    }
+    await route.fulfill({ status: 503, json: { error: { message: "Unavailable" } } });
+  });
+  await page.goto("/live?bbox=-1.6,53.775,-1.49,53.825");
+  await expect(page.getByText(/live buses will be retried on the next update/i)).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Stops in view" })).toBeVisible();
+});

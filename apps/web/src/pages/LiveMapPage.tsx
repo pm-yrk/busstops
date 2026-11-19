@@ -66,7 +66,8 @@ const DEFAULT_VIEW: Bounds = {
 /** Street-level without being nose-to-the-pavement: the zoom a map opens at when it knows where you are. */
 const AROUND_ME_ZOOM = 15;
 
-const REFRESH_INTERVAL_MS = 20_000;
+// Leave time for the full viewport, split retry and smaller viewport to finish.
+const REFRESH_INTERVAL_MS = 25_000;
 
 type LayerKey = "stops" | "vehicles";
 
@@ -200,13 +201,43 @@ export function LiveMapPage() {
   const hasMapData = useRef(false);
 
   const fetcher = useCallback(
-    (signal: AbortSignal) =>
-      fetchMapWithFallback(
-        (bounds, inner) => apiClient.map(bounds, safeZoom, inner),
+    async (signal: AbortSignal) => {
+      let attempt = 0;
+      let missing: "stops" | "buses" | null = null;
+      const result = await fetchMapWithFallback(
+        async (bounds, inner) => {
+          if (++attempt !== 2) return apiClient.map(bounds, safeZoom, inner);
+          const [stops, buses] = await Promise.allSettled([
+            apiClient.mapLayer(bounds, safeZoom, "stops", inner),
+            apiClient.mapLayer(bounds, safeZoom, "vehicles", inner),
+          ]);
+          if (stops.status === "rejected" && buses.status === "rejected") throw stops.reason;
+          missing =
+            stops.status === "rejected" ? "stops" : buses.status === "rejected" ? "buses" : null;
+          const stopResponse = stops.status === "fulfilled" ? stops.value : null;
+          const busResponse = buses.status === "fulfilled" ? buses.value : null;
+          const available = (busResponse ?? stopResponse)!;
+          return {
+            ...available,
+            data: {
+              ...available.data,
+              stops: stopResponse?.data.stops ?? [],
+              degraded: stopResponse?.data.degraded ?? false,
+              degradationReason: stopResponse?.data.degradationReason ?? null,
+              vehicles: busResponse?.data.vehicles ?? [],
+              truncated: {
+                ...available.data.truncated,
+                stops: stopResponse?.data.truncated.stops ?? false,
+              },
+            },
+          };
+        },
         clamped,
         signal,
         { attempts: hasMapData.current ? 1 : 3 },
-      ),
+      );
+      return { ...result, missing };
+    },
     // The bounds object is recreated each render, so depend on its values, not its identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [clamped.west, clamped.south, clamped.east, clamped.north, safeZoom],
@@ -217,13 +248,15 @@ export function LiveMapPage() {
     error,
     loading,
     reload,
-  } = useFetch<MapAttemptOutcome<MapResponse>>(fetcher, { refreshMs: REFRESH_INTERVAL_MS });
+  } = useFetch<MapAttemptOutcome<MapResponse> & { missing: "stops" | "buses" | null }>(fetcher, {
+    refreshMs: REFRESH_INTERVAL_MS,
+  });
   const response = outcome?.response ?? null;
   // In an effect, not during render: the fetcher reads this on its next call, which is always after
   // a commit, so there is nothing to gain from assigning it a moment earlier and a lint rule to break.
   useEffect(() => {
-    hasMapData.current = response !== null;
-  }, [response]);
+    hasMapData.current = response !== null && !outcome?.missing;
+  }, [response, outcome?.missing]);
 
   const now = useTicker();
 
@@ -461,7 +494,7 @@ export function LiveMapPage() {
               {error instanceof ApiError && error.code === "bbox_too_large"
                 ? "That area is too large to load at once. Zoom in and the map will update."
                 : "We could not load stops and buses for this area. The map below is still yours to " +
-                  "move; we tried three times, including a smaller area."}
+                  "move. You can retry here or zoom in to load a smaller area."}
             </p>
             <button type="button" className="button button--secondary" onClick={reload}>
               Try again
@@ -474,6 +507,13 @@ export function LiveMapPage() {
          * Said out loud, because a map that silently covers less than the screen is a map that
          * looks like a part of England with no buses in it.
          */}
+        {outcome?.missing && (
+          <p className="live-map__notice small" role="status">
+            We could only load part of this view.{" "}
+            {outcome.missing === "stops" ? "Stops" : "Live buses"} will be retried on the next
+            update.
+          </p>
+        )}
         {outcome?.narrowed && (
           <p className="live-map__notice small" role="status">
             Only the middle of this view could be loaded, so stops near the edges are missing. Zoom

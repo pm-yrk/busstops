@@ -259,11 +259,29 @@ export class ApiClient {
     zoom: number,
     signal?: AbortSignal,
   ): Promise<MapResponse> {
+    return this.requestMap(bbox, zoom, signal);
+  }
+
+  mapLayer(
+    bbox: { west: number; south: number; east: number; north: number },
+    zoom: number,
+    layer: "stops" | "vehicles",
+    signal: AbortSignal,
+  ): Promise<MapResponse> {
+    return this.requestMap(bbox, zoom, signal, layer);
+  }
+
+  private requestMap(
+    bbox: { west: number; south: number; east: number; north: number },
+    zoom: number,
+    signal?: AbortSignal,
+    layer?: "stops" | "vehicles",
+  ): Promise<MapResponse> {
     const bboxParam = [bbox.west, bbox.south, bbox.east, bbox.north]
       .map((v) => v.toFixed(5))
       .join(",");
     return this.request<MapResponse>(
-      `/v1/map?bbox=${encodeURIComponent(bboxParam)}&zoom=${Math.round(zoom)}`,
+      `/v1/map?bbox=${encodeURIComponent(bboxParam)}&zoom=${Math.round(zoom)}${layer ? `&layer=${layer}` : ""}`,
       signal,
       MapResponseSchema,
       {
@@ -279,7 +297,7 @@ export class ApiClient {
          * anything was said. A map that gives up sooner retries sooner, and the next rung of the
          * ladder asks for less.
          */
-        timeoutMs: MAP_TIMEOUT_MS,
+        timeoutMs: layer ? 6_000 : MAP_TIMEOUT_MS,
       },
     );
   }

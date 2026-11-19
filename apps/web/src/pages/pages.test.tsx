@@ -978,6 +978,7 @@ describe("the live map opening around the passenger", () => {
  */
 describe("the live map when the platform refuses the data", () => {
   it("keeps a basemap on the screen and says what is missing", async () => {
+    vi.spyOn(apiClient, "mapLayer").mockRejectedValue(new TypeError("Failed to fetch"));
     vi.spyOn(apiClient, "map").mockRejectedValue(new TypeError("Failed to fetch"));
 
     const { container } = renderAt("/live", "/live", <LiveMapPage />);
@@ -995,15 +996,19 @@ describe("the live map when the platform refuses the data", () => {
    * and fall roughly every other request, so asking again is the cheapest fix there is; asking for
    * less is the fallback when asking again does not work.
    */
-  it("asks again, then asks for a smaller area", async () => {
+  it("splits the request before trying a smaller area", async () => {
+    const mapLayer = vi
+      .spyOn(apiClient, "mapLayer")
+      .mockRejectedValue(new TypeError("Failed to fetch"));
     const map = vi.spyOn(apiClient, "map").mockRejectedValue(new TypeError("Failed to fetch"));
 
     renderAt("/live?bbox=-1.12,53.94,-1.03,53.99", "/live", <LiveMapPage />);
 
-    await waitFor(() => expect(map).toHaveBeenCalledTimes(3), { timeout: 5000 });
+    await waitFor(() => expect(map).toHaveBeenCalledTimes(2), { timeout: 5000 });
 
     const first = map.mock.calls[0]?.[0] as { west: number; east: number };
-    const third = map.mock.calls[2]?.[0] as { west: number; east: number };
+    expect(mapLayer.mock.calls.map((call) => call[2])).toEqual(["stops", "vehicles"]);
+    const third = map.mock.calls[1]?.[0] as { west: number; east: number };
     expect(third.east - third.west).toBeLessThan(first.east - first.west);
   });
 

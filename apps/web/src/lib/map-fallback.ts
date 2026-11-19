@@ -1,4 +1,4 @@
-import { isPlatformFailure } from "./api.js";
+import { ApiError, isPlatformFailure } from "./api.js";
 
 export { isPlatformFailure };
 
@@ -96,7 +96,8 @@ export async function fetchMapWithFallback<T>(
       last = error;
       // Anything that is not the platform refusing is the Worker's considered answer — a box that
       // is too large, a bad zoom — and asking again would get the same answer more slowly.
-      if (!isPlatformFailure(error)) throw error;
+      if (!isPlatformFailure(error) && !(error instanceof ApiError && error.status === 504))
+        throw error;
       if (signal.aborted) throw error;
       if (attempts < plan.length) await sleep(delayMs);
     }
