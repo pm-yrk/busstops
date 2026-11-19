@@ -2293,3 +2293,26 @@ jobs:
             console.log(layer + ': ' + data.stops.length + ' stops, ' + data.vehicles.length + ' buses');
           }
           NODE
+
+  preview_map_layer_cpu:
+    name: Compare deployed map CPU with independent layers
+    if: contains(github.event.head_commit.message, '[preview-map-layer-cpu]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Sample one request per layer in each test city
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          npx tsx scripts/measure-worker-cpu.ts \
+            --worker https://busstops-api-preview.paulmurrin13.workers.dev \
+            --rounds 1 --compare-map-layers --endpoints map,map-stops,map-vehicles

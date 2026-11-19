@@ -34,6 +34,8 @@ const WORKER = (arg("worker") ?? process.env.WORKER_URL ?? "").replace(/\/+$/, "
 const WORKER_ENV = arg("env") ?? process.env.WORKER_ENV ?? "preview";
 const JSON_OUT = arg("json");
 const ROUNDS = Number(arg("rounds") ?? "3");
+const COMPARE_MAP_LAYERS = process.argv.includes("--compare-map-layers");
+const MAP_SAMPLE = `&cpuSample=${Date.now().toString(36)}`;
 
 /**
  * Which endpoints to ask, so one question can be isolated.
@@ -435,7 +437,11 @@ function startTail() {
 /** Which endpoint a tail record belongs to, from the URL it carries. */
 function endpointOfUrl(url: string | undefined): string {
   if (url === undefined) return "(unknown)";
-  if (url.includes("/v1/map")) return "map";
+  if (url.includes("/v1/map")) {
+    if (url.includes("&layer=stops")) return "map-stops";
+    if (url.includes("&layer=vehicles")) return "map-vehicles";
+    return "map";
+  }
   if (url.includes("/v1/journeys")) return "journey";
   if (url.includes("/v1/stops/")) return "stop";
   if (url.includes("/v1/nearby")) return "nearby";
@@ -467,7 +473,7 @@ async function main(): Promise<number> {
    * recorded, so the discovery traffic is not in the measurement.
    */
   const targets = new Map<string, { stopId: string | null; routeId: string | null }>();
-  for (const city of CITIES) {
+  for (const city of wanted("stop") || wanted("route") ? CITIES : []) {
     const found: { stopId: string | null; routeId: string | null } = {
       stopId: null,
       routeId: null,
@@ -513,7 +519,14 @@ async function main(): Promise<number> {
 
   for (let round = 1; round <= ROUNDS; round += 1) {
     for (const city of CITIES) {
-      await ask("map", city.name, `/v1/map?bbox=${city.bbox}&zoom=14`);
+      const mapPath = `/v1/map?bbox=${city.bbox}&zoom=14`;
+      if (COMPARE_MAP_LAYERS) {
+        await ask("map", city.name, mapPath + MAP_SAMPLE);
+        await ask("map-stops", city.name, mapPath + MAP_SAMPLE + "&layer=stops");
+        await ask("map-vehicles", city.name, mapPath + MAP_SAMPLE + "&layer=vehicles");
+      } else {
+        await ask("map", city.name, mapPath);
+      }
       for (const journey of city.journeys.slice(0, Math.max(1, JOURNEY_SHAPES))) {
         await ask("journey", city.name, `/v1/journeys?${journey.query}`, journey.shape);
       }
@@ -546,6 +559,7 @@ async function main(): Promise<number> {
     { cpu: number[]; wall: number[]; outcomes: Record<string, number> }
   >();
   for (const record of tail.records) {
+    if (COMPARE_MAP_LAYERS && !record.event?.request?.url?.includes(MAP_SAMPLE)) continue;
     const endpoint = endpointOfUrl(record.event?.request?.url);
     const entry = byEndpoint.get(endpoint) ?? { cpu: [], wall: [], outcomes: {} };
     if (typeof record.cpuTime === "number") entry.cpu.push(record.cpuTime);
@@ -576,6 +590,7 @@ async function main(): Promise<number> {
   };
   const tailByPath = new Map<string, TailRecord[]>();
   for (const record of tail.records) {
+    if (COMPARE_MAP_LAYERS && !record.event?.request?.url?.includes(MAP_SAMPLE)) continue;
     const path = pathOf(record.event?.request?.url);
     const list = tailByPath.get(path) ?? [];
     list.push(record);
