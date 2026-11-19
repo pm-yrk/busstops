@@ -49,10 +49,9 @@ enabled = true
 
 [env.preview.vars]
 GOVERNOR_MODE = "green"
-# CPU sample 2026-11-02: journeys p50 65 ms, max 194 ms, six exceededCpu outcomes.
-# Keep the free-tier containment until the candidate preserves every ranked plan and the
-# deployed endpoints fit the budget. Profiling and corpus jobs read R2 without enabling these.
-FEATURE_FLAGS_JSON = '{"liveVehicles":false,"journeyPlanner":false}'
+# The preview serves live markers. Journey planning stays paused after the CPU sample
+# recorded six journey terminations. The preview deploy checks real map responses.
+FEATURE_FLAGS_JSON = '{"liveVehicles":true,"journeyPlanner":false}'
 PUBLIC_BASE_URL = "https://preview.busstops.pages.dev"
 
 [[env.preview.r2_buckets]]

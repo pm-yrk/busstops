@@ -2179,8 +2179,12 @@ jobs:
   # from [acceptance]/[cpu-proof] load tests, which themselves exhausted the free CPU.
   # Only the preview Worker is deployed; no Pages, R2 publishes or paid plan changes.
   cpu_hotfix_preview:
-    name: Apply and verify preview CPU safety mode
-    if: contains(github.event.head_commit.message, '[preview-cpu-hotfix]')
+    name: Deploy and verify preview feature flags
+    if: >-
+      contains(github.event.head_commit.message, '[preview-cpu-hotfix]') ||
+      contains(github.event.head_commit.message, '[preview-restore-buses]')
+    env:
+      RESTORE_BUSES: ${{ contains(github.event.head_commit.message, '[preview-restore-buses]') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -2193,7 +2197,7 @@ jobs:
           cache: "npm"
       - run: npm ci --no-audit --no-fund
 
-      - name: Confirm both expensive features are disabled before deployment
+      - name: Check the expected preview flags before deployment
         run: |
           node --input-type=module <<'NODE'
           import { readFileSync } from 'node:fs';
@@ -2202,10 +2206,11 @@ jobs:
           const raw = /^FEATURE_FLAGS_JSON\s*=\s*'([^']+)'/m.exec(preview)?.[1];
           if (!raw) throw new Error('Preview feature flags missing or not a single-quoted TOML JSON string');
           const flags = JSON.parse(raw);
-          if (flags.liveVehicles !== false || flags.journeyPlanner !== false) {
-            throw new Error('Refusing hotfix deployment without both CPU-intensive features disabled');
+          const restoreBuses = process.env.RESTORE_BUSES === 'true';
+          if (flags.liveVehicles !== restoreBuses || flags.journeyPlanner !== false) {
+            throw new Error('Preview flags do not match the requested deployment');
           }
-          console.log('Safety settings verified; deploying preview only.');
+          console.log('Feature flags verified; deploying preview only.');
           NODE
 
       - name: Verify Worker configuration tests
@@ -2238,3 +2243,34 @@ jobs:
           done
           echo "::error::Preview safety mode did not become active"
           exit 1
+
+      - name: Verify live bus markers and stops
+        if: env.RESTORE_BUSES == 'true'
+        env:
+          API_ORIGIN: ${{ steps.deploy.outputs.url }}
+        run: |
+          node --input-type=module <<'NODE'
+          const viewports = [
+            ['York', '-1.14,53.92,-1.03,53.99'],
+            ['Leeds', '-1.60,53.775,-1.49,53.825'],
+          ];
+          let liveCount = 0;
+          for (const [city, bbox] of viewports) {
+            const response = await fetch(process.env.API_ORIGIN + '/v1/map?zoom=13&bbox=' + bbox, {
+              signal: AbortSignal.timeout(10_000),
+              headers: { Origin: 'https://preview.busstops.pages.dev' },
+            });
+            if (!response.ok) throw new Error(city + ' map status ' + response.status);
+            if (response.headers.get('access-control-allow-origin') !== 'https://preview.busstops.pages.dev') {
+              throw new Error(city + ' map response cannot be read by the browser');
+            }
+            const { data, meta } = await response.json();
+            if (!data.stops.length || !meta.sources.some(({ source, status }) =>
+              source === 'bods' && status === 'healthy')) {
+              throw new Error(city + ' map is missing stops or a healthy live feed');
+            }
+            liveCount += data.vehicles.length;
+            console.log(city + ': ' + data.stops.length + ' stops, ' + data.vehicles.length + ' live buses');
+          }
+          if (liveCount === 0) throw new Error('No live buses in either viewport');
+          NODE
