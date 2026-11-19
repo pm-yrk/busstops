@@ -338,6 +338,23 @@ describe("rate limiting", () => {
 });
 
 describe("GET /v1/map", () => {
+  it("can serve stops and vehicles in separate invocations", async () => {
+    const env = makeEnv(await publishedStore());
+    const url = "/v1/map?bbox=-1.6,53.7,-1.5,53.85&zoom=14";
+    const stops = await worker.fetch(get(url + "&layer=stops"), env, ctx);
+    const vehicles = await worker.fetch(get(url + "&layer=vehicles"), env, ctx);
+    expect(stops.status).toBe(200);
+    expect(vehicles.status).toBe(200);
+    const stopData = MapResponseSchema.parse(await stops.json());
+    const vehicleData = MapResponseSchema.parse(await vehicles.json());
+    expect(stopData.data.stops.length).toBeGreaterThan(0);
+    expect(stopData.data.vehicles).toEqual([]);
+    expect(stopData.meta.sources).toEqual([]);
+    expect(vehicleData.data.stops).toEqual([]);
+    expect(vehicleData.data.disruptions).toEqual([]);
+    expect(vehicleData.meta.sources.map(({ source }) => source)).toContain("bods");
+  });
+
   it("rejects a missing or malformed bbox", async () => {
     const store = await publishedStore();
     const env = makeEnv(store);

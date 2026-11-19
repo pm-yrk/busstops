@@ -624,6 +624,12 @@ router.get("/v1/map", async (_request, { env, url }) => {
   const state = governorState(env);
   const flags = readFeatureFlags(env);
 
+  const layer = url.searchParams.get("layer");
+  if (layer !== null && layer !== "stops" && layer !== "vehicles") {
+    return errorResponse("bad_request", "layer must be stops or vehicles", 400);
+  }
+  const stopNetwork = layer === "vehicles" ? null : network;
+
   const bboxResult = parseBoundingBox(url);
   if (!bboxResult.ok) return errorResponse("bad_request", bboxResult.message, 400);
   const bbox = bboxResult.bbox;
@@ -656,7 +662,7 @@ router.get("/v1/map", async (_request, { env, url }) => {
 
   // Only the tiles this viewport covers are read. The national stop set is 198 MiB against a
   // 128 MiB isolate, so "load it and filter" is not an option that exists.
-  const index = network ? await ledger.stage("index", () => network!.networkIndex()) : null;
+  const index = stopNetwork ? await ledger.stage("index", () => stopNetwork.networkIndex()) : null;
 
   /*
    * Essential first, and unconditionally: the stops are the map.
@@ -676,7 +682,7 @@ router.get("/v1/map", async (_request, { env, url }) => {
   let failedSources: string[] = [];
   let observedAt: string | null = null;
 
-  const liveAllowed = flags.liveVehicles && state !== "critical";
+  const liveAllowed = layer !== "stops" && flags.liveVehicles && state !== "critical";
 
   /*
    * Together, because they are not competing for the same thing.
@@ -699,8 +705,8 @@ router.get("/v1/map", async (_request, { env, url }) => {
    * large, so the bytes are the floor. `network/map-stops` is those two families projected to what
    * a marker draws, in one read instead of two.
    */
-  const projected = network
-    ? await network.mapStopsInBoundingBox(
+  const projected = stopNetwork
+    ? await stopNetwork.mapStopsInBoundingBox(
         bbox,
         MAP_QUERY_LIMITS.maxStops,
         Date.now(),
@@ -718,8 +724,8 @@ router.get("/v1/map", async (_request, { env, url }) => {
    * diagnostics could not tell "the reader ignored the projection" from "the projection is not in
    * the index". This states both, which costs one object in the payload and ends the guessing.
    */
-  if (network) {
-    const declared = await network.networkIndex(Date.now());
+  if (index) {
+    const declared = index;
     ledger.artifactNote({
       version: declared?.version ?? "(no index)",
       mapStopTiles: declared?.mapStopTiles?.length ?? 0,
@@ -732,8 +738,8 @@ router.get("/v1/map", async (_request, { env, url }) => {
     Promise.all([
       projected
         ? Promise.resolve({ stops: projected.stops, truncated: projected.truncated })
-        : network
-          ? network.stopsInBoundingBox(
+        : stopNetwork
+          ? stopNetwork.stopsInBoundingBox(
               bbox,
               MAP_QUERY_LIMITS.maxStops,
               Date.now(),
@@ -798,9 +804,9 @@ router.get("/v1/map", async (_request, { env, url }) => {
         complete: true,
         available: true,
       }
-    : network
+    : stopNetwork
       ? await ledger.stage("stop-routes", () =>
-          network!.routeNamesForStopTiles(
+          stopNetwork.routeNamesForStopTiles(
             stopTilesForBoundingBox(bbox),
             Date.now(),
             ledger,
@@ -905,7 +911,7 @@ router.get("/v1/map", async (_request, { env, url }) => {
    * it. This used to be a literal `incidents: []` with no comment, which meant the map could never
    * show a closure however loudly an operator announced it.
    */
-  const snapshot = await disruptions?.snapshot();
+  const snapshot = layer === null ? await disruptions?.snapshot() : null;
   const viewportRouteNames = [
     ...new Set(
       vehicles
@@ -968,7 +974,16 @@ router.get("/v1/map", async (_request, { env, url }) => {
           "stop_routes_unavailable"),
   };
 
-  const coverage = index ? (liveAllowed && failedSources.length === 0 ? 1 : 0.5) : 0;
+  const coverage =
+    layer === "vehicles"
+      ? liveObservations && failedSources.length === 0
+        ? 1
+        : 0
+      : index
+        ? liveAllowed && failedSources.length === 0
+          ? 1
+          : 0.5
+        : 0;
 
   endResidency();
 
